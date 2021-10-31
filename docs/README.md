@@ -63,6 +63,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
+> N.B. In order to run, Dockside relies upon other third-party open-source software dependencies that are separate to and
+independent from Dockside and published under their own independent licences.
+>
+> Dockside Docker images made available at https://hub.docker.com/repository/docker/newsnowlabs/dockside are distributions
+> designed to run Dockside that comprise: (a) the Dockside project source and/or object code; and
+> (b) third-party dependencies that Dockside needs to run; and which are each distributed under the terms
+> of their respective licences.
+
 ## Host requirements
 
 Dockside is tested on Debian Linux running [Docker Engine](https://docs.docker.com/engine/install/) (the `docker-ce` package suite) and on MacOS and Windows 10 running [Docker Desktop](https://docs.docker.com/get-docker/), and is expected to run on any host with at least 1GB memory running a modern Linux distribution.
