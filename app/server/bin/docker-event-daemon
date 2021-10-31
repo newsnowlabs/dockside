@@ -1,0 +1,303 @@
+#!/usr/bin/perl
+
+# docker-event-daemon
+# Copyright © 2020 NewsNow Publishing Limited
+# ----------------------------------------------------------------------
+# LICENCE TBC
+# ----------------------------------------------------------------------
+# 
+# Monitors for docker container and network events:
+# - when it receives them, debounces;
+# - safely updates the containers.json file to reflect changes in container state;
+# - periodically calculates container sizes and interpolates the last-looked-up size figure into the current container state;
+# - inspects containers to update port bindings.
+
+use strict;
+
+use JSON;
+use Data::Dumper;
+
+use Try::Tiny;
+use File::Path;
+use IO::Handle;
+use IO::Select;
+use IPC::Open2;
+use Time::HiRes qw(time);
+
+use Util qw(cacheReadWrite flog run run_system);
+use Exception;
+use Data qw($CONFIG $HOSTNAME);
+use Reservation;
+use Containers;
+use User;
+
+sub _update {
+   my $oldJSON = shift;
+   my $opts = shift; # hashref: { 'updateSizes' => undef|1 }
+
+   my $size_opt = $opts->{'updateSizes'} ? '-s' : '';
+
+   flog("docker-event-daemon::update: cache running docker ps '$size_opt'");
+   my $newJSON = run("$CONFIG->{'docker'}{'bin'} container ls -a --format '{{ json . }}' $size_opt");
+
+   my $oldContainers;
+   try {
+      $oldContainers = $oldJSON ? decode_json($oldJSON)->{'containers'} : {};
+   }
+   catch {
+      $oldContainers = {};
+   };
+
+   my $newContainers;
+
+   foreach my $c_json ( split( "\n", $newJSON ) ) {
+      my $c = decode_json($c_json);
+
+      $newContainers->{$c->{'ID'}}{'docker'} = $c;
+
+      if( $oldContainers && $oldContainers->{$c->{'ID'}} ) {
+
+         if( $oldContainers->{$c->{'ID'}}{'inspect'} ) {
+            $newContainers->{$c->{'ID'}}{'inspect'} = $oldContainers->{$c->{'ID'}}{'inspect'};
+         }
+
+         if( !$size_opt && $oldContainers->{$c->{'ID'}}{'docker'}{'Size'}) {
+            $c->{'Size'} = $oldContainers->{$c->{'ID'}}{'docker'}{'Size'};
+         }
+
+      }
+   }
+
+   my @inspectContainerIds = sort map { $_->{'docker'}{'ID'} } values %$newContainers;
+   my $idePath = $CONFIG->{'ide'}{'path'} || '/opt/dockside';
+
+   if(@inspectContainerIds) {
+
+      my $inspectedContainers = decode_json( run("$CONFIG->{'docker'}{'bin'} container inspect " . join(' ', @inspectContainerIds) ) );
+
+      foreach my $inspectedContainer (@$inspectedContainers) {
+         my $ports = {};
+
+         # Obtain host port mapping from:
+         foreach my $S (
+            # - here, when container is running;
+            $inspectedContainer->{'NetworkSettings'}{'Ports'}, 
+
+            # - here, when container is stopped.
+            $inspectedContainer->{'HostConfig'}{'PortBindings'}
+            ) {
+
+            while( my ($portString, $p) = each %$S ) {
+               if($portString =~ m!^(\d+)/tcp$!) {
+                  $ports->{$1} = $p->[0]{'HostPort'} if exists($p->[0]{'HostPort'}) && $p->[0]{'HostPort'};
+               }
+            }
+         }
+
+         my ($ideVolume) = map { $_->{'Name'} } grep { $_->{'Destination'} eq $idePath } @{$inspectedContainer->{'Mounts'}};
+
+         my ($shortContainerId) = $inspectedContainer->{'Id'} =~ /^(.{12})/;
+         
+         $newContainers->{$shortContainerId}{'inspect'} = { 
+            'Networks' => $inspectedContainer->{'NetworkSettings'}{'Networks'},
+            'Ports' => $ports,
+            'ideVolume' => $ideVolume
+         };
+
+         # Insert inspected Runtime and ImageID into 'docker' object.
+         $newContainers->{$shortContainerId}{'docker'}{'Runtime'} = $inspectedContainer->{'HostConfig'}{'Runtime'};
+         $newContainers->{$shortContainerId}{'docker'}{'ImageId'} = substr( substr($inspectedContainer->{'Image'}, 7), 0, 12);
+      }
+
+   }
+
+   my $newContainersFile = { 'version' => Containers::CURRENT_VERSION, 'containers' => $newContainers };
+
+   return encode_json($newContainersFile);
+}
+
+sub update {
+   my $opts = shift;  # hashref: { 'updateSizes' => undef|1 }
+
+   my $containersJSON = cacheReadWrite(
+      $CONFIG->{'containersPath'},
+      \&_update,
+      $opts
+   );
+
+   try {
+      my $containersFile = decode_json($containersJSON);
+      my $containers = $containersFile->{'containers'};
+
+      # Assign ExpiryTimes to Reservations missing containers, and clean up old Reservations.
+      Reservation->load_clean_map(keys %$containers);
+   }
+   catch {
+      flog("update: caught exception: " . (ref($_) ? $_->dbg : $_));
+   };
+}
+
+my $SIGNAL_RECEIVED = 0;
+
+$SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = sub {
+   # This will interrupt can_read().
+   flog("eventHandler: Received SIGTERM; preparing to exit.");
+   $SIGNAL_RECEIVED = 1;
+};
+
+sub eventHandler {
+   flog("eventHandler: Starting...");
+
+   my $Events = IO::Handle->new();
+
+   my $pid = open2($Events, undef, $CONFIG->{'docker'}{'bin'}, 'events', '--format', "{{ json . }}")
+      || die Exception->new( 'msg' => "Unable to launch 'docker events'");
+
+   flog("eventHandler: Launched docker event watcher with pid=$pid");
+   $Events->autoflush(1);
+   $Events->blocking(0);
+
+   my $s = IO::Select->new();
+   $s->add($Events);
+
+   my $lastSizesUpdateTime = 0;
+   my $lastEventTime = 0;
+   my $timeout;
+   my $Container; # hashref { <containerID> => <count of events received> }
+
+   try {
+      OUTER:
+      while(!$SIGNAL_RECEIVED) {
+
+         if(scalar(keys %$Container)) {
+            flog("eventHandler: Updating docker containers without sizes");
+            update( { } );
+         }
+
+         # Updating with sizes can be slow, so only do this if:
+         # - it's been more than 5s since the last event; and
+         # - it's been more than 55s since the last time sizes were updated.
+         if(time - $lastEventTime >= 5 && time - $lastSizesUpdateTime >= 55) {
+            $lastSizesUpdateTime = time;
+            $lastEventTime = 0;
+            flog("eventHandler: Updating docker containers with sizes");
+            update( { 'updateSizes' => 1 } );
+         }
+
+         $Container = {};
+         $timeout = 30;
+         while(1) {
+            flog("eventHandler: Waiting ${timeout}s for events ...");
+            last unless $s->can_read( $timeout );
+
+            flog(sprintf("eventHandler: Received event: error=%d; EOF=%d", $Events->error, $Events->eof));
+
+            last OUTER if $Events->eof || $Events->error;
+
+            my $events = 0;
+            while(my $eventJSON = $Events->getline()) {
+
+               my $event;
+               try {
+                  $event = decode_json($eventJSON);
+               }
+               catch {
+                  flog("eventHandler: failed to parse event JSON '$eventJSON'");
+               };
+
+               flog(sprintf("eventHandler($events): Received event: Type=%s, Action=%s, Actor=%s", $event->{'Type'}, $event->{'Action'}, $event->{'Actor'}{'ID'}));
+
+               if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(start|stop|destroy)$/ ) {
+                  $Container->{ $event->{'Actor'}{'ID'} }++;
+               }
+               elsif( $event->{'Type'} eq 'network' && $event->{'Action'} =~ /^(connect|disconnect)$/ ) {
+                  $Container->{ $event->{'Actor'}{'Attributes'}{'container'} }++;
+               }
+
+               if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(start)$/ ) {
+
+                  # Reload config, reservations and containers, to access Reservation->load and %CONFIG.
+                  # Reload users and roles too, in case we can update owner's name and email [at later date].
+                  Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+
+                  my $reservations = Reservation->load({ 'containerId' => $event->{'Actor'}{'ID'} });
+                  if( @$reservations) {
+                     my $reservation = $reservations->[0];
+                     my $reservationId = $reservation->id;
+                     my $containerId = $reservation->containerId;
+
+                     flog("eventHandler: we manage reservationId=$reservationId with containerId=$containerId");
+
+                     try {
+                        if(my @Command = $reservation->ide_command()) {
+                           # TODO: Configure Profiles to support launching IDE as non-root user
+                           flog("eventHandler: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
+                              join(' ', @Command)
+                           );
+                           run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root', $event->{'Actor'}{'ID'}, @Command);
+                        }
+                        else {
+                           flog("eventHandler: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");
+                        }
+                     }
+                     catch {
+                        my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
+                        flog("eventHandler: failed to launch IDE: dbg='$dbg'; msg='$msg'");
+                     };
+                  }
+               }               
+
+               $events++;
+               $lastEventTime = time;
+
+               # In testing, a select timeout of 0.25 seconds delivered a happy medium between responsiveness
+               # and over-reacting to docker container and network events.
+               $timeout = 0.25;
+            }
+
+            flog("eventHandler: Finished reading.");
+         }
+
+      }
+   }
+   catch {
+      flog("eventHandler: caught exception: " . (ref($_) ? $_->dbg : $_));
+      sleep 3;
+   };
+
+   flog("eventHandler: Ending...");
+
+   close $Events;
+   flog(sprintf("eventHandler: Sending TERM=%d", kill(15, $pid)));
+   sleep 1;
+   if( waitpid( $pid, 0 ) == $pid ) {
+      flog("eventHandler: Reaped child $pid");
+   }
+   else {
+      flog(sprintf("eventHandler: Sending KILL=%d", kill(9, $pid)));
+   }
+
+   flog("eventHandler: Ended.");
+}
+
+####################################################################################################
+
+flog({ 'service' => 'docker-event-daemon', 'file' => "/var/log/$ENV{'USER'}/$ENV{'USER'}.log" });
+flog("docker-event-daemon: Starting...");
+
+Data::load('config.json');
+
+# Create temporary path needed for cache and log files.
+if( ! -d $CONFIG->{'tmpPath'} ) {
+   mkpath( [ $CONFIG->{'tmpPath'} ], 0, 0755 );
+}
+
+while(1) {
+   eventHandler();
+
+   last if $SIGNAL_RECEIVED;
+   sleep 1;
+}
+flog("docker-event-daemon: Exiting.");
+
+1;

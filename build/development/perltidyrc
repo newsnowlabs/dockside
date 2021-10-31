@@ -1,0 +1,10 @@
+-i=3
+-l=240
+-nola
+-cti=0
+-nsfs
+-nsak="if unless until while for"
+-bar
+-vt=2
+-vtc=0
+-lp

@@ -1,0 +1,7 @@
+#!/bin/sh
+
+. ./data/env
+
+HOME=$APP_HOME
+
+LOGNAME=$USER USER=$USER PERLLIB=$APP_DIR/app/server/lib:$PERLLIB exec /usr/bin/s6-setuidgid $USER $APP_DIR/app/server/bin/docker-event-daemon

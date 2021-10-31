@@ -1,0 +1,7 @@
+[
+    {
+        "command": "search-in-workspace.in-folder",
+        "keybinding": "cmd+shift+F",
+        "context": ""
+    }
+]

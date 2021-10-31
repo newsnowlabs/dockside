@@ -1,0 +1,11 @@
+--- a/node_modules/@theia/plugin-ext/lib/main/browser/webview/webview-environment.js
++++ b/node_modules/@theia/plugin-ext/lib/main/browser/webview/webview-environment.js
+@@ -141,7 +141,7 @@
+             return __generator(this, function (_a) {
+                 switch (_a.label) {
+                     case 0: return [4 /*yield*/, this.externalEndpointUrl()];
+-                    case 1: return [2 /*return*/, (_a.sent()).withPath('').withQuery('').withFragment('').toString(true).replace('{{uuid}}', '*')];
++                    case 1: return [2 /*return*/, (_a.sent()).withPath('').withQuery('').withFragment('').toString(true).replace(/{{uuid}}\./, '*.')];
+                 }
+             });
+         });

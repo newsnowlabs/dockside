@@ -1,0 +1,68 @@
+{
+   "version": 2,
+   "name": "Dockside (IDE from image)",
+   "description": "Dockside (with IDE from image)",
+   "active": true,
+   "mountIDE": false, // Don't mount the production (outer Dockside) IDE
+   "routers": [
+      {
+         "name": "dockside",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+
+         // This normally implies public port 443
+         "https": { "protocol": "https", "port": 443 },
+      },
+      {
+         "name": "passthru",
+         "prefixes": ["**"],
+         "domains": ["*"],
+         "type": "passthru",
+
+         // This normally implies public port 80.
+         // protocol will default to the public protocol if unspecified.
+         "http": { "protocol": "http", "port": 80 },
+
+         // This normally implies public port 443
+         "https": { "protocol": "https", "port": 443 },
+      },
+   ],
+
+   "networks": [ "bridge" ],
+   "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:test" ],
+
+   "unixusers": [ "dockside" ],
+
+   "imagePathsFilter" : [],
+
+   "mounts": {
+
+      // Use this to identify paths in your containers that will contain ephemeral data that will be lost
+      // when the container is stopped, and which will not be duplicated in a clone operation.
+      "tmpfs": [
+
+         // {ideUser} will be substituted at launch-time with the user that
+         // the IDE will be launched as (as per the "users" option above).
+         { "dst": "/home/{ideUser}/.vscode", "tmpfs-size": "100M" },
+
+         // These are good for most Linux distributions
+         { "dst": "/tmp", "tmpfs-size": "1G" },
+         { "dst": "/var/tmp", "tmpfs-size": "1G" }
+      ],
+
+      // Use this to bind-mount shared development resources, or shared application data, from the host
+      // into your containers, and which will not be duplicated in a clone operation.
+      "bind": [ 
+         { "src": "/var/run/docker.sock", "dst": "/var/run/docker.sock" },
+      ],
+
+      "volume": [
+         // Use this to share encrypted ssh keys in the named volume among team members.
+         { "src": "dockside-ssh-keys", "dst": "/home/newsnow/.ssh" }
+      ]
+   },
+
+   "runDockerInit": false,
+   "command": ["--ssl-selfsigned", "--ssl-zone", "{container.hostname}"]
+}

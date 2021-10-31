@@ -1,0 +1,22 @@
+resources:
+- name: dockside
+  type: templates/instance.jinja
+  properties:
+    name: {{ properties["name"] }}
+    dns_name: {{ properties["dns_name"] }}
+    machine_zone: {{ properties["machine_zone"] }}
+    machine_type: {{ properties["machine_type"] }}
+    disk_type: {{ properties["disk_type"] }}
+    disk_size: {{ properties["disk_size"] }}
+    disk_image: {{ properties["disk_image"] }}
+    dockside_image: {{ properties["dockside_image"] }}
+- name: nn-public-rrset
+  type: gcp-types/dns-v1:resourceRecordSets
+  properties:
+    name: {{ properties["dns_name"] }}.
+    managedZone: {{ properties["managed_zone"] }}
+    records:
+    - type: A
+      ttl: 30
+      rrdatas:
+      - $(ref.{{ properties["name"] }}.networkInterfaces[0].accessConfigs[0].natIP)

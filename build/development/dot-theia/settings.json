@@ -1,0 +1,27 @@
+{
+    "diffEditor.renderSideBySide": false,
+    "editor.autoSave": "on",
+    "editor.fontSize": 13,
+    "editor.tabSize": 3,
+    "perl.perlInc": ["/home/newsnow/dockside/app/server/lib"],
+    "perl.ignoreDirs": [".vscode", ".git", ".ssh", ".cpan", ".config", ".npm", ".nvm", ".theia", "node_modules"],
+    "terminal.integrated.fontSize": 13,
+    "terminal.integrated.scrollback": 10000,
+    "files.exclude": {
+       "**/.git": true,
+       "**/.svn": true,
+       "**/.hg": true,
+       "**/CVS": true,
+       "**/.DS_Store": true,
+       "**/.nvm": true,
+       "**/.local": true,
+       ".vscode": true,
+       "*~": true,
+       "*.bak": true,
+       "*.tdy": true,
+       "*.vsix": true
+   },
+   "search.lineNumbers": true,
+   "workbench.iconTheme": "theia-file-icons",
+   "workbench.editor.highlightModifiedTabs": true
+}

@@ -1,0 +1,51 @@
+{
+    "uidCookie": {
+        "salt": "",
+        "name": "_dsuid"
+    },
+    "assetsPath": "/home/newsnow/dockside/app/server/assets",
+    "reservationsPath": "/data/db/reservations.json",
+    "containersPath": "/data/cache/containers.json",
+    "tmpPath": "/tmp/dockside",
+    "globalCookie": {
+        "name": "",
+        "secret": "",
+        "domain": ""
+    },
+    "containerCookie": {
+        "name": "CAUTH",
+        "domain": ""
+    },
+    "gateway": {
+      "IP": "172.17.0.1",
+      "enabled": false
+    },
+    "ide": {
+        "path": "/opt/dockside",
+        "command": [
+            "/opt/dockside/launch.sh",
+            "IDE_USER='{ideUser}'",
+            "GIT_COMMITTER_NAME='{user.name}'",
+            "GIT_COMMITTER_EMAIL='{user.email}'",
+            "launch_ide"
+        ]
+    },
+    "clientDistPath": "/home/newsnow/dockside/app/client/dist",
+    "docker": {
+       "bin": "/usr/bin/docker",
+       "PATH": "/usr/bin:/bin",
+       "HOME": "/home/newsnow"
+    },
+    "lxcfs": {
+        "mountpoints": [
+            "cpuinfo",
+            "diskstats",
+            "meminfo",
+            "stat",
+            "swaps",
+            "uptime"
+        ],
+        "available": false,
+        "default": true
+    }
+}

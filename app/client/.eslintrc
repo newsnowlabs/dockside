@@ -1,0 +1,17 @@
+{
+   "env": {
+      "node": true
+   },
+   "parserOptions": {
+      "ecmaVersion": 2018,
+      "sourceType": "module"
+   },
+   "extends": [
+      "eslint:recommended",
+      "plugin:vue/essential"
+   ],
+   "rules": {
+      "semi": ["error", "always"],
+      "no-debugger": 0
+   }
+}

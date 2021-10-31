@@ -1,0 +1,22 @@
+// This JSON is parsed:
+// - so a line beginning // denotes a comment.
+
+{
+    // Administrator
+    "admin": {
+        "id": 1,
+        "email" : "",
+        "role": "admin",
+        "name": "Administrator",
+        "permissions": {
+           // Disable any by-default-enabled admin permissions by specifying them with value 0 here.
+        },
+        "resources": {
+            "networks": [ "*" ],
+            "profiles": [ "*" ],
+            "auth": [ "*" ],
+            "images": [ "*" ],
+            "runtimes": [ "*" ]
+        }
+    }
+}

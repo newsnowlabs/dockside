@@ -1,0 +1,2 @@
+Patch to fix invalid cspSource:
+- https://github.com/eclipse-theia/theia/issues/8857

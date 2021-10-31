@@ -1,0 +1,331 @@
+#!/bin/bash
+
+# FIXME:
+# - Write unit test for code returning wrong exit code when log_do pipes into a process like 'head -n 1' that
+#   causes a SIGPIPE. For background, this was the first test case:
+#   . /nfs/brackup/bin/log_do; LOG_DO_RUN=1; LOG_DO_VERBOSE=1; log_do cat /tmp/y | head -n 1; echo $?
+
+LOG_DO_VERSION="1.2.3"
+
+# Enable logging via log_do
+LOG_DO_VERBOSE=""
+LOG_DO_DATE=1
+LOG_DO_INDENT=""
+LOG_DO_RUN=""
+LOG_DO_PREFIX=""
+LOG_DO_NO_STDOUT=""
+LOG_DO_NO_STDERR=""
+
+log_reset() {
+  LOG_DO_INDENT=""
+}
+
+# IMPROVEME: Can this be moved, or replaced with 102>&2 elsewhere in the call to log?
+exec 101>&1
+exec 102>&2
+
+_log() {
+  local S=""
+  
+  [ -z "$_BASHPID" ] && _BASHPID="$BASHPID"
+  
+  if [ -n "$LOG_DO_DATE" ]; then
+    local D=$(date +%Y-%m-%d.%H:%M:%S.%N)
+    S=$(printf "%s|%05d|" "${D:0:26}" "$_BASHPID")
+  fi
+
+  [ -n "$LOG_DO_PREFIX" ] && S+="$LOG_DO_PREFIX|"
+
+  echo "$@" | sed "s/^/$S /g" 1>&102
+  
+  if [ -n "$LOG_DO_OUTPUT_FILE" ]; then
+    echo "$@" | sed "s/^/$S /g" >>$LOG_DO_OUTPUT_FILE
+  fi
+}
+
+_log_pipe() {
+  local PREFIX="$1"
+  
+  trap -- '' PIPE
+  
+  # FIXME: This 'tr' works well in some circumstances, but poorly in others.
+  # tr '\015' '\012' | 
+  while read line
+  do
+    [ -n "$LOG_DO_VERBOSE" ] && _log "$PREFIX$line"
+    [ -z "$LOG_DO_NO_STDOUT" ] && echo "$line"
+  done  2>/dev/null
+  return 0
+}
+
+_log_pipe_err() {
+  local PREFIX="$1"
+  
+  tr '\015' '\012' | while read line
+  do
+    [ -n "$LOG_DO_VERBOSE" ] && _log "$PREFIX$line"
+    [ -z "$LOG_DO_NO_STDERR" ] && echo "$line" >&2
+  done
+  return 0
+}
+
+log_pipe() {
+  _log_pipe "${LOG_DO_INDENT}  > "
+}
+
+log() {
+  if [ -n "$1" ]; then
+    if [ -z "$LOG_DO_INDENT" ]; then _log "$@"; else _log "$LOG_DO_INDENT$@"; fi
+  else
+    _log
+  fi
+}
+
+log_opts() {
+  while true
+  do
+    case "$1" in
+      -x) shift; LOG_DO_RUN="1"; continue; ;;
+      +x) shift; LOG_DO_RUN=""; continue; ;;
+      
+      -v) shift; LOG_DO_VERBOSE="1"; continue; ;;
+      +v) shift; LOG_DO_VERBOSE=""; continue; ;;
+      
+      --no-log-stderr) shift; LOG_DO_NO_LOG_STDERR="1"; continue; ;;
+      --log-stderr) shift; LOG_DO_NO_LOG_STDERR=""; continue; ;;
+      
+      --no-log-stdout) shift; LOG_DO_NO_LOG_STDOUT="1"; continue; ;;
+      --log-stdout) shift; LOG_DO_NO_LOG_STDOUT=""; continue; ;;
+      
+      --no-pipe*|--no-log*) shift; LOG_DO_NO_PIPE="1"; continue; ;;
+      --pipe*|--log*) shift; LOG_DO_NO_PIPE=""; continue; ;;
+      
+      --no-stderr) shift; LOG_DO_NO_STDERR="1"; continue; ;;
+      --stderr|+err|+stderr) shift; LOG_DO_NO_STDERR=""; continue; ;;
+      
+      --no-stdout) shift; LOG_DO_NO_STDOUT="1"; continue; ;;
+      --stdout|+out|+stdout) shift; LOG_DO_NO_STDOUT=""; continue; ;;
+      
+      --silent|-s) shift; LOG_DO_NO_STDOUT="1"; LOG_DO_NO_STDERR="1"; continue; ;;
+      --no-silent) shift; LOG_DO_NO_STDOUT=""; LOG_DO_NO_STDERR=""; continue; ;;
+
+      --strict) shift; LOG_DO_EXIT_ON_FAILURE="1"; continue; ;;
+   --no-strict) shift; LOG_DO_EXIT_ON_FAILURE=""; continue; ;;
+   
+      --output-file) shift; LOG_DO_OUTPUT_FILE="$1"; shift; continue; ;;
+
+      *) break; ;;
+    esac
+  done
+}
+
+log_do_setopt() {
+  log_opts "$@"
+}
+
+log_do() {
+  local _BASHPID="$BASHPID"
+  
+  local LOG_DO_RUN="$LOG_DO_RUN"
+  local LOG_DO_VERBOSE="$LOG_DO_VERBOSE"
+  local LOG_DO_NO_LOG_STDERR="$LOG_DO_NO_LOG_STDERR"
+  local LOG_DO_NO_LOG_STDOUT="$LOG_DO_NO_LOG_STDOUT"
+  local LOG_DO_NO_PIPE="$LOG_DO_NO_PIPE"
+  local LOG_DO_NO_STDERR="$LOG_DO_NO_STDERR"
+  local LOG_DO_NO_STDOUT="$LOG_DO_NO_STDOUT"
+  local LOG_DO_EXIT_ON_FAILURE="$LOG_DO_EXIT_ON_FAILURE"
+
+  while true
+  do
+    case "$1" in
+      -x) shift; LOG_DO_RUN="1"; continue; ;;
+      +x) shift; LOG_DO_RUN=""; continue; ;;
+      
+      -v) shift; LOG_DO_VERBOSE="1"; continue; ;;
+      +v) shift; LOG_DO_VERBOSE=""; continue; ;;
+      
+      --no-log-stderr) shift; LOG_DO_NO_LOG_STDERR="1"; continue; ;;
+      --log-stderr) shift; LOG_DO_NO_LOG_STDERR=""; continue; ;;
+      
+      --no-log-stdout) shift; LOG_DO_NO_LOG_STDOUT="1"; continue; ;;
+      --log-stdout) shift; LOG_DO_NO_LOG_STDOUT=""; continue; ;;
+      
+      --no-pipe*|--no-log*) shift; LOG_DO_NO_PIPE="1"; continue; ;;
+      --pipe*|--log*) shift; LOG_DO_NO_PIPE=""; continue; ;;
+      
+      --no-stderr) shift; LOG_DO_NO_STDERR="1"; continue; ;;
+      --stderr|+err|+stderr) shift; LOG_DO_NO_STDERR=""; continue; ;;
+      
+      --no-stdout) shift; LOG_DO_NO_STDOUT="1"; continue; ;;
+      --stdout|+out|+stdout) shift; LOG_DO_NO_STDOUT=""; continue; ;;
+      
+      --silent|-s) shift; LOG_DO_NO_STDOUT="1"; LOG_DO_NO_STDERR="1"; continue; ;;
+      --no-silent) shift; LOG_DO_NO_STDOUT=""; LOG_DO_NO_STDERR=""; continue; ;;
+
+      --strict) shift; LOG_DO_EXIT_ON_FAILURE="1"; continue; ;;
+   --no-strict) shift; LOG_DO_EXIT_ON_FAILURE=""; continue; ;;
+      
+      *) break; ;;
+    esac
+  done
+
+  [ -n "$LOG_DO_VERBOSE" ] && _log "$LOG_DO_INDENT\$ $@"
+
+  if [ -z "$LOG_DO_RUN" ]; then return; fi
+  
+  if [ -n "$LOG_DO_NO_PIPE" ]; then
+    "$@"
+    local R=$?
+    [ -n "$LOG_DO_VERBOSE" ] && _log "${LOG_DO_INDENT}  * returned $R (from $@)"
+
+    [ -n "$LOG_DO_EXIT_ON_FAILURE" ] && [ $R -ne 0 ] && exit 1
+
+    return $R    
+  fi
+   
+  # Save shell options.
+  # See: https://unix.stackexchange.com/questions/310957/how-to-restore-the-value-of-shell-options-like-set-x?noredirect=1&lq=1
+  # N.B. We can improve on this in bash 4.4 and dash using 'local -'
+  local OPTIONS="$(set +o); set -$- 2>/dev/null"
+
+  set -o pipefail
+  set +e
+  trap "" PIPE
+
+  if [ -n "$LOG_DO_NO_LOG_STDERR" ]; then
+    ( "$@" ) | log_pipe
+  elif [ -n "$LOG_DO_NO_LOG_STDOUT" ]; then
+    ( "$@" 3>&1 1>&2- 2>&3- | _log_pipe_err "${LOG_DO_INDENT}  ! " 2>&1 ) 3>&1 1>&2- 2>&3-
+  else
+    ( "$@" 3>&1 1>&2- 2>&3- | _log_pipe_err "${LOG_DO_INDENT}  ! " 2>&1 ) 3>&1 1>&2- 2>&3- | log_pipe
+  fi
+
+  local R=$?
+  [ -n "$LOG_DO_VERBOSE" ] && _log "${LOG_DO_INDENT}  * returned $R (from $@)"
+
+  # Restore shell options
+  eval "$OPTIONS"
+
+  [ -n "$LOG_DO_EXIT_ON_FAILURE" ] && [ $R -ne 0 ] && exit 1
+
+  return $R
+}
+
+log_push() {
+  if [ -n "$1" ]; then log "$@"; fi
+  LOG_DO_INDENT="  ${LOG_DO_INDENT}"
+}
+
+log_pop() {
+  if [ -n "$1" ]; then log "$@"; fi
+  LOG_DO_INDENT=${LOG_DO_INDENT:2}
+}
+
+log_status() {
+  log_push
+  _log "  $LOG_DO_INDENT> $@"
+  log_pop
+}
+
+log_result() {
+  if [ $? == 0 ]; then
+    log_status "Returned OK"
+  else
+    log_status "Returned FAIL (code $?)"
+  fi
+}
+
+log_sub() {
+  log_push
+  local l=$(echo -n "$1" | wc -c)
+  LOG_DO_INDENT=${LOG_DO_INDENT:$l}
+  LOG_DO_PREFIX="$1"
+  shift
+}
+
+log_do_running() {
+  [ -n "$LOG_DO_RUN" ] && return 0 || return 1
+}
+
+_log_do_test() {
+  local EXPECTED_STDOUT="$1";
+  local EXPECTED_STDERR="$2";
+  shift; shift;
+
+  log_push "log_do $@"
+
+  Z=$("$@" bash -c 'echo TestString; true')
+  [ $? -eq 0 ] && [ "$Z" == "$EXPECTED_STDOUT" ] && R='-OK-' || R=FAIL
+  log "T1: $R (return string '$Z' == '$EXPECTED_STDOUT' and return code == 0)"
+  
+  Z=$("$@" bash -c 'echo TestString; exit 23')
+  [ $? -eq 23 ] && [ "$Z" == "$EXPECTED_STDOUT" ] && R='-OK-' || R=FAIL
+  log "T2: $R (return string '$Z' == '$EXPECTED_STDOUT' and return code == 23)"
+
+  Z=$("$@" bash -c 'echo StderrTestString >&2; echo TestString; true' 2>/dev/null)
+  [ $? -eq 0 ] && [ "$Z" == "$EXPECTED_STDOUT" ] && R='-OK-' || R=FAIL
+  log "T3: $R (return string '$Z' == '$EXPECTED_STDOUT' and return code == 0)"
+
+  Z=$("$@" bash -c 'echo StderrTestString >&2; echo TestString; false' 2>/dev/null)
+  [ $? -eq 1 ] && [ "$Z" == "$EXPECTED_STDOUT" ] && R='-OK-' || R=FAIL
+  log "T4: $R (return string '$Z' == '$EXPECTED_STDOUT' and return code == 1)"
+
+  Z=$("$@" bash -c '(echo StderrTestString >&2; echo TestString; exit 46) 2>&1 >/dev/null' 2>/dev/null)
+  [ $? -eq 46 ] && [ "$Z" == "$EXPECTED_STDERR" ] && R='-OK-' || R=FAIL
+  log "T5: $R (return string '$Z' == '$EXPECTED_STDERR' and return code == 46)"
+
+  Z=$("$@" bash -c 'echo StderrTestString >&2; echo TestString; exit 46;')
+  [ $? -eq 46 ] && [ "$Z" == "$EXPECTED_STDOUT" ] && R='-OK-' || R=FAIL
+  log "T6: $R (return string '$Z' == '$EXPECTED_STDOUT' and return code == 46)"
+
+  log_pop
+}
+
+log_do_tests() {
+  local LOG_DO_RUN="1"
+
+  _log_do_dummy() {
+    "$@"
+  }
+
+  _log_do_test "TestString" "StderrTestString" log_do 
+  _log_do_test "" "" log_do --no-stdout
+  _log_do_test "TestString" "StderrTestString" log_do --no-stderr
+  _log_do_test "" "" log_do --no-stdout --no-stderr
+  _log_do_test "TestString" "StderrTestString" log_do --no-log-stdout
+  _log_do_test "TestString" "StderrTestString" log_do --no-log-stderr
+  _log_do_test "TestString" "StderrTestString" log_do --no-log-stdout --no-log-stderr
+
+  log "direct command execution (log_do disabled)"
+  _log_do_test "TestString" "StderrTestString" _log_do_dummy
+}
+
+_log_do_test_1() {
+  echo "This is STDOUT"
+  echo "This is STDERR" 1>&2
+}
+
+_log_do_examples() {
+  Z=$(log_do ls -l /qwe 2>/dev/null)
+  log "T2: Return from ls -l /qwe: '$Z'"
+  
+  Z=$(log_do _log_do_test_1 2>/dev/null)
+  log "T3: Return from _log_do_test_1: '$Z'"
+  
+  Z=$(log_do _log_do_test_1 2>&1)
+  log "T3B: Return from _log_do_test_1: '$Z'"
+  
+  Z=$(log_do ls -l /qwer 2>&1)
+  log "T4: Return from ls -l /qwer 2>&1: '$Z'"
+  
+  log_do echo "T5: MyEcho" >/dev/null
+  
+  log_do ls -l /qwe 2>/dev/null && fail t1 || ok t1
+  log_do ls -l / | sed 's/^/XXX /g' | log_pipe >/dev/null && ok t2 || fail t2
+  log_do ls -l / >/dev/null && ok t2 || fail t2
+  log_do ls -l /qwe 2>/dev/null | sed 's/^/XXX /g' && fail t3 || ok t3
+  X=$(log_do echo My test output); log "[$X]"; [ "$X" == "My test output" ] && ok t4 || fail t4
+  Y=$(log_do ls -l /qwe 2>&1); log "[$Y]";
+}
+
+# log "Welcome to log_do version $LOG_DO_VERSION!"

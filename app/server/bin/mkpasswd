@@ -1,0 +1,69 @@
+#!/usr/bin/perl
+
+use strict;
+
+my $MIN_WORD_LENGTH = 4;
+my $MAX_WORD_LENGTH = 6;
+my $NUM_WORDS       = 4;
+my $NUMBER_LENGTH   = 2;
+my $DELETE_RATIO    = .3;
+my $TITLECASE_RATIO = .8;
+
+my @Words;
+
+# Delete a character from a word, but sometimes not
+sub delete_char {
+   my $s = shift;
+
+   if( rand() > $DELETE_RATIO ) { return $s; }
+   my $pos = rand( length($s) );
+   return substr( $s, 0, $pos ) . substr( $s, $pos + 1 );
+}
+
+# Return a number
+sub number {
+   my $out = '';
+   for( my $i = 0; $i < $NUMBER_LENGTH; $i++ ) { $out .= [ '0' .. '9' ]->[ rand(10) ]; }
+   if($out eq '88' || $out eq '13' || $out eq '69') { return &number(); }
+   return $out;
+}
+
+# Titlecase a word, but sometimes not
+sub titlecase {
+   my $s = shift;
+
+   my $first = substr($s, 0, 1);
+   if( rand() > $TITLECASE_RATIO && $first ne 'l' ) { return $s; }
+   if($first eq 'o' || $first eq 'i') { return $s; }
+   return uc($first) . substr( $s, 1 );
+}
+
+# Return a word
+sub word {
+   my $limit = sqrt( scalar(@Words) );
+   my $rnd1  = rand($limit);
+   my $rnd2  = rand($limit);
+
+   return $Words[ $rnd1 * $limit + $rnd2 ];
+}
+
+# Load words
+open( my $fh, '<', $ARGV[0] || '/usr/share/dict/words' ) || die "Cannot open words file: $!";
+while(<$fh>) {
+   chomp;
+   push(@Words, $_) unless /[^a-z0-9]/i;
+}
+
+my $numberpos1 = int( rand( $NUM_WORDS + 1 ) );
+my $numberpos2 = int( rand( $NUM_WORDS + 1 ) );
+my $out       = '';
+
+for( my $i = 0; $i < $NUM_WORDS + 1; $i++ ) {
+   if( $i == $numberpos1 ) { $out .= &number(); next; }
+   if( $i == $numberpos2 ) { $out .= &number(); next; }
+   $out .= &titlecase( &delete_char( &word() ) );
+}
+
+print "$out\n";
+
+1;

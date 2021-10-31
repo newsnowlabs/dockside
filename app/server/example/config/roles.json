@@ -1,0 +1,38 @@
+// This JSON is parsed:
+// - so a line beginning // denotes a comment.
+
+{
+    "admin": {
+        // The admin role is special: users with the admin role have all permissions
+        // unless explicitly denied either in the 'admin' role or in the user record.
+        "permissions": {},
+        "resources": {}
+    },
+    "developer": {
+        "permissions": {
+            "createContainerReservation": 1,
+            "startContainer": 1,
+            "stopContainer": 1,
+            "removeContainer": 1,
+            "developContainers": 1,
+            "setContainerViewers": 1,
+            "setContainerDevelopers": 1
+        },
+        "resources": {
+            "networks": { "*": 1 }
+        },
+    },
+    "productmanager": {
+        "permissions": {
+            "startContainer": 1,
+            "stopContainer": 1,
+            "setContainerViewers": 1,
+            "viewAllContainers": 1
+        },
+        "resources": {}
+    },
+    "user": {
+        "permissions": {},
+        "resources": {}
+    }
+}

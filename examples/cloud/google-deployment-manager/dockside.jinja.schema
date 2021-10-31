@@ -1,0 +1,12 @@
+info:
+  title: A template for creating a Dockside instance.
+  author: NewsNow Publishing Limited
+
+imports:
+- path: templates/dockside.jinja
+- path: templates/instance.jinja
+
+required:
+- name
+- managed_zone
+- dns_name

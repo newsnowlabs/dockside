@@ -1,0 +1,195 @@
+# The use of ngx_http_perl_module for the App UI, and Proxy,
+# has its limitations. In particular:
+#
+#   "While the Perl module is performing a long-running operation, such
+#    as resolving a domain name, connecting to another server, or querying
+#    a database, other requests assigned to the current worker process will
+#    not be processed. It is thus recommended to perform only such
+#    operations that have predictable and short execution time, such as
+#    accessing the local file system."
+#
+# See:
+# - http://nginx.org/en/docs/http/ngx_http_perl_module.html
+
+perl_modules /home/newsnow/dockside/app/server/lib;
+perl_require Proxy.pm;
+perl_require App.pm;
+
+perl_set $upstream_http Proxy::http_server_port;
+perl_set $upstream_https Proxy::https_server_port;
+perl_set $upstream_cookie Proxy::upstream_cookie;
+
+log_format proxy_http '$host - $upstream_http - $remote_addr - $remote_user [$time_local] ' '"$request" $status $body_bytes_sent ' '"$http_referer" "$http_user_agent"';
+log_format proxy_https '$host - $upstream_https - $remote_addr - $remote_user [$time_local] ' '"$request" $status $body_bytes_sent ' '"$http_referer" "$http_user_agent"';
+
+# Resolve reverse proxy domain names using Docker's custom network DNS
+# (if available)
+resolver 127.0.0.11 valid=5s ipv6=off;
+
+map $status $status_text {
+  400 'Bad Request';
+  401 'Unauthorized';
+  402 'Payment Required';
+  403 'Forbidden';
+  404 'Not Found';
+  405 'Method Not Allowed';
+  406 'Not Acceptable';
+  407 'Proxy Authentication Required';
+  408 'Request Timeout';
+  409 'Conflict';
+  410 'Gone';
+  411 'Length Required';
+  412 'Precondition Failed';
+  413 'Payload Too Large';
+  414 'URI Too Long';
+  415 'Unsupported Media Type';
+  416 'Range Not Satisfiable';
+  417 'Expectation Failed';
+  418 'I\'m a teapot';
+  421 'Misdirected Request';
+  422 'Unprocessable Entity';
+  423 'Locked';
+  424 'Failed Dependency';
+  425 'Too Early';
+  426 'Upgrade Required';
+  428 'Precondition Required';
+  429 'Too Many Requests';
+  431 'Request Header Fields Too Large';
+  451 'Unavailable For Legal Reasons';
+  500 'Internal Server Error';
+  501 'Not Implemented';
+  502 'Container Service Unavailable (Bad Gateway)';
+  503 'Service Unavailable';
+  504 'Gateway Timeout';
+  505 'HTTP Version Not Supported';
+  506 'Variant Also Negotiates';
+  507 'Insufficient Storage';
+  508 'Loop Detected';
+  510 'Not Extended';
+  511 'Network Authentication Required';
+  default 'Something is wrong';
+}
+
+error_page 401 402 403 404 405 406 407 408 409 410 411 412 413 414 415 416 417 418 421 422 423 424 425 426 428 429 431 451 500 501 502 503 504 505 506 507 508 510 511 /293812398120391823901283123098213.html;
+
+# Proxing HTTP server
+server {
+  listen 0.0.0.0:80;
+
+  location / {
+  
+    # This will only be called, if proxy_pass is *not* set, and the
+    # request is not otherwise handled by e.g. 'return 410'.
+    #
+    perl App::handlerHTTP;
+
+    if ($upstream_http = '400') {
+      # Container not found.
+      expires 5s;
+      add_header Cache-Control "no-store" always;
+      add_header Refresh "2" always;
+      return 400;
+    }
+
+    if ($upstream_http = '410') {
+      # Container not found.
+      expires 5s;
+      add_header Cache-Control "no-store" always;
+      return 410;
+    }
+
+    if ($upstream_http ~ '^http') {
+      proxy_pass $upstream_http;
+      access_log /var/log/nginx/access.log proxy_http;
+    }
+
+    proxy_pass_header Authorization;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Nest-Level 1-$http_x_nest_level;
+    proxy_set_header Cookie $upstream_cookie;
+    proxy_http_version 1.1;
+
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+
+    proxy_buffering off;
+    client_max_body_size 0;
+    proxy_read_timeout 36000s;
+    proxy_redirect off;
+  }
+
+}
+
+# https://www.nginx.com/blog/websocket-nginx/
+
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  '' close;
+}
+
+# Proxying HTTPS server
+server {
+  listen 0.0.0.0:443 default_server;
+
+  ssl on;
+  ssl_certificate /data/certs/fullchain.pem;
+  ssl_certificate_key /data/certs/privkey.pem;
+
+  location /293812398120391823901283123098213.html {
+     ssi on;
+     internal;
+     auth_basic off;
+     add_header Cache-Control "no-store" always;
+     root /home/newsnow/dockside/app/server/nginx/html;
+  }
+
+  location / {
+
+    # This will only be called, if proxy_pass is *not* set, and the
+    # request is not otherwise handled by e.g. 'return 410'.
+    #
+    perl App::handlerHTTPS;
+
+    # This will only be served statically, if the above handler returns nginx::DECLINED.
+    root /home/newsnow/dockside/app/server/nginx/html;
+
+    if ($upstream_https = '400') {
+      # Container not found.
+      expires 5s;
+      add_header Cache-Control "no-store" always;
+      add_header Refresh "2" always;
+      return 400;
+    }
+
+    if ($upstream_https = '410') {
+      # Container not found.
+      expires 5s;
+      add_header Cache-Control "no-store" always;
+      return 410;
+    }
+
+    if ($upstream_https ~ '^http') {
+      proxy_pass $upstream_https;
+      access_log /var/log/nginx/access.log proxy_https;
+    }
+    
+    proxy_pass_header Authorization;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Nest-Level 1-$http_x_nest_level;
+    proxy_set_header Cookie $upstream_cookie;
+    proxy_http_version 1.1;
+    
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    
+    proxy_buffering off;
+    client_max_body_size 0;
+    proxy_read_timeout 36000s;
+    proxy_redirect off;
+  }
+
+}

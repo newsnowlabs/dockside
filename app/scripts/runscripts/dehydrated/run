@@ -1,0 +1,46 @@
+#!/bin/bash
+
+. ./data/env
+. $APP_DIR/app/scripts/includes/snore
+. $APP_DIR/app/scripts/includes/log_do
+
+SCRIPT_PATH=$APP_DIR/dehydrated/bin
+CONFIG=$APP_DIR/dehydrated/config
+
+mkdir -p /data/dehydrated
+
+# Launch and configure log_do
+log_do -x -v --silent $SCRIPT_PATH/dehydrated --config $CONFIG --register --accept-terms && \
+log_do -x -v --silent $SCRIPT_PATH/dehydrated --config $CONFIG -t dns-01 --cron --hook $SCRIPT_PATH/hook.sh
+
+if [ $? -ne 0 ]; then
+  # On failure ...
+  if [ -f "/data/certs/fullchain.pem" ] && [ -f "/data/certs/privkey.pem" ]; then
+    # Assume harmless transient error; try in an hour
+    log "- Transient error generating certificates; trying again in an hour"
+    snore 3600
+    exit 0
+  else
+    # Error on obtaining certs for first startup
+    [ -f ./data/try ] && TRY=$(cat ./data/try) || TRY=0
+    TRY=$((TRY+1))
+    echo $TRY >./data/try
+
+    if [ $TRY -lt 5 ]; then
+      log "- Error generating certificates; commencing try #$((TRY+1)) in 10 seconds"
+      snore 10
+      exit 1
+    fi
+
+    # Aborting Dockside container.
+    log "- Error generating certificates after $TRY tries; aborting Dockside!"
+    kill 1
+    snore 30
+  fi
+else
+  # Success obtaining certificates
+  log "- Checking certificates again in 1 day"
+  echo 0 >./data/try
+  snore 86400
+  exit 0
+fi

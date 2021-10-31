@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# Exec this script, instead of include it, to create a useful process name
+exec >/dev/null
+exec 2>/dev/null
+exec ./data/logrotate-daemon

@@ -1,0 +1,16 @@
+#!/bin/bash
+
+. ./data/env
+. $APP_DIR/app/scripts/includes/snore
+. $APP_DIR/app/scripts/includes/log_do
+
+if [ -f "/data/certs/fullchain.pem" ] && [ -f "/data/certs/privkey.pem" ]; then
+  log "Launching nginx"
+  exec /usr/sbin/nginx -g 'daemon off;' -c /home/newsnow/dockside/app/server/nginx/conf/nginx.conf
+fi
+
+# If no certificates are available, sleep, then exit; the s6 supervisor will restart us.
+log "Waiting for SSL certificates before launching nginx; sleeping 5s"
+snore 5
+
+exit 1

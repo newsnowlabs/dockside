@@ -1,0 +1,1 @@
+perl -MYAML::XS -MJSON -0777 -wnl -e 's!^\s*//.*$!!gm; print Dump(from_json($_, {'relaxed'=>1}))' "$@"

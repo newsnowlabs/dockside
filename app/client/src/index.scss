@@ -1,0 +1,27 @@
+$table-accent-bg: #f9f9f9;
+$started: #337ab7;
+$stopped: #f8f9fa;
+
+$theme-colors: (
+   primary: $started,
+   started: $started,
+   stopped: $stopped
+);
+
+@import 'node_modules/bootstrap/scss/bootstrap';
+@import 'node_modules/bootstrap-vue/src/index.scss';
+
+.card.card--hoverable {
+   &.bg-started {
+      & .card-header:hover {
+         cursor: pointer;
+         background-color: lighten($started, 5%) !important;
+      }
+   }
+   &.bg-stopped {
+      & .card-header:hover {
+         cursor: pointer;
+         background-color: darken($stopped, 5%) !important;
+      }
+   }
+}

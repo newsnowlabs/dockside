@@ -1,0 +1,9 @@
+#!/bin/bash
+
+. ./data/env
+. $APP_DIR/app/scripts/includes/snore
+
+/usr/sbin/logrotate ./data/logrotate.d/nginx.conf ./data/logrotate.d/dockside.conf
+
+# Sleep
+snore 60

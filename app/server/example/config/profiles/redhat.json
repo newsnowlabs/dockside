@@ -1,0 +1,29 @@
+{
+   "version": 2,
+   "name": "RedHat Linux",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+      }
+   ],
+   "networks": [ "bridge" ],
+   "images": [ "richxsl/rhel7", "richxsl/rhel8" ],
+   "unixusers": ["dockside"],
+   "mounts": {
+      "tmpfs": [],
+      "bind": [],
+      "volume": [
+         // Use this to share encrypted ssh keys in the named volume among team members.
+          { "src": "ssh-keys", "dst": "/home/{ideUser}/.ssh" } ]
+   },
+   "lxcfs": true,
+   "dockerArgs": [],
+   "command": [
+      "/bin/sh", "-c", "sleep infinity"
+   ],
+}

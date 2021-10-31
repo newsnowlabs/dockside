@@ -1,0 +1,42 @@
+Dockside
+--------
+
+Copyright 2017-2021 NewsNow Publishing Limited and contributors.
+
+This project (known as "Dockside") is licensed under the Apache License, Version 2.0 (the "License");
+you may not use Dockside or its constituent files except in compliance with the License.
+
+You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Main contributors
+-----------------
+
+Thanks to [Struan Bartlett](https://github.com/struanb) for conceiving the
+model of iterative web development through the use of ready-built, stageable
+and disposable development environments running web-based IDEs, and for leading
+the development of Dockside.
+
+Thanks also to other members of the NewsNow development team for contributing
+the Dockside Vue client, design and architectural ideas, support and advice,
+code and code-reviews; for coining the term _devtainers_; and for the original
+Dockside logo concept.
+
+Thanks also to the entire design and development, editorial and testing teams
+at [NewsNow](https://www.newsnow.co.uk/about/) for so enthusiastically adopting
+containerised development working practices and for subjecting Dockside to so
+many years of robust use (and abuse) during the course of their daily iterative
+development, evaluation and testing of the
+[NewsNow](https://www.newsnow.co.uk/) platform - and proving the value of this
+development model.
+
+Thanks last but not least to [NewsNow](https://www.newsnow.co.uk/about/),
+_The Independent News Discovery Platform_, for sponsoring the development of
+Dockside.

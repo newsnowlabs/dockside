@@ -1,0 +1,15 @@
+.#*
+*~
+*.bak
+*.o
+*.version
+*.orig
+*.tdy
+TAGS
+\#*\#
+.packlist
+perllocal.pod
+.c9
+.Trash-1000
+.vscode
+app/server/nginx/html/docs

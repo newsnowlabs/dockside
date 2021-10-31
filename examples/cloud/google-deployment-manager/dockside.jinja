@@ -1,0 +1,18 @@
+imports:
+- path: templates/dockside.jinja
+- path: templates/instance.jinja
+
+resources:
+- name: dockside
+  type: templates/dockside.jinja
+  properties:
+
+    name: {{ properties["name"] }}
+    managed_zone: {{ properties["managed_zone"] }}
+    dns_name: {{ properties["dns_name"] }}
+    machine_zone: {{ properties["machine_zone"] }}
+    machine_type: {{ properties["machine_type"] }}
+    disk_type: pd-ssd
+    disk_size: {{ properties["disk_size"] }}
+    disk_image: {{ properties["disk_image"] }}
+    dockside_image: {{ properties["dockside_image"] }}

@@ -1,0 +1,29 @@
+{
+   "version": 2,
+   "name": "Alpine Linux",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "bridge" ],
+   "images": [ "alpine:latest", "i386/alpine:latest", "amd64/alpine:latest" ],
+   "unixusers": ["dockside"],
+   "mounts": {
+      "tmpfs": [],
+      "bind": [],
+      "volume": [
+         // Use this to share encrypted ssh keys in the named volume among team members.
+          { "src": "alpine-ssh-keys", "dst": "/home/{ideUser}/.ssh" } ]
+   },
+   "lxcfs": true,
+   "dockerArgs": [],
+   "command": [
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"
+   ]
+}

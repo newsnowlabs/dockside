@@ -1,0 +1,60 @@
+# Project information
+site_name: Dockside
+site_url: https://github.com/newsnowlabs/dockside
+site_description: >-
+  A tool for provisioning lightweight access-controlled IDEs, staging environments and sandboxes - aka 'devtainers' - on local machine, self-hosted on-premises (on raw metal or VM) or in the cloud
+
+# Filesystem configuration
+site_dir: '/home/newsnow/dockside/app/server/nginx/html/docs/'
+
+# Repository
+repo_name: NewsNow Labs/Dockside
+repo_url: https://github.com/newsnowlabs/dockside
+edit_uri: 'edit/main/docs/'
+
+# Copyright
+copyright: Copyright &copy; 2017 - 2021 NewsNow Publishing Limited and contributors
+
+# Theme configuration
+theme:
+  name: material
+  logo: images/android-chrome-256x256.png
+  favicon: images/favicon.ico
+  features:
+    - tabs
+    # - instant
+  palette:
+    scheme: default
+    primary: black
+    accent: indigo
+  font:
+    text: Roboto
+    code: Roboto Mono
+
+extra:
+  homepage: /
+
+# Plugins
+plugins:
+  - search # necessary for search to work
+#  - awesome-pages
+
+# Extensions
+markdown_extensions:
+  - smarty
+  - codehilite:
+      linenums: true
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+## Disabled for now, as not Github-compatible
+#  - admonition
+#  - footnotes
+#  - pymdownx.tasklist:
+#      custom_checkbox: true
+#  - pymdownx.tabbed
+#  - pymdownx.details
+
+nav:
+  - README: README.md
+  - Roadmap: roadmap.md
