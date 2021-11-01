@@ -49,10 +49,11 @@ init_admin_credentials() {
 
 install_dehydrated() {
   local SCRIPT_PATH="$APP_DIR/dehydrated/bin"
+  local DEHYDRATED_URL="https://raw.githubusercontent.com/dehydrated-io/dehydrated/v0.7.0/dehydrated"
 
   if ! [ -x "$SCRIPT_PATH/dehydrated" ]; then
     log "- Downloading dehydrated from git repo master branch ..."
-    curl --silent -o $SCRIPT_PATH/dehydrated https://raw.githubusercontent.com/dehydrated-io/dehydrated/master/dehydrated && chmod 755 $SCRIPT_PATH/dehydrated
+    curl --silent -o $SCRIPT_PATH/dehydrated $DEHYDRATED_URL && chmod 755 $SCRIPT_PATH/dehydrated
   fi
 }
 
