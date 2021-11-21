@@ -16,6 +16,11 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
+Trade marks
+-----------
+
+Dockside and devtainer are trade marks of NewsNow Publishing Limited. All rights reserved.
+
 Main contributors
 -----------------
 
@@ -33,9 +38,8 @@ Thanks also to the entire design and development, editorial and testing teams
 at [NewsNow](https://www.newsnow.co.uk/about/) for so enthusiastically adopting
 containerised development working practices and for subjecting Dockside to so
 many years of robust use (and abuse) during the course of their daily iterative
-development, evaluation and testing of the
-[NewsNow](https://www.newsnow.co.uk/) platform - and proving the value of this
-development model.
+development, evaluation and testing of the [NewsNow](https://www.newsnow.co.uk/)
+platform - and proving the value of this development model.
 
 Thanks last but not least to [NewsNow](https://www.newsnow.co.uk/about/),
 _The Independent News Discovery Platform_, for sponsoring the development of

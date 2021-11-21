@@ -47,30 +47,6 @@ Advanced features:
 - Support for launching [multi-architecture devtainers](#multi-architecture-devtainers) using [qemu-user-static](https://github.com/multiarch/qemu-user-static).
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications.
 
-## Licence
-
-This project (known as "Dockside"), comprising the files in this Git repository,
-is copyright 2017-2021 NewsNow Publishing Limited and contributors.
-
-Dockside is an open-source project licensed under the Apache License, Version 2.0 (the "License");
-you may not use Dockside or its constituent files except in compliance with the License.
-
-You may obtain a copy of the License at [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0).
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-> N.B. In order to run, Dockside relies upon other third-party open-source software dependencies that are separate to and
-independent from Dockside and published under their own independent licences.
->
-> Dockside Docker images made available at https://hub.docker.com/repository/docker/newsnowlabs/dockside are distributions
-> designed to run Dockside that comprise: (a) the Dockside project source and/or object code; and
-> (b) third-party dependencies that Dockside needs to run; and which are each distributed under the terms
-> of their respective licences.
-
 ## Host requirements
 
 Dockside is tested on Debian Linux running [Docker Engine](https://docs.docker.com/engine/install/) (the `docker-ce` package suite) and on MacOS and Windows 10 running [Docker Desktop](https://docs.docker.com/get-docker/), and is expected to run on any host with at least 1GB memory running a modern Linux distribution.
@@ -685,3 +661,31 @@ Thanks also to other members of the NewsNow development team for contributing th
 Thanks also to the entire design and development, editorial and testing teams at [NewsNow](https://www.newsnow.co.uk/about/) for so enthusiastically adopting containerised development working practices and for subjecting Dockside to so many years of robust use (and abuse) during the course of their daily iterative development, evaluation and testing of the [NewsNow](https://www.newsnow.co.uk/) platform - and proving the value of this development model.
 
 Thanks last but not least to [NewsNow](https://www.newsnow.co.uk/about/), _The Independent News Discovery Platform_, for sponsoring the development of Dockside.
+
+## Licence and legals
+
+This project (known as "Dockside"), comprising the files in this Git repository,
+is copyright 2017-2021 NewsNow Publishing Limited and contributors.
+
+Dockside is an open-source project licensed under the Apache License, Version 2.0 (the "License");
+you may not use Dockside or its constituent files except in compliance with the License.
+
+You may obtain a copy of the License at [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0).
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+> N.B. In order to run, Dockside relies upon other third-party open-source software dependencies that are separate to and
+independent from Dockside and published under their own independent licences.
+>
+> Dockside Docker images made available at [https://hub.docker.com/repository/docker/newsnowlabs/dockside](https://hub.docker.com/repository/docker/newsnowlabs/dockside) are distributions
+> designed to run Dockside that comprise: (a) the Dockside project source and/or object code; and
+> (b) third-party dependencies that Dockside needs to run; and which are each distributed under the terms
+> of their respective licences.
+
+### Trade marks
+
+Dockside and devtainer are trade marks of NewsNow Publishing Limited. All rights reserved.
