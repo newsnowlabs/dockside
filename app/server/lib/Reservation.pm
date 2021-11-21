@@ -488,10 +488,10 @@ sub cloneWithConstraints {
       # Developer reservation constraints
       $clone->sanitise(
          {
-            'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks Runtime ) ],
+            'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description ) ],
             'profileObject' => [ qw(name routers networks runtimes) ],
-            'data' => [ qw( FQDN parentFQDN image ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId) ]

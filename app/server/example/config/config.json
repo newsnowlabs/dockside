@@ -33,6 +33,7 @@
     "clientDistPath": "/home/newsnow/dockside/app/client/dist",
     "docker": {
        "bin": "/usr/bin/docker",
+       "socket": "/var/run/docker.sock",
        "PATH": "/usr/bin:/bin",
        "HOME": "/home/newsnow"
     },

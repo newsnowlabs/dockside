@@ -145,7 +145,7 @@ RUN apt-get update && \
     wamerican \
     bind9 dnsutils \
     docker-ce docker-ce-cli containerd.io gcc- \
-    perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl \
+    perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
     python3-pip \
     acl \
     s6 \

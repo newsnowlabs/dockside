@@ -65,7 +65,7 @@
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>Runtime</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode">{{ container.docker ? container.docker.Runtime : '' }}</td>
+                           <td v-if="!isPrelaunchMode">{{ container.data ? container.data.runtime : '' }}</td>
                            <td v-else>
                               <select class="form-control" v-model="form.runtime" :disabled="runtimes.length <= 1">
                                  <option v-for="runtime in runtimes" v-bind:key="runtime">{{ runtime }}</option>
@@ -122,7 +122,7 @@
                         </tr>
                         <tr v-if="container.permissions.auth.developer && container.status >= 0 && isSelected">
                            <th>Created</th>
-                           <td>{{ container.docker.CreatedAt }}</td>
+                           <td>{{ new Date(container.docker.CreatedAt * 1e3).toString() }}</td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && container.status >= 0 && isSelected">
                            <th>Status</th>

@@ -23,6 +23,8 @@ use IO::Handle;
 use IO::Select;
 use IPC::Open2;
 use Time::HiRes qw(time);
+use URI::Escape;
+use Mojo::UserAgent;
 
 use Util qw(cacheReadWrite flog run run_system);
 use Exception;
@@ -35,78 +37,70 @@ sub _update {
    my $oldJSON = shift;
    my $opts = shift; # hashref: { 'updateSizes' => undef|1 }
 
-   my $size_opt = $opts->{'updateSizes'} ? '-s' : '';
+   my $ua = Mojo::UserAgent->new();
+   my $socket = $CONFIG->{'docker'}{'socket'} // '/var/run/docker.sock';
+   my $path = '/containers/json?all=true' . ($opts->{'updateSizes'} ? '&size=true' : '');
+   my $socketPath = $socket . $path;
+   my $uri = 'http+unix://' . uri_escape($socket) . $path;
 
-   flog("docker-event-daemon::update: cache running docker ps '$size_opt'");
-   my $newJSON = run("$CONFIG->{'docker'}{'bin'} container ls -a --format '{{ json . }}' $size_opt");
+   flog("docker-event-daemon::update: requesting container list via $socketPath" . ($opts->{'updateSizes'} ? ' with sizes' : ''));
 
+   my $result;
+   try {
+      $result = $ua->get($uri => {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'})->result;
+   }
+   catch {
+      die Exception->new( 'msg' => "Unable to obtain container list via $socketPath (can't connect)" );
+   };
+
+   if(!$result->is_success) {
+      die Exception->new( 'msg' => sprintf("Unable to obtain container list via $socketPath (response code %d, error '%s')", $result->code, $result->message) );
+   }
+
+   my $newContainersFromAPI;
    my $oldContainers;
    try {
       $oldContainers = $oldJSON ? decode_json($oldJSON)->{'containers'} : {};
+      $newContainersFromAPI = decode_json($result->body);
    }
    catch {
       $oldContainers = {};
    };
 
-   my $newContainers;
-
-   foreach my $c_json ( split( "\n", $newJSON ) ) {
-      my $c = decode_json($c_json);
-
-      $newContainers->{$c->{'ID'}}{'docker'} = $c;
-
-      if( $oldContainers && $oldContainers->{$c->{'ID'}} ) {
-
-         if( $oldContainers->{$c->{'ID'}}{'inspect'} ) {
-            $newContainers->{$c->{'ID'}}{'inspect'} = $oldContainers->{$c->{'ID'}}{'inspect'};
-         }
-
-         if( !$size_opt && $oldContainers->{$c->{'ID'}}{'docker'}{'Size'}) {
-            $c->{'Size'} = $oldContainers->{$c->{'ID'}}{'docker'}{'Size'};
-         }
-
-      }
-   }
-
-   my @inspectContainerIds = sort map { $_->{'docker'}{'ID'} } values %$newContainers;
    my $idePath = $CONFIG->{'ide'}{'path'} || '/opt/dockside';
 
-   if(@inspectContainerIds) {
+   my $newContainers;
+   foreach my $c (@$newContainersFromAPI) {
 
-      my $inspectedContainers = decode_json( run("$CONFIG->{'docker'}{'bin'} container inspect " . join(' ', @inspectContainerIds) ) );
+      my $ID = substr($c->{'Id'}, 0, 12);
+      my ($ideVolume) = map { $_->{'Name'} } grep { $_->{'Destination'} eq $idePath } @{$c->{'Mounts'}};
 
-      foreach my $inspectedContainer (@$inspectedContainers) {
-         my $ports = {};
+      $newContainers->{$ID}{'docker'} = {
+         'ID' => $ID, # Short ID (for now)
+         'Names' => substr($c->{'Names'}[0], 1), # Skip leading '/'
+         'CreatedAt' => $c->{'Created'}, # Was string; now unixtime
+         'Status' => $c->{'Status'}, # String
+         'Image' => $c->{'Image'}, # String
+         'ImageId' => substr( substr($c->{'ImageID'}, 7), 0, 12),
+         'Size' => $c->{'SizeRW'},
+         'Networks' => join(',', sort keys %{$c->{'NetworkSettings'}{'Networks'}})
+      };
 
-         # Obtain host port mapping from:
-         foreach my $S (
-            # - here, when container is running;
-            $inspectedContainer->{'NetworkSettings'}{'Ports'}, 
+      # HashRef keyed on internal port looking up host port.
+      # This is only needed when $CONFIG->{'gateway'}{'enabled'} is true (and this is deprecated)
+      my $ports = { map { $_->{'PrivatePort'} => $_->{'PublicPort'} } @{$c->{'Ports'}} };
 
-            # - here, when container is stopped.
-            $inspectedContainer->{'HostConfig'}{'PortBindings'}
-            ) {
+      $newContainers->{$ID}{'inspect'} = { 
+         'Networks' => $c->{'NetworkSettings'}{'Networks'},
+         'Ports' => $ports,
+         'ideVolume' => $ideVolume
+      };
 
-            while( my ($portString, $p) = each %$S ) {
-               if($portString =~ m!^(\d+)/tcp$!) {
-                  $ports->{$1} = $p->[0]{'HostPort'} if exists($p->[0]{'HostPort'}) && $p->[0]{'HostPort'};
-               }
-            }
+      # Copy the container Size from the oldContainer record if we haven't requested the Size on this run.
+      if( $oldContainers && $oldContainers->{$ID} && $oldContainers->{$ID}{'docker'}{'Size'} ) {
+         if( !$newContainers->{$ID}{'docker'}{'Size'} ) {
+            $newContainers->{$ID}{'docker'}{'Size'} = $oldContainers->{$ID}{'docker'}{'Size'};
          }
-
-         my ($ideVolume) = map { $_->{'Name'} } grep { $_->{'Destination'} eq $idePath } @{$inspectedContainer->{'Mounts'}};
-
-         my ($shortContainerId) = $inspectedContainer->{'Id'} =~ /^(.{12})/;
-         
-         $newContainers->{$shortContainerId}{'inspect'} = { 
-            'Networks' => $inspectedContainer->{'NetworkSettings'}{'Networks'},
-            'Ports' => $ports,
-            'ideVolume' => $ideVolume
-         };
-
-         # Insert inspected Runtime and ImageID into 'docker' object.
-         $newContainers->{$shortContainerId}{'docker'}{'Runtime'} = $inspectedContainer->{'HostConfig'}{'Runtime'};
-         $newContainers->{$shortContainerId}{'docker'}{'ImageId'} = substr( substr($inspectedContainer->{'Image'}, 7), 0, 12);
       }
 
    }
@@ -153,7 +147,7 @@ sub eventHandler {
    my $pid = open2($Events, undef, $CONFIG->{'docker'}{'bin'}, 'events', '--format', "{{ json . }}")
       || die Exception->new( 'msg' => "Unable to launch 'docker events'");
 
-   flog("eventHandler: Launched docker event watcher with pid=$pid");
+   flog("eventHandler: Launched 'docker event' subprocess with PID $pid");
    $Events->autoflush(1);
    $Events->blocking(0);
 
@@ -262,19 +256,19 @@ sub eventHandler {
    }
    catch {
       flog("eventHandler: caught exception: " . (ref($_) ? $_->dbg : $_));
-      sleep 3;
+      sleep 1;
    };
 
    flog("eventHandler: Ending...");
 
    close $Events;
-   flog(sprintf("eventHandler: Sending TERM=%d", kill(15, $pid)));
+   flog(sprintf("eventHandler: Sending signal TERM=%d to 'docker events' subprocess PID $pid", kill(15, $pid)));
    sleep 1;
    if( waitpid( $pid, 0 ) == $pid ) {
-      flog("eventHandler: Reaped child $pid");
+      flog("eventHandler: Reaped 'docker events' subprocess PID $pid");
    }
    else {
-      flog(sprintf("eventHandler: Sending KILL=%d", kill(9, $pid)));
+      flog(sprintf("eventHandler: Sending signal KILL=%d to 'docker events' subprocess PID $pid", kill(9, $pid)));
    }
 
    flog("eventHandler: Ended.");
