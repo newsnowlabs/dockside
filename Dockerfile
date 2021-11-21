@@ -3,7 +3,7 @@ ARG NODE_VERSION=12
 FROM node:${NODE_VERSION}-alpine as theia-build
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python libsecret-dev s6 curl && \
+    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl && \
     apk add --no-cache patchelf --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community
 
 ARG OPT_PATH
