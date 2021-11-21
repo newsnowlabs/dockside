@@ -14,7 +14,7 @@ WORKDIR $THEIA_PATH/theia
 ADD ./ide/theia/$THEIA_VERSION/ ./
 
 # Build Theia
-RUN NODE_OPTIONS="--max_old_space_size=4096" && yarn
+RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && NODE_OPTIONS="--max_old_space_size=4096" && yarn
 
 FROM theia-build as theia
 
