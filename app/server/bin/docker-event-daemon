@@ -201,7 +201,7 @@ sub eventHandler {
 
                flog(sprintf("eventHandler($events): Received event: Type=%s, Action=%s, Actor=%s", $event->{'Type'}, $event->{'Action'}, $event->{'Actor'}{'ID'}));
 
-               if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(start|stop|destroy)$/ ) {
+               if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(start|stop|create|destroy)$/ ) {
                   $Container->{ $event->{'Actor'}{'ID'} }++;
                }
                elsif( $event->{'Type'} eq 'network' && $event->{'Action'} =~ /^(connect|disconnect)$/ ) {
@@ -238,6 +238,9 @@ sub eventHandler {
                         my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
                         flog("eventHandler: failed to launch IDE: dbg='$dbg'; msg='$msg'");
                      };
+                  }
+                  else {
+                     flog("eventHandler: we don't manage containerId=$event->{'Actor'}{'ID'}");
                   }
                }               
 
