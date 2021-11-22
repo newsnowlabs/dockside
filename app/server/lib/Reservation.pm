@@ -76,7 +76,15 @@ sub docker {
 }
 
 sub containerId {
-   return $_[0]->{'containerId'};
+   my $self = shift;
+
+   if(@_ == 0) {
+      return $self->{'containerId'};
+   }
+
+   $self->{'containerId'} = $_[0];
+
+   return $self;
 }
 
 sub profileObject {
@@ -839,12 +847,13 @@ sub launch {
    my @cmd;
    push(@cmd,
       $CONFIG->{'docker'}{'bin'},
-      'run',
-      # TODO: Configure Profiles to support launch user.
-      # '--user=root',
-      '-d',
+      'create',
       '--label', "owner.username=" . $self->owner('username'),
       '--label', "owner.name=" . $self->owner('name'),
+
+      # TODO: Configure Profiles to support launch user.
+      # '--user=root',
+
       @cmdline
    );
 
@@ -904,14 +913,23 @@ sub launch {
          die Exception->new( 'msg' => 'docker run failed to output container id' );
       }
 
-      my $containerId = $1;
+      # Set containerId in $self
+      $self->containerId($1);
 
+      # Update containerId property in reservation db for $self
       $self->update( {
-         'containerId' => $containerId
+         'containerId' => $self->containerId()
       } );
-
-      flog("Reservation::launch: updated map file successfully");
       
+      flog("Reservation::launch: updated reservation db successfully");
+
+      # Now the reservation db has been updated with the containerId,
+      # docker-event-daemon will be able to identify the container, when launched, as its responsibility.
+      #
+      # So, start the container.
+      $self->action('startContainer');
+      flog("Reservation::launch: started container");
+
       exit(0);
    }
    catch {
