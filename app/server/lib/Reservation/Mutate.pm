@@ -11,20 +11,21 @@ use Exception;
 use Data qw($CONFIG);
 use JSON;
 
-# Reload, and optionally update, the map file atomically:
-# - If called without arguments, simply reloads the map file.
-# - If called with an $update subref, after reloading the map file, the update sub will be called
-#   (with the internal map data structure as argument) to update the internal map file data structure(s).
-#   - If the update sub returns true, the map file will be truncated and rewritten before the file is closed and exclusive lock released, and we return true.
-#   - If the update sub returns false, the map file will not be rewritten, and we return 0.
+# mutate:
+#
+# Reloads, and optionally updates, the reservation db atomically:
+# - If called without arguments, simply reloads the reservation db.
+# - If called with an $update subref, after reloading the reservation db, the update sub will be called
+#   (with the internal map data structure as argument) to update the internal reservation db data structure(s).
+#   - If the update sub returns true, the reservation db will be truncated and rewritten before the file is closed and exclusive lock released, and we return true.
+#   - If the update sub returns false, the reservation db will not be rewritten, and we return 0.
 # - On any error, return undef.
 #
-# In both cases, an exclusive lock is taken to ensure the map file is not in process of being written by another process,
+# In both cases, an exclusive lock is taken to ensure the reservation db is not in process of being written by another process,
 # while it is read or re-written here.
 #
-# FIXME:
+# TODO:
 # - Cache the last modified time on $HID_PATH. If it hasn't changed, then don't bother reparsing the file unless $update is provided.
-#
 sub mutate {
    my $mutateFn = shift;
 
@@ -57,6 +58,10 @@ sub mutate {
 # PUBLIC METHODS
 # --------------
 
+# update:
+#
+# Atomically update the reservation database for $self:
+# $e provides a hashref of properties to update.
 sub update {
    my $self = shift;
    my $e = shift;
@@ -68,8 +73,8 @@ sub update {
 
          my $id = $self->id;
 
-         # Don't allow storage of a reservation map file entry, with a host name already in use
-         # by another reservation map file entry.
+         # Don't allow storage of a reservation reservation db entry, with a host name already in use
+         # by another reservation reservation db entry.
          if(
                defined($e->{'name'}) && 
                defined($by_name->{$e->{'name'}}) &&
@@ -92,8 +97,10 @@ sub update {
    );
 }
 
+# load_clean_map:
+#
 # Takes as input, a full complement of container IDs for active (running or stopped) containers.
-# Loops through the map file contents, deleting any entries that do not tally with active containers.
+# Loops through the reservation db contents, deleting any entries that do not tally with active containers.
 sub load_clean_map {
    my $self = shift;
    my @containerIds = @_;
@@ -114,7 +121,7 @@ sub load_clean_map {
          my $Updates = 0;
 
          keys %$by_id;
-         # Loop through map file entries
+         # Loop through reservation db entries
          while( my ( $id, $reservation ) = each %$by_id ) {
 
             # If the reservation already has a containerId:
@@ -141,7 +148,7 @@ sub load_clean_map {
             }
 
             # For container reservations, and failed launch reservations:
-            # - If expiryTime exists and is old enough, delete the map file entry.
+            # - If expiryTime exists and is old enough, delete the reservation db entry.
             if( $reservation->{'expiryTime'} && $reservation->{'expiryTime'} lt $expireTime ) {
                flog("load_clean_map: deleting reservation $id");
                delete $by_name->{ $by_id->{$id}{'name'} };
@@ -150,7 +157,7 @@ sub load_clean_map {
             }
          }
 
-         # Only rewrite the map file if there were actual updates.
+         # Only rewrite the reservation db if there were actual updates.
          return $Updates;
          
       }

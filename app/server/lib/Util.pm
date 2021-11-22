@@ -173,6 +173,11 @@ sub YYYYMMDDHHMMSS {
 
 sub TO_JSON { return { %{ shift() } }; }
 
+# Atomically read or update $file:
+#
+# If $sub given, get exclusive lock on $file, slurp $file, overwrite with return value of &$sub(<file contents>, @args).
+# If no $sub given, get shared lock on $file, slurp $file and return.
+#
 sub cacheReadWrite {
    my $file = shift;
    my $sub = shift;
@@ -201,7 +206,6 @@ sub cacheReadWrite {
 
       if(defined($newData) && $newData ne $oldData) {            
          flog("cacheReadWrite: file=$file; sub=Yes; #7; Updating=Yes");
-         # flog("cacheReadWrite: file=$file; sub=Yes; #7; Updating=Yes; oldData='$oldData'; newData='$newData'");
 
          truncate( $FH, 0 ) || do { close $FH; die Exception->new( 'dbg' => "Cannot truncate '$file' ($!)" ); };
          seek( $FH, 0, SEEK_SET ) || do { close $FH; die Exception->new( 'dbg' => "Cannot seek to start of '$file' ($!)" ); };
@@ -244,8 +248,8 @@ sub cacheEvery {
    return cacheReadWrite($FILEPATH);
 }
 
+# Recusively copy across all values that are different from deep hashref $_[0] to $_[1]
 sub cloneHash {
-   # Copy across all values that are different.
    while( my($k, $v) = each %{$_[0]}) {
       if( defined($_[0]->{$k}) ) {
          if( ref($_[0]->{$k}) eq 'HASH' && ref($_[1]->{$k}) eq 'HASH') {
