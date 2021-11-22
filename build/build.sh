@@ -85,7 +85,7 @@ build_env() {
   DOCKER_OPTS=()
   DOCKER_OPTS+=("--label=com.newsnow.dockside.build.date=$TAG_DATE")
   DOCKER_OPTS+=("--build-arg=OPT_PATH=/opt/dockside")
-  DOCKER_OPTS+=("--build-arg=THEIA_VERSION=1.17.0+webview")
+  DOCKER_OPTS+=("--build-arg=THEIA_VERSION=1.19.0+webview")
 
   [ -n "$NO_CACHE" ] && DOCKER_OPTS+=("--no-cache")
   [ -n "$FORCE_RM" ] && DOCKER_OPTS+=("--force-rm")
