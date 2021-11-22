@@ -148,12 +148,12 @@
                            <th></th>
                            <td>
                               <b-button size="sm" variant="outline-primary"
-                                 v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= 0"
+                                 v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
                                  v-on:click="edit()"
                                  >Edit</b-button>
 
                               <b-button size="sm" variant="primary"
-                                 v-show="container.permissions.actions.startContainer && !isEditMode && !isPrelaunchMode && container.status == 0"
+                                 v-show="container.permissions.actions.startContainer && !isEditMode && !isPrelaunchMode && container.status >= -1 && container.status <= 0"
                                  v-on:click="action('startContainer')"
                                  :data-id="container.id"
                                  >Start</b-button>
