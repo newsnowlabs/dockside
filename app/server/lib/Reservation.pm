@@ -392,7 +392,7 @@ sub update_container_info {
          $r->{'status'} = -2;
       }
 
-      $r->{'dockerLaunchLogs'} = $r->_logs();      
+      $r->load_launch_logs();      
    }
 
    return $class;
@@ -434,13 +434,14 @@ sub load {
    return $RESERVATIONS;
 }
 
-# Reads the launch logs for the Reservation,
-# as written by Reservation::launch.
-sub _logs {
 ################################################################################
 # OBJECT METHODS
 # --------------
 
+# Updates the dockerLaunchLogs property of the Reservation,
+# to container the tail of the launch log file written by Reservation::launch.
+#
+sub load_launch_logs {
    my $self = shift;
 
    my $id = $self->id();
@@ -460,6 +461,8 @@ sub _logs {
       push(@$data, $lines[$i]) if $i >= 0 && $lines[$i] !~ /$TerminationRE/;
    }
    untie @lines;
+
+   $self->{'dockerLaunchLogs'} = $data;
 
    return $data;
 }

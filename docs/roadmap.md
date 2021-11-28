@@ -7,7 +7,6 @@ The roadmap for Dockside currently remains highly flexible. We have a list of ca
 ### Minor issues
 
 - Remove duplicate nvm chaff appended to `.bashrc`
-- fix devtainer launch logs not updating periodically in client
 
 ### Minor improvements
 

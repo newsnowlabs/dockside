@@ -507,6 +507,11 @@ sub reservations {
       # Skip containers the user isn't allowed to view.
       next unless $self->can_on( $reservation, 'view' );
 
+      # If container is not yet created, then update launch logs.
+      if($reservation->{'status'} == -2) {
+         $reservation->load_launch_logs();
+      }
+
       # If the data will be used externally (i.e. sent to the client),
       # make a copy, sanitise to remove unneeded data and annotate it with permissions data.
       # WARNING: Be careful to avoid storing the sanitised copy back into the reservations database!

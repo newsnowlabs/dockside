@@ -448,8 +448,6 @@
 
    pre.logs {
       white-space: pre-wrap;
-      max-height: 10em;
-      overflow-y: auto;
       margin: 0;
    }
 </style>
