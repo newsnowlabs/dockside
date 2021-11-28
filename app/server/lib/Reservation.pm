@@ -325,6 +325,16 @@ sub new {
    return $self;
 }
 
+################################################################################
+# CLASS METHODS
+# -------------
+
+# Update loaded Reservation objects with details of the containers they relate to,
+# and update BY_IP and BY_CONTAINERID indices into the Reservation objects.
+#
+# This class method expects to be called whenever either the containers cache file,
+# or reservations db file, is updated.
+
 sub update_container_info {
    my $class = shift;
 
@@ -427,6 +437,10 @@ sub load {
 # Reads the launch logs for the Reservation,
 # as written by Reservation::launch.
 sub _logs {
+################################################################################
+# OBJECT METHODS
+# --------------
+
    my $self = shift;
 
    my $id = $self->id();
@@ -599,7 +613,7 @@ sub mapfile_routers {
    return $routers;
 }
 
-# This function generates a data structure consumed by lookup_container_uri() below.
+# This method generates a data structure consumed by lookup_container_uri() below.
 sub routers {
    my $self = shift;
 
