@@ -15,7 +15,6 @@
 use strict;
 
 use JSON;
-use Data::Dumper;
 
 use Try::Tiny;
 use File::Path;

@@ -249,9 +249,6 @@ sub cmdline {
    # mounts
    # dockerArgs
 
-   use Data::Dumper;
-   flog("cmdline: " . Dumper($self));
-
    return (
       $self->cmdline_runtime(),
       $self->cmdline_ports(),

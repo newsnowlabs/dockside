@@ -6,7 +6,6 @@ use JSON;
 use Expect;
 use Try::Tiny;
 use Tie::File;
-use Data::Dumper;
 use Reservation::Mutate qw(update load_clean_map);
 use Reservation::Load;
 use Reservation::Launch;
@@ -386,10 +385,6 @@ sub update_container_info {
       $r->{'dockerLaunchLogs'} = $r->_logs();      
    }
 
-   # flog("Reservation::load: BY_ID=" . join(', ', keys %$BY_ID));
-   # flog("Reservation::load: BY_NAME=" . join(', ', keys %$BY_NAME));
-   # flog("Reservation::load: BY_IP=" . join(', ', keys %$BY_IP));
-
    return $class;
 }
 
@@ -580,7 +575,7 @@ sub mapfile_routers {
 
       my %destinations;
       foreach my $publicProtocol ('http', 'https') {
-         # flog("routers: $routerName: $publicProtocol: router=" . &Dumper($router)); use Data::Dumper;
+         
          if( exists($router->{$publicProtocol}) && $router->{$publicProtocol}{'protocol'} && $router->{$publicProtocol}{'port'} ) {
             $destinations{ sprintf("%s:%d:%s",
                               $router->{$publicProtocol}{'protocol'},
@@ -589,8 +584,6 @@ sub mapfile_routers {
                            ) }{$publicProtocol} = 1;
          }
       }
-
-      # flog('routers: destinations=' . &Dumper(\%destinations)); use Data::Dumper;
 
       while( my ($destination, $publicProtocols) = each %destinations) {
          my $key = sprintf("%s/%s/%s",
@@ -841,8 +834,6 @@ sub launch {
       } );
       die Exception->new( 'msg' => "Failed to compile 'docker run' command line, with error: $msg", 'dbg' => "Reservation::launch: Reservation->cmdline() threw error: $msg" );
    };
-
-   flog("Reservation::launch: Reservation->mapfile_routers: " . &Dumper($self->mapfile_routers()));
 
    my @cmd;
    push(@cmd,
