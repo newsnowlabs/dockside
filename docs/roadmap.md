@@ -13,13 +13,17 @@ The roadmap for Dockside currently remains highly flexible. We have a list of ca
 - IDE upgrades:
   - build and store the launch-ide.sh script with the IDE at `/opt/dockside/ide/theia/theia-<version>/bin` (so it can be versioned with the IDE)
   - create a formal script for upgrading the Dockside Theia IDE
+- Add profiles for popular Linux distributions
+- Add keyboard shortcuts for open Launch form, Launch, Stop, Start, Cancel
+- Add option to launch Dockside UI listening on http://localhost/ (i.e. no HTTPS) for purely local usage
 
 ### Application Client
 
 - Add devtainer-level menu to select version of Theia IDE (from those available) to launch for a devtainer
-- Add admin view for managing users, passwords, ssh keys (including deploying keys to devtainers)
-- Add admin view for monitoring/managing host memory/disk space
-- Add option for viewing devtainer launch logs (preferably in integrated terminal)
+- Add UI for managing users, passwords, ssh keys (including deploying keys to devtainers)
+- Add UI for monitoring/managing host memory/disk space/images
+- Add UI for monitoring/managing container memory/disk space/CPU (via `docker stats`)
+- Add UI for viewing devtainer stdout/stderr logs (preferably in integrated terminal)
 - Replace Bootstrap with alternative CSS framework more appropriate to a web app
 
 ### Service access control
@@ -30,15 +34,30 @@ The roadmap for Dockside currently remains highly flexible. We have a list of ca
 
 - Break out Application Server into standalone FastCGI process to facilitate:
   - reimplement static error pages (for stopped devtainers, and devtainers with stopped services) within the client
-  - (re)implementing API in separate Go or Node.js process
-- Add config and profile options to enable/disable user creation, sudo configuration, and ssh-agent auto-launch
-- Build in ssh-agent for use with images where none is provided
+- Reimplement all remaining Docker CLI calls with API calls (and remove docker packages from main production build)
+
+### IDE customisation and support
+
+- Build in `ssh-agent` for use with images where none is provided
+- Support for other IDEs e.g. VS Code and Cloud9
+- Add config and profile options to enable/disable in-devtainer user creation, sudo configuration, and ssh-agent auto-launch
+
+### Launch customisation
+
+- A 'fork'/'clone' button, that launches a devtainer using the same disk image as the selected devtainer
+- A 'launch again' button, that launches a devtainer using the same profile and settings as the selected devtainer
+- Support for launching a devtainer directly from a git repo using `.devcontainer.json`
+- Integrated SSH key management and agent, allowing devtainers to git pull/git checkout specified branches when they launch
+- Custom hooks/variables to allow devtainer launch URLs to be crafted that pull/checkout/build specific branches of a repo (depends on integrated SSH agent)
 
 ### Other
 
-- Custom hooks/variables to allow users to craft devtainer launch URLs that check out and build your app for specific repo branches
+- Implement per-user quotas for devtainers memory, disk and CPU resources
+- Support for Podman
+
+### Scalability
+
 - Docker Swarm and/or Kubernetes support to allow devtainers to be distributed across a cluster
-- Per-user quotas for devtainers, and for memory and disk resources
 
 ## v2.0.0
 
