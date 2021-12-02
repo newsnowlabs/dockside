@@ -87,11 +87,11 @@ gcloud -q --verbosity=error deployment-manager deployments create dockside-$NAME
 #
 echo >&2
 echo "Setting NS record for $DNS_NAME in managed zone $CLOUD_DNS_ZONE ..." >&2
-gcloud -q  --verbosity=error beta dns --project=newsnow-production record-sets transaction abort --zone="$CLOUD_DNS_ZONE" 2>/dev/null
-gcloud -q  --verbosity=error beta dns --project=newsnow-production record-sets transaction start --zone="$CLOUD_DNS_ZONE" 2>/dev/null
-gcloud -q  --verbosity=error beta dns --project=newsnow-production record-sets transaction remove "${DNS_NAME}." --name="${DNS_NAME}." --ttl="300" --type="NS" --zone="$CLOUD_DNS_ZONE" 2>/dev/null
-gcloud -q  --verbosity=error beta dns --project=newsnow-production record-sets transaction add "${DNS_NAME}." --name="${DNS_NAME}." --ttl="300" --type="NS" --zone="$CLOUD_DNS_ZONE" 2>/dev/null
-gcloud -q  --verbosity=error beta dns --project=newsnow-production record-sets transaction execute --zone="$CLOUD_DNS_ZONE"
+gcloud -q  --verbosity=error beta dns record-sets transaction abort --zone="$CLOUD_DNS_ZONE" 2>/dev/null
+gcloud -q  --verbosity=error beta dns record-sets transaction start --zone="$CLOUD_DNS_ZONE" 2>/dev/null
+gcloud -q  --verbosity=error beta dns record-sets transaction remove "${DNS_NAME}." --name="${DNS_NAME}." --ttl="300" --type="NS" --zone="$CLOUD_DNS_ZONE" 2>/dev/null
+gcloud -q  --verbosity=error beta dns record-sets transaction add "${DNS_NAME}." --name="${DNS_NAME}." --ttl="300" --type="NS" --zone="$CLOUD_DNS_ZONE" 2>/dev/null
+gcloud -q  --verbosity=error beta dns record-sets transaction execute --zone="$CLOUD_DNS_ZONE"
 
 echo >&2
 echo "Checking for ssh key $SSH_KEY ..." >&2

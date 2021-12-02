@@ -20,3 +20,27 @@ resources:
       ttl: 30
       rrdatas:
       - $(ref.{{ properties["name"] }}.networkInterfaces[0].accessConfigs[0].natIP)
+- name: dockside-dns
+  type: compute.v1.firewall
+  properties:
+    targetTags: ["dockside-dns"]
+    sourceRanges: ["0.0.0.0/0"]
+    allowed:
+      - IPProtocol: UDP
+        ports: ["53"]
+- name: dockside-http
+  type: compute.v1.firewall
+  properties:
+    targetTags: ["dockside-http"]
+    sourceRanges: ["0.0.0.0/0"]
+    allowed:
+      - IPProtocol: TCP
+        ports: ["80"]
+- name: dockside-https
+  type: compute.v1.firewall
+  properties:
+    targetTags: ["dockside-https"]
+    sourceRanges: ["0.0.0.0/0"]
+    allowed:
+      - IPProtocol: TCP
+        ports: ["443"]

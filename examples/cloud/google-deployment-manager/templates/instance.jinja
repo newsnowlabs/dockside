@@ -18,9 +18,9 @@ resources:
         sourceImage: {{ properties["disk_image"] }}
     tags:
       items:
-      - http-server
-      - https-server
-      - dns-server
+      - dockside-http
+      - dockside-https
+      - dockside-dns
     networkInterfaces:
     - network: global/networks/default
       accessConfigs:
