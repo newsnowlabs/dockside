@@ -11,7 +11,7 @@ ARG THEIA_VERSION
 ARG THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
 
 WORKDIR $THEIA_PATH/theia
-ADD ./ide/theia/$THEIA_VERSION/ ./
+ADD ./ide/theia/$THEIA_VERSION/build/ ./
 
 # Build Theia
 RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && NODE_OPTIONS="--max_old_space_size=4096" && yarn
@@ -48,8 +48,12 @@ RUN find node_modules/ -name '*.node' -print -exec patchelf --set-rpath $THEIA_P
        patchelf --set-interpreter $THEIA_PATH/lib64/lib/ld-musl-x86_64.so.1 $THEIA_PATH/bin/$binary && \
        patchelf --set-rpath $THEIA_PATH/lib64/lib:$THEIA_PATH/lib64/usr/lib $THEIA_PATH/bin/$binary; \
     done && \
-    ln -sf $THEIA_PATH/bin/busybox $THEIA_PATH/bin/sh && \
-    ln -sf $THEIA_PATH/bin/busybox $THEIA_PATH/bin/su
+    cd $THEIA_PATH/bin && \
+    ln -sf busybox sh && \
+    ln -sf busybox su && \
+    ln -sf busybox pgrep
+
+ADD ./ide/theia/$THEIA_VERSION/bin/ $THEIA_PATH/bin/
 
 ################################################################################
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
@@ -267,12 +271,11 @@ VOLUME $OPT_PATH
 #
 USER root
 RUN mkdir -p $OPT_PATH/bin && \
-    cp -a $HOME/$APP/app/scripts/container/dummysh $OPT_PATH/bin/ && \
     cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
-    cp -a $HOME/$APP/app/scripts/container/launch-ide.sh $THEIA_PATH/bin/ && \
+    ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
     cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/ && \
     ln -sf $THEIA_PATH/bin/launch-ide.sh $OPT_PATH/bin/launch-ide.sh && \
-    ln -sf $THEIA_PATH $OPT_PATH/theia && \
+    ln -sfr $THEIA_PATH $OPT_PATH/theia && \
     ln -sf $HOME/$APP/app/scripts/entrypoint.sh /entrypoint.sh && \
     ln -sf $HOME/$APP/app/server/bin/password-wrapper /usr/local/bin/password && \
     chown -R root.root $OPT_PATH/bin/

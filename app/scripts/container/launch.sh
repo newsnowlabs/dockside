@@ -11,19 +11,6 @@ which() {
    for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && break; done
 }
 
-fake_home() {
-   local FAKEHOME="$1"
-    
-   mkdir -p "$FAKEHOME" && chown -R $IDE_USER.$IDE_USER "$FAKEHOME"
-
-   export _HOME="$HOME"
-   export HOME="$FAKEHOME"
-}
-
-set_home() {
-   export HOME=$(getent passwd $IDE_USER | cut -d':' -f6)    
-}
-
 # Expects:
 # - IDE_USER
 # 
@@ -75,21 +62,9 @@ _EOE_
     fi
 }
 
-# DEPRECATED
-meta_curl() {
-   /opt/dockside/theia/bin/curl -sf --retry 10 --retry-delay 1 -m 10 -H 'Metadata-Flavor: Google' "$@"
-}
-
-# DEPRECATED
-launch_entrypoint() {
-  log "If ENTRYPOINT defined, exec it..."
-  if [ -n "$ENTRYPOINT" ]; then
-     exec $ENTRYPOINT
-  fi
-}
-
 # Expects:
 # - IDE_USER
+# - IDE_PATH
 # 
 
 # 1. (Optionally) Create user (if needed)
@@ -97,6 +72,15 @@ launch_entrypoint() {
 # 3. Launch IDE watcher, in turn launching and keep running IDE.
 launch_ide() {
    [ -n "$IDE_USER" ] || IDE_USER="root"
+   
+   # Use IDE_PATH if specified and directory exists;
+   # otherwise look for the alphanumerically latest subsubdirectory of /opt/dockside/ide
+   if [ -n "$IDE_PATH" ] && [ -d "$IDE_PATH" ]; then
+     log "Using IDE_PATH '$IDE_PATH'"
+   else
+     IDE_PATH="$(ls -d /opt/dockside/ide/*/* | tail -n 1)"
+     log "Selecting latest IDE_PATH '$IDE_PATH'"
+   fi
 
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
@@ -107,7 +91,9 @@ launch_ide() {
 
       while true
       do
-         /opt/dockside/theia/bin/su $IDE_USER -c "env -i HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" /opt/dockside/theia/bin/sh $IDE_PATH/bin/launch-ide.sh IDE_PATH=\"$IDE_PATH\""
+         # su will retain exported env vars and set new ones.
+         # So we use 'env -i' to clear all env vars before setting just the ones needed.
+         $IDE_PATH/bin/su $IDE_USER -c "env -i HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
          sleep 1
       done
    else
@@ -122,53 +108,10 @@ launch_ide() {
       # - Current user is not root and IDE_USER is ignored.
       while true
       do
-         /opt/dockside/theia/bin/sh $IDE_PATH/bin/launch-ide.sh IDE_PATH="$IDE_PATH"
+         $IDE_PATH/bin/sh IDE_PATH="$IDE_PATH" $IDE_PATH/bin/launch-ide.sh
          sleep 1
-      done </dev/null &>/dev/null
+      done
    fi
 }
 
-# DEPRECATED
-exec_meta_startup() {
-  if [ -z "$METADATA_URI" ]; then
-    return
-  fi
-
-  # To place this in a noexec filesystem - typically true for /tmp/ - would need special care
-  # and treatment (such as parsing the shebang and calling the intepreter directly).
-  while true
-  do
-      # Try re-reading the startup-script.
-      log "Retrieving startup-script from metadata server... " >&2
-      meta_curl -o $METADATA_SS_FSPATH $METADATA_URI/instance/attributes/startup-script && break
-
-      # In case the startup-script was cached from a previous launch, break anyway.
-      if [ -f "$METADATA_SS_FSPATH" ]; then
-          log "Retrieved startup-script to '$METADATA_SS_FSPATH', or this file preexisted."
-          break
-      fi
-
-      # Pause before trying again, indefinitely.
-      log "No start-up script retrieved or preexisting, so looping... " >&2
-      sleep 1
-  done
-
-  log "Execing startup script '$METADATA_SS_FSPATH'... " >&2
-  [ -f "$METADATA_SS_FSPATH" ] && chmod 755 $METADATA_SS_FSPATH && exec $METADATA_SS_FSPATH
-}
-
-# DEPRECATED
-launch() {
-
-  launch_ide
-  exec_meta_startup
-  launch_entrypoint
-
-  # If no entrypoint, wait for Theia watcher to exit.
-  log "No ENTRYPOINT defined, waiting for Theia watcher to exit..."
-  wait
-}
-
-IDE_PATH=$(realpath $(dirname $0))
 eval "$@"
-

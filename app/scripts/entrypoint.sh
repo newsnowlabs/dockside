@@ -249,14 +249,9 @@ log "Creating /var/log/$APP log directory ..."
 mkdir -p /var/log/$APP && chown -R $USER.$USER /var/log/$APP
 
 # Copy container scripts to shared volume
-log "Testing if shared IDE volume is writeable ..."
+log "Testing if shared IDE volume '$OPT_PATH' is writeable ..."
 if (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then
-
-  log "- Shared IDE volume is writeable; installing container launch scripts ..."
-  (cp -a -T $APP_DIR/app/scripts/container/ $OPT_PATH/bin && \
-      chown -R root.root $OPT_PATH/bin && \
-      rm -f $OPT_PATH/launch.sh && \
-      ln -sf $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh) 2>/dev/null
+  log "- Shared IDE volume is writeable ..."
 else
   log "- Shared IDE volume is not writeable."
 fi

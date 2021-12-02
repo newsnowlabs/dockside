@@ -15,19 +15,22 @@ which() {
   for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && break; done
 }
 
-log "Launching IDE from IDE_PATH '$IDE_PATH' ..."
-
-log "Evaling arguments $@ ..."
-eval "$@"
-
-log "Backing up and overriding PATH ..."
-export _PATH="$PATH"
-export PATH="$IDE_PATH/theia/bin:$PATH"
-
 LOG=/tmp/theia.log
 
 log "Creating logfile '$LOG' ..."
 touch $LOG && chmod 666 $LOG
+
+exec 1>>$LOG
+exec 2>>$LOG
+
+log "Evaling arguments $@ ..."
+eval "$@"
+
+log "Launching IDE from IDE_PATH='$IDE_PATH' ..."
+
+log "Backing up and overriding PATH ..."
+export _PATH="$PATH"
+export PATH="$IDE_PATH/theia/bin:$PATH"
 
 # Run ssh-agent if available, but not already running.
 log "Checking for ssh-agent ..."
@@ -48,12 +51,13 @@ export THEIA_WEBVIEW_EXTERNAL_ENDPOINT='{{uuid}}-webview-{{hostname}}'
 export THEIA_MINI_BROWSER_HOST_PATTERN='{{uuid}}-minibrowser-{{hostname}}'
 export SHELL="$IDE_PATH/bin/dummysh"
 
+THEIA_PATH=$IDE_PATH
+log "Launching IDE using: $THEIA_PATH/bin/node $THEIA_PATH/theia/src-gen/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 ..."
+
+unset IDE_PATH
+cd $THEIA_PATH/theia || exit 1
+
 log "Listing launch environment variables ..."
 env | sed -r 's/^/    /' >&2
 
-THEIA_PATH=$IDE_PATH/theia
-log "Launching IDE using: $THEIA_PATH/theia/node_modules/.bin/theia start $HOME --hostname 0.0.0.0 --port 3131 ..."
-
-unset IDE_PATH
-cd $THEIA_PATH/theia && \
-  exec $THEIA_PATH/bin/node $THEIA_PATH/theia/src-gen/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 --plugins=local-dir:$HOME/theia-plugins >>$LOG 2>&1
+exec $THEIA_PATH/bin/node $THEIA_PATH/theia/src-gen/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 --plugins=local-dir:$HOME/theia-plugins
