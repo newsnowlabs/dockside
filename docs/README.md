@@ -66,14 +66,14 @@ Choose from the following options:
 
 1. [Launch locally with built-in SSL cert](#launch-locally-with-built-in-ssl-cert)
 2. [Launch anywhere with self-signed SSL cert](#launch-anywhere-with-self-signed-ssl-cert)
-3. [Launch in production with auto-generated LetsEncrypt public SSL certificate](#launch-in-production-with-auto-generated-letsencrypt-public-ssl-certificate)
-4. [Launch in production with self-supplied SSL certificate](#launch-in-production-with-self-supplied-ssl-certificate)
+3. [Launch in production with self-supplied SSL certificate](#launch-in-production-with-self-supplied-ssl-certificate)
+4. [Launch in production with auto-generated LetsEncrypt public SSL certificate](#launch-in-production-with-auto-generated-letsencrypt-public-ssl-certificate)
 
 ### Launch locally with built-in SSL cert
 
 1. Launch Dockside on a local machine, with a temporary and convenient built-in SSL certificate
 ```sh
-mkdir -p ~/.dockside
+mkdir -p ~/.dockside && \
 docker run -it --name dockside \
   -v ~/.dockside:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -81,9 +81,9 @@ docker run -it --name dockside \
   newsnowlabs/dockside --ssl-builtin
 ```
 
-2. In your browser, navigate to the Dockside homescreen at [https://www.local.dockside.dev/](https://www.local.dockside.dev). Sign in with the username `admin` and the password output to the terminal, then follow the instructions displayed on-screen.
+2. In your browser, navigate to the Dockside homescreen at [https://www.local.dockside.dev/](https://www.local.dockside.dev). Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
 
-(You can now [detach](https://docs.docker.com/engine/reference/commandline/attach/) from the Dockside container running back in your terminal by typing `CTRL+P` `CTRL+Q`. Alternatively you can instead launch with `docker run -d` instead of `docker run -it`; if you do this, run `docker logs dockside` to display the terminal output and admin password).
+3. You can now [detach](https://docs.docker.com/engine/reference/commandline/attach/) from the Dockside container running back in your terminal by typing `CTRL+P` `CTRL+Q`. Alternatively you can instead launch with `docker run -d` instead of `docker run -it`; if you do this, run `docker logs dockside` to display the terminal output and auto-generated admin password.
 
 > WARNING: The default Dockside installation embeds a non-secret SSL certificate, for `*.local.dockside.dev` resolving to 127.0.0.1, which should not be used for production usage.
 
@@ -91,7 +91,7 @@ docker run -it --name dockside \
 
 1. Launch Dockside on a local machine, on-premises server, VM or cloud instance, with a temporary and convenient self-signed SSL certificate:
 ```sh
-mkdir -p ~/.dockside
+mkdir -p ~/.dockside && \
 docker run -it --name dockside \
   -v ~/.dockside:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -99,64 +99,15 @@ docker run -it --name dockside \
   newsnowlabs/dockside --ssl-selfsigned
 ```
 
-2. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. Sign in with the username `admin` and the password output to the terminal, then follow the instructions displayed on-screen.
+2. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
 
-(You can now [detach](https://docs.docker.com/engine/reference/commandline/attach/) from the Dockside container running back in your terminal by typing `CTRL+P` `CTRL+Q`. Alternatively you can instead launch with `docker run -d` instead of `docker run -it`; if you do this, run `docker logs dockside` to display the terminal output and admin password).
-
-### Launch in production with auto-generated LetsEncrypt public SSL certificate
-
-In order for Dockside to auto-generate an public SSL certificate using LetsEncrypt, it must be delegated responsibility for handling public internet DNS requests for your chosen domain.
-
-You must therefore ensure the server on which you will run Dockside must be able to accept UDP requests on port 53, and preconfigure your chosen Dockside domain (`<my-domain>`) with the following two domain name records:
-- `<my-domain> A <my-server-ip>`
-- `<my-domain> NS <my-domain>`
-
-These records are needed to tell the public DNS infrastructure that DNS requests for `<my-domain>` should be forwarded to `<my-server-IP>`.
-
-You may then launch Dockside as follows:
-
-```sh
-docker run -d --name dockside \
-  -v ~/.dockside:/data \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -p 443:443 -p 80:80 -p 53:53/udp \
-  newsnowlabs/dockside --ssl-letsencrypt --ssl-zone <my-domain>
-```
-
-Assuming you have provisioned <my-domain> correctly, Dockside will use LetsEncrypt to generate a public SSL certificate on startup and to regenerate the certificate periodically to ensure it remains current.
-
-View the launch logs by running:
-```sh
-docker logs -f dockside
-```
-
-#### Launch using Google Cloud Deployment Manager
-
-An implementation of the above procedure within [Google Deployment Manager](https://console.cloud.google.com/dm/deployments) is available [here](/examples/cloud/google-deployment-manager/).
-
-To use it, you must first have a managed zone configured within [Google Cloud DNS](https://console.cloud.google.com/net-services/dns/zones).
-
-Then, sign into Cloud Shell, and run:
-
-```sh
-git clone https://github.com/newsnowlabs/dockside.git
-cd dockside/examples/cloud/google-deployment-manager/
-./launch.sh --managed-zone <managed-zone> --dns-name <managed-zone-fully-qualified-subdomain>
-```
-
-For example, if your managed zone is called `myzone`, the zone DNS name is `myzone.org`, and your chosen subdomain is `dockside` then run:
-
-```sh
-./launch.sh --managed-zone myzone --dns-name dockside.myzone.org
-```
-
-For full `launch.sh` usage, including options for configuring cloud machine type, machine zone, and disk size, run `./launch.sh --help`.
+3. You can now [detach](https://docs.docker.com/engine/reference/commandline/attach/) from the Dockside container running back in your terminal by typing `CTRL+P` `CTRL+Q`. Alternatively you can instead launch with `docker run -d` instead of `docker run -it`; if you do this, run `docker logs dockside` to display the terminal output and auto-generated admin password.
 
 ### Launch in production with self-supplied SSL certificate
 
-Before launching Dockside copy your self-supplied `fullchain.pem` and `privkey.pem` files for the wildcard SSL certificate for your domain to inside `~/.dockside/certs/` or bind-mount the directory containing these files by adding `-v <certsdir>:/data/certs` to the `docker run` command line e.g.
-
+1. Assuming your self-supplied `fullchain.pem` and `privkey.pem` files for the wildcard SSL certificate for your domain are located in `<certsdir>` then launch Dockside as follows:
 ```sh
+mkdir -p ~/.dockside && \
 docker run -d --name dockside \
   -v ~/.dockside:/data \
   -v <certsdir>:/data/certs \
@@ -165,12 +116,47 @@ docker run -d --name dockside \
   newsnowlabs/dockside --ssl-selfsupplied
 ```
 
-View the launch logs by running:
-```sh
-docker logs -f dockside
-```
+2. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. To view the launch logs and obtain the auto-generated `admin` user password, view the launch logs by running `docker logs dockside`. Sign in with the username `admin` and the password output to the terminal, then follow the instructions displayed on-screen.
 
-Should you update your certificates in `<certsdir>`, then run `docker exec dockside s6-svc -t /etc/service/nginx`.
+> N.B. Should you update your certificates run `docker exec dockside s6-svc -t /etc/service/nginx` to tell Dockside to reload them.
+
+### Launch in production with auto-generated LetsEncrypt public SSL certificate
+
+In order for Dockside to auto-generate a public SSL certificate using LetsEncrypt, it must first be delegated responsibility for handling public internet DNS requests for your chosen domain and you must also configure the server (or VM or instance) on which you will run Dockside to accept UDP requests on port 53. So:
+
+1. Delegate the domain to the server running Dockside by installing the following two domain name records for `<my-domain>`:
+```
+<my-domain> A <my-server-ip>
+<my-domain> NS <my-domain>
+```
+These records are needed to tell the public DNS infrastructure that DNS requests for `<my-domain>` should be forwarded to `<my-server-IP>`.
+
+2. Launch Dockside as follows:
+```sh
+mkdir -p ~/.dockside && \
+docker run -d --name dockside \
+  -v ~/.dockside:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -p 443:443 -p 80:80 -p 53:53/udp \
+  newsnowlabs/dockside --ssl-letsencrypt --ssl-zone <my-domain>
+```
+Assuming you have provisioned <my-domain> correctly, Dockside will use LetsEncrypt to generate a public SSL certificate on startup and to regenerate the certificate periodically to ensure it remains current.
+
+3. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. To view the launch logs and obtain the auto-generated `admin` user password, view the launch logs by running `docker logs dockside`. Sign in with the username `admin` and the password output to the terminal, then follow the instructions displayed on-screen.
+
+> **Launch using Google Cloud Deployment Manager**
+>
+> An implementation of the above procedure within [Google Deployment Manager](https://console.cloud.google.com/dm/deployments) is available [here](/examples/cloud/google-deployment-manager/). To use it, you must first configure a managed zone within [Google Cloud DNS](https://console.cloud.google.com/net-services/dns/zones).
+>
+> Then sign into Cloud Shell, and run:
+> ```sh
+> git clone https://github.com/newsnowlabs/dockside.git
+> cd dockside/examples/cloud/google-deployment-manager/
+> ./launch.sh --managed-zone <managed-zone> --dns-name <managed-zone-fully-qualified-subdomain>
+> ```
+> For example, if your managed zone is called `myzone`, the zone DNS name is `myzone.org`, and your chosen subdomain is `dockside` then run `./launch.sh --managed-zone myzone --dns-name dockside.myzone.org`.
+>
+> For full `launch.sh` usage, including options for configuring cloud machine type, machine zone, and disk size, run `./launch.sh --help`.
 
 ## Case-study - Dockside in production at NewsNow
 
