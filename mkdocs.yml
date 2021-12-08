@@ -22,17 +22,37 @@ theme:
   favicon: images/favicon.ico
   features:
     - tabs
-    # - instant
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+#    - navigation.instant
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.integrate
   palette:
-    scheme: default
-    primary: black
-    accent: indigo
+    - scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/toggle-switch
+        name: Switch to dark mode
+    - scheme: slate
+      primary: red
+      accent: red
+      toggle:
+        icon: material/toggle-switch-off-outline
+        name: Switch to light mode
   font:
     text: Roboto
     code: Roboto Mono
 
 extra:
-  homepage: /
+  homepage: /docs/
 
 # Plugins
 plugins:
@@ -56,5 +76,19 @@ markdown_extensions:
 #  - pymdownx.details
 
 nav:
-  - README: README.md
+  - Introduction: README.md
+  - Usage: usage.md
+  - Setup: setup.md
+  - Upgrading: upgrading.md
+  - Security: security.md
+  - Extensions:
+    - Extensions: extensions.md
+    - LXCFS: extensions/lxcfs.md
+    - Multiarch: extensions/multiarch.md
+    - Sysbox: extensions/runtimes/sysbox.md
+    - Backups: extensions/backups.md
+  - Case Studies: case-studies/NewsNow.md
   - Roadmap: roadmap.md
+  - Developing:
+    - Developing: developing.md
+    - Building an image: building-image.md
