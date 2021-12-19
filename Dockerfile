@@ -278,6 +278,7 @@ RUN mkdir -p $OPT_PATH/bin && \
     ln -sfr $THEIA_PATH $OPT_PATH/theia && \
     ln -sf $HOME/$APP/app/scripts/entrypoint.sh /entrypoint.sh && \
     ln -sf $HOME/$APP/app/server/bin/password-wrapper /usr/local/bin/password && \
+    ln -sf $HOME/$APP/app/server/bin/upgrade /usr/local/bin/upgrade && \
     chown -R root.root $OPT_PATH/bin/
 
 ################################################################################

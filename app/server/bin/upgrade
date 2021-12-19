@@ -1,0 +1,36 @@
+#!/bin/bash
+
+log() {
+   echo "$1" >&2
+}
+
+usage() {
+   log "Usage: upgrade [--image <image>]"
+   exit -1
+}
+
+IMAGE="newsnowlabs/dockside:latest"
+
+while [ ${#@} -gt 0 ];
+do
+   case "$1" in
+      '--image') shift; IMAGE="$1"; shift; ;;
+      *) usage
+   esac
+done
+
+DOCKSIDE_HOSTNAME=$(hostname)
+DOCKSIDE_VOLUME=$(docker inspect $DOCKSIDE_HOSTNAME --format '{{ range .Mounts }} {{if eq .Destination "/opt/dockside"}} {{.Name}} {{end}} {{end}}' | tr -d ' ')
+
+if [ -z "$DOCKSIDE_VOLUME" ]; then
+  log "ERROR: Unable to locate Dockside volume for Dockside container $DOCKSIDE_HOSTNAME, aborting!" 
+  exit -2
+fi
+
+log "Located Dockside volume '$DOCKSIDE_VOLUME' for Dockside container $DOCKSIDE_HOSTNAME"
+
+log "Proceeding to launch new Dockside image '$IMAGE' to perform IDE upgrade ..."
+
+docker run --rm -i --entrypoint=/bin/bash --mount=type=volume,src=$DOCKSIDE_VOLUME,dst=/opt/dockside.orig "$IMAGE" -c 'for typepath in /opt/dockside/ide/*; do type=$(basename $typepath); for idepath in $typepath/*; do ide=$(basename $idepath); dstpath=/opt/dockside.orig/ide; if [ -d "$dstpath/$type/$ide" ]; then echo "[--EXISTS--] $type/$ide"; else echo "[INSTALLING] $type/$ide"; cp -a $idepath $dstpath/$type/; fi; done; done'
+
+exit 0

@@ -1,40 +1,56 @@
-# Upgrade strategies
+# Upgrading
 
-There are several strategies available for upgrading Dockside, or Dockside components such as the Dockside Theia IDE.
+Upgrading Dockside is usually a two-step process:
 
-### 1. Replacing the running Dockside container
+1. Upgrading the version of the Dockside IDE available to existing devtainers
+2. Upgrading the Dockside application (which includes the version of the Dockside IDE launched within any subsequently-launched devtainers)
 
-This is the simplest and most general method of upgrading the Dockside system and client/server app, but it will not upgrade the version of the Theia IDE running within _existing_ devtainers, only new ones.
+## Step 1: Upgrade the IDE within running Dockside devtainers
 
-Always backup your `/data` directory (i.e. the host directory you have bind-mounted at `/data`) before proceeding.
+This step will backport any new version(s) of the Dockside IDE that may be embedded within any new Dockside image, to the running Dockside container. Doing this means the new IDE version(s) may be used within existing devtainers after they are next started or restarted. It is generally useful to perform this step before upgrading the Dockside container (as per Step 2 below), to allow the users of existing devtainers to benefit from newer versions of the IDE.
 
-It is often a good idea to test a new version of Dockside:
+To copy the new IDE from the latest Dockside image (i.e. from `newsnowlabs/dockside:latest`) into the currently running Dockside container, simply run:
+```
+docker exec <dockside-container> upgrade
+```
 
-1. Stop - but do not remove - your running Dockside container.
-2. Launch and test the new Dockside container. As long as the previous Dockside container is stopped, the new one can bind to the correct ports.
-3. If everything works fine, remove the old Dockside container. If not, remove the new container, restore the backed-up `/data` folder, and restart the old container.
+Alternatively, to copy the new IDE from a test or development Dockside image, where `<image>` is the name of the image, simply run:
+```
+docker exec <dockside-container> upgrade --image <image>
+```
+
+> N.B. You may skip this step if you have no existing devtainers, or if you are not bothered about upgrading the version of the Dockside IDE available within existing devtainers.
+
+## Step 2. Replacing the running Dockside container
+
+This step will upgrade the version of the Dockside client/server app that is running, as well as the version of the IDE embedded within any subsequently-launched devtainers.
+
+### Testing a new Dockside version
+
+It can be a good idea to test a new version of Dockside like this:
+
+1. Stop - but do not remove - your running Dockside container, by running: `docker stop <old-dockside-container>`
+2. Backup the directory you have bind-mounted at `/data` (e.g. `~/.dockside`)
+3. Launch a new Dockside container by [following the usual instructions](README.md#getting-started). As long as the previous Dockside container is stopped, the new container will be able to bind to the usual ports.
+4. If the new Dockside passes testing, clean up by removing the old Dockside container. If it doesn't, then remove the new Dockside container, restore the backed-up `/data` folder, and start the old Dockside container.
 
 > **N.B. It is best to ensure Dockside users know not to launch new devtainers during testing, in case it proves necessary to roll back. Newly-launched devtainers may not be guaranteed to be backwards-compatible with an older version of Dockside.**
 
-As variations on this theme, you can test the new version of Dockside with a backup of the original `/data` directory bind-mounted. You can also test the new version of Dockside without having to stop your running Dockside container, by modifying the `docker run` command line to listen on alternative ports e.g. `-p 444:443 -p 81:80`.
+### Testing a new Dockside version in parallel
 
-> **N.B. Ensure your Dockside /data directory is bind-mounted from the host or mounted from a Docker volume, otherwise its contents will be lost when the Dockside container is removed!**
+You can test a new version of Dockside without having to disrupt your running Dockside container, by launching Dockside in the usual manner but referencing a copy of the directory currently bind-mounted at `/data`, and listening on alternative ports.
 
-### 2. Upgrading Dockside codebase within running Dockside container
+e.g. Assuming you originally launched Dockside with `-v ~/.dockside:/data` then run:
 
-This method will upgrade the version of the client/server app and daemons within the running dockside container. To do this from the host, obtain a terminal on the dockside container using `docker exec -it <dockside-container-name>` and then run:
-
-```sh
-cd ~/dockside
-git pull
-cd app/client && . ~/.nvm/nvm.sh && npm run build
-sudo s6-svc -t /etc/service/nginx
-sudo s6-svc -t /etc/service/docker-event-daemon
+```
+cp -a ~/.dockside ~/.dockside.tmp
+docker run -it --name dockside \
+  -v ~/.dockside.tmp:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -p 444:443 -p 81:80 \
+  newsnowlabs/dockside <ssl-opts>
 ```
 
-### 3. Upgrading the IDE running within running Dockside devtainers
+> **Make sure your firewall allows incoming TCP connections on ports 444 and 81.**
 
-This method will install an upgraded version of the Dockside IDE within running (and new) devtainers. It is useful to combine this method with method #1 to upgrade the IDE running within already-launched devtainers launched, before upgrading the Dockside container.
-
-Procedures for this are yet to be fully documented or automated but, roughly put, involve: launching or creating a new Dockside container from latest image; copying the `/opt/dockside/ide/theia/theia-<version>` folder from the new container to the old Dockside container's `/opt/dockside/ide/theia` folder. This can be done within the running Dockside container, using `docker container create --name dockside-new newsnowlabs/dockside:latest && sudo docker cp dockside-new:/opt/dockside/ide/theia/<theia-path>/ /opt/dockside/ide/theia/ && docker rm dockside-new` then pruning the redundant volume. It could also be implemented by launching the new Dockside container with the old Dockside container's `/opt/dockside` bind-mounted at a known location and specific command line arguments that tell it to copy its `/opt/dockside/ide/theia/` contents to this bind-mounted location.
-
+If the new Dockside container passes testing, remove it and relaunch it referencing the original `/data` directory and ports. If it doesn't, then just remove the new Dockside container.
