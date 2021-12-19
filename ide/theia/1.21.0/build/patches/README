@@ -1,0 +1,6 @@
+Patch to fix invalid cspSource:
+- @theia+plugin-ext+<version>.patch
+- https://github.com/eclipse-theia/theia/issues/8857
+
+Patch to disable HTTP fallback, appears incompatible with Dockside:
+- @theia+core+<version>.patch
