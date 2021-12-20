@@ -1,4 +1,8 @@
-## Welcome to GitHub Pages
+## Welcome to Dockside
+
+<p align="center">
+    <img alt="//Dockside" src="https://user-images.githubusercontent.com/354555/145203965-b573f43b-757a-4471-a39c-d2e53b1acb41.png" width="75%"/>
+</p>
 
 You can use the [editor on GitHub](https://github.com/newsnowlabs/dockside/edit/gh-pages/index.md) to maintain and preview the content for your website in Markdown files.
 
