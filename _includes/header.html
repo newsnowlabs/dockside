@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="shortcut icon" href="{{ "/assets/img/favicon.ico" | relative_url }}" type="image/x-icon">
+  <link rel="stylesheet" type="text/css" href="{{ "/assets/css/style.css" | relative_url }}">
+  <link href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i" rel="stylesheet">
+  {% seo %}
+</head>
+
+<body{% if page.id %} id="{{ page.id }}"{% endif %} class="{{ page.layout }}">
+
+  <div class="page-header pt-4 pb-5">
+    <div class="container-lg">
+      <div class="text-center">
+        <div class="pb-6 mb-4">
+          <ul>
+            <li class="text-center d-block d-sm-inline-block px-1 px-md-3"><a href="#features" class="text-white">Features</a></li>
+            <li class="text-center d-block d-sm-inline-block px-1 px-md-3"><a href="#getting-started" class="text-white">Getting Started</a></li>
+            <li class="text-center d-block d-sm-inline-block px-1 px-md-3"><a href="#contribute" class="text-white">Contribute</a></li>
+            <li class="text-center d-block d-sm-inline-block px-1 px-md-3"><a href="https://github.com/newsnowlabs/dockside" class="text-white" target="_blank">View on GitHub</a></li>
+          </ul>
+       </div>
+        <a href="{{ "/" | relative_url}}"><img class="logo py-3" src="{{ "/assets/img/dockside.svg" | relative_url}}" alt="Dockside"></a>
+      </div>
+    </div>
