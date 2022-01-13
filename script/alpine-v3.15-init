@@ -1,0 +1,8 @@
+#!/bin/sh
+
+set -e
+
+sudo apk update && \
+sudo apk add git nodejs npm ruby ruby-dev gcc g++ make musl-dev openssh-client curl patch && \
+sudo gem install bundle
+git clone --single-branch --branch gh-pages git@github.com:newsnowlabs/dockside.git
