@@ -192,6 +192,12 @@ if [ -S /var/run/docker.sock ]; then
     chmod g+rw /var/run/docker.sock
   fi
 
+  # Test the socket, to confirm it is not stale or access-prohibited by Apparmor
+  if ! curl -s --unix-socket /var/run/docker.sock -H "Content-Type: application/json" -X GET http:/v1.41/info -o /dev/null; then
+    log "- Cannot cannot to bind-mounted /var/run/docker.sock: please ensure dockerd is running on host and Apparmor/SELinux is not prohibiting access; aborting!"
+    exit 3
+  fi
+
 else
 
   if [ "$OPT_RUN_DOCKERD" != "1" ]; then
