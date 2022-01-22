@@ -4,7 +4,7 @@ use strict;
 
 use Exporter qw(import);
 our @EXPORT_OK = ( qw(
-   flog wlog run run_system run_pty YYYYMMDDHHMMSS TO_JSON cache cacheReadWrite cloneHash
+   flog wlog call_socket_api run run_system run_pty YYYYMMDDHHMMSS TO_JSON cache cacheReadWrite cloneHash
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    ));
 
@@ -14,6 +14,7 @@ use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
 use JSON;
 use URI::Escape;
+use Mojo::UserAgent;
 use Digest::SHA qw(sha256_hex);
 use Exception;
 use Crypt::Rijndael;
@@ -51,6 +52,28 @@ sub wlog {
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
    
    print STDERR $dt . " [dockside] " . $m . "\n";
+}
+
+sub call_socket_api {
+   my $socket = shift;
+   my $path = shift;
+
+   my $ua = Mojo::UserAgent->new();
+
+   my $socketPath = $socket . $path;
+   my $uri = 'http+unix://' . uri_escape($socket) . $path;
+
+   flog("call_socket_api: $uri");
+
+   my $result;
+   try {
+      $result = $ua->get($uri => {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'})->result;
+   }
+   catch {
+      return undef;
+   };
+
+   return $result;
 }
 
 sub run {

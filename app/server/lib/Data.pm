@@ -87,6 +87,9 @@ my $CONFIG_FILES = {
 
          # Set up convenience shortcut
          $CONFIG = $c;
+
+         # Assign default
+         $CONFIG->{'docker'}{'socket'} //= '/var/run/docker.sock';
       },
       'parse' => \&parse_json
    },

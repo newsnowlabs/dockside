@@ -1,11 +1,7 @@
 #!/usr/bin/perl
 
 # docker-event-daemon
-# Copyright © 2020 NewsNow Publishing Limited
-# ----------------------------------------------------------------------
-# LICENCE TBC
-# ----------------------------------------------------------------------
-# 
+#
 # Monitors for docker container and network events:
 # - when it receives them, debounces;
 # - safely updates the containers.json file to reflect changes in container state;
@@ -23,9 +19,8 @@ use IO::Select;
 use IPC::Open2;
 use Time::HiRes qw(time);
 use URI::Escape;
-use Mojo::UserAgent;
 
-use Util qw(cacheReadWrite flog run run_system);
+use Util qw(cacheReadWrite flog call_socket_api run_system);
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
@@ -36,24 +31,21 @@ sub _update {
    my $oldJSON = shift;
    my $opts = shift; # hashref: { 'updateSizes' => undef|1 }
 
-   my $ua = Mojo::UserAgent->new();
-   my $socket = $CONFIG->{'docker'}{'socket'} // '/var/run/docker.sock';
    my $path = '/containers/json?all=true' . ($opts->{'updateSizes'} ? '&size=true' : '');
-   my $socketPath = $socket . $path;
-   my $uri = 'http+unix://' . uri_escape($socket) . $path;
 
-   flog("docker-event-daemon::update: requesting container list via $socketPath" . ($opts->{'updateSizes'} ? ' with sizes' : ''));
+   flog("docker-event-daemon::update: requesting container list" . ($opts->{'updateSizes'} ? ' with sizes' : ''));
 
-   my $result;
-   try {
-      $result = $ua->get($uri => {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'})->result;
+   my $result = call_socket_api(
+      $CONFIG->{'docker'}{'socket'},
+      $path
+   );
+
+   unless($result) {
+      die Exception->new( 'dbg' => "Unable to execute Docker API call: $path #1", 'msg' => "Unable to retrieve container list" );
    }
-   catch {
-      die Exception->new( 'msg' => "Unable to obtain container list via $socketPath (can't connect)" );
-   };
 
    if(!$result->is_success) {
-      die Exception->new( 'msg' => sprintf("Unable to obtain container list via $socketPath (response code %d, error '%s')", $result->code, $result->message) );
+      die Exception->new( 'msg' => sprintf("Unable to obtain container list via $path (response code %d, error '%s')", $result->code, $result->message) );
    }
 
    my $newContainersFromAPI;
