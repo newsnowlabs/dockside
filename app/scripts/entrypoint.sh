@@ -157,6 +157,8 @@ do
  --ssl-selfsupplied) shift; OPT_SSL="selfsupplied"; continue; ;;
   --lxcfs-available) shift; OPT_LXCFS_AVAILABLE="1"; continue; ;;
           -h|--help) shift; usage; exit 0; ;;
+    --passwd-stdout) shift; OPT_PASSWD_STDOUT="1"; continue; ;;
+      --passwd-file) shift; OPT_PASSWD_FILE="$1"; shift; continue; ;;
                   *) break; ;;
   esac
 done
@@ -497,6 +499,15 @@ log ">>> Navigate to https://www.${SSL_ZONES[0]}/"
 
 if [ -n "$PASSWD" ]; then
   log ">>> Sign in with username 'admin' and password '$PASSWD'"
+
+  if [ -n "$OPT_PASSWD_STDOUT" ]; then
+    echo "admin:$PASSWD"
+  fi
+
+  if [ -n "$OPT_PASSWD_FILE" ]; then
+    echo "admin:$PASSWD" >$OPT_PASSWD_FILE
+  fi
+
   unset PASSWD
 fi
 
