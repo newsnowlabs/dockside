@@ -95,7 +95,7 @@ _EOE_
     rm -f /var/lib/bind/db.$DOMAIN.*
     cat >/var/lib/bind/db.$DOMAIN <<_EOE_
 \$ORIGIN .
-\$TTL 3600       ; 1 hour
+\$TTL 300       ; 5 minutes
 $DOMAIN IN SOA $DOMAIN. root.$DOMAIN. (
                                 528        ; serial
                                 604800     ; refresh (1 week)
