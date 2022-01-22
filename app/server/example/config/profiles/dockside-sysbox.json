@@ -59,7 +59,7 @@
 
       "volume": [
          // Use this to share encrypted ssh keys in the named volume among team members.
-         { "src": "dockside-ssh-keys", "dst": "/home/newsnow/.ssh" },
+         { "src": "dockside-ssh-keys", "dst": "/home/{ideUser}/.ssh" },
 
          // Mount an anonymous volume at /var/lib/docker
          { "dst": "/var/lib/docker" }
@@ -67,5 +67,5 @@
    },
 
    "runDockerInit": false,
-   "command": ["--ssl-selfsigned", "--ssl-zone", "{container.hostname}"]
+   "command": ["--ssl-selfsigned", "--ssl-zone", "{container.hostname}", "--run-dockerd", "--passwd-stdout"]
 }
