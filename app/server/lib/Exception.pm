@@ -48,6 +48,9 @@ sub new {
       'dbg' => $args{'dbg'}
    }, ( ref($class) || $class );
 
+   $self->{'dbg'} =~ s/\s+$//s;
+   $self->{'msg'} =~ s/\s+$//s;
+
    return $self;
 }
 
