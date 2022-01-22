@@ -1,6 +1,6 @@
 #!/bin/sh
 
-mkdir /run/named && chown bind /run/named
+mkdir -p /run/named && chown bind /run/named
 
 exec >/dev/null
 exec 2>/dev/null
