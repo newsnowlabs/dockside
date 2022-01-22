@@ -4,7 +4,12 @@ use strict;
 
 use Exporter qw(import);
 our @EXPORT_OK = ( qw(
-   flog wlog call_socket_api run run_system run_pty YYYYMMDDHHMMSS TO_JSON cache cacheReadWrite cloneHash
+   flog wlog
+   get_config
+   call_socket_api
+   run run_system run_pty
+   YYYYMMDDHHMMSS TO_JSON
+   cache cacheReadWrite cloneHash
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    ));
 
@@ -52,6 +57,22 @@ sub wlog {
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
    
    print STDERR $dt . " [dockside] " . $m . "\n";
+}
+
+sub get_config {
+   local $_ = shift;
+
+   return undef if /\.\./;
+   open( F, '<', "$_" ) || return undef;
+
+   local $/;
+   $_ = <F>;
+   close F;
+
+   # Remove trailing whitespace
+   s/\s+//s;
+
+   return $_;
 }
 
 sub call_socket_api {
@@ -153,16 +174,6 @@ sub run_pty {
 
       print $fh $_;
       $fh->flush();
-
-      # Identify the container ID if it's printed.
-      # This is usually the last line, but might not be if there are error on starting the container,
-      # which can happen (for example) if the requested network doesn't exist.
-      #
-      # It would improve the resilence of this code if STDOUT could be separated from STDERR, as the
-      # container ID is only printed to STDOUT. That appears to exceed the current capabilities of the Except
-      # module. Alternatives would be IPC::Run, or to use a wrapper script that pipes STDOUT elsewhere before
-      # running $cmd.
-      $ContainerID = $_ if m!^[0-9a-f]{64}\s*$!;
    };
 
    # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
@@ -186,7 +197,7 @@ sub run_pty {
 
    close $fh;
 
-   return ( $ContainerID, $exp->exitstatus() );
+   return $exp->exitstatus();
 }
 
 sub YYYYMMDDHHMMSS {

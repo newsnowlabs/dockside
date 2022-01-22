@@ -8,7 +8,7 @@ our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
-use Util qw(flog cacheReadWrite);
+use Util qw(flog cacheReadWrite get_config);
 
 my $CONFIG_PATH = '/data/config';
 
@@ -16,22 +16,6 @@ my $CONFIG_PATH = '/data/config';
 # See entrypoint.sh for details
 our $HOSTNAME = get_config('/etc/service/nginx/data/ctr-id');
 our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
-
-sub get_config {
-   local $_ = shift;
-
-   return undef if /\.\./;
-   open( F, '<', "$_" ) || return undef;
-
-   local $/;
-   $_ = <F>;
-   close F;
-
-   # Remove trailing whitespace
-   s/\s+//s;
-
-   return $_;
-}
 
 sub parse_json {
    local $_ = shift;

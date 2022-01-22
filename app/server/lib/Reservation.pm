@@ -11,7 +11,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite);
+use Util qw(flog wlog get_config run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api);
 use Data qw($CONFIG $HOSTNAME);
 
 ################################################################################
@@ -856,10 +856,13 @@ sub launch {
       die Exception->new( 'msg' => "Failed to compile 'docker run' command line, with error: $msg", 'dbg' => "Reservation::launch: Reservation->cmdline() threw error: $msg" );
    };
 
+   my $id = $self->id();
+
    my @cmd;
    push(@cmd,
       $CONFIG->{'docker'}{'bin'},
       'create',
+      '--cidfile', "$CONFIG->{'tmpPath'}/r-$id.cid",
       '--label', "owner.username=" . $self->owner('username'),
       '--label', "owner.name=" . $self->owner('name'),
 
@@ -878,8 +881,6 @@ sub launch {
    # return { 'status' => undef, 'msg' => 'failed to launch container', 'cmd' => $cmd, 'dbg' => "XYZZY" };
 
    flog("Reservation::launch: launching container with reservation id " . $self->id());
-
-   my $id = $self->id();
 
    my $pid;
    if( $pid = fork ) {
@@ -912,12 +913,11 @@ sub launch {
       # sleep(30);
 
       # Launch 'docker run' command in a subprocess with pty piped to specified file.
-      my ( $o, $exitCode ) = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
+      my $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
 
-      # 'docker run' has completed, so:
-      # - Remove any trailing lines from 'docker run' output
-      # - Log containerId (if launch successful) and exitCode.
-      $o =~ s/\r?\n.*$//;
+      # 'docker run' has completed, so, log containerId (if launch successful) and exitCode.
+
+      my $o = get_config("$CONFIG->{'tmpPath'}/r-$id.cid");
       flog("Reservation::launch: containerId='$o'; exitCode=$exitCode");
 
       if( $o !~ /^([0-9a-f]{12})[0-9a-f]{52}$/i ) {
