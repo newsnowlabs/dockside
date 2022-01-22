@@ -3,7 +3,7 @@ package Reservation;
 
 use strict;
 
-use Data qw($CONFIG $HOSTNAME);
+use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
 ################################################################################
 # UTILITY FUNCTIONS/METHODS
@@ -189,20 +189,31 @@ sub cmdline_ide_mount {
    my $idePath = $CONFIG->{'ide'}{'path'} || '/opt/dockside';
    my $ideVolume;
    my $ideVolumeType;
-   
-   # If $HOSTNAME is undefined, we must be running on bare metal, VM, or sysbox container:
-   # in which case, we can expect to bind-mount the ideVolume from the 'host'.
-   if($HOSTNAME) {
-      $ideVolume = Containers->containers->{$HOSTNAME}{'inspect'}{'ideVolume'};
-      $ideVolumeType = 'volume';
-   }
-   else {
+
+   # If $HOSTNAME is undefined, try to bind-mount the ideVolume from the 'host',
+   # assuming the ide.path provided in config.json. This is appropriate where Dockside
+   # is launched in a Sysbox container or other container in which the host docker.sock is not bind-mounted
+   # and /opt/dockside from within the Dockside container image should be bind-mounted.
+   if($INNER_DOCKERD) {
+      # When launching a devtainer using an inner dockerd instance, whether using Sysbox, Docker-in-Docker, or Podman
+      # the devtainer cannot mount the Dockside volume (as there is no Dockside container, or volume, accessible to the inner dockerd).
+      # Instead, bind-mount $idePath from the Dockside container to the devtainer.
       $ideVolume = $idePath;
       $ideVolumeType = 'bind';
    }
+   else {
+      # When launching a devtainer within the same dockerd instance as is running Dockside, identify the Docker volume to mount in the devtainer.
+      if($HOSTNAME) {
+         $ideVolume = Containers->containers->{$HOSTNAME}{'inspect'}{'ideVolume'};
+         $ideVolumeType = 'volume';
+      }
+      else {
+         die Exception->new( 'msg' => "Failed to locate IDE volume because expected Dockside container hostname is undefined" );
+      }
+   }
 
    if(!$ideVolume) {
-      die Exception->new( 'msg' => "failed to locate IDE volume for hostname '$HOSTNAME'" );
+      die Exception->new( 'msg' => "Failed to locate IDE volume for hostname '$HOSTNAME'" );
    }
 
    flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered ideVolume '$ideVolume'");

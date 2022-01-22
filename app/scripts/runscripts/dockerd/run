@@ -10,17 +10,20 @@ cgroupfs_mount() {
 	if ! mountpoint -q /sys/fs/cgroup; then
 		mount -t tmpfs -o uid=0,gid=0,mode=0755 cgroup /sys/fs/cgroup
 	fi
-	(
-		cd /sys/fs/cgroup
-		for sys in $(awk '!/^#/ { if ($4 == 1) print $1 }' /proc/cgroups); do
-			mkdir -p $sys
-			if ! mountpoint -q $sys; then
-				if ! mount -n -t cgroup -o $sys cgroup $sys; then
-					rmdir $sys || true
-				fi
-			fi
-		done
-	)
+   if [ "$(mountpoint -d /sys/fs/cgroup)" == "0:26" ]; then
+      # If cgroups v1, '0:26' (and not cgroups v2, '0:27')
+      (
+         cd /sys/fs/cgroup
+         for sys in $(awk '!/^#/ { if ($4 == 1) print $1 }' /proc/cgroups); do
+            mkdir -p $sys
+            if ! mountpoint -q $sys; then
+               if ! mount -n -t cgroup -o $sys cgroup $sys; then
+                  rmdir $sys || true
+               fi
+            fi
+         done
+      )
+   fi
 }
 
 cgroupfs_mount

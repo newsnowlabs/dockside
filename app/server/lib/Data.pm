@@ -3,7 +3,7 @@ package Data;
 use strict;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw($CONFIG $HOSTNAME);
+our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
@@ -12,8 +12,10 @@ use Util qw(flog cacheReadWrite);
 
 my $CONFIG_PATH = '/data/config';
 
-# If $HOSTNAME is undefined, we must be running on bare metal, VM, or sysbox container.
-our $HOSTNAME = `grep -o -P -m1 'docker.*\\K[0-9a-f]{64,}' /proc/self/cgroup`; chomp $HOSTNAME; $HOSTNAME =~ s/^(.{12}).*$/$1/;
+# Load in the container ID of this Dockside container and the inner-dockerd flag.
+# See entrypoint.sh for details
+our $HOSTNAME = get_config('/etc/service/nginx/data/ctr-id');
+our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
 
 sub get_config {
    local $_ = shift;
@@ -24,6 +26,9 @@ sub get_config {
    local $/;
    $_ = <F>;
    close F;
+
+   # Remove trailing whitespace
+   s/\s+//s;
 
    return $_;
 }

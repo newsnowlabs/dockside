@@ -111,32 +111,31 @@ _EOE_
 done
 }
 
+# Following https://developers.google.com/style/code-syntax
 usage() {
   cat >&2 <<_EOE_
 
-Usage: docker run [-d|-it] [--name <name>] [-v <host-config-path>:/data] -v /var/run/docker.sock:/var/run/docker.sock -p 443:443 -p 80:80 newsnowlabs/dockside [OPTIONS]
+Usage: docker run {-d|-it} [--name <name>] [-v <host-config-path>:/data] -p 443:443 -p 80:80 [-p 53:53/udp] -v /var/run/docker.sock:/var/run/docker.sock newsnowlabs/dockside [OPTIONS]
 
   [OPTIONS]
 
   Generate LetsEncrypt certificate for <zone>:
-
     --ssl-letsencrypt --ssl-zone <zone1> [[--ssl-zone <zone2>] ...]
 
   Use self-supplied cert (optionally specify <zone>):
-
     --ssl-selfsupplied [--ssl-zone <zone>]
   
   Generate self-signed cert (optionally specify <zone>):
-
    --ssl-selfsigned [--ssl-zone <zone>]
 
   Use built-in local.dockside.dev cert:
-  
    --ssl-builtin
 
-  Allow LXCFS to be mounted in devtainers:
-
+  Indicate LXCFS is installed on the host and available to be mounted into devtainers:
    --lxcfs-available
+
+  Launch 'inner' dockerd, for running devtainers:
+    docker run {-d|-it} [--name <name>] [-v <host-config-path>:/data] -p 443:443 -p 80:80 [-p 53:53/udp] --runtime=sysbox-runc newsnowlabs/dockside --run-dockerd [OPTIONS]
 
   Display this help:
     --help
@@ -151,7 +150,6 @@ while true
 do
   case "$1" in
       --run-dockerd) shift; OPT_RUN_DOCKERD="1"; continue; ;;
-   --no-run-dockerd) shift; OPT_RUN_DOCKERD="0"; continue; ;;
          --ssl-zone) shift; OPT_SSL_ZONES+=("$1"); shift; continue; ;;
       --ssl-builtin) shift; OPT_SSL="builtin"; continue; ;;
    --ssl-selfsigned) shift; OPT_SSL="selfsigned"; continue; ;;
@@ -194,19 +192,54 @@ if [ -S /var/run/docker.sock ]; then
 
 else
 
-  # If we weren't told explicitly not to run dockerd, and if we can't identify a container id
-  # that implies we're running in a runc container, then imply --run-dockerd.
-  if [ "$OPT_RUN_DOCKERD" != "0" ]; then
-    if ! grep -q -o -P -m1 'docker.*\K[0-9a-f]{64,}' /proc/self/cgroup; then
-      OPT_RUN_DOCKERD="1"
-    fi
-  fi
-
   if [ "$OPT_RUN_DOCKERD" != "1" ]; then
-    log "- Cannot find bind-mounted /var/run/docker.sock: please bind-mount from host; exiting!"
+    log "- Cannot find bind-mounted /var/run/docker.sock: please bind-mount from host or relaunch using runtime supporting Docker-in-Docker and --run-dockerd; aborting!"
     usage
     exit 2
   fi
+fi
+
+if [ "$OPT_RUN_DOCKERD" == "1" ] && [ -S /var/run/docker.sock ]; then
+  log "Can't launch with --run-dockerd when /var/run/docker.sock already present; aborting!"
+  exit 2
+fi
+
+log "Identifying container ID ..."
+
+CGROUP_ID=$(grep -o -P -m1 'docker.*\K[0-9a-f]{64,}' /proc/self/cgroup)
+
+if [ -n "$CGROUP_ID" ]; then
+  # This only works with cgroup v1 OR with cgroup v2 and --cgroupns=host
+  CTR_ID="$CGROUP_ID"
+  log "- Identified container ID from /proc/self/cgroup as $CTR_ID"
+elif [ -f "/data/ctr-id" ]; then
+  # This works when using --cidfile <host-data-mount-path>/ctr-id -v <host-data-mount-path>:/data
+  CTR_ID=$(cat /data/ctr-id)
+  log "- Identified container ID from /data/ctr-id as $CTR_ID"
+else
+  if [[ "$HOSTNAME" =~ ^[0-9a-f]{12}$ ]]; then
+    # This works when not using --network=host
+    CTR_ID="$HOSTNAME"
+    log "- Identified container ID from hex string hostname as $CTR_ID"
+  elif [ -S /var/run/docker.sock ]; then
+    # This works when using --hostname=<name> --name=<name> even when --network=host
+    CTR_ID="$(docker ps -q --filter=Name=$HOSTNAME)"
+
+    if [ -n "$CTR_ID" ]; then
+      log "- Identified container ID from non-hex-string hostname '$HOSTNAME' as $CTR_ID"
+    else
+      log "- Failed to identify container ID from non-hex-string hostname '$HOSTNAME'; aborting!"
+      exit 1
+    fi
+  elif [ "$OPT_RUN_DOCKERD" != "1" ]; then
+    log "- Failed to identify container ID from non-hex-string hostname '$HOSTNAME' without 'docker ps'; aborting!"
+    exit 1
+  fi
+fi
+
+if [ "$OPT_RUN_DOCKERD" != "1" ] && [ -z "$CTR_ID" ]; then
+  log "Can't launch without having identified container ID; aborting!"
+  exit 2
 fi
 
 log "Configuring standard services ..."
@@ -214,13 +247,18 @@ for s in bind nginx docker-event-daemon logrotate dehydrated
 do
   log "- Configuring $s"
   mkdir -p /etc/service/$s /etc/service/$s/data
-  cat >>/etc/service/$s/data/env <<_EOE_
+  cat >/etc/service/$s/data/env <<_EOE_
 DATA_DIR=/data
 USER=${USER:-dockside}
 APP=${APP:-dockside}
 APP_HOME=${APP_HOME:-/home/newsnow}
 APP_DIR=$APP_HOME/$APP
+CTR_ID=${CTR_ID:0:12}
+INNER_DOCKERD="$OPT_RUN_DOCKERD"
 _EOE_
+
+  echo "${CTR_ID:0:12}" >/etc/service/$s/data/ctr-id
+  [ "$OPT_RUN_DOCKERD" == "1" ] && echo 'true' >/etc/service/$s/data/inner-dockerd
 
   # Create symlink for runscript
   ln -sf $APP_DIR/app/scripts/runscripts/$s/run /etc/service/$s/run

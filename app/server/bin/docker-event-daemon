@@ -27,7 +27,7 @@ use Mojo::UserAgent;
 
 use Util qw(cacheReadWrite flog run run_system);
 use Exception;
-use Data qw($CONFIG $HOSTNAME);
+use Data qw($CONFIG);
 use Reservation;
 use Containers;
 use User;

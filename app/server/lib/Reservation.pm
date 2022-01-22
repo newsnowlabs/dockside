@@ -723,10 +723,14 @@ sub lookup_container_uri {
       );
    }
    else {
-      # Attempt to directly address container via an IP on a network we share with the container.
-      # If $HOSTNAME is undefined, we must be running on bare metal, VM, or sysbox container:
-      # in which case, we assume all container networks are available on the host.
-      my $hostNetworks = $HOSTNAME ? Containers->containers->{$HOSTNAME}{'inspect'}{'Networks'} : undef;
+      my $hostNetworks;
+      if(!$INNER_DOCKERD) {
+         # Attempt to directly address container via an IP on a network we share with the container.
+         $hostNetworks = Containers->containers->{$HOSTNAME}{'inspect'}{'Networks'};
+      }
+      # else {
+         # When addressing a devtainer running on an inner dockerd instance, we assume all of its networks are accessible from the Dockside container.
+      # }
       
       # Loop through the addressed container's networks.
       foreach my $network (sort { $a cmp $b } keys %{ $self->{'inspect'}{'Networks'}}) {
