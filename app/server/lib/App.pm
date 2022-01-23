@@ -133,7 +133,7 @@ sub handle_login_form {
 
       if( my $User = Request->authenticate_by_credentials( $credentials{'username'}, $credentials{'password'} ) ) {
          my @cookies = $User->generate_auth_cookies($parentFQDN);
-         $r->status(301);
+         $r->status(302);
          $r->header_out( 'Cache-Control', 'no-store' );
          $r->header_out( 'Location',      '/' );
 
