@@ -85,9 +85,10 @@ sub split_args {
 
 sub json {
    my $r = shift;
+   my $code = shift;
    my $data = shift;
 
-   $r->status(200);
+   $r->status($code);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->send_http_header("application/json");
 
@@ -98,9 +99,10 @@ sub json {
 
 sub text {
    my $r = shift;
+   my $code = shift;
    my $data = shift;
 
-   $r->status(200);
+   $r->status($code);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->send_http_header("text/plain");
 
@@ -303,7 +305,7 @@ sub _handler {
          $args->{'parentFQDN'} ||= $parentFQDN;
 
          my $reservation = $User->createContainerReservation( $args );
-         return json($r, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation });
+         return json($r, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation });
       }
 
       ##########################
@@ -313,7 +315,7 @@ sub _handler {
          my $args = split_args($1); # Split querystring-style arguments
 
          my $reservation = $User->updateContainerReservation($args);
-         return json($r, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation });
+         return json($r, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation });
       }
 
       ###################
@@ -330,7 +332,7 @@ sub _handler {
 
          $User->controlContainer($1, $2);
 
-         return json($r, { 'status' => '200', 'data' => $User->reservations({'client' => 1}) });
+         return json($r, 200, { 'status' => '200', 'data' => $User->reservations({'client' => 1}) });
       }
 
       ######################################
@@ -346,7 +348,7 @@ sub _handler {
 
          my $logs = $User->controlContainer('getContainerLogs', $id, $args);
 
-         return ($args->{'format'} eq 'text') ? text($r, join('', @$logs)) : json($r, { 'status' => '200', 'data' => $logs });
+         return ($args->{'format'} eq 'text') ? text($r, 200, join('', @$logs)) : json($r, 200, { 'status' => '200', 'data' => $logs });
       }
 
       ######################################
@@ -355,7 +357,7 @@ sub _handler {
       if( $route =~ m!^/containers/?$! ) {
 
          my $containers = $User->reservations({'client' => 1});
-         return json($r, { 'status' => '200', 'data' => $containers });
+         return json($r, 200, { 'status' => '200', 'data' => $containers });
       }
 
    }
@@ -365,10 +367,10 @@ sub _handler {
       flog("Reporting exception: dbg='$dbg'; msg='$msg'; content type='$type'");
 
       if($type eq 'text') {
-         text($r, "Error: $msg");
+         text($r, 401, $msg);
       }
       else {
-         json($r, { 'status' => '401', 'msg' => $msg });
+         json($r, 401, { 'status' => '401', 'msg' => $msg });
       }
    };
 
