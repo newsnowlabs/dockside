@@ -265,7 +265,7 @@ sub updateDerivedPermissions {
          next;
       }
 
-      # Failing that, if explicitly set to 1 or true, or the role is 'admin', permission is granted.
+      # Failing that, if explicitly set to 1, or the role is 'admin', permission is granted.
       if( $self->{'role'} eq 'admin' || $permissions{$permission} eq '1') {
          $permissions{$permission} = 1;
          next;
