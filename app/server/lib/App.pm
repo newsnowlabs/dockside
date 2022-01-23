@@ -322,11 +322,11 @@ sub _handler {
       if( $route =~ m!^/(stopContainer|startContainer|removeContainer)/(.*)$! ) {
 
          # Currently we ignore the return value. This is not ideal, but:
-         # (a) until there is better support in the Vue app to display errors, there is no point in returning;
-         # (b) it is not strictly necessary, the current state of the container will be updated in the Vue app
+         # (a) it is not strictly necessary, the current state of the container will be updated in the Vue app
          #     and the success/failure of their request to change container state will ultimately be apparent.
-         #     N.B. Some commands like 'docker start' can also return success, but then the container can fail
+         # (b) some commands like 'docker start' can also return success, but then the container can fail
          #     to start anyway.
+         # (c) until there is better support in the Vue app to display errors, there is no point in returning;
 
          $User->controlContainer($1, $2);
 
