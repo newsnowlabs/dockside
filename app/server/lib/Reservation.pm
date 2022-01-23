@@ -12,6 +12,7 @@ use Reservation::Launch;
 use Containers;
 use Profile;
 use Util qw(flog wlog get_config run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api);
+use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api);
 use Data qw($CONFIG $HOSTNAME);
 
 ################################################################################
@@ -467,6 +468,57 @@ sub load_launch_logs {
    return $data;
 }
 
+# Gets the container logs for the Reservation:
+# Inputs:
+# - stdout => { 'clean_pty' => [0|1] }
+# - stderr => { 'clean_pty' => [0|1] }
+#
+# Returns:
+# - array of (undef, <stdout>, <stderr>)
+#
+sub load_container_logs {
+   my $self = shift;
+   my $opts = shift;
+
+   my $containerId = $self->containerId();
+
+   my $path = sprintf("/containers/%s/logs?stderr=%s&stdout=%s",
+      $containerId,
+      $opts->{'stderr'} ? 'true' : 'false',
+      $opts->{'stdout'} ? 'true' : 'false'
+   );
+
+   my $result = call_socket_api(
+      $CONFIG->{'docker'}{'socket'},
+      $path
+   );
+
+   unless($result) {
+      die Exception->new( 'dbg' => "Unable to execute Docker API call: $path #1", 'msg' => "Unable to retrieve container logs" );
+   }
+
+   unless($result->is_success) {
+      die Exception->new( 'dbg' => "Unable to execute Docker API call '$path', error: " . trim($result->body), 'msg' => "Unable to retrieve container logs" );
+   }
+
+   my @stream = (undef, 'stdout', 'stderr');
+   my $body = $result->body;
+   my @output;
+   while ($body) {
+      # Extract the header bytes, and remove them from $body:
+      # - see https://docs.docker.com/engine/api/v1.41/#operation/ContainerLogs
+      #   and https://docs.docker.com/engine/api/v1.41/#operation/ContainerAttach
+      my $header = substr($body, 0, 8, '');
+      my ($stream_type, $length) = unpack("CxxxN", $header);
+      my $text = substr($body, 0, $length, '');
+
+      # Optionally, clean PTY escape sequences from the logs.
+      $output[ $opts->{'merge'} ? 1 : $stream_type ] .= $opts->{ $stream[$stream_type] }{'clean_pty'} ? clean_pty($text) : $text;
+   }
+
+   return \@output;
+}
+
 ################################################################################
 # CLONE WITH CONSTRAINTS AND SANITISE
 # -----------------------------------
@@ -782,8 +834,7 @@ sub meta_has_user {
 sub action {
    my $self = shift;
    my $action = shift;
-
-   my $containerId = $self->containerId();
+   my $args = shift;
 
    my $command;
    if($action eq 'startContainer') {
@@ -795,10 +846,18 @@ sub action {
    elsif($action eq 'removeContainer') {
       $command = 'rm';
    }
+   elsif($action eq 'getContainerLogs') {
+      return $self->load_container_logs({
+         'stdout' => is_true($args->{'stdout'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
+         'stderr' => is_true($args->{'stderr'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
+         'merge' => is_true($args->{'merge'})
+      });
+   }
    else {
       die Exception->new( 'msg' => "Unknown docker container action '$action'" );
    }
 
+   my $containerId = $self->containerId();
    return run("$CONFIG->{'docker'}{'bin'} $command $containerId");
 }
 

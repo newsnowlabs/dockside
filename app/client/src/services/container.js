@@ -27,8 +27,11 @@ const updateReservationUri = (args) => {
    return "/updateContainerReservation/" + createReservationArgs(args);
 };
 
+const getReservationLogsUri = (args) => {
+   return `/containers/${args.id}/logs?stdout=true&stderr=true&format=text&clean_pty=true&merge=true`;
+};
+
 const putContainer = (args) => {
-   console.log('putContainer', args.id);
    const uri = args.id ? updateReservationUri(args) : createReservationUri(args);
    return axios.get(uri).then(response => response.data);
 };
@@ -39,4 +42,4 @@ const controlContainer = (id, cmd) => {
    return axios.get(url).then(response => response.data);
 };
 
-export { getContainers, putContainer, controlContainer, createReservationUri };
+export { getContainers, putContainer, controlContainer, createReservationUri, getReservationLogsUri };

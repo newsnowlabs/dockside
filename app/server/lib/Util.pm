@@ -6,8 +6,9 @@ use Exporter qw(import);
 our @EXPORT_OK = ( qw(
    flog wlog
    get_config
+   trim is_true
    call_socket_api
-   run run_system run_pty
+   run run_system clean_pty run_pty
    YYYYMMDDHHMMSS TO_JSON
    cache cacheReadWrite cloneHash
    encrypt_password generate_auth_cookie_values validate_auth_cookie
@@ -75,6 +76,16 @@ sub get_config {
    return $_;
 }
 
+sub trim {
+   local $_ = shift;
+   s/(^\s+|\s$)//g;
+   return $_;
+}
+
+sub is_true {
+   return $_[0] =~ /^(1|true)$/s;
+}
+
 sub call_socket_api {
    my $socket = shift;
    my $path = shift;
@@ -138,6 +149,37 @@ sub run_system {
    return $? >> 8;
 }
 
+sub clean_pty {
+   local $_ = $_[0];
+
+   # https://unix.stackexchange.com/questions/14684/removing-control-chars-including-console-codes-colours-from-script-output
+   if(s/ \e[ #%()*+\-.\/]. |
+   \e\[ [ -?]* [@-~] | # CSI ... Cmd
+   \e\] .*? (?:\e\\|[\a\x9c]) | # OSC ... (ST|BEL)
+   \e[P^_] .*? (?:\e\\|\x9c) | # (DCS|PM|APC) ... ST
+   \e. //xgs
+   ) {
+      return undef unless $_;
+   }
+
+   # Replace CRLF with LF
+   s/\r+\n/\n/sg;
+
+   # Skip lines consisting only of CR
+   return undef if /^\r+$/;
+
+   # Replace CRs at end of line with single LF
+   s/\r+$/\n/g;
+
+   # Remove CRs/LFs at beginning of line
+   s/^[\r\n]+//s;
+
+   # Remove any remaining CRs
+   s/\r+//sg;
+
+   return $_;
+}
+
 sub run_pty {
    my $cmd     = shift;
    my $logfile = shift;
@@ -145,32 +187,16 @@ sub run_pty {
    open( my $fh, ">", $logfile ) || die Exception->new( 'dbg' => "Cannot open logfile '$logfile': $!", 'msg' => 'Cannot create container launch log file' );
    $fh->autoflush(1);
    my $ContainerID;
+   my @input;
 
    my $logger = sub {
       print $_[0];
 
-      local $_ = $_[0];
+      push(@input, $_[0]);
 
-      # https://unix.stackexchange.com/questions/14684/removing-control-chars-including-console-codes-colours-from-script-output
-      if(s/ \e[ #%()*+\-.\/]. |
-      \e\[ [ -?]* [@-~] | # CSI ... Cmd
-      \e\] .*? (?:\e\\|[\a\x9c]) | # OSC ... (ST|BEL)
-      \e[P^_] .*? (?:\e\\|\x9c) | # (DCS|PM|APC) ... ST
-      \e. //xg
-      ) {
-         return unless $_;
-      }
+      local $_ = clean_pty($_[0]);
 
-      # Replace CRLF with LF
-      s/\r*\n/\n/g;
-
-      # Skip lines consisting only of CR
-      return if /^\r+$/;
-
-      # Replace CRs at EOL with single LF
-      s/\r+$/\n/g;
-
-      s/^\r+//g;
+      return unless defined($_);
 
       print $fh $_;
       $fh->flush();

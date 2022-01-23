@@ -96,6 +96,19 @@ sub json {
    return nginx::OK;
 }
 
+sub text {
+   my $r = shift;
+   my $data = shift;
+
+   $r->status(200);
+   $r->header_out( 'Cache-Control', 'no-store' );
+   $r->send_http_header("text/plain");
+
+   $r->print( $data );
+
+   return nginx::OK;
+}
+
 sub send_login_page {
    my $r = shift; # nginx request object
 
@@ -166,6 +179,7 @@ sub _handler {
    return nginx::HTTP_BAD_REQUEST unless $protocol eq 'https';
 
    my $route = $r->uri;
+   my $querystring = $r->args;
 
    # Generate the 'parent fully qualified domain name', i.e.
    # a hostname from which child container hostnames can be generated,
@@ -275,6 +289,7 @@ sub _handler {
    # AJAX SERVICES
    #
 
+   my $type = 'json';
    try {
 
       #############################################
@@ -321,17 +336,40 @@ sub _handler {
       ######################################
       # Load Reservations and container data
       #
+      if( $route =~ m!^/containers/([^\/]+)/logs/?$! ) {
+         my $id = $1;
+         my $args = split_args($querystring); # Split querystring-style arguments
+
+         if($args->{'format'} eq 'text') {
+            $type = 'text';
+         }
+
+         my $logs = $User->controlContainer('getContainerLogs', $id, $args);
+
+         return ($args->{'format'} eq 'text') ? text($r, join('', @$logs)) : json($r, { 'status' => '200', 'data' => $logs });
+      }
+
+      ######################################
+      # Load Reservations and container data
+      #
       if( $route =~ m!^/containers/?$! ) {
 
          my $containers = $User->reservations({'client' => 1});
          return json($r, { 'status' => '200', 'data' => $containers });
       }
+
    }
    catch {
       my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
       
-      flog("Caught exception: dbg='$dbg'; msg='$msg'");
-      json($r, { 'status' => '401', 'msg' => $msg });
+      flog("Reporting exception: dbg='$dbg'; msg='$msg'; content type='$type'");
+
+      if($type eq 'text') {
+         text($r, "Error: $msg");
+      }
+      else {
+         json($r, { 'status' => '401', 'msg' => $msg });
+      }
    };
 
    return nginx::OK;

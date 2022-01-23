@@ -48,7 +48,8 @@ my @CONTAINER_PERMISSIONS = (
    'setContainerPrivacy', # Permission to edit the private flag of containers
    'startContainer', # Permission to start a container
    'stopContainer', # Permission to stop a container
-   'removeContainer' # Permission to remove a container
+   'removeContainer', # Permission to remove a container
+   'getContainerLogs' # Permission to retrieve container logs
 );
 
 our $USER_PASSWD;
@@ -818,9 +819,10 @@ sub controlContainer {
    my $self = shift;
    my $cmd = shift;
    my $id = shift;
+   my $args = shift;
 
-   if( $id !~ m!^([0-9a-f]+)$! || $cmd !~ m!^(stopContainer|startContainer|removeContainer)$! ) {
-      die Exception->new( 'msg' => "command '$cmd' with argument '$id', incorrect, failed" );
+   if( $id !~ m!^([0-9a-f]+)$! || $cmd !~ m!^(stopContainer|startContainer|removeContainer|getContainerLogs)$! ) {
+      die Exception->new( 'msg' => "command '$cmd' with invalid argument '$id' failed" );
    }
 
    if( !$self->has_permission($cmd) ) {
@@ -834,7 +836,7 @@ sub controlContainer {
    }
 
    # Execute the requested command.
-   return $container->action($cmd);
+   return $container->action($cmd, $args);
 }
 
 # Creates a Reservation object, stores it, and attempts to launch a container for that Reservation.

@@ -170,6 +170,12 @@
                                  :data-id="container.id"
                                  >Remove</b-button>
 
+                              <b-button size="sm" variant="outline-primary"
+                                 v-show="container.permissions.actions.getContainerLogs && !isEditMode && !isPrelaunchMode && container.status >= 0"
+                                 v-on:click="showLogs()"
+                                 :data-id="container.id"
+                                 >Logs</b-button>
+
                               <b-button size="sm" variant="outline-success"
                                  v-show="container.permissions.auth.developer && isPrelaunchMode"
                                  v-on:click="saveOrLaunch"
@@ -211,7 +217,7 @@
    import { routing } from '@/components/mixins';
    import copyToClipboard from '@/utilities/copy-to-clipboard';
    import UserTagsInput from '@/components/UserTagsInput';
-   import { putContainer, controlContainer, createReservationUri } from '@/services/container';
+   import { putContainer, controlContainer, createReservationUri, getReservationLogsUri } from '@/services/container';
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';
 
@@ -334,16 +340,15 @@
                })
                .catch((e) => { console.error(e); });
          },
+         showLogs() {
+            window.open(getReservationLogsUri({id: this.container.id}) , `docksideLogs_${this.container.id}`);
+         },
          makeLaunchUri() {
             return `${window.location.protocol}//${window.location.host}` + createReservationUri(this.form);
          },
          saveOrLaunch() {
             const me = this;
 
-            console.log('saveOrLaunch', this.form);
-            console.log('saveOrLaunch', JSON.stringify(this.form));
-
-            // FIXME: Catch ajax errors
             putContainer(this.form)
                .then(data => {
                   console.log(data);
