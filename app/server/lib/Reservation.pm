@@ -837,16 +837,16 @@ sub action {
    my $args = shift;
 
    my $command;
-   if($action eq 'startContainer') {
+   if($action eq 'start') {
       $command = 'start';
    }
-   elsif($action eq 'stopContainer') {
+   elsif($action eq 'stop') {
       $command = 'stop';
    }
-   elsif($action eq 'removeContainer') {
+   elsif($action eq 'remove') {
       $command = 'rm';
    }
-   elsif($action eq 'getContainerLogs') {
+   elsif($action eq 'getLogs') {
       return $self->load_container_logs({
          'stdout' => is_true($args->{'stdout'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
          'stderr' => is_true($args->{'stderr'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
@@ -998,7 +998,7 @@ sub launch {
       # docker-event-daemon will be able to identify the container, when launched, as its responsibility.
       #
       # So, start the container.
-      $self->action('startContainer');
+      $self->action('start');
       flog("Reservation::launch: started container");
 
       exit(0);

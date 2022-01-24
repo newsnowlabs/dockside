@@ -154,19 +154,19 @@
 
                               <b-button size="sm" variant="primary"
                                  v-show="container.permissions.actions.startContainer && !isEditMode && !isPrelaunchMode && container.status >= -1 && container.status <= 0"
-                                 v-on:click="action('startContainer')"
+                                 v-on:click="action('start')"
                                  :data-id="container.id"
                                  >Start</b-button>
 
                               <b-button size="sm" variant="outline-danger"
                                  v-show="container.permissions.actions.stopContainer && !isEditMode && !isPrelaunchMode && container.status == 1"
-                                 v-on:click="action('stopContainer')" 
+                                 v-on:click="action('stop')" 
                                  :data-id="container.id"
                                  >Stop</b-button>
 
                               <b-button size="sm" variant="outline-danger"
                                  v-show="container.permissions.actions.removeContainer && !isEditMode && !isPrelaunchMode && container.status >= -1 && container.status <= 0" 
-                                 v-on:click="action('removeContainer')"
+                                 v-on:click="action('remove')"
                                  :data-id="container.id"
                                  >Remove</b-button>
 
@@ -324,21 +324,22 @@
             //    }
             // }
 
-            // FIXME: Catch ajax errors
             controlContainer(this.container.id, command)
                .then(data => {
                   console.log('controlContainer', data);
-                  if (data.status === '200') {
-                     console.log('updateContainers');
-                     if(command === 'remove') { me.goHome(); }
-                     me.$store.dispatch('setContainers', data.data);
+                  if(command === 'remove') { me.goHome(); }
+                  me.$store.dispatch('setContainers', data.data);
+               })
+               .catch((error) => {
+                  // See https://github.com/axios/axios#handling-errors
+                  if(error.response && error.response.status == 401) {
+                     console.log(error.response.data.msg);
+                     alert(error.response.data.msg);
                   }
                   else {
-                     console.log(data.msg);
-                     alert(data.msg);
+                     console.error(error);
                   }
-               })
-               .catch((e) => { console.error(e); });
+               });
          },
          showLogs() {
             window.open(getReservationLogsUri({id: this.container.id}) , `docksideLogs_${this.container.id}`);
@@ -352,20 +353,23 @@
             putContainer(this.form)
                .then(data => {
                   console.log(data);
-                  if (data.status === '200') {
-                     // Reservation succeeded.
-                     console.log('createContainerReservation', data);
-                     // Add reservation to containers list.
-                     me.$store.dispatch('addContainer', data.reservation);
-                     // Go to the detailed view for the reservation.
-                     me.goToContainer(data.reservation.name, 'view', 1);
+                  // Reservation succeeded.
+                  console.log('createContainerReservation', data);
+                  // Add reservation to containers list.
+                  me.$store.dispatch('addContainer', data.reservation);
+                  // Go to the detailed view for the reservation.
+                  me.goToContainer(data.reservation.name, 'view', 1);
+               })
+               .catch((error) => {
+                  // See https://github.com/axios/axios#handling-errors
+                  if(error.response && error.response.status == 401) {
+                     console.log(error.response.data.msg);
+                     alert(error.response.data.msg);
                   }
                   else {
-                     console.log(data.msg);
-                     alert(data.msg);
+                     console.error(error);
                   }
-               })
-               .catch((e) => { console.error(e); });
+               });
          },
          cancel() {
             if(this.isPrelaunchMode) {

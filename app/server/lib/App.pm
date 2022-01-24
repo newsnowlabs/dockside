@@ -297,8 +297,8 @@ sub _handler {
       #############################################
       # Create a Reservation and launch a container
       #
-      if( $route =~ m!^/createContainerReservation/(.*)$! ) {
-         my $args = split_args($1); # Split querystring-style arguments
+      if( $route =~ m!^/containers/create/?$! ) {
+         my $args = split_args($querystring); # Split querystring-style arguments
 
          # Use the current host's parentFQDN string to generate the child
          # container's hostname, if none has been provided.
@@ -311,8 +311,10 @@ sub _handler {
       ##########################
       # Update i.e. save an edit
       #
-      if( $route =~ m!^/updateContainerReservation/(.*)$! ) {
-         my $args = split_args($1); # Split querystring-style arguments
+      if( $route =~ m!^/containers/([^\/]+)/update/?$! ) {
+         my $id = $1;
+         my $args = split_args($querystring); # Split querystring-style arguments
+         $args->{'id'} = $id if $id;
 
          my $reservation = $User->updateContainerReservation($args);
          return json($r, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation });
@@ -321,7 +323,9 @@ sub _handler {
       ###################
       # Start/Stop/Remove
       #
-      if( $route =~ m!^/(stopContainer|startContainer|removeContainer)/(.*)$! ) {
+      if( $route =~ m!^/containers/([^\/]+)/(stop|start|remove)/?$! ) {
+         my $id = $1;
+         my $cmd = $2;
 
          # Currently we ignore the return value. This is not ideal, but:
          # (a) it is not strictly necessary, the current state of the container will be updated in the Vue app
@@ -330,7 +334,7 @@ sub _handler {
          #     to start anyway.
          # (c) until there is better support in the Vue app to display errors, there is no point in returning;
 
-         $User->controlContainer($1, $2);
+         $User->controlContainer($cmd, $id);
 
          return json($r, 200, { 'status' => '200', 'data' => $User->reservations({'client' => 1}) });
       }
@@ -346,7 +350,7 @@ sub _handler {
             $type = 'text';
          }
 
-         my $logs = $User->controlContainer('getContainerLogs', $id, $args);
+         my $logs = $User->controlContainer('getLogs', $id, $args);
 
          return ($args->{'format'} eq 'text') ? text($r, 200, join('', @$logs)) : json($r, 200, { 'status' => '200', 'data' => $logs });
       }

@@ -20,15 +20,15 @@ const createReservationArgs = (args) => {
 };
 
 const createReservationUri = (args) => {
-   return "/createContainerReservation/" + createReservationArgs(args);
+   return `/containers/create?` + createReservationArgs(args);
 };
 
 const updateReservationUri = (args) => {
-   return "/updateContainerReservation/" + createReservationArgs(args);
+   return `/containers/${encodeURIComponent(args.id)}/update?` + createReservationArgs(args);
 };
 
 const getReservationLogsUri = (args) => {
-   return `/containers/${args.id}/logs?stdout=true&stderr=true&format=text&clean_pty=true&merge=true`;
+   return `/containers/${encodeURIComponent(args.id)}/logs?stdout=true&stderr=true&format=text&clean_pty=true&merge=true`;
 };
 
 const putContainer = (args) => {
@@ -37,8 +37,7 @@ const putContainer = (args) => {
 };
 
 const controlContainer = (id, cmd) => {
-   const url = `/${cmd}/` + encodeURIComponent(id);
-
+   const url = `/containers/${encodeURIComponent(id)}/${encodeURIComponent(cmd)}`;
    return axios.get(url).then(response => response.data);
 };
 

@@ -821,18 +821,19 @@ sub controlContainer {
    my $id = shift;
    my $args = shift;
 
-   if( $id !~ m!^([0-9a-f]+)$! || $cmd !~ m!^(stopContainer|startContainer|removeContainer|getContainerLogs)$! ) {
+   if( $id !~ m!^([0-9a-f]+)$! || $cmd !~ m!^(stop|start|remove|getLogs)$! ) {
       die Exception->new( 'msg' => "command '$cmd' with invalid argument '$id' failed" );
    }
 
-   if( !$self->has_permission($cmd) ) {
-      die Exception->new( 'msg' => "User not permitted to execute command '$cmd'" );
+   my $permission = $cmd eq 'getLogs' ? 'getContainerLogs' : "${cmd}Container";
+   if( !$self->has_permission($permission) ) {
+      die Exception->new( 'msg' => "You need the '$permission' permission to execute command '$cmd' on this devtainer" );
    }
 
    my $container = $self->reservation($id);
 
    if( !$self->can_on( $container, 'develop' )) {
-      die Exception->new( 'msg' => "User not permitted to execute '$cmd' on this container" );
+      die Exception->new( 'msg' => "You need the 'develop' permission to execute '$cmd' on this devtainer" );
    }
 
    # Execute the requested command.
@@ -847,7 +848,7 @@ sub createContainerReservation {
 
    # Launch new container.
    if( !$self->has_permission( 'createContainerReservation' ) ) {
-      die Exception->new( 'msg' => "You have no permissions to launch" );
+      die Exception->new( 'msg' => "You need the 'createContainerReservation' permission to launch a devtainer" );
    }
 
    flog("User::createContainerReservation: calling Reservation->new");
