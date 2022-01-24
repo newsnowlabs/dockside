@@ -117,7 +117,7 @@ docker run -it --name dockside \
 
 ### Launch in production with self-supplied SSL certificate
 
-1. Assuming your self-supplied `fullchain.pem` and `privkey.pem` files for the wildcard SSL certificate for your domain are located in `<certsdir>` then launch Dockside as follows:
+1. Assuming your self-supplied `fullchain.pem` and `privkey.pem` files for the wildcard SSL certificate for your domain `<my-domain>` are located in `<certsdir>` then launch Dockside as follows:
 ```sh
 mkdir -p ~/.dockside && \
 docker run -d --name dockside \
@@ -128,7 +128,7 @@ docker run -d --name dockside \
   newsnowlabs/dockside --ssl-selfsupplied
 ```
 
-2. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. To view the launch logs and obtain the auto-generated `admin` user password, view the launch logs by running `docker logs dockside`. Sign in with the username `admin` and the password output to the terminal, then follow the instructions displayed on-screen.
+2. In your browser, navigate to the Dockside homescreen at `https://www.<my-domain>/`. To view the launch logs and obtain the auto-generated `admin` user password, run `docker logs dockside`. Sign in with the username `admin` and the displayed password, then follow the instructions displayed on-screen.
 
 > N.B. Should you update your certificates run `docker exec dockside s6-svc -t /etc/service/nginx` to tell Dockside to reload them.
 
@@ -154,7 +154,7 @@ docker run -d --name dockside \
 ```
 Assuming you have provisioned <my-domain> correctly, Dockside will use LetsEncrypt to generate a public SSL certificate on startup and to regenerate the certificate periodically to ensure it remains current.
 
-3. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. To view the launch logs and obtain the auto-generated `admin` user password, view the launch logs by running `docker logs dockside`. Sign in with the username `admin` and the password output to the terminal, then follow the instructions displayed on-screen.
+3. In your browser, navigate to the Dockside homescreen at `https://www.<my-domain>/`. To view the launch logs and obtain the auto-generated `admin` user password, run `docker logs dockside`. Sign in with the username `admin` and the displayed password, then follow the instructions displayed on-screen.
 
 > **Launch using Google Cloud Deployment Manager**
 >
