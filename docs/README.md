@@ -101,18 +101,18 @@ docker run -it --name dockside \
 
 ### Launch anywhere with self-signed SSL cert
 
-1. Launch Dockside on a local machine, on-premises server, VM or cloud instance, with a temporary and convenient self-signed SSL certificate:
+1. Launch Dockside on a local machine, on-premises server, VM or cloud instance, with a temporary and convenient self-signed SSL certificate, where `<my-domain>` is the domain name:
 ```sh
 mkdir -p ~/.dockside && \
 docker run -it --name dockside \
   -v ~/.dockside:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
-  newsnowlabs/dockside --ssl-selfsigned
+  newsnowlabs/dockside --ssl-selfsigned --ssl-zone <my-domain>
 ```
 
-2. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
-
+2. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. This must be `https://www.<my-domain>/` so you must configure your DNS or `/etc/hosts` file accordingly. Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
+ 
 3. You can now [detach](https://docs.docker.com/engine/reference/commandline/attach/) from the Dockside container running back in your terminal by typing `CTRL+P` `CTRL+Q`. Alternatively you can instead launch with `docker run -d` instead of `docker run -it`; if you do this, run `docker logs dockside` to display the terminal output and auto-generated admin password.
 
 ### Launch in production with self-supplied SSL certificate
