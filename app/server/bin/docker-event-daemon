@@ -201,6 +201,12 @@ sub eventHandler {
 
                if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(start)$/ ) {
 
+                  if( $Container->{ $event->{'Actor'}{'ID'} } ) {
+                     # This container's details might not yet have been loaded. Do this now.
+                     flog("eventHandler: Updating docker containers without sizes before reloading reservations");
+                     update( { } );
+                  }
+
                   # Reload config, reservations and containers, to access Reservation->load and %CONFIG.
                   # Reload users and roles too, in case we can update owner's name and email [at later date].
                   Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
@@ -233,7 +239,7 @@ sub eventHandler {
                   else {
                      flog("eventHandler: we don't manage containerId=$event->{'Actor'}{'ID'}");
                   }
-               }               
+               }
 
                $events++;
                $lastEventTime = time;
