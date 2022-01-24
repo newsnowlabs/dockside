@@ -64,7 +64,7 @@ The currently-supported root properties within a profile are:
 | mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{"tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}]}`
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
-| lxcfs | whether to mount [lxcfs](#lxcfs) | optional | as specified in `config.json` | `true` |
+| lxcfs | whether to mount [lxcfs](extensions/lxcfs.md) | optional | as specified in `config.json` | `true` |
 | command | [array] command to run on devtainer launch | mandatory if image does not specify a long-running entrypoint or command | `[]` | `["/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"]`
 | entrypoint | command with which to override image entrypoint | optional | `[]` | `["/my-entrypoint.sh"]` |
 | mountIDE | disable mounting the Dockside IDE volume (strictly for use with images, such as the Dockside image, that embed their own IDE volume) | optional | `false` | `true` |
@@ -143,4 +143,4 @@ The `config.json` file contains global config for the Dockside instance. Not all
 
 - `uidCookie`: an object specifying a unique name and salt for the Dockside authentication cookie; this must be different for every nested instance of Dockside;
 - `globalCookie`: for an extra layer of security for the security-conscious, you may specify a name, domain and secret value for a global cookie which must be present before any part of Dockside, including the UI will respond to a web request; use this if you are uncomfortable with either the Dockside UI login screen, or devtainer services that may be set to 'public' to be exposed publicly;
-- `lxcfs`: [LXCFS](#lxcfs) is a fuse filesystem that allows processes running with docker containers to measure their own cpu, memory, and disk usage. As not all Docker hosts will have lxcfs installed, it is disabled in Dockside by default, but may be enabled by setting `available: true`. After this, lxcfs may be by default enabled or disabled for all profiles (by setting `enabled` in `config.json` accordingly), however this default may be overriden by the lxcfs setting in any individual profile.
+- `lxcfs`:  is a fuse filesystem that allows processes running with docker containers to measure their own cpu, memory, and disk usage; refer to [LXCFS](extensions/lxcfs.md) for details of the LXCFS extension.
