@@ -5,7 +5,8 @@ Multi-architecture devtainers can be launched by installing [qemu-user-static](h
 On a Debian Dockside host, it can be installed using:
 
 ```
-sudo apt-get install qemu binfmt-support qemu-user-static
+sudo apt-get update && \
+sudo apt-get -y install qemu binfmt-support qemu-user-static && \
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 ```
 
