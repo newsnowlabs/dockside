@@ -20,23 +20,23 @@
       }
    },
    // Example
-   //  "johnsmith": {
-   //       "id": 2,
-   //       "email": "john.smith@someservice.com",
-   //       "role": "developer",
-   //       "permissions": {
-   //             "createContainerReservation": 1,
-   //             "startContainer": 1,
-   //             "stopContainer": 1,
-   //             "removeContainer": 1,
-   //             "developContainers": 1,
-   //             "setContainerViewers": 1,
-   //             "setContainerDevelopers": 1
-   //       },
-   //       "resources": {
-   //             "profiles": { "admin-only-profile": 0 },
-   //             "networks": { "*": 1, "custom-network-we-want-disabled": 0 },
-   //             "runtimes": { "sysbox-runc": 0, "gvisor": 1 }
-   //       }
-   //  }
+   // "johnsmith": {
+   //    "id": 2,
+   //    "email": "john.smith@someservice.com",
+   //    "role": "developer",
+   //    "permissions": {
+   //       "createContainerReservation": 1,
+   //       "startContainer": 1,
+   //       "stopContainer": 1,
+   //       "removeContainer": 1,
+   //       "developContainers": 1,
+   //       "setContainerViewers": 1,
+   //       "setContainerDevelopers": 1
+   //    },
+   //    "resources": {
+   //       "profiles": { "admin-only-profile": 0 },
+   //       "networks": { "*": 1, "custom-network-we-want-disabled": 0 },
+   //       "runtimes": { "sysbox-runc": 0, "gvisor": 1 }
+   //    }
+   // }
 }
