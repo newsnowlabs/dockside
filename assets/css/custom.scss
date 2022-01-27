@@ -215,6 +215,12 @@ td.does-not-support { color: $red-500; }
   word-wrap: break-word;
 }
 
+.preview img, .preview .video-container {
+    width:100%;
+    box-shadow: rgba(140, 149, 159, 0.7) 0px 12px 28px 0px;
+    border-radius: 0.5%;
+}
+
 //
 // YouTube Embed - Responsive
 //
@@ -224,7 +230,7 @@ td.does-not-support { color: $red-500; }
   padding-bottom: 56.25%; 
   padding-top: 30px; 
   height: 0; 
-  overflow: hidden; 
+  overflow: hidden;
 }
 
 .video-container iframe, .video-container object, .video-container embed { 
