@@ -90,6 +90,7 @@ docker run -it --name dockside \
   -v ~/.dockside:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
+  --security-opt=apparmor=unconfined \
   newsnowlabs/dockside --ssl-builtin
 ```
 
@@ -108,6 +109,7 @@ docker run -it --name dockside \
   -v ~/.dockside:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
+  --security-opt=apparmor=unconfined \
   newsnowlabs/dockside --ssl-selfsigned --ssl-zone <my-domain>
 ```
 
@@ -125,6 +127,7 @@ docker run -d --name dockside \
   -v <certsdir>:/data/certs \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
+  --security-opt=apparmor=unconfined \
   newsnowlabs/dockside --ssl-selfsupplied
 ```
 
@@ -150,6 +153,7 @@ docker run -d --name dockside \
   -v ~/.dockside:/data \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 -p 53:53/udp \
+  --security-opt=apparmor=unconfined \
   newsnowlabs/dockside --ssl-letsencrypt --ssl-zone <my-domain>
 ```
 Assuming you have provisioned <my-domain> correctly, Dockside will use LetsEncrypt to generate a public SSL certificate on startup and to regenerate the certificate periodically to ensure it remains current.

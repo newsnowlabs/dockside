@@ -115,7 +115,7 @@ done
 usage() {
   cat >&2 <<_EOE_
 
-Usage: docker run {-d|-it} [--name <name>] [-v <host-config-path>:/data] -p 443:443 -p 80:80 [-p 53:53/udp] -v /var/run/docker.sock:/var/run/docker.sock newsnowlabs/dockside [OPTIONS]
+Usage: docker run {-d|-it} [--name <name>] [-v <host-config-path>:/data] -p 443:443 -p 80:80 [-p 53:53/udp] -v /var/run/docker.sock:/var/run/docker.sock --security-opt=apparmor=unconfined newsnowlabs/dockside [OPTIONS]
 
   [OPTIONS]
 
@@ -194,7 +194,7 @@ if [ -S /var/run/docker.sock ]; then
 
   # Test the socket, to confirm it is not stale or access-prohibited by Apparmor
   if ! curl -s --unix-socket /var/run/docker.sock -H "Content-Type: application/json" -X GET http:/v1.41/info -o /dev/null; then
-    log "- Cannot connect to bind-mounted /var/run/docker.sock: please ensure dockerd is running on host and Apparmor/SELinux is not prohibiting access; aborting!"
+    log "- Cannot connect to bind-mounted /var/run/docker.sock: please ensure dockerd is running on host and consider adding docker run option --security-opt=apparmor=unconfined; aborting!"
     exit 3
   fi
 
