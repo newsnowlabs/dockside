@@ -65,6 +65,7 @@ The currently-supported root properties within a profile are:
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
 | lxcfs | whether to mount [lxcfs](extensions/lxcfs.md) | optional | as specified in `config.json` | `true` |
+| security | `docker run` security options | optional | as specified in `config.json` | `{ "apparmor": "unconfined", "seccomp": "unconfined" }` |
 | command | [array] command to run on devtainer launch | mandatory if image does not specify a long-running entrypoint or command | `[]` | `["/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"]`
 | entrypoint | command with which to override image entrypoint | optional | `[]` | `["/my-entrypoint.sh"]` |
 | mountIDE | disable mounting the Dockside IDE volume (strictly for use with images, such as the Dockside image, that embed their own IDE volume) | optional | `false` | `true` |
@@ -141,6 +142,7 @@ The syntax for `roles.json` mirrors that for `users.json`.
 
 The `config.json` file contains global config for the Dockside instance. Not all properties are user-editable, but those which are include:
 
-- `uidCookie`: an object specifying a unique name and salt for the Dockside authentication cookie; this must be different for every nested instance of Dockside;
-- `globalCookie`: for an extra layer of security for the security-conscious, you may specify a name, domain and secret value for a global cookie which must be present before any part of Dockside, including the UI will respond to a web request; use this if you are uncomfortable with either the Dockside UI login screen, or devtainer services that may be set to 'public' to be exposed publicly;
-- `lxcfs`:  is a fuse filesystem that allows processes running with docker containers to measure their own cpu, memory, and disk usage; refer to [LXCFS](extensions/lxcfs.md) for details of the LXCFS extension.
+- `uidCookie`: an object specifying a unique name and salt for the Dockside authentication cookie; this must be different for every nested instance of Dockside
+- `globalCookie`: for an extra layer of security for the security-conscious, you may specify a name, domain and secret value for a global cookie which must be present before any part of Dockside, including the UI will respond to a web request; use this if you are uncomfortable with either the Dockside UI login screen, or devtainer services that may be set to 'public' to be exposed publicly
+- `lxcfs`:  is a fuse filesystem that allows processes running with docker containers to measure their own cpu, memory, and disk usage; refer to [LXCFS](extensions/lxcfs.md) for details of the LXCFS extension
+- `docker.security`: the default `apparmor` and `seccomp` security profiles (may be overriden within Dockside profiles)

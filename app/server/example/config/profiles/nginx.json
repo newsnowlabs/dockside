@@ -17,4 +17,7 @@
    "mounts": {
       "tmpfs": []
    },
+   "security": {
+      "apparmor": "unconfined"
+   }
 }

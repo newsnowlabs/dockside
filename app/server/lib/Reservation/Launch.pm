@@ -34,6 +34,39 @@ sub _placeholders {
 # DOCKER COMMAND LINE GENERATION
 #
 
+sub cmdline_security {
+   my $self = shift;
+
+   my $security = $self->profileObject->{'security'};
+
+   my @opts;
+
+   foreach my $m ('apparmor', 'seccomp') {
+      my $profile = ($security->{$m} // $CONFIG->{'docker'}{'security'}{$m}) // 'unspecified';
+
+      if($profile ne 'unspecified') {
+         push(@opts, sprintf("--security-opt=%s=%s", $m, $profile));
+      }
+   }
+
+   if($security->{'no-new-privileges'}) {
+      push(@opts, sprintf("--security-opt=no-new-privileges"));
+   }
+
+   if($security->{'labels'}) {
+      if( ref($security->{'labels'}) eq 'SCALAR' && $security->{'labels'} eq 'disable' ) {
+         push(@opts, sprintf("--security-opt=label=disable"));
+      }
+      elsif( ref($security->{'labels'}) eq 'HASH' ) {
+         foreach my $opt ('user', 'role', 'type', 'level') {
+            push(@opts, sprintf("--security-opt=label=%s:%s", $opt, $security->{'labels'}{$opt}));
+         }
+      }
+   }
+
+   return @opts;
+}
+
 sub cmdline_ports {
    my $self = shift;
 
@@ -56,7 +89,6 @@ sub cmdline_runtime {
 
    return ();
 }
-
 
 sub cmdline_network {
    my $self = shift;
@@ -261,6 +293,7 @@ sub cmdline {
    # dockerArgs
 
    return (
+      $self->cmdline_security(),
       $self->cmdline_runtime(),
       $self->cmdline_ports(),
       $self->cmdline_network(),

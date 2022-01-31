@@ -317,6 +317,27 @@ sub validate_profile_unixusers {
    }
 }
 
+sub validate_profile_security {
+   my $self = shift;
+   my $type = shift;
+   my $data = shift;
+
+   $self->do_validate( $type, $data, qw( apparmor seccomp no-new-privileges labels ) );
+
+   if($data->{'labels'}) {
+      if( ref($data->{'labels'}) eq 'HASH' ) {
+         $self->do_validate( "$type.labels", $data->{'labels'}, qw( user role type level ) );
+      }
+      elsif( $data->{'labels'} ne 'disable' ) {
+         $self->errors( "$type.labels", "must be the string 'disable' or an Object with keys 'user', 'role', 'type', 'level'" );
+      }
+   }
+
+   if( defined($data->{'no-new-privileges'}) && $data->{'no-new-privileges'} !~ /^[01]$/ ) {
+      $self->errors( "$type.no-new-privileges", "must be true or false or '1' or '0', if defined" );
+   }
+}
+
 ################################################################################
 # DATA ACCESSORS
 # --------------
