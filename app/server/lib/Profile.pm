@@ -1,8 +1,5 @@
 # Profile.pm
-# Copyright © 2020 NewsNow Publishing Limited
-# ----------------------------------------------------------------------
-# LICENCE TBC
-# ----------------------------------------------------------------------
+
 # A Profile object, which can be constructed:
 #
 # 1. By Reservation->new(), when instantiating the encapsulated Profile data structure for a Reservation record
@@ -166,7 +163,7 @@ sub validate {
    return undef unless $self->{'active'};
 
    # A list of allowed properties: a trailing '!' indicates the property is mandatory.
-   $self->do_validate( $self->name, $self, qw( name! version! description active! mountIDE routers runtimes networks! images! unixusers imagePathsFilter mounts runDockerInit dockerArgs command entrypoint metadata lxcfs ) );
+   $self->do_validate( '', $self, qw( name! version! description active! mountIDE routers runtimes networks! images! unixusers imagePathsFilter mounts runDockerInit dockerArgs command entrypoint metadata lxcfs security ) );
 
    return $self;
 }
@@ -598,7 +595,7 @@ sub sanitise {
 sub errorsArray {
    my $self = shift;
 
-   return map { $_ = ($_->[0] ? "in '%s', " : '') . $_->[1] } @{ $self->{'errors'} };
+   return map { $_ = ($_->[0] ? "in '$_->[0]', " : '') . $_->[1] } @{ $self->{'errors'} };
 }
 
 1;
