@@ -117,7 +117,7 @@ You should add one record to `users.json` for each registered user in your team.
 The `passwd` file is a text file (in largely standard Unix format) containing one row per user. It should contain a row for each registered user specified in `users.json` that is not disabled, of the form `<username>:<encrypted-password>`. Password may currently be added, changed, or checked, from the host (or any dockside container with access to the host docker socket) using the following command:
 
 ```sh
-docker exec -it dockside passwd [--check] <username>
+docker exec -it dockside password [--check] <username>
 ```
 
 #### Revoking a user's access to Dockside
