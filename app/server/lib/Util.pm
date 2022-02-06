@@ -71,7 +71,7 @@ sub get_config {
    close F;
 
    # Remove trailing whitespace
-   s/\s+//s;
+   s/\s+$//s;
 
    return $_;
 }
