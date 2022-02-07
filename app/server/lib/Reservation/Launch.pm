@@ -157,7 +157,7 @@ sub cmdline_mounts_volume {
       join(',',
          "--mount=type=volume",
          "dst=" . $self->_placeholders($_->{'dst'}),
-         $_->{'src'} ? ("src=$_->{'src'}") : (),
+         $_->{'src'} ? ("src=" . $self->_placeholders($_->{'src'})) : (),
       )
    # FIXME: Add profile accessor
    } @{ $self->profileObject->{'mounts'}{'volume'} };
