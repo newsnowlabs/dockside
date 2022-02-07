@@ -82,22 +82,16 @@
 </script>
 
 <style lang="scss" scoped>
-   .navbar {
-      padding: 20px 1rem;
-      height: 56px;
-   }
 
    .navbar-brand {
       cursor: pointer;
+      height: 42px;
 
-      line-height: 0.8em;
       padding-top: 0px;
       position: relative;
-      top: -3px;
+      top: -4px;
 
       > div {
-         // display: inline-block;
-         // margin-bottom: 10px;
          font-size: 32px;
 
          > .dockside {
