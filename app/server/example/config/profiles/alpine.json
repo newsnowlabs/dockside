@@ -18,8 +18,8 @@
       "tmpfs": [],
       "bind": [],
       "volume": [
-         // Use this to share encrypted ssh keys in the named volume among team members.
-          { "src": "alpine-ssh-keys", "dst": "/home/{ideUser}/.ssh" } ]
+         // Use this to mount encrypted ssh keys from within a per-user volume.
+          { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
    },
    "lxcfs": true,
    "dockerArgs": [],
