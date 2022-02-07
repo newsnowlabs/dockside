@@ -43,13 +43,16 @@
     },
     "lxcfs": {
         "mountpoints": [
-            "cpuinfo",
-            "diskstats",
-            "meminfo",
-            "stat",
-            "swaps",
-            "uptime"
+            "/proc/cpuinfo",
+            "/proc/diskstats",
+            "/proc/meminfo",
+            "/proc/stat",
+            "/proc/swaps",
+            "/proc/uptime",
+            "/proc/loadavg",
+            "/sys/devices/system/cpu/online"
         ],
+        "mountpoint": "/var/lib/lxcfs",
         "available": false,
         "default": true
     }

@@ -179,11 +179,23 @@ sub cmdline_mounts_lxcfs {
       return () unless exists($self->profileObject->{'lxcfs'}) && $self->profileObject->{'lxcfs'} == 1;
    }
 
+   my $mountpoint = $CONFIG->{'lxcfs'}{'mountpoint'} // '/var/lib/lxcfs';
+
+   # Remove any trailing '/' as we won't need it.
+   $mountpoint =~ s!/+$!!;
+
    return map {
+      m!^/! ?
+      join(',',
+         "--mount=type=bind",
+         "dst=$_",
+         "src=$mountpoint$_",
+      )
+      :
       join(',',
          "--mount=type=bind",
          "dst=/proc/$_",
-         "src=/var/lib/lxcfs/proc/$_",
+         "src=$mountpoint/proc/$_",
       )
    } @{$CONFIG->{'lxcfs'}{'mountpoints'}};
 }
