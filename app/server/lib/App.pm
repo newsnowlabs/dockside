@@ -97,6 +97,40 @@ sub json {
    return nginx::OK;
 }
 
+sub redirect {
+   my $r = shift;
+   my $code = shift;
+   my $location = shift;
+   my $headers = shift;
+
+   $r->status($code);
+   $r->header_out( 'Cache-Control', 'no-store' );
+   $r->header_out( 'Location',      $location );
+
+   foreach my $h (@$headers) {
+      $r->header_out(@$h);
+   }
+
+   $r->send_http_header("text/plain");
+   $r->print("Redirecting to $location ...\n");
+
+   return nginx::OK;
+}
+
+sub html {
+   my $r = shift;
+   my $code = shift;
+   my $data = shift;
+
+   $r->status($code);
+   $r->header_out( 'Cache-Control', 'no-store' );
+   $r->send_http_header("text/html");
+
+   $r->print( $data );
+
+   return nginx::OK;
+}
+
 sub text {
    my $r = shift;
    my $code = shift;
@@ -111,16 +145,34 @@ sub text {
    return nginx::OK;
 }
 
-sub send_login_page {
+sub send_branded_page {
    my $r = shift; # nginx request object
+   my $code = shift;
+   my $html = shift;
 
+   $r->status($code);
    $r->send_http_header("text/html");
    $r->print( get_asset('header.html') );
    $r->print( "<style>\n" . get_asset('signin.css') . "\n</style>\n" );
    $r->print("</head><body>\n");
-   $r->print( get_asset('signin.html') );
-   $r->print("</body></html>\n");
+   $r->print('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">');
+   $r->print('<div class="container"><div class="form-signin"><div class="dockside"></div>' . $html . "</div></div>\n</body></html>\n");
    return nginx::OK;
+}
+
+sub send_login_page {
+   my $r = shift; # nginx request object
+
+   return send_branded_page($r, 200, <<'_EOE_'
+   <form class="form-signin" method="POST" accept-charset="UTF-8" action="/">
+      <label for="inputUser" class="sr-only">Username</label>
+      <input name="username" type="username" id="inputUser" class="form-control" placeholder="Username" autocomplete="username" required autofocus>
+      <label for="inputPassword" class="sr-only">Password</label>
+      <input name="password" type="password" id="inputPassword" class="form-control" placeholder="Password" autocomplete="current-password" required>
+      <input class="btn btn-lg btn-primary btn-block" type="submit" value="Sign in">
+   </form>
+_EOE_
+   );
 }
 
 sub handle_login_form {
@@ -135,16 +187,10 @@ sub handle_login_form {
 
       if( my $User = Request->authenticate_by_credentials( $credentials{'username'}, $credentials{'password'} ) ) {
          my @cookies = $User->generate_auth_cookies($parentFQDN);
-         $r->status(302);
-         $r->header_out( 'Cache-Control', 'no-store' );
-         $r->header_out( 'Location',      '/' );
 
-         foreach my $cookie (@cookies) {
-            $r->header_out( 'Set-Cookie', $cookie );
-         }
-
-         $r->send_http_header("text/plain");
-         $r->print("Authenticating...\n");
+         redirect($r, 302, '/', [
+            map { ['Set-Cookie', $_] } @cookies
+         ]);
          return 1;
       }
       else {
@@ -364,6 +410,8 @@ sub _handler {
          return json($r, 200, { 'status' => '200', 'data' => $containers });
       }
 
+      # Default: redirect to /
+      return redirect($r, 302, '/');
    }
    catch {
       my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
@@ -371,10 +419,10 @@ sub _handler {
       flog("Reporting exception: dbg='$dbg'; msg='$msg'; content type='$type'");
 
       if($type eq 'text') {
-         text($r, 401, $msg);
+         return text($r, 401, $msg);
       }
       else {
-         json($r, 401, { 'status' => '401', 'msg' => $msg });
+         return json($r, 401, { 'status' => '401', 'msg' => $msg });
       }
    };
 
@@ -394,11 +442,9 @@ sub handler {
    catch {
       my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
 
-      $r->status(503);
-      $r->print("<html><body><h1>Dockside</h1><p>Caught exception: $msg</p></body></html>");
       wlog( "Caught exception: dbg='$dbg'; msg='$msg'");
       flog("Caught exception: dbg='$dbg'; msg='$msg'");
-      return nginx::OK;
+      return html($r, 503, "<html><body><h1>Dockside</h1><p>Caught exception: $msg</p></body></html>");
    };
 
    return $R;
