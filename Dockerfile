@@ -25,3 +25,6 @@ RUN mkdir -p $BUNDLE_PATH && \
 
 # Add rest of repo
 ADD --chown=dockside:dockside ./ ./
+
+# Add HTML Language Basics plugin
+ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/html/latest/file/vscode.html-1.62.3.vsix /home/dockside/theia-plugins/

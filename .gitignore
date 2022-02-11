@@ -9,6 +9,7 @@
 /.ash_history
 /.gitconfig
 /.jekyll-metadata
+/theia-plugins
 *package-lock.json
 /Gemfile.lock
 /vendor/
