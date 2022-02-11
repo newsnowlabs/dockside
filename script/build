@@ -1,9 +1,0 @@
-#!/bin/sh
-
-set -e
-
-npm install
-
-export BUNDLE_PATH=/home/dockside/.gems
-bundle install
-bundle exec jekyll build
