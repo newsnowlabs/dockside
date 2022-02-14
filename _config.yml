@@ -1,6 +1,6 @@
 # global settings
-title: "Dockside - Develop in containers using production environments"
-description: "Provision lightweight access-controlled IDEs, staging environments and sandboxes - aka ‘devtainers’ - on local machine, on-premises raw metal or VM, or in the cloud."
+title: "Dockside - develop in clones of your production environment"
+description: "A dev and staging environment in one - Dockside lets dev teams code from anywhere in clones of their production environment and share and stage their work online for stakeholders."
 permalink: "/stories/:title"
 url: https://dockside.io
 relative_permalinks: false

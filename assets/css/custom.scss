@@ -1,5 +1,14 @@
+html {
+  scroll-behavior: smooth;
+}
+
+@media screen and (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+}
+
 body {
-  font-family: 'Roboto', 'Helvetica Neue', Helvetica, Arial, sans-serif;
   font-size: 16px;
 }
 
@@ -137,8 +146,6 @@ body {
   td.criterion { width: 45%; }
   td.support { width: 20%; font-size: $h4-size;}
   td.comments { width: 35%; }
-
-
 }
 
 td.supports { color: $green-500;  }

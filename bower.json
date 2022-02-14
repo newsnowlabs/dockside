@@ -1,11 +1,11 @@
 {
   "name": "dockside.io",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "homepage": "https://dockside.io",
   "authors": [
     "NewsNow Labs"
   ],
-  "description": "Develop in containers using production environments.",
+  "description": "develop in clones of your production environment.",
   "main": "index.html",
   "license": "Apache",
   "dependencies": {
