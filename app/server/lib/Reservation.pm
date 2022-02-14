@@ -112,7 +112,7 @@ sub profile {
    }
 
    my $name = shift;
-   unless( $name =~ /^[a-zA-Z][a-zA-Z0-9\-\_]+$/ && Profile->load($name) ) {
+   unless( $name =~ /^[a-zA-Z0-9][a-zA-Z0-9\-\_]+$/ && Profile->load($name) ) {
       die Exception->new( 'msg' => "Failed to set Reservation profile to unknown or invalid profile '$name'" );
    }
 
