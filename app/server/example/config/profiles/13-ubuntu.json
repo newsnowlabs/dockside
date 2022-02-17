@@ -1,6 +1,6 @@
 {
    "version": 2,
-   "name": "RedHat Linux",
+   "name": "Stock Image - Ubuntu",
    "active": true,
    "routers": [
       {
@@ -12,7 +12,16 @@
       }
    ],
    "networks": [ "bridge" ],
-   "images": [ "richxsl/rhel7", "richxsl/rhel8" ],
+   "images": [
+      "ubuntu:latest",
+      "ubuntu:trusty",
+      "ubuntu:xenial",
+      "ubuntu:bionic",
+      "ubuntu:focal",
+      "ubuntu:hirsute",
+      "ubuntu:impish",
+      "ubuntu:jammy"
+   ],
    "unixusers": ["dockside"],
    "mounts": {
       "tmpfs": [],
@@ -22,8 +31,8 @@
           { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
    },
    "lxcfs": true,
-   "dockerArgs": [],
+   "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "command": [
-      "/bin/sh", "-c", "sleep infinity"
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity"
    ],
 }

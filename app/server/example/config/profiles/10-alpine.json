@@ -1,6 +1,6 @@
 {
    "version": 2,
-   "name": "Debian",
+   "name": "Stock Image - Alpine Linux",
    "active": true,
    "routers": [
       {
@@ -8,14 +8,11 @@
          "prefixes": [ "www" ],
          "domains": [ "*" ],
          "https": { "protocol": "http", "port": 8080 },
-         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
       }
    ],
    "networks": [ "bridge" ],
-   "images": [
-      "debian:latest", "amd64/debian:buster", "i386/debian:buster",
-      "arm32v7/debian", "arm64v8/debian", "mips64le/debian", "ppc64le/debian", "s390x/debian"
-   ],
+   "images": [ "alpine:latest", "i386/alpine:latest", "amd64/alpine:latest" ],
    "unixusers": ["dockside"],
    "mounts": {
       "tmpfs": [],
@@ -25,8 +22,8 @@
           { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
    },
    "lxcfs": true,
-   "dockerArgs": [],
+   "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "command": [
-      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity"
-   ],
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"
+   ]
 }

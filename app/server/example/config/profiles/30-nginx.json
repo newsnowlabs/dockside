@@ -1,6 +1,6 @@
 {
    "version": 2,
-   "name": "NGINX",
+   "name": "Stock Image - NGINX",
    "active": true,
    "routers": [
       {
@@ -19,5 +19,8 @@
    },
    "security": {
       "apparmor": "unconfined"
-   }
+   },
+   "entrypoint": "/bin/bash",
+   "command": [ "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); chmod -R dockside /usr/share/nginx/html; exec /docker-entrypoint.sh nginx -g 'daemon off;'" ],
+   "dockerArgs": ["--memory=1G", "--pids-limit=4000", "--cpus=1"]
 }

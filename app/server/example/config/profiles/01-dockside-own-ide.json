@@ -1,9 +1,9 @@
 {
    "version": 2,
-   "name": "Dockside",
-   "description": "Dockside (with production IDE)",
+   "name": "Dockside (IDE from image)",
+   "description": "Dockside (with IDE from image)",
    "active": true,
-   "mountIDE": true, // Mount the production (outer Dockside) IDE (the default)
+   "mountIDE": false, // Don't mount the production (outer Dockside) IDE
    "routers": [
       {
          "name": "dockside",
@@ -30,7 +30,7 @@
    ],
 
    "networks": [ "bridge" ],
-   "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:test" ],
+   "images": [ "newsnowlabs/dockside:latest" ],
 
    "unixusers": [ "dockside" ],
 
@@ -68,6 +68,7 @@
       "apparmor": "unconfined"
    },
 
+   "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "runDockerInit": false,
    "command": ["--ssl-selfsigned", "--ssl-zone", "{container.hostname}", "--passwd-stdout"]
 }

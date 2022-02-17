@@ -1,6 +1,6 @@
 {
    "version": 2,
-   "name": "Alpine Linux",
+   "name": "Stock Image - RedHat Linux",
    "active": true,
    "routers": [
       {
@@ -8,11 +8,11 @@
          "prefixes": [ "www" ],
          "domains": [ "*" ],
          "https": { "protocol": "http", "port": 8080 },
-         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
       }
    ],
    "networks": [ "bridge" ],
-   "images": [ "alpine:latest", "i386/alpine:latest", "amd64/alpine:latest" ],
+   "images": [ "richxsl/rhel7", "richxsl/rhel8" ],
    "unixusers": ["dockside"],
    "mounts": {
       "tmpfs": [],
@@ -22,8 +22,8 @@
           { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
    },
    "lxcfs": true,
-   "dockerArgs": [],
+   "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "command": [
-      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"
-   ]
+      "/bin/sh", "-c", "sleep infinity"
+   ],
 }

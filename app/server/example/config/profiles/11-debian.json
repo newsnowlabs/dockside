@@ -1,6 +1,6 @@
 {
    "version": 2,
-   "name": "Ubuntu",
+   "name": "Stock Image - Debian",
    "active": true,
    "routers": [
       {
@@ -13,14 +13,8 @@
    ],
    "networks": [ "bridge" ],
    "images": [
-      "ubuntu:latest",
-      "ubuntu:trusty",
-      "ubuntu:xenial",
-      "ubuntu:bionic",
-      "ubuntu:focal",
-      "ubuntu:hirsute",
-      "ubuntu:impish",
-      "ubuntu:jammy"
+      "debian:latest", "amd64/debian:buster", "i386/debian:buster",
+      "arm32v7/debian", "arm64v8/debian", "mips64le/debian", "ppc64le/debian", "s390x/debian"
    ],
    "unixusers": ["dockside"],
    "mounts": {
@@ -31,7 +25,7 @@
           { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
    },
    "lxcfs": true,
-   "dockerArgs": [],
+   "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "command": [
       "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity"
    ],

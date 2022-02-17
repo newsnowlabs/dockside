@@ -31,7 +31,7 @@
 
    "runtimes": [ "sysbox-runc" ],
    "networks": [ "bridge" ],
-   "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:test" ],
+   "images": [ "newsnowlabs/dockside:latest" ],
 
    "unixusers": [ "dockside" ],
 
@@ -67,6 +67,7 @@
       ]
    },
 
+   "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "runDockerInit": false,
    "command": ["--ssl-selfsigned", "--ssl-zone", "{container.hostname}", "--run-dockerd", "--passwd-stdout"]
 }
