@@ -1,0 +1,30 @@
+{
+   "version": 2,
+   "name": "Dockside.io",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "bridge" ],
+   "images": [ "newsnowlabs/dockside:io" ],
+   "unixusers": ["dockside"],
+   "mounts": {
+      "tmpfs": [],
+      "bind": [],
+      "volume": [
+         // Use this to share encrypted ssh keys in the named volume among team members.
+          { "src": "dockside-ssh-keys", "dst": "/home/{ideUser}/.ssh" } ]
+   },
+   "runtimes": [ "runc", "runsc", "sysbox-runc" ],
+   "lxcfs": true,
+   "dockerArgs": ["--memory=2G", "--pids-limit=4000", "--cpus=1"],
+   "command": [
+      "/bin/sh", "-c", "/home/dockside/script/server --incremental & sleep infinity"
+   ]
+}
