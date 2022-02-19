@@ -1,26 +1,38 @@
 div.dockside {
    background-image: url(/ico/dockside.svg);
    background-repeat: no-repeat;
-   height: 58px;
+   background-position: center;
+   background-size: contain;
    margin-bottom: 10px;
+
+   background-size:100% auto;
+   -o-background-size:100% auto;
+   -webkit-background-size:100% auto;
+   -moz-background-size:100% auto;
 }
 
-.form-signin {
-  max-width: 330px;
-  padding: 15px;
+.branded {
+  padding: 1em;
   margin: 0 auto;
 }
 
-.form-signin .form-signin-heading,
-.form-signin .checkbox {
-  margin-bottom: 10px;
+.branded.demo {
+  max-width: 430px;
 }
 
-.form-signin .checkbox {
-  font-weight: normal;
+.branded.demo div.dockside {
+   height: 74px;
 }
 
-.form-signin .form-control {
+.branded.signin div.dockside {
+   height: 58px;
+}
+
+.branded.signin {
+   max-width: 330px;
+}
+
+.branded .form-control {
   position: relative;
   height: auto;
   -webkit-box-sizing: border-box;
@@ -30,17 +42,17 @@ div.dockside {
   font-size: 16px;
 }
 
-.form-signin .form-control:focus {
+.branded .form-control:focus {
   z-index: 2;
 }
 
-.form-signin input[type="email"] {
+.branded input[type="email"] {
   margin-bottom: -1px;
   border-bottom-right-radius: 0;
   border-bottom-left-radius: 0;
 }
 
-.form-signin input[type="password"] {
+.branded input[type="password"] {
   margin-bottom: 10px;
   border-top-left-radius: 0;
   border-top-right-radius: 0;

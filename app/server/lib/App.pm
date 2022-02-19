@@ -148,6 +148,7 @@ sub text {
 sub send_branded_page {
    my $r = shift; # nginx request object
    my $code = shift;
+   my $class = shift;
    my $html = shift;
 
    $r->status($code);
@@ -156,15 +157,15 @@ sub send_branded_page {
    $r->print( "<style>\n" . get_asset('signin.css') . "\n</style>\n" );
    $r->print("</head><body>\n");
    $r->print('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">');
-   $r->print('<div class="container"><div class="form-signin"><div class="dockside"></div>' . $html . "</div></div>\n</body></html>\n");
+   $r->print('<div class="container"><div class="branded ' . $class . '"><div class="dockside"></div>' . $html . "</div></div>\n</body></html>\n");
    return nginx::OK;
 }
 
 sub send_login_page {
    my $r = shift; # nginx request object
 
-   return send_branded_page($r, 200, <<'_EOE_'
-   <form class="form-signin" method="POST" accept-charset="UTF-8" action="/">
+   return send_branded_page($r, 200, 'signin', <<'_EOE_'
+   <form method="POST" accept-charset="UTF-8">
       <label for="inputUser" class="sr-only">Username</label>
       <input name="username" type="username" id="inputUser" class="form-control" placeholder="Username" autocomplete="username" required autofocus>
       <label for="inputPassword" class="sr-only">Password</label>
