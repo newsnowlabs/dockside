@@ -189,7 +189,8 @@ sub handle_login_form {
       if( my $User = Request->authenticate_by_credentials( $credentials{'username'}, $credentials{'password'} ) ) {
          my @cookies = $User->generate_auth_cookies($parentFQDN);
 
-         redirect($r, 302, '/', [
+         # On successful login, redirect with 302 to current URI
+         redirect($r, 302, $r->uri, [
             map { ['Set-Cookie', $_] } @cookies
          ]);
          return 1;
