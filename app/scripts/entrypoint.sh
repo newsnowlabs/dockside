@@ -136,6 +136,9 @@ Usage: docker run {-d|-it} [--name <name>] [-v <host-config-path>:/data] -p 443:
 
   Launch 'inner' dockerd, for running devtainers:
     docker run {-d|-it} [--name <name>] [-v <host-config-path>:/data] -p 443:443 -p 80:80 [-p 53:53/udp] --runtime=sysbox-runc newsnowlabs/dockside --run-dockerd [OPTIONS]
+  
+  Set arbitrary config.json option, where <expression> is a jq assignment expression:
+    --config-set '<expression>'
 
   Display this help:
     --help
@@ -159,6 +162,7 @@ do
           -h|--help) shift; usage; exit 0; ;;
     --passwd-stdout) shift; OPT_PASSWD_STDOUT="1"; continue; ;;
       --passwd-file) shift; OPT_PASSWD_FILE="$1"; shift; continue; ;;
+       --config-set) shift; OPT_CONFIG_SET+=("$1"); shift; continue; ;;
                   *) break; ;;
   esac
 done
@@ -331,6 +335,16 @@ if ! [ -f $DATA_DIR/config/config.json ]; then
   cp -a $APP_DIR/app/server/example/config/config.json $DATA_DIR/config/
   
   init_config
+fi
+
+if [ ${#OPT_CONFIG_SET[@]} -gt 0 ]; then
+  log_push "Setting config.json options ..."
+  for opt in "${OPT_CONFIG_SET[@]}"
+  do
+    log "- Setting config.json '$opt'"
+    jq_config_set "$opt"
+  done
+  log_pop
 fi
 
 if [ "$OPT_LXCFS_AVAILABLE" == "1" ]; then
