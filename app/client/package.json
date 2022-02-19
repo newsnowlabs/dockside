@@ -7,8 +7,8 @@
     "start": "webpack --config ./build/webpack.dev.js",
     "build": "webpack --config ./build/webpack.prod.js"
   },
-  "author": "NewsNow",
-  "license": "ISC",
+  "author": "NewsNow Publishing Limited",
+  "license": "Apache-2.0",
   "dependencies": {
     "@johmun/vue-tags-input": "^2.1.0",
     "@trevoreyre/autocomplete-vue": "^2.2.0",
