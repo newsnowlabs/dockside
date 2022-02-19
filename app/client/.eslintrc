@@ -12,6 +12,7 @@
    ],
    "rules": {
       "semi": ["error", "always"],
-      "no-debugger": 0
+      "no-debugger": 0,
+      "vue/no-parsing-error": [2, { "invalid-first-character-of-tag-name": false }]
    }
 }
