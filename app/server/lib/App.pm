@@ -276,6 +276,13 @@ sub _handler {
 
       # GET request? Then send login page.
       if( $r->request_method ne "POST") {
+         
+         # If not a UI URI, redirect to / to serve login page.
+         # Otherwise allow login page to be served on current URI.
+         unless( $route eq '/' || $route =~ m!^/container/! ) {
+            return redirect($r, 302, '/');
+         }
+
          return send_login_page($r);
       }
 
