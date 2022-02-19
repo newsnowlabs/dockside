@@ -130,7 +130,10 @@
                         </tr>
                         <tr v-if="container.permissions.auth.developer && container.status >= 0 && container.docker.Size">
                            <th>Size</th>
-                           <td>{{ container.docker.Size }}</td>
+                           <td>{{ container.docker.Size < 1000000000 ?
+                              Math.round(container.docker.Size/10000)/100 + 'MB' :
+                              Math.round(container.docker.Size/10000000)/100 + 'GB' }}
+                           </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected && !isPrelaunchMode">
                            <th>Reservation ID</th>
