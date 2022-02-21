@@ -74,7 +74,7 @@ my $CONFIG_FILES = {
 
          # Assign defaults
          $CONFIG->{'docker'}{'socket'} //= '/var/run/docker.sock';
-         $CONFIG->{'docker'}{'sizes'} //= 1;
+         $CONFIG->{'docker'}{'sizes'} //= 0;
       },
       'parse' => \&parse_json
    },
