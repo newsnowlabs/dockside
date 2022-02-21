@@ -64,7 +64,7 @@ sub _update {
    foreach my $c (@$newContainersFromAPI) {
 
       my $ID = substr($c->{'Id'}, 0, 12);
-      my ($ideVolume) = map { $_->{'Name'} } grep { $_->{'Destination'} eq $idePath } @{$c->{'Mounts'}};
+      my ($ideVolume) = map { $_->{'Type'} eq 'volume' ? ['volume', $_->{'Name'}] : ['bind', $_->{'Source'}] } grep { $_->{'Destination'} eq $idePath } @{$c->{'Mounts'}};
 
       $newContainers->{$ID}{'docker'} = {
          'ID' => $ID, # Short ID (for now)

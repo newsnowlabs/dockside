@@ -231,8 +231,7 @@ sub cmdline_ide_mount {
    }
 
    my $idePath = $CONFIG->{'ide'}{'path'} || '/opt/dockside';
-   my $ideVolume;
-   my $ideVolumeType;
+   my $ide;
 
    # If $HOSTNAME is undefined, try to bind-mount the ideVolume from the 'host',
    # assuming the ide.path provided in config.json. This is appropriate where Dockside
@@ -242,27 +241,25 @@ sub cmdline_ide_mount {
       # When launching a devtainer using an inner dockerd instance, whether using Sysbox, Docker-in-Docker, or Podman
       # the devtainer cannot mount the Dockside volume (as there is no Dockside container, or volume, accessible to the inner dockerd).
       # Instead, bind-mount $idePath from the Dockside container to the devtainer.
-      $ideVolume = $idePath;
-      $ideVolumeType = 'bind';
+      $ide = ['bind', $idePath];
    }
    else {
-      # When launching a devtainer within the same dockerd instance as is running Dockside, identify the Docker volume to mount in the devtainer.
+      # When launching a devtainer within the same dockerd instance as is running Dockside, identify the Docker volume, or bind-mount path, to mount in the devtainer.
       if($HOSTNAME) {
-         $ideVolume = Containers->containers->{$HOSTNAME}{'inspect'}{'ideVolume'};
-         $ideVolumeType = 'volume';
+         $ide = Containers->containers->{$HOSTNAME}{'inspect'}{'ideVolume'};
       }
       else {
          die Exception->new( 'msg' => "Failed to locate IDE volume because expected Dockside container hostname is undefined" );
       }
    }
 
-   if(!$ideVolume) {
+   if(!$ide) {
       die Exception->new( 'msg' => "Failed to locate IDE volume for hostname '$HOSTNAME'" );
    }
 
-   flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered ideVolume '$ideVolume'");
+   flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered ide mount type '$$ide[0]' src/named '$$ide[1]'");
 
-   return ("--mount=type=$ideVolumeType,src=$ideVolume,dst=$idePath,ro");
+   return ("--mount=type=$$ide[0],src=$$ide[1],dst=$idePath,ro");
 }
 
 sub cmdline_init {
