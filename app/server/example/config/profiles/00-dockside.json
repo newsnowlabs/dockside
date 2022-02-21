@@ -47,7 +47,7 @@
          { "dst": "/home/{ideUser}/.vscode", "tmpfs-size": "100M" },
 
          // These are good for most Linux distributions
-         { "dst": "/tmp", "tmpfs-size": "128M" },
+         { "dst": "/tmp", "tmpfs-size": "512M" },
          { "dst": "/var/tmp", "tmpfs-size": "128M" },
          { "dst": "/run", "tmpfs-size": "64M" }
       ],
