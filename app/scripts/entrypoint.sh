@@ -148,7 +148,7 @@ _EOE_
 
 log "Initialising Dockside ..." >&2
 
-log "Parsing command line arguments ..."
+log "Parsing command line arguments: ${@@Q}"
 while true
 do
   case "$1" in
