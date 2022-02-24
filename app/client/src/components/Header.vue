@@ -1,6 +1,6 @@
 <template>
    <b-navbar toggleable="lg" variant="dark" type="dark" fixed="top">
-      <b-navbar-brand v-on:click="goHome(false)"><div><Dockside colour="white"/><sub>from NewsNow Labs</sub></div></b-navbar-brand>
+      <b-navbar-brand v-on:click="goHome(false)"><div><Dockside colour="white"/></div></b-navbar-brand>
 
       <b-navbar-toggle target="nav-collapse"></b-navbar-toggle>
 
@@ -16,7 +16,11 @@
 
             <b-nav-item v-show="user.permissions.actions.createContainerReservation && !isPrelaunchMode" v-on:click="goToContainer('new', 'prelaunch')"><a href="javascript:">Launch</a></b-nav-item>
 
-            <b-nav-item v-show="!isSelected" to="docs"><a href="javascript:">Docs</a></b-nav-item>
+            <b-nav-item v-show="!isSelected" to="/docs"><a href="javascript:">Docs</a></b-nav-item>
+
+            <b-nav-item v-show="!isSelected" to="/docksideio"><a href="https://dockside.io/">Dockside.io</a></b-nav-item>
+
+            <b-nav-item v-show="!isSelected" to="/dockside-github"><a href="https://github.com/newsnowlabs/dockside">GitHub</a></b-nav-item>
          </b-navbar-nav>
       </b-collapse>
    </b-navbar>
@@ -85,11 +89,8 @@
 
    .navbar-brand {
       cursor: pointer;
-      height: 42px;
 
       padding-top: 0px;
-      position: relative;
-      top: -4px;
 
       > div {
          font-size: 32px;
@@ -98,14 +99,6 @@
             float: left;
          }
 
-         > sub {
-            font-style: italic;
-            display: block;
-            float: right;
-            margin-top: 6px;
-            clear: left;
-            font-size: 45%;
-         }
       }
    }
 

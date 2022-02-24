@@ -1,16 +1,19 @@
 <template>
-   <b-container fluid>
-      <Header></Header>
-
-      <b-row>
-         <Sidebar></Sidebar>
-         <Main></Main>
-      </b-row>
-   </b-container>
+   <div>
+      <b-container fluid>
+         <Header></Header>
+         <b-row>
+            <Sidebar></Sidebar>
+            <Main></Main>
+         </b-row>
+      </b-container>
+      <Footer></Footer>
+   </div>
 </template>
 
 <script>
    import Header from '@/components/Header';
+   import Footer from '@/components/Footer';
    import Sidebar from '@/components/Sidebar';
    import Main from '@/components/Main';
 
@@ -18,6 +21,7 @@
       name: 'App',
       components: {
          Header,
+         Footer,
          Sidebar,
          Main
       },
@@ -57,7 +61,7 @@
 
    body {
       font-size: 0.9rem;
-      padding-top: 56px; /* Move down content because we have a fixed navbar that is 56px tall */
+      padding-top: 58px; /* Move down content because we have a fixed navbar that is 56px tall */
    }
 
    /* Define MacOS Safari scrollbar appearance */
