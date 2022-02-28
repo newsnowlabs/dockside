@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -e
 
 PLUGIN_DIR=~/theia-plugins
 
@@ -22,7 +22,7 @@ for vsix in \
 do
   file=$(basename $vsix)
   echo "Downloading vsix plugin $vsix to $file ..." >&2
-  curl --silent --location -o $PLUGIN_DIR/$file $vsix
+  curl --fail --silent --location -o $PLUGIN_DIR/$file $vsix
 done
 
-curl --silent --location -o $PLUGIN_DIR/richterger.perl-2.2.0.vsix https://marketplace.visualstudio.com/_apis/public/gallery/publishers/richterger/vsextensions/perl/2.2.0/vspackage --compressed
+curl --fail --silent --location -o $PLUGIN_DIR/richterger.perl-2.2.0.vsix https://marketplace.visualstudio.com/_apis/public/gallery/publishers/richterger/vsextensions/perl/2.2.0/vspackage --compressed
