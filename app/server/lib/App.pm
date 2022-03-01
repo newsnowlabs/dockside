@@ -57,6 +57,14 @@ sub get_client_asset {
    return $contents;
 }
 
+sub get_header {
+   my $title = shift;
+
+   return get_asset('header.html') . 
+      "   <title>" . ($title // 'Dockside -- from NewsNow Labs') . "</title>\n" .
+      get_asset('gtm.html');
+}
+
 ####################################################################################################
 
 sub log_status {
@@ -153,7 +161,7 @@ sub send_branded_page {
 
    $r->status($code);
    $r->send_http_header("text/html");
-   $r->print( get_asset('header.html') );
+   $r->print( get_header() );
    $r->print( "<style>\n" . get_asset('signin.css') . "\n</style>\n" );
    $r->print("</head><body>\n");
    $r->print('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">');
@@ -306,7 +314,7 @@ sub _handler {
       # Display main page HTML
       #
       $r->send_http_header("text/html");
-      $r->print( get_asset('header.html') );
+      $r->print( get_header() );
       $r->print( "<style>\n" . get_client_asset('main.css') . "\n</style>\n" );
 
       # Output permissions for signed-in user
