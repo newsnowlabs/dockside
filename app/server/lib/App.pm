@@ -61,7 +61,7 @@ sub get_header {
    my $title = shift;
 
    return get_asset('header.html') . 
-      "   <title>" . ($title // 'Dockside -- from NewsNow Labs') . "</title>\n" .
+      "   <title>" . ($title // 'Dockside - A dev and staging environment in one - From NewsNow Labs') . "</title>\n" .
       get_asset('gtm.html');
 }
 
