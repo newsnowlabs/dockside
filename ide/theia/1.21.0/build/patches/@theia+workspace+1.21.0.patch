@@ -1,0 +1,20 @@
+--- a/node_modules/@theia/workspace/lib/browser/workspace-service.js
++++ b/node_modules/@theia/workspace/lib/browser/workspace-service.js
+@@ -60,6 +60,7 @@
+     }
+     async init() {
+         this.applicationName = frontend_application_config_provider_1.FrontendApplicationConfigProvider.get().applicationName;
++        this.devtainerName = frontend_application_config_provider_1.FrontendApplicationConfigProvider.get().devtainerName;
+         const wsUriString = await this.getDefaultWorkspaceUri();
+         const wsStat = await this.toFileStat(wsUriString);
+         await this.setWorkspace(wsStat);
+@@ -245,7 +246,8 @@
+     }
+     formatTitle(title) {
+         const name = this.applicationName;
+-        return title ? `${title} — ${name}` : name;
++        const devtainer = this.devtainerName;
++        return title ? `${devtainer} (${title}) - ${name}` : `${devtainer} - ${name}`;
+     }
+     updateTitle() {
+         let title;

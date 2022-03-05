@@ -4,3 +4,7 @@ Patch to fix invalid cspSource:
 
 Patch to disable HTTP fallback, appears incompatible with Dockside:
 - @theia+core+<version>.patch
+
+Patches to modify browser title to incorporate devtainer name:
+- @theia+application-manager+<version>.patch
+- @theia+workspace+<version>.patch
