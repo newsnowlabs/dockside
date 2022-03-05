@@ -216,16 +216,6 @@ RUN apt-get -y install \
     rm -rf /tmp/vsix-deps
 
 ################################################################################
-# INSTALL DEVELOPMENT VSIX PLUGINS
-#
-COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
-
-################################################################################
-# THEIA INTEGRATION
-#
-COPY --from=theia $THEIA_PATH $THEIA_PATH/
-
-################################################################################
 # VUE CLIENT INSTALL
 #
 USER $USER
@@ -255,6 +245,16 @@ RUN cp -a ~/$APP/build/development/dot-theia .theia && \
 #
 USER $USER
 COPY --chown=$USER:$USER . $HOME/$APP/
+
+################################################################################
+# INSTALL DEVELOPMENT VSIX PLUGINS
+#
+COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
+
+################################################################################
+# THEIA INTEGRATION
+#
+COPY --from=theia $THEIA_PATH $THEIA_PATH/
 
 ################################################################################
 # Cause the creation of a volume at /opt/dockside.
