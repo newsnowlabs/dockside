@@ -5,7 +5,7 @@
   "authors": [
     "NewsNow Labs"
   ],
-  "description": "develop in clones of your production environment.",
+  "description": "Dockside Online IDE - A Dev and Staging Environment in One",
   "main": "index.html",
   "license": "Apache",
   "dependencies": {

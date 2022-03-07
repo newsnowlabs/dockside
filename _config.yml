@@ -1,6 +1,6 @@
 # global settings
-title: "Dockside - develop in clones of your production environment"
-description: "A dev and staging environment in one - Dockside lets dev teams code from anywhere in clones of their production environment and share and stage their work online for stakeholders."
+title: "Dockside Online IDE - A Dev and Staging Environment in One"
+description: "Dockside lets dev teams code from anywhere in clones of their production environment & stage their work online for stakeholders. Open-source self-hosted online IDE."
 permalink: "/stories/:title"
 url: https://dockside.io
 relative_permalinks: false

@@ -1,7 +1,7 @@
 {
   "name": "dockside.io",
   "version": "1.0.0",
-  "description": "Develop in clones of your production environment",
+  "description": "Dockside Online IDE - A Dev and Staging Environment in One",
   "main": "index.js",
   "directories": {
     "doc": "docs"
