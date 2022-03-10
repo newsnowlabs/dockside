@@ -61,7 +61,7 @@
             }
          },
          placeholder() {
-            return this.disabled ? '' : 'Add Tag';
+            return this.disabled ? '' : 'Add User';
          }
       },
       methods: {
