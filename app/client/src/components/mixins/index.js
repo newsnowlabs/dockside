@@ -37,6 +37,10 @@ const filteredContainers = {
 
 const routing = {
    methods: {
+      go: function (path) {
+         this.$router.push({ path: path }).catch(() => {});
+         return false;
+      },
       goDocs: function () {
          this.$router.push({ path: '/docs' }).catch(() => {});
       },

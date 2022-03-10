@@ -1,22 +1,32 @@
 import Vuex from 'vuex';
 import { getContainers } from '@/services/container';
 
+const welcomeTextStatusLocalStorageKey = '/dockside/welcomeTextStatus';
+
 const createStore = () => new Vuex.Store({
    strict: process.env.NODE_ENV !== 'production',
    state: {
       selectedContainer: { name: undefined, mode: 'view' },
       containersFilter: 'shared',
-      containers: window.dockside.containers
+      containers: window.dockside.containers,
+      welcomeTextStatus: localStorage.getItem(welcomeTextStatusLocalStorageKey) !== null ?
+         parseInt(localStorage.getItem(welcomeTextStatusLocalStorageKey)) : 0
    },
    getters: {
+      welcomeTextStatus: state => state.welcomeTextStatus,
       isSelected: state => state.selectedContainer.name !== undefined,
       haveLaunchingContainers: state => state.containers.some(container =>
          (container.status == -2 && (container.expiryTime === undefined || container.expiryTime === null || container.expiryTime === ''))
       ),
+      haveContainers: state => state.containers.length > 0,
       isEditMode: (state, getters) => getters.isSelected && state.selectedContainer.mode === "edit",
       isPrelaunchMode: (state, getters) => getters.isSelected && state.selectedContainer.name === "new",
    },
    mutations: {
+      updateWelcomeTextStatus(state, status) {
+         state.welcomeTextStatus = status;
+         localStorage.setItem(welcomeTextStatusLocalStorageKey, status);
+      },
       updateSelectedContainerName(state, name) {
          state.selectedContainer.name = name;
       },
@@ -34,6 +44,11 @@ const createStore = () => new Vuex.Store({
       }
    },
    actions: {
+      updateWelcomeTextStatus({ state, commit }, status) {
+         if (state.welcomeTextStatus !== status) {
+            commit('updateWelcomeTextStatus', status);
+         }
+      },
       updateSelectedContainerName({ state, commit }, name) {
          if (state.selectedContainer.name !== name) {
             commit('updateSelectedContainerName', name);
