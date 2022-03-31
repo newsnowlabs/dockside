@@ -206,11 +206,11 @@ Read the [case study of how Dockside is used in production](case-studies/NewsNow
 
 Where are we taking Dockside? As Dockside today satisfactorily serves the needs of the NewsNow development team, its roadmap currently remains highly flexible. We have a list of features we think could be great to add, but we now want to hear from you what you would most value to see added to Dockside.
 
-For our current ideas/plans, see our [draft roadmap](roadmap).
+For our current ideas/plans, see our [draft roadmap](roadmap.md).
 
 ## Developing Dockside
 
-See [Developing and building Dockside](developing).
+See [Developing and building Dockside](developing.md).
 
 ## Bugs, issues and support
 
