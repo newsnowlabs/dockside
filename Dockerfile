@@ -3,7 +3,7 @@ ARG NODE_VERSION=12
 FROM node:${NODE_VERSION}-alpine as theia-build
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl && \
+    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file && \
     apk add --no-cache patchelf --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community
 
 ARG OPT_PATH
@@ -18,6 +18,10 @@ RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && NODE_OPTIONS="--max_old_space_size=409
 
 FROM theia-build as theia
 
+ARG OPT_PATH
+ARG THEIA_VERSION
+ARG THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
+
 RUN yarn autoclean --init && \
     echo '*.ts' >> .yarnclean && \
     echo '*.ts.map' >> .yarnclean && \
@@ -30,29 +34,18 @@ RUN yarn autoclean --init && \
     rm -rf patches && \
     rm -rf node_modules/puppeteer/.local-chromium
 
-ARG LIBRARY_PACKAGES="libgcc g++ musl libssl1.1 libcrypto1.1 s6 skalibs libcurl nghttp2-libs zlib libsecret glib libgcrypt pcre libmount libblkid libintl libffi libgpg-error"
+
+# Patch all binaries and dynamic libraries for full portability.
+COPY build/development/elf-patcher.sh $THEIA_PATH/bin/elf-patcher.sh
+
 ARG BINARIES="node busybox s6-svscan curl"
-
-# Copy libraries from g++, musl, libgcc, etc
-RUN mkdir -p $THEIA_PATH/lib64 && cd / && for lib in $(for pkg in $LIBRARY_PACKAGES; do apk info -L $pkg | sed -n '1!p'; done | egrep '(\.so$|\.so\.)' | sort -u); do cp -a --parents /$lib* $THEIA_PATH/lib64; done
-
-# Patch all binaries and dynamic libraries for full portability...
-# Patch all Theia .node files
-# Create bin subdir
-# Patch node itself
-# Patch daemontools
-RUN find node_modules/ -name '*.node' -print -exec patchelf --set-rpath $THEIA_PATH/lib64 {} \; && \
-    mkdir -p $THEIA_PATH/bin && \
-    for binary in $BINARIES; do \
-       cp -a $(which $binary) $THEIA_PATH/bin/ && \
-       patchelf --set-interpreter $THEIA_PATH/lib64/lib/ld-musl-x86_64.so.1 $THEIA_PATH/bin/$binary && \
-       patchelf --set-rpath $THEIA_PATH/lib64/lib:$THEIA_PATH/lib64/usr/lib $THEIA_PATH/bin/$binary; \
-    done && \
+RUN $THEIA_PATH/bin/elf-patcher.sh && \
     cd $THEIA_PATH/bin && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
     ln -sf busybox pgrep
 
+# Add our Theia-version-specific scripts.
 ADD ./ide/theia/$THEIA_VERSION/bin/ $THEIA_PATH/bin/
 
 ################################################################################
