@@ -28,3 +28,7 @@ ADD --chown=dockside:dockside ./ ./
 
 # Add HTML Language Basics plugin
 ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/html/latest/file/vscode.html-1.62.3.vsix /home/dockside/theia-plugins/
+ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/scss/1.54.1/file/vscode.scss-1.54.1.vsix /home/dockside/theia-plugins/
+ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/shellscript/1.54.1/file/vscode.shellscript-1.54.1.vsix /home/dockside/theia-plugins/
+ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/docker/1.54.1/file/vscode.docker-1.54.1.vsix /home/dockside/theia-plugins/
+ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/json/1.54.1/file/vscode.json-1.54.1.vsix /home/dockside/theia-plugins/
