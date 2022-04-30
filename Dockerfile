@@ -10,7 +10,7 @@ WORKDIR /home/dockside
 
 USER root
 RUN apk update && \
-    apk add git nodejs npm ruby ruby-dev gcc g++ make musl-dev openssh-client curl patch && \
+    apk add git nodejs npm ruby ruby-dev gcc g++ make musl-dev openssh-client curl patch tig && \
     gem install bundle
 
 USER dockside
