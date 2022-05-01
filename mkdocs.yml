@@ -80,7 +80,7 @@ nav:
   - Usage: usage.md
   - Setup: setup.md
   - Upgrading: upgrading.md
-  - Security: security.md
+  - Security: securing.md
   - Extensions:
     - Extensions: extensions.md
     - LXCFS: extensions/lxcfs.md
