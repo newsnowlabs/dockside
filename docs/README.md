@@ -188,7 +188,7 @@ See [Upgrading Dockside](upgrading.md) for strategies for upgrading Dockside, or
 
 ## Security
 
-See [Securing profiles and devtainers](security.md)
+See [Securing profiles and devtainers](securing.md)
 
 ## Extensions
 
