@@ -2,9 +2,6 @@ Patch to fix invalid cspSource:
 - @theia+plugin-ext+<version>.patch
 - https://github.com/eclipse-theia/theia/issues/8857
 
-Patch to disable HTTP fallback, appears incompatible with Dockside:
-- @theia+core+<version>.patch
-
 Patches to modify browser title to incorporate devtainer name:
 - @theia+application-manager+<version>.patch
 - @theia+workspace+<version>.patch
