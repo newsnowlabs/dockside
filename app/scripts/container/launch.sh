@@ -108,7 +108,7 @@ launch_ide() {
       # - Current user is not root and IDE_USER is ignored.
       while true
       do
-         $IDE_PATH/bin/sh IDE_PATH="$IDE_PATH" $IDE_PATH/bin/launch-ide.sh
+         IDE_PATH="$IDE_PATH" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
          sleep 1
       done
    fi
