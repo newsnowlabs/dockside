@@ -1,2 +1,4 @@
 # Ignore files matching the following patterns within docker build
 **/*~
+app/client/node_modules
+app/client/dist
