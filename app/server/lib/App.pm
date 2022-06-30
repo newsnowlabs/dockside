@@ -271,7 +271,15 @@ sub _handler {
       return nginx::OK;
    }
 
-   if( $route =~ m!^/ico/.*?\.svg$! ) {
+   if( $route =~ m!^/ico/[a-z0-9\-_]+\.png$! ) {
+      my $file = $&;
+      $r->status(200);
+      $r->send_http_header("image/png");
+      $r->sendfile("$CONFIG->{'assetsPath'}/$file");
+      return nginx::OK;
+   }
+
+   if( $route =~ m!^/ico/[a-z0-9\-_]+\.svg$! ) {
       my $file = $&;
       $r->status(200);
       $r->send_http_header("image/svg+xml");
