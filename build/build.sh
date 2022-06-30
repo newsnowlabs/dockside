@@ -1,33 +1,26 @@
 #!/bin/bash
 
 IMAGE=$(basename $(pwd))
-REPOS="newsnowlabs/dockside"
+REPO="newsnowlabs/dockside"
 DOCKERFILE="Dockerfile"
 TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
 
 usage() {
-  echo "$0: [[--stage <stage>] [--tag <tag>] [--push] [--no-cache] [--force-rm] [--progress-plain]] | [--clean] | [--list]" >&2
+  echo "$0: [[--stage <stage>] [--tag <tag>] [--push] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>]] | [--clean] | [--list]" >&2
   exit
 }
 
 push() {
   [ -z "$PUSH" ] && return
   
-  for r in $REPOS
+  for t in ${TAGS[@]}
   do
-    for t in $TAGS
-    do
-      docker push $r:$t
-    done
+    docker push $t
   done
 }
 
 list() {
-  local FILTERS
-  for r in $REPOS
-  do
-    FILTERS+="--filter=reference=$r "
-  done
+  local FILTERS="--filter=reference=$REPO "
   
   docker image ls $FILTERS "$@"
 }
@@ -46,6 +39,7 @@ parse_commandline() {
             --no-cache) shift; NO_CACHE="1"; continue; ;;
             --force-rm) shift; FORCE_RM="1"; continue; ;;
                  --tag) shift; TAG="$1"; shift; continue; ;;
+                --repo) shift; REPO="$1"; shift; continue; ;;
       --progress-plain) shift; PROGRESS="plain"; continue; ;;
             --progress) shift; PROGRESS="$1"; shift; continue; ;;
 	    
@@ -62,24 +56,21 @@ parse_commandline() {
 
 build_env() {
   TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
-  TAGS="$TAG_DATE"
+  TAGS=()
 
   if [ -n "$TAG" ]; then
-    TAGS+=" $TAG"
+    TAGS+=("$REPO:$TAG")
   fi
 
   if [ -n "$STAGE" ] && [ "$STAGE" != "production" ]; then
-    TAGS+=" $STAGE"
+    TAGS+=("$REPO:$STAGE")
   elif [ -z "$TAG" ]; then
-    TAGS+=" latest"
+    TAGS+=("$REPO:latest")
   fi
 
-  for r in $REPOS
+  for t in ${TAGS[@]}
   do
-    for t in $TAGS
-    do
-      DOCKER_OPTS_TAGS+=" --tag $r:$t"
-    done
+    DOCKER_OPTS_TAGS+=" --tag $t"
   done
 
   DOCKER_OPTS=()

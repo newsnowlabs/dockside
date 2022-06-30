@@ -2,13 +2,20 @@
 
 A Dockside image can be built directly from the repo, on any host running Docker - and even within a Dockside devtainer.
 
-To build a new `dockside:test` image :
+To build a new `newsnowlabs/dockside:test` image :
 
 ```
 ./build/build.sh --tag test
 ```
 
-You may now test your newly-built image, by launching a new Dockside devtainer and selecting the `newsnowlabs/dockside:test` image from the devtainer launch menu.
+You may now test your newly-built image, by launching a new Dockside devtainer using either the `Dockside` or `Dockside (IDE from image)`
+profiles, selecting the `newsnowlabs/dockside:test` image from the Image menu.
+
+To build a new image tagged for a custom repo, e.g. `myrepo:test` :
+
+```
+./build/build.sh --repo myrepo --tag test
+```
 
 > **N.B.**
 > 
