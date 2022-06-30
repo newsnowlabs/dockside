@@ -234,12 +234,6 @@ RUN cp -a ~/$APP/build/development/dot-theia .theia && \
     ln -s ~/$APP/build/development/perltidyrc ~/.perltidyrc
 
 ################################################################################
-# COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
-#
-USER $USER
-COPY --chown=$USER:$USER . $HOME/$APP/
-
-################################################################################
 # INSTALL DEVELOPMENT VSIX PLUGINS
 #
 COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
@@ -248,6 +242,12 @@ COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plu
 # THEIA INTEGRATION
 #
 COPY --from=theia $THEIA_PATH $THEIA_PATH/
+
+################################################################################
+# COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
+#
+# USER $USER
+COPY --chown=$USER:$USER . $HOME/$APP/
 
 ################################################################################
 # Cause the creation of a volume at /opt/dockside.
