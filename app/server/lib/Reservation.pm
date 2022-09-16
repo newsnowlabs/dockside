@@ -719,8 +719,10 @@ sub lookup_container_uri {
       return undef;
    }
 
-   # Match the Theia webview prefix, e.g. ada64f8c-e28a-467e-8005-684da9eeaa90-webview-ide, and map to the 'ide' prefix.
-   if( $host ne '' && $prefix =~ /^.*-(webview|minibrowser)-ide$/ ) {
+   # Match the Theia webview or minibrowser prefixes, e.g. ada64f8c-e28a-467e-8005-684da9eeaa90-wv-ide, and map to the 'ide' prefix.
+   # The actual domain prefixes in use by Theia are configured in launch-ide.sh (currently 'wv' and 'mb').
+   # We retain support for legacy prefixes 'webview' and 'minibrowser' for a limited period, for backwards compatibility.
+   if( $host ne '' && $prefix =~ /^.*-(wv|mb|webview|minibrowser)-ide$/ ) {
       wlog( "lookup_container_uri: reservation $self->{'id'} found, and is authorised, mapping prefix '$prefix' => 'ide'" );
       $prefix = 'ide';
    }
