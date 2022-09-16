@@ -229,7 +229,7 @@ COPY --chown=$USER:$USER app/server/assets $HOME/$APP/app/server/assets/
 COPY --chown=$USER:$USER docs $HOME/$APP/docs/
 COPY --chown=$USER:$USER mkdocs.yml $HOME/$APP/
 WORKDIR $HOME/$APP
-RUN pip3 install --no-warn-script-location mkdocs mkdocs-material && ~/.local/bin/mkdocs build && rm -rf ~/.cache/pip
+RUN pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/.local/bin/mkdocs build && rm -rf ~/.cache/pip
 
 ################################################################################
 # INSTALL SETTINGS
