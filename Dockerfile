@@ -16,6 +16,10 @@ ADD ./ide/theia/$THEIA_VERSION/build/ ./
 # Build Theia
 RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && NODE_OPTIONS="--max_old_space_size=4096" && yarn
 
+# Default diagnostics entrypoint for this stage
+# (and the next, which inherits it)
+ENTRYPOINT ["node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
+
 FROM theia-build as theia-clean
 
 ARG OPT_PATH
@@ -53,6 +57,9 @@ RUN $THEIA_PATH/bin/elf-patcher.sh && \
 
 # Add our Theia-version-specific scripts.
 ADD ./ide/theia/$THEIA_VERSION/bin/ $THEIA_PATH/bin/
+
+# Default diagnostics entrypoint for this stage (uses patched node)
+ENTRYPOINT ["../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
 
 ################################################################################
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
