@@ -4,7 +4,7 @@ IMAGE=$(basename $(pwd))
 REPO="newsnowlabs/dockside"
 DOCKERFILE="Dockerfile"
 TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
-THEIA_VERSION=1.25.0
+THEIA_VERSION=1.27.0
 
 usage() {
   echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] | [--clean] | [--list]" >&2
