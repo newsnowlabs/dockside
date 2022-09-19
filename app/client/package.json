@@ -30,7 +30,7 @@
     "eslint-loader": "^3.0.3",
     "eslint-plugin-vue": "^6.1.2",
     "mini-css-extract-plugin": "^0.9.0",
-    "node-sass": "^4.13.1",
+    "sass": "^1.54.0",
     "sass-loader": "^8.0.2",
     "stylelint": "^13.0.0",
     "stylelint-webpack-plugin": "^1.2.1",
