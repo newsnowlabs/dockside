@@ -55,8 +55,8 @@ jobs:
         with:
           context: .
           build-args:
-            - "OPT_PATH=/opt/dockside"
-            - "THEIA_VERSION=1.27.0"
+            OPT_PATH: "/opt/dockside"
+            THEIA_VERSION: "1.27.0"
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.dockside.outputs.tags }}
