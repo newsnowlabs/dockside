@@ -65,7 +65,7 @@ ENTRYPOINT ["../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
 #
 
-FROM amd64/debian:buster as vsix-plugins
+FROM debian:buster as vsix-plugins
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -79,7 +79,7 @@ RUN apt-get update && \
 # BUILD DEVELOPMENT VSIX PLUGINS DEPENDENCIES
 # - libperl-languageserver-perl, libcompiler-lexer-perl, libanyevent-aio-perl
 
-FROM amd64/debian:buster as vsix-plugins-deps
+FROM debian:buster as vsix-plugins-deps
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -119,7 +119,7 @@ RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
 # MAIN DOCKSIDE BUILD
 #
 
-FROM amd64/debian:buster as Dockside
+FROM debian:buster as Dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -147,7 +147,7 @@ RUN apt-get update && \
         curl \
         gnupg2 && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - && \
-    echo "deb [arch=amd64] https://download.docker.com/linux/debian buster stable" >/etc/apt/sources.list.d/docker.list && \
+    echo "deb https://download.docker.com/linux/debian buster stable" >/etc/apt/sources.list.d/docker.list && \
     apt-get update && \
     apt-get -y install \
     sudo \
@@ -160,7 +160,8 @@ RUN apt-get update && \
     acl \
     s6 \
     jq \
-    logrotate cron- bcron- exim4-
+    logrotate cron- bcron- exim4- \
+    libatomic1
 
 ################################################################################
 # GCLOUD SDK: https://cloud.google.com/sdk/docs/quickstart-debian-ubuntu
@@ -212,14 +213,14 @@ COPY --chown=$USER:$USER build $HOME/$APP/build/
 
 USER root
 # Perl::LanguageServer dependencies
-COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
-
-RUN apt-get -y install \
-        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
-	git tig perltidy \
-	procps vim less curl locales \
-        /tmp/vsix-deps/*.deb && \
-    rm -rf /tmp/vsix-deps
+#COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
+#
+#RUN apt-get -y install \
+#        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
+#	git tig perltidy \
+#	procps vim less curl locales \
+#        /tmp/vsix-deps/*.deb && \
+#    rm -rf /tmp/vsix-deps
 
 ################################################################################
 # VUE CLIENT INSTALL
