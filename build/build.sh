@@ -96,9 +96,10 @@ build_env
 export DOCKER_BUILDKIT
 
 # Run docker build
-docker build "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
+# docker build "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
 # docker buildx build --platform=linux/amd64 "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
 # docker buildx build --platform=linux/arm64 "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
 # docker buildx build --platform=linux/arm/v7 "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
+docker buildx build "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
 
 push
