@@ -8,6 +8,7 @@ on:
       - 'multiarch'
     tags:
       - 'v*.*.*'
+      - 'test'
 
 # permissions are needed if pushing to ghcr.io
 permissions: 
