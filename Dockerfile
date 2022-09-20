@@ -104,7 +104,7 @@ COPY --chown=newsnow:newsnow build/development/cpan/MyConfig.pm /home/newsnow/.c
 
 # BUILD libcompiler-lexer-perl_*.deb
 RUN git clone https://github.com/goccy/p5-Compiler-Lexer && cd ~/p5-Compiler-Lexer && rm -rf .git && dh-make-perl make . || true
-RUN cd ~/p5-Compiler-Lexer && fakeroot ./debian/rules binary
+RUN cd ~/p5-Compiler-Lexer && DEB_BUILD_OPTIONS=nocheck fakeroot ./debian/rules binary
 RUN sudo dpkg -i libcompiler-lexer-perl_*.deb
 
 # BUILD libanyevent-aio-perl
@@ -213,14 +213,14 @@ COPY --chown=$USER:$USER build $HOME/$APP/build/
 
 USER root
 # Perl::LanguageServer dependencies
-#COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
-#
-#RUN apt-get -y install \
-#        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
-#	git tig perltidy \
-#	procps vim less curl locales \
-#        /tmp/vsix-deps/*.deb && \
-#    rm -rf /tmp/vsix-deps
+COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
+
+RUN apt-get -y install \
+        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
+	git tig perltidy \
+	procps vim less curl locales \
+        /tmp/vsix-deps/*.deb && \
+    rm -rf /tmp/vsix-deps
 
 ################################################################################
 # VUE CLIENT INSTALL
