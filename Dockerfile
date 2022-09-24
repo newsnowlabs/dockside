@@ -117,7 +117,7 @@ RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
 # MAIN DOCKSIDE BUILD
 #
 
-FROM debian:buster as Dockside
+FROM node:12-buster as Dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -179,17 +179,6 @@ RUN useradd -l -U -m $USER -s /bin/bash -d $HOME && \
     chown -R $USER.$USER $HOME /var/log/$APP/$APP.log
 
 ################################################################################
-# Install NODE DEPENDENCIES
-#
-# Install NVM, Node, and Yarn
-#
-USER $USER
-WORKDIR $HOME
-RUN curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.5/install.sh | bash && \
-    bash -c ". ~/.nvm/nvm.sh && nvm install 12 && rm -rf ~/.nvm/.git && nvm cache clear" && \
-    echo 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm' >>~/.bashrc
-
-################################################################################
 # Mailname
 #
 # RUN sudo bash -c 'echo NewsNow.co.uk >/etc/mailname'
@@ -226,7 +215,7 @@ RUN apt-get -y install \
 USER $USER
 COPY --chown=$USER:$USER app/client $HOME/$APP/app/client/
 WORKDIR $HOME/$APP/app/client
-RUN NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh" && npm install && npm run build && npm cache clean --force
+RUN npm install && npm run build && npm cache clean --force
 
 ################################################################################
 # MKDOCS INSTALL
