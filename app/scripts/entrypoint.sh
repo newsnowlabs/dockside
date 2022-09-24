@@ -11,6 +11,10 @@ OPT_PATH="/opt/dockside"
 
 . $APP_DIR/app/scripts/includes/log_do
 
+safe_curl() {
+   curl --fail --silent --retry 7 --max-time 5 "$@"
+}
+
 jq_config_set() {
   if jq "$@" $DATA_DIR/config/config.json >/tmp/config.json; then
     mv /tmp/config.json $DATA_DIR/config/config.json
@@ -53,7 +57,7 @@ install_dehydrated() {
 
   if ! [ -x "$SCRIPT_PATH/dehydrated" ]; then
     log "- Downloading dehydrated from git repo master branch ..."
-    curl --silent -o $SCRIPT_PATH/dehydrated $DEHYDRATED_URL && chmod 755 $SCRIPT_PATH/dehydrated
+    safe_curl -o $SCRIPT_PATH/dehydrated $DEHYDRATED_URL && chmod 755 $SCRIPT_PATH/dehydrated
   fi
 }
 
@@ -75,7 +79,7 @@ init_dehydrated() {
 init_bind9() {
   local DOMAINS=$(cat $DATA_DIR/dehydrated/domains.txt | sed -r 's/>.*$//')
 
-  local IP=$(curl -sf -m 2 ifconfig.me) # IP=$(curl -sf -m 2 -H "Metadata-flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
+  local IP=$(safe_curl ifconfig.me) # IP=$(curl -sf -m 2 -H "Metadata-flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip)
 
   log "- Generating /etc/bind/named.conf.local from /data/dehydrated/domains.txt using IP $IP ..."
   rm -f /etc/bind/named.conf.local
@@ -197,7 +201,7 @@ if [ -S /var/run/docker.sock ]; then
   fi
 
   # Test the socket, to confirm it is not stale or access-prohibited by Apparmor
-  if ! curl -s --unix-socket /var/run/docker.sock -H "Content-Type: application/json" -X GET http:/v1.41/info -o /dev/null; then
+  if ! safe_curl --unix-socket /var/run/docker.sock -H "Content-Type: application/json" -X GET http:/v1.41/info -o /dev/null; then
     log "- Cannot connect to bind-mounted /var/run/docker.sock: please ensure dockerd is running on host and consider adding docker run option --security-opt=apparmor=unconfined; aborting!"
     exit 3
   fi
@@ -446,13 +450,14 @@ fi
 # Process the SSL and SSL_ZONES options, setting up certificates as required, aborting on setup errors.
 #
 if [ "$SSL" == "builtin" ]; then
-  log "- Looking for built-in certificate for ${SSL_ZONES[0]} ..."
+  log "- Downloading certificates for ${SSL_ZONES[0]} ..."
 
-  if [ -f $APP_DIR/app/server/example/certs/fullchain.pem ] && [ -f $APP_DIR/app/server/example/certs/privkey.pem ]; then
-    log "  - Installing built-in certificates ..."
-    cp -aL $APP_DIR/app/server/example/certs/{fullchain.pem,privkey.pem} $DATA_DIR/certs/
+  if safe_curl -o $DATA_DIR/certs/fullchain.pem https://storage.googleapis.com/dockside/certs/local.dockside.dev/fullchain.pem && \
+     safe_curl -o $DATA_DIR/certs/privkey.pem https://storage.googleapis.com/dockside/certs/local.dockside.dev/privkey.pem && \
+     [ -f $DATA_DIR/certs/fullchain.pem ] && [ -f $DATA_DIR/certs/privkey.pem ]; then
+    log "  - Certificates installed for ${SSL_ZONES[0]}"
   else
-    log "- no built-in certificates found in this image; please relaunch with --ssl-selfsigned or --ssl-letsencrypt; aborting!"
+    log "  - Certificates failed to download; please try again or relaunch with --ssl-selfsigned or --ssl-letsencrypt; aborting!"
     exit 1
   fi
 

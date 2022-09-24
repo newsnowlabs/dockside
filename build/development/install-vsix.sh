@@ -26,4 +26,5 @@ do
 done
 
 echo "Downloading vsix plugin richterger.perl-2.2.0.vsix ..." >&2
-# curl --fail --silent --location -o $PLUGIN_DIR/richterger.perl-2.2.0.vsix https://marketplace.visualstudio.com/_apis/public/gallery/publishers/richterger/vsextensions/perl/2.2.0/vspackage --compressed
+curl --fail --silent --location -o $PLUGIN_DIR/richterger.perl-2.2.0.vsix https://marketplace.visualstudio.com/_apis/public/gallery/publishers/richterger/vsextensions/perl/2.2.0/vspackage --compressed || \
+curl --fail --silent --location -o $PLUGIN_DIR/richterger.perl-2.2.0.vsix https://storage.googleapis.com/dockside/vsix/richterger.perl-2.2.0.vsix
