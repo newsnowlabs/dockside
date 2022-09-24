@@ -65,14 +65,12 @@ ENTRYPOINT ["../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
 #
 
-FROM debian:buster as vsix-plugins
-
-ARG DEBIAN_FRONTEND=noninteractive
+FROM alpine as vsix-plugins
 
 COPY build/development/install-vsix.sh /root/install-vsix.sh
 
-RUN apt-get update && \
-    apt-get -y install curl && \
+RUN apk update && \
+    apk add --no-cache curl && \
     /root/install-vsix.sh
 
 ################################################################################
