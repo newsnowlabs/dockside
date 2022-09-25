@@ -161,6 +161,20 @@ RUN apt-get update && \
     logrotate cron- bcron- exim4-
 
 ################################################################################
+# DEVELOPMENT DEPENDENCIES
+#
+# Perl::LanguageServer dependencies
+
+COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
+
+RUN apt-get -y install \
+        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
+        git tig perltidy \
+        procps vim less curl locales \
+        /tmp/vsix-deps/*.deb && \
+    rm -rf /tmp/vsix-deps
+
+################################################################################
 # GCLOUD SDK: https://cloud.google.com/sdk/docs/quickstart-debian-ubuntu
 #
 # RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg  add - && apt-get update && apt-get -y install google-cloud-sdk
@@ -184,25 +198,8 @@ USER $USER
 COPY --chown=$USER:$USER dehydrated $HOME/$APP/dehydrated/
 
 ################################################################################
-# DEVELOPMENT DEPENDENCIES
-# 
-COPY --chown=$USER:$USER build $HOME/$APP/build/
-
-USER root
-# Perl::LanguageServer dependencies
-COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
-
-RUN apt-get -y install \
-        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
-	git tig perltidy \
-	procps vim less curl locales \
-        /tmp/vsix-deps/*.deb && \
-    rm -rf /tmp/vsix-deps
-
-################################################################################
 # VUE CLIENT INSTALL
 #
-USER $USER
 COPY --chown=$USER:$USER app/client $HOME/$APP/app/client/
 WORKDIR $HOME/$APP/app/client
 RUN npm install && npm run build && npm cache clean --force
@@ -217,14 +214,6 @@ WORKDIR $HOME/$APP
 RUN pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/.local/bin/mkdocs build && rm -rf ~/.cache/pip
 
 ################################################################################
-# INSTALL SETTINGS
-#
-USER $USER
-WORKDIR $HOME
-RUN cp -a ~/$APP/build/development/dot-theia .theia && \
-    ln -s ~/$APP/build/development/perltidyrc ~/.perltidyrc
-
-################################################################################
 # INSTALL DEVELOPMENT VSIX PLUGINS
 #
 COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
@@ -237,8 +226,12 @@ COPY --from=theia $THEIA_PATH $THEIA_PATH/
 ################################################################################
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
 #
-# USER $USER
 COPY --chown=$USER:$USER . $HOME/$APP/
+
+USER $USER
+WORKDIR $HOME
+RUN cp -a ~/$APP/build/development/dot-theia .theia && \
+    ln -s ~/$APP/build/development/perltidyrc ~/.perltidyrc
 
 ################################################################################
 # Cause the creation of a volume at /opt/dockside.
