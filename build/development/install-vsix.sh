@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/sh -e
 
 PLUGIN_DIR=~/theia-plugins
 

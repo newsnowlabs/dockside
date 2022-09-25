@@ -6,6 +6,10 @@
 # - BINARIES - list of additional system binaries 
 # - THEIA_PATH - path to Theia version to be scanned and patched
 
+# Determine LD_MUSL filename, which is architecture-dependent
+# e.g. ld-musl-aarch64.so.1 (linux/arm64), ld-musl-armhf.so.1 (linux/arm/v7), ld-musl-x86_64.so.1 (linux/amd64)
+LD_MUSL_BIN=$(basename /lib/ld-musl-*)
+
 append() {
   while read line; do echo "${line}${1}"; done
 }
@@ -21,7 +25,7 @@ checkelfs() {
   # Now check the ELF files
   for lib in $(cat $THEIA_PATH/.elfs)
   do
-     $THEIA_PATH/lib64/lib/ld-musl-x86_64.so.1 --list $lib 2>/dev/null | sed -nr '/=>/!d; s/^\s*(\S+)\s*=>\s*(.*?)(\s*\(0x[0-9a-f]+\))?$/\1 \2/;/^.+$/p;' | append " in $lib" | egrep -v "$THEIA_PATH/lib64"
+     $THEIA_PATH/lib64/lib/$LD_MUSL_BIN --list $lib 2>/dev/null | sed -nr '/=>/!d; s/^\s*(\S+)\s*=>\s*(.*?)(\s*\(0x[0-9a-f]+\))?$/\1 \2/;/^.+$/p;' | append " in $lib" | egrep -v "$THEIA_PATH/lib64"
   
      # If any libraries do not match the expected pattern, grep returns true
      [ $? -eq 0 ] && status=1
@@ -84,7 +88,7 @@ done
 # For all ELF binaries, set the interpreter to our own.
 for bin in $(sort -u /tmp/cmd-elf-bin /tmp/theia-elf-bin)
 do
-  patchelf --set-interpreter $THEIA_PATH/lib64/lib/ld-musl-x86_64.so.1 $bin
+  patchelf --set-interpreter $THEIA_PATH/lib64/lib/$LD_MUSL_BIN $bin
 done
 
 # For all ELF libs, set the RPATH to our own, and force RPATH use.

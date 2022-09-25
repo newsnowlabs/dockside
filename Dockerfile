@@ -65,21 +65,19 @@ ENTRYPOINT ["../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
 #
 
-FROM amd64/debian:buster as vsix-plugins
-
-ARG DEBIAN_FRONTEND=noninteractive
+FROM alpine as vsix-plugins
 
 COPY build/development/install-vsix.sh /root/install-vsix.sh
 
-RUN apt-get update && \
-    apt-get -y install curl && \
+RUN apk update && \
+    apk add --no-cache curl && \
     /root/install-vsix.sh
 
 ################################################################################
 # BUILD DEVELOPMENT VSIX PLUGINS DEPENDENCIES
 # - libperl-languageserver-perl, libcompiler-lexer-perl, libanyevent-aio-perl
 
-FROM amd64/debian:buster as vsix-plugins-deps
+FROM debian:buster as vsix-plugins-deps
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -104,7 +102,7 @@ COPY --chown=newsnow:newsnow build/development/cpan/MyConfig.pm /home/newsnow/.c
 
 # BUILD libcompiler-lexer-perl_*.deb
 RUN git clone https://github.com/goccy/p5-Compiler-Lexer && cd ~/p5-Compiler-Lexer && rm -rf .git && dh-make-perl make . || true
-RUN cd ~/p5-Compiler-Lexer && fakeroot ./debian/rules binary
+RUN cd ~/p5-Compiler-Lexer && DEB_BUILD_OPTIONS=nocheck fakeroot ./debian/rules binary
 RUN sudo dpkg -i libcompiler-lexer-perl_*.deb
 
 # BUILD libanyevent-aio-perl
@@ -119,7 +117,7 @@ RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
 # MAIN DOCKSIDE BUILD
 #
 
-FROM amd64/debian:buster as Dockside
+FROM node:12-buster as Dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -147,7 +145,7 @@ RUN apt-get update && \
         curl \
         gnupg2 && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - && \
-    echo "deb [arch=amd64] https://download.docker.com/linux/debian buster stable" >/etc/apt/sources.list.d/docker.list && \
+    echo "deb https://download.docker.com/linux/debian buster stable" >/etc/apt/sources.list.d/docker.list && \
     apt-get update && \
     apt-get -y install \
     sudo \
@@ -178,17 +176,6 @@ RUN useradd -l -U -m $USER -s /bin/bash -d $HOME && \
     mkdir -p $HOME/$APP /var/log/$APP && \
     touch /var/log/$APP/$APP.log && \
     chown -R $USER.$USER $HOME /var/log/$APP/$APP.log
-
-################################################################################
-# Install NODE DEPENDENCIES
-#
-# Install NVM, Node, and Yarn
-#
-USER $USER
-WORKDIR $HOME
-RUN curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.33.5/install.sh | bash && \
-    bash -c ". ~/.nvm/nvm.sh && nvm install 12 && rm -rf ~/.nvm/.git && nvm cache clear" && \
-    echo 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" # This loads nvm' >>~/.bashrc
 
 ################################################################################
 # Mailname
@@ -227,7 +214,7 @@ RUN apt-get -y install \
 USER $USER
 COPY --chown=$USER:$USER app/client $HOME/$APP/app/client/
 WORKDIR $HOME/$APP/app/client
-RUN NVM_DIR="$HOME/.nvm" && \. "$NVM_DIR/nvm.sh" && npm install && npm run build && npm cache clean --force
+RUN npm install && npm run build && npm cache clean --force
 
 ################################################################################
 # MKDOCS INSTALL
