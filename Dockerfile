@@ -117,7 +117,7 @@ RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
 # MAIN DOCKSIDE BUILD
 #
 
-FROM node:12-buster as Dockside
+FROM node:12-buster as dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -178,19 +178,10 @@ RUN useradd -l -U -m $USER -s /bin/bash -d $HOME && \
     chown -R $USER.$USER $HOME /var/log/$APP/$APP.log
 
 ################################################################################
-# Mailname
-#
-# RUN sudo bash -c 'echo NewsNow.co.uk >/etc/mailname'
-
-################################################################################
 # DEHYDRATED SETUP
 #
 USER $USER
 COPY --chown=$USER:$USER dehydrated $HOME/$APP/dehydrated/
-RUN cp -aL $HOME/$APP/dehydrated/certs/sslzone/{fullchain.pem,privkey.pem} $HOME/$APP/app/server/example/certs/ || true && \
-    rm -rf $HOME/$APP/dehydrated/accounts/* \
-           $HOME/$APP/dehydrated/certs/sslzone/* \
-           $HOME/$APP/dehydrated/chains/*
 
 ################################################################################
 # DEVELOPMENT DEPENDENCIES
