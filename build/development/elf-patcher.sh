@@ -10,6 +10,10 @@
 # LD_MUSL_BIN=ld-musl-x86_64.so.1
 LD_MUSL_BIN=$(basename /lib/ld-musl-*)
 
+# Determine LD_MUSL filename, which is architecture-dependent
+# e.g. ld-musl-aarch64.so.1 (linux/arm64), ld-musl-armhf.so.1 (linux/arm/v7), ld-musl-x86_64.so.1 (linux/amd64)
+LD_MUSL_BIN=$(basename /lib/ld-musl-*)
+
 append() {
   while read line; do echo "${line}${1}"; done
 }
