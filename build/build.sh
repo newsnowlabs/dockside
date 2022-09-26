@@ -5,9 +5,11 @@ REPO="newsnowlabs/dockside"
 DOCKERFILE="Dockerfile"
 TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
 THEIA_VERSION=1.27.0
+BUILDER=buildkit
+PLATFORMS="linux/amd64,linux/arm64,linux/arm/v7"
 
 usage() {
-  echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] | [--clean] | [--list]" >&2
+  echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] [--builder [depot|buildx|buildkit]] [--platform=<platforms>] | [--clean] | [--list]" >&2
   exit
 }
 
@@ -44,6 +46,9 @@ parse_commandline() {
       --progress-plain) shift; PROGRESS="plain"; continue; ;;
             --progress) shift; PROGRESS="$1"; shift; continue; ;;
                --theia) shift; THEIA_VERSION="$1"; shift; continue; ;;
+
+            --builder) shift; BUILDER="$1"; shift; continue; ;;
+          --platforms) shift; PLATFORMS="$1"; shift; continue; ;;
 	    
                --clean) shift; clean; exit 0; ;;
            --list|--ls) shift; list "$@"; exit 0; ;;
@@ -86,6 +91,8 @@ build_env() {
   [ -n "$STAGE" ] && DOCKER_OPTS+=("--target=$STAGE")
   [ -n "$PROGRESS" ] && DOCKER_OPTS+=("--progress=$PROGRESS")
   [ -n "$TAG" ] && DOCKER_OPTS+=("--label" "com.newsnow.dockside.build.tag=$TAG")
+
+  DOCKER_OPTS+=("--platform=$PLATFORMS")
 }
 
 parse_commandline "$@"
@@ -95,11 +102,45 @@ build_env
 [ -z "$DOCKER_BUILDKIT" ] && DOCKER_BUILDKIT=1
 export DOCKER_BUILDKIT
 
-# Run docker build
-# docker build "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
-# docker buildx build --platform=linux/amd64 "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
-# docker buildx build --platform=linux/arm64 "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
-# docker buildx build --platform=linux/arm/v7 "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
-docker buildx build "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
+case "$BUILDER" in
 
-push
+  buildkit)
+  
+    # Build using Docker Build (https://docs.docker.com/build/)
+
+    if [[ "$PLATFORMS" =~ , ]]; then
+      echo "$0: Error, --platforms=$PLATFORMS but must use --platforms=<platform> with only one platform at a time, with the '$BUILDER' builder, aborting" >&2
+      exit -1
+    fi
+
+    docker build "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
+    [ "$PUSH" == "1" ] && push
+    ;;
+
+  buildx)
+  
+    # Build using Docker Buildx (https://github.com/docker/buildx)
+
+    [ "$PUSH" == "1" ] && DOCKER_OPTS+=("--push")
+    docker buildx build "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
+    ;;
+
+  depot)
+  
+    # Build using Depot (https://depot.dev/), for building Docker images faster and smarter, in the cloud.
+
+    [ "$PUSH" == "1" ] && DOCKER_OPTS+=("--push")
+
+    if [ -z "$(which depot)" ]; then
+       echo "$0: Error, depot CLI not installed (see https://depot.dev/), aborting" >&2
+       exit -1
+    fi
+    depot build "${DOCKER_OPTS[@]}" $DOCKER_OPTS_TAGS -f "$DOCKERFILE" . || exit -1
+    ;;
+
+  *)
+    echo "$0: Error, unknown builder '$BUILDER', aborting." >&2
+    exit -1
+    ;;
+
+esac

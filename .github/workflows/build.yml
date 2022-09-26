@@ -4,11 +4,10 @@ name: Build
 on:
   workflow_dispatch: # Allow for running this manually.
   push:
-    branches:
-      - 'multiarch'
     tags:
       - 'v*.*.*'
-      - 'test'
+      - 'pre-v*.*.*'
+      - 'test*'
 
 # permissions are needed if pushing to ghcr.io
 permissions:
