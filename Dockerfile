@@ -52,6 +52,15 @@ RUN $THEIA_PATH/bin/elf-patcher.sh --findelfs
 
 FROM theia-findelfs as theia
 
+ARG TARGETPLATFORM
+
+# The version of rg installed by the Theia build on linux/arm/v7
+# depends on libs that are not available on Alpine on this platform.
+# Workaround this by overwriting it with Alpine's own rg.
+RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
+      apk add --no-cache ripgrep; \
+      cp $(which rg) $(find -name rg); \
+    fi
 
 RUN $THEIA_PATH/bin/elf-patcher.sh --patchelfs && \
     cd $THEIA_PATH/bin && \
