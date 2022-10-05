@@ -41,15 +41,19 @@ RUN yarn autoclean --init && \
 # Patch all binaries and dynamic libraries for full portability.
 COPY build/development/elf-patcher.sh $THEIA_PATH/bin/elf-patcher.sh
 
-FROM theia-clean as theia
+FROM theia-clean as theia-findelfs
 
 ARG OPT_PATH
 ARG THEIA_VERSION
-ARG THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
+ENV THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
+ENV BINARIES="node busybox s6-svscan curl"
 
-ARG BINARIES="node busybox s6-svscan curl"
+RUN $THEIA_PATH/bin/elf-patcher.sh --findelfs
 
-RUN $THEIA_PATH/bin/elf-patcher.sh && \
+FROM theia-findelfs as theia
+
+
+RUN $THEIA_PATH/bin/elf-patcher.sh --patchelfs && \
     cd $THEIA_PATH/bin && \
     ln -sf busybox sh && \
     ln -sf busybox su && \

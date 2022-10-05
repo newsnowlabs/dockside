@@ -41,10 +41,18 @@ if [ "$1" = "--checkelfs" ]; then
   exit $?
 fi
 
-# Find all Theia ELF files that are dynamically linked.
-# - This should includes all Theia .node files and spawn-helper, but not statically-linked binaries like 'rg'
-# - The only way to tell if a file is an ELF binary (or library) is to check the first 4 bytes for the magic byte sequence.
-find $THEIA_PATH/theia/node_modules -type f ! -name '*.o' -exec hexdump -n 4 -e '4/1 "%2x" " {}\n"' {} \; | sed '/^7f454c46/!d; s/^7f454c46 //' | xargs -n 1 -P 4 file | grep dynamically >/tmp/theia-elf-file
+if [ "$1" = "--findelfs" ]; then
+
+  # Find all Theia ELF files that are dynamically linked.
+  # - This should includes all Theia .node files and spawn-helper, but not statically-linked binaries like 'rg'
+  # - The only way to tell if a file is an ELF binary (or library) is to check the first 4 bytes for the magic byte sequence.
+  find $THEIA_PATH/theia/node_modules -type f ! -name '*.o' -exec hexdump -n 4 -e '4/1 "%2x" " {}\n"' {} \; | sed '/^7f454c46/!d; s/^7f454c46 //' | xargs -n 1 -P 4 file | grep dynamically >/tmp/theia-elf-file
+  exit $?
+fi
+
+if [ "$1" != "--patchelfs" ]; then
+  exit 1
+fi
 
 # Separate out those that do and do not require an interpreter (binaries and libs, respectively) into separate lists.
 grep interpreter /tmp/theia-elf-file | cut -d':' -f1 >/tmp/theia-elf-bin
@@ -82,7 +90,7 @@ do
   cp -a --parents -L $dest $THEIA_PATH/lib64
 
   # If needed, add a symlink from $lib to $(basename $dest)
-  [ "$(basename $dest)" != "$lib" ] && cd $THEIA_PATH/lib64/$(dirname $dest) && ln -s $(basename $dest) $lib && cd -
+  [ "$(basename $dest)" != "$lib" ] && cd $THEIA_PATH/lib64/$(dirname $dest) && ln -s $(basename $dest) $lib && cd - >/dev/null
 done
 
 # For all ELF binaries, set the interpreter to our own.
