@@ -210,7 +210,7 @@ For our current ideas/plans, see our [draft roadmap](roadmap.md).
 
 ## Developing Dockside
 
-See [Developing and building Dockside](developing.md).
+See [Developing Dockside](developing.md) and [Building the Dockside image](building-image.md).
 
 ## Bugs, issues and support
 
@@ -247,6 +247,10 @@ Thanks also to other members of the NewsNow development team for contributing th
 Thanks also to the entire design and development, editorial and testing teams at [NewsNow](https://www.newsnow.co.uk/about/) for so enthusiastically adopting containerised development working practices and for subjecting Dockside to so many years of robust use (and abuse) during the course of their daily iterative development, evaluation and testing of the [NewsNow](https://www.newsnow.co.uk/) platform - and proving the value of this development model.
 
 Thanks last but not least to [NewsNow](https://www.newsnow.co.uk/about/), _The Independent News Discovery Platform_, for sponsoring the development of Dockside.
+
+## More credits
+
+The Dockside multiarch build is built thanks to [Depot](https://depot.dev) and we're grateful for their support.
 
 ## Licence and legals
 

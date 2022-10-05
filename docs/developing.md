@@ -28,18 +28,20 @@ Additional optionally-enabled components are:
 2. A Bind9 service, which is needed to support the generation of LetsEncrypt wildcard SSL certificates
 3. A Logrotate service, which rotates Dockside and NGINX logs.
 
+Whether these components are enabled depends on the command-line options given when Dockside is launched.
+
 ## Dockside client
 
 To rebuild the client, run:
 
 ```sh
-cd ~/dockside/app/client && . ~/.nvm/nvm.sh && npm run build
+cd ~/dockside/app/client && npm run build
 ```
 
 To watch continuously for changes to client code, run:
 
 ```sh
-cd ~/dockside/app/client && . ~/.nvm/nvm.sh && npm run start
+cd ~/dockside/app/client && npm run start
 ```
 
 ## Dockside server
@@ -65,3 +67,13 @@ To rebuild the documentation html, run:
 ```sh
 ~/.local/bin/mkdocs build
 ```
+
+## Building a Dockside image
+
+To launch a fresh instance of a modified Dockside codebase, it is necessary to build a Dockside image.
+
+This is useful to do when you want to test that your modified Dockside
+launches as expected, or when you want to launch a modified version of
+Dockside in production on another host.
+
+For instructions, see [Building the Dockside image](building-image.md).

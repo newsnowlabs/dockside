@@ -12,4 +12,5 @@ perllocal.pod
 .c9
 .Trash-1000
 .vscode
+depot.json
 app/server/nginx/html/docs
