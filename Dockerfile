@@ -35,3 +35,5 @@ ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/scss/1.54.1/file/v
 ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/shellscript/1.54.1/file/vscode.shellscript-1.54.1.vsix /home/dockside/theia-plugins/
 ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/docker/1.54.1/file/vscode.docker-1.54.1.vsix /home/dockside/theia-plugins/
 ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/json/1.54.1/file/vscode.json-1.54.1.vsix /home/dockside/theia-plugins/
+
+ENTRYPOINT [ "/bin/sh", "-c", "/home/dockside/script/server --incremental" ]
