@@ -9,8 +9,11 @@ USER dockside
 WORKDIR /home/dockside
 
 USER root
+
+# Install ffi from github for compatibility with linux/arm/v7;
+# requires autoconf and libffi-dev
 RUN apk update && \
-    apk add git nodejs npm ruby ruby-dev gcc g++ make musl-dev openssh-client curl patch tig && \
+    apk add git nodejs npm ruby ruby-dev gcc g++ make musl-dev openssh-client curl patch tig autoconf libffi-dev && \
     gem install bundle
 
 USER dockside
