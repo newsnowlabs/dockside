@@ -47,8 +47,8 @@ parse_commandline() {
             --progress) shift; PROGRESS="$1"; shift; continue; ;;
                --theia) shift; THEIA_VERSION="$1"; shift; continue; ;;
 
-            --builder) shift; BUILDER="$1"; shift; continue; ;;
-          --platforms) shift; PLATFORMS="$1"; shift; continue; ;;
+             --builder) shift; BUILDER="$1"; shift; continue; ;;
+           --platform*) shift; PLATFORMS="$1"; shift; continue; ;;
 	    
                --clean) shift; clean; exit 0; ;;
            --list|--ls) shift; list "$@"; exit 0; ;;
