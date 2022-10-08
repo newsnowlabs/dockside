@@ -24,3 +24,4 @@
 .sass-cache
 .env
 tmp/
+**/depot.json
