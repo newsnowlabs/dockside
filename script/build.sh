@@ -66,9 +66,7 @@ build_env() {
 
   if [ -n "$TAG" ]; then
     TAGS+=("$REPO:$TAG")
-  fi
-
-  if [ -n "$STAGE" ] && [ "$STAGE" != "production" ]; then
+  elif [ -n "$STAGE" ] && [ "$STAGE" != "production" ]; then
     TAGS+=("$REPO:$STAGE")
   elif [ -z "$TAG" ]; then
     TAGS+=("$REPO:latest")
