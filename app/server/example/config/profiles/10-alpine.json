@@ -12,7 +12,7 @@
       }
    ],
    "networks": [ "bridge" ],
-   "images": [ "alpine:latest", "i386/alpine:latest", "amd64/alpine:latest" ],
+   "images": [ "alpine:latest" ],
    "unixusers": ["dockside"],
    "mounts": {
       "tmpfs": [],
