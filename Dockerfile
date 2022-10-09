@@ -90,7 +90,7 @@ RUN apk update && \
 # BUILD DEVELOPMENT VSIX PLUGINS DEPENDENCIES
 # - libperl-languageserver-perl, libcompiler-lexer-perl, libanyevent-aio-perl
 
-FROM debian:buster as vsix-plugins-deps
+FROM debian:bullseye as vsix-plugins-deps
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -130,8 +130,7 @@ RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
 # MAIN DOCKSIDE BUILD
 #
 
-FROM node:12-buster as dockside
-LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
+FROM node:16-bullseye as dockside-1
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -225,6 +224,18 @@ COPY --chown=$USER:$USER docs $HOME/$APP/docs/
 COPY --chown=$USER:$USER mkdocs.yml $HOME/$APP/
 WORKDIR $HOME/$APP
 RUN pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/.local/bin/mkdocs build && rm -rf ~/.cache/pip
+
+FROM dockside-1 as dockside
+LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+ARG OPT_PATH
+ARG THEIA_VERSION
+ARG THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
+ARG USER=dockside
+ARG APP=dockside
+ARG HOME=/home/newsnow
 
 ################################################################################
 # INSTALL DEVELOPMENT VSIX PLUGINS
