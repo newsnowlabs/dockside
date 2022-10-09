@@ -12,7 +12,7 @@
       }
    ],
    "networks": [ "bridge" ],
-   "images": [ "newsnowlabs/dockside:io" ],
+   "images": [ "newsnowlabs/dockside-io" ],
    "unixusers": ["dockside"],
    "mounts": {
       "tmpfs": [],
