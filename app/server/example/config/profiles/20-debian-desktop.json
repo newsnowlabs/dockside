@@ -13,7 +13,7 @@
       }
    ],
    "networks": [ "bridge" ],
-   "images": [ "newsnowlabs/dockside-debian-desktop:latest", "us.gcr.io/dockside-io/dockside-debian-desktop" ],
+   "images": [ "newsnowlabs/dockside-debian-desktop:latest" ],
    "unixusers": ["dockside"],
    "mounts": {
       "tmpfs": [],
