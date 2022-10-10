@@ -61,7 +61,16 @@ Advanced features:
 
 ## Host requirements
 
-Dockside is tested on Debian Linux running [Docker Engine](https://docs.docker.com/engine/install/) (the `docker-ce` package suite) and on MacOS and Windows 10 running [Docker Desktop](https://docs.docker.com/get-docker/), and is expected to run on any host with at least 1GB memory running a modern Linux distribution.
+Dockside is supported on Intel (amd64/x86), Apple M1/M2 (arm64) and Raspberry Pi (arm/v7) hardware platforms, via a multiarch Docker image
+that contains native binary implementations of Dockside for all three architectures.
+
+Dockside is tested on:
+- Intel (amd64/x86) platforms running Debian Linux and [Docker Engine](https://docs.docker.com/engine/install/) (via the `docker-ce` package suite)
+- MacOS (amd64/x86 and Apple Mac M1) running [Docker Desktop](https://docs.docker.com/get-docker/)
+- Intel Windows 10 running [Docker Desktop](https://docs.docker.com/get-docker/)
+- Raspberry Pi (arm/v7) running Raspbian Linux and [Docker Engine](https://docs.docker.com/engine/install/) (via the `docker-ce` package suite)
+
+Dockside requires a host with a minimum of 1GB memory.
 
 ## Getting started
 
