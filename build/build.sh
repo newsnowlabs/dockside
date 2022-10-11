@@ -41,7 +41,7 @@ parse_commandline() {
       --stage|--target) shift; STAGE="$1"; shift; continue; ;;
             --no-cache) shift; NO_CACHE="1"; continue; ;;
             --force-rm) shift; FORCE_RM="1"; continue; ;;
-                 --tag) shift; TAG="$1"; shift; continue; ;;
+                 --tag) shift; TAGS+=("$REPO:$1"); shift; continue; ;;
                 --repo) shift; REPO="$1"; shift; continue; ;;
       --progress-plain) shift; PROGRESS="plain"; continue; ;;
             --progress) shift; PROGRESS="$1"; shift; continue; ;;
@@ -64,14 +64,15 @@ parse_commandline() {
 
 build_env() {
   TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
-  TAGS=()
 
-  if [ -n "$TAG" ]; then
-    TAGS+=("$REPO:$TAG")
-  elif [ -n "$STAGE" ] && [ "$STAGE" != "production" ]; then
-    TAGS+=("$REPO:$STAGE")
-  elif [ -z "$TAG" ]; then
-    TAGS+=("$REPO:latest")
+  if [ -z "${TAGS[0]}" ]; then
+    if [ -n "$STAGE" ] && [ "$STAGE" != "production" ]; then
+      # If no --tag <tag> provided, and --stage <stage> is provided and <stage> != "production", then use the stage for a tag
+      TAGS+=("$REPO:$STAGE")
+    else
+      # If no --tag <tag> provided and no --stage <stage> is provided, then tag with 'latest'
+      TAGS+=("$REPO:latest")
+    fi
   fi
 
   for t in ${TAGS[@]}
