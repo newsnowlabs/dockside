@@ -3,7 +3,7 @@ package Data;
 use strict;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD);
+our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION);
 
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
@@ -16,6 +16,7 @@ my $CONFIG_PATH = '/data/config';
 # See entrypoint.sh for details
 our $HOSTNAME = get_config('/etc/service/nginx/data/ctr-id');
 our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
+our $VERSION = get_config('/etc/service/nginx/data/version');
 
 sub parse_json {
    local $_ = shift;

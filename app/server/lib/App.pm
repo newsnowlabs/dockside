@@ -14,7 +14,7 @@ use URI::Escape;
 use Try::Tiny;
 use File::Path;
 use Util qw(flog wlog run run_pty);
-use Data qw($CONFIG);
+use Data qw($CONFIG $VERSION);
 use Profile;
 use Reservation;
 use Request;
@@ -338,7 +338,8 @@ sub _handler {
                            'containers' => $User->reservations({'client' => 1}),
                            'viewers' => User->viewers(),
                            'dummyReservation' => $User->createClientReservation(),
-                           'host' => $parentFQDN
+                           'host' => $parentFQDN,
+                           'version' => $VERSION // 'v-unknown'
                         }
                      )
             )

@@ -4,6 +4,11 @@
 . $APP_DIR/app/scripts/includes/snore
 . $APP_DIR/app/scripts/includes/log_do
 
+# Extract tag and short commit ID and save for rendering in app
+GIT_TAG=$(git -C $APP_DIR describe --tags)
+GIT_COMMIT_ID=$(git -C $APP_DIR rev-parse --short HEAD)
+echo "$GIT_TAG ($GIT_COMMIT_ID)" >./data/version
+
 if [ -f "/data/certs/fullchain.pem" ] && [ -f "/data/certs/privkey.pem" ]; then
   log "Launching nginx"
   exec /usr/sbin/nginx -g 'daemon off;' -c /home/newsnow/dockside/app/server/nginx/conf/nginx.conf

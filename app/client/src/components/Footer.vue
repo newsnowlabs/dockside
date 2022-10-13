@@ -1,7 +1,9 @@
 <template>
    <b-navbar toggleable="md" variant="dark" type="dark" class="footer">
       <b-navbar-nav>
-         <b-nav-text>Dockside is an open-source project by NewsNow Labs</b-nav-text>
+         <b-nav-text class="pad first">Dockside {{ version }}</b-nav-text>
+         <b-nav-text class="md">|</b-nav-text>
+         <b-nav-text class="pad">An open-source project by NewsNow Labs</b-nav-text>
          <b-nav-text class="md">|</b-nav-text>
          <b-nav-item to="/docksideio">
             <a href="https://dockside.io/">Dockside.io</a>
@@ -27,6 +29,7 @@
       },
       data() {
          return {
+            version: window.dockside.version
          };
       },
       computed: {
@@ -52,10 +55,27 @@
       bottom: 0px;
    }
 
-   li.navbar-text + li.navbar-text {
-      padding-left: 0.5rem;
+   li.navbar-text.first {
+      font-weight: bold;
    }
 
+   // On wider devices ...
+   @media (min-width: 768px) {
+
+      // Add padding to right of first text
+      li.navbar-text.pad {
+         padding-right: 0.5rem;
+      }
+
+      // Add padding to left and right of subsequent text (matching padding on <a>)
+      li.navbar-text + li.navbar-text.pad {
+         padding-left: 0.5rem;
+         padding-right: 0.5rem;
+      }
+
+   }
+
+   // On mobile devices
    @media (max-width: 768px) {
 
       body {
@@ -66,6 +86,7 @@
          height: 15em; /* Footer height */
       }
 
+      // Hide vertical bars
       li.navbar-text.md {
          display: none;
       }
