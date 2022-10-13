@@ -12,8 +12,8 @@ Click `Launch` to prepare to launch a devtainer. Choose a Profile to indicate th
 - devtainer docker image
 - docker network
 - the auth/access level for each service preconfigured within the profile
-- a list of users allowed to view the devtainer i.e. acccess the devtainer and links to devtainer services displayed on Dockside
-- a list of users allowed to develop the devtainer i.e. access the Dockside Theia IDE (which implies rights to view the devtainer too)
+- a list of users, and/or roles of users, allowed to view the devtainer i.e. access the devtainer and display links to devtainer services displayed on Dockside
+- a list of users, and/or roles of users, allowed to develop the devtainer i.e. access the Dockside Theia IDE (which implies rights to view the devtainer too)
 - a checkbox for keeping the devtainer private from other admin users (only available to admin users)
 
 When ready, click the green `Launch` button. If errors are encountered launching the devtainer, these will be displayed onscreen.

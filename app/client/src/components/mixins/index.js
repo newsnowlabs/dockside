@@ -14,11 +14,15 @@ const filteredContainers = {
                return this.$store.state.containers
                   .filter(container => container.meta.owner === window.dockside.user.username);
             case 'shared':
+               // Display containers for which:
                return this.$store.state.containers
                   .filter(container => 
+                     //  the user is the owner
                      (container.meta.owner === window.dockside.user.username) ||
-                     (container.meta.developers && container.meta.developers.split(',').filter(user => user === window.dockside.user.username).length) ||
-                     (container.meta.viewers.split(',').filter(user => user === window.dockside.user.username).length)
+                     // the devtainer's developers list includes the user, or the user's role
+                     (container.meta.developers && container.meta.developers.split(',').filter(user => (user === window.dockside.user.username) || (user === window.dockside.user.role_as_meta)).length) ||
+                     // the devtainer's viewers list includes the user, or the user's role
+                     (container.meta.viewers && container.meta.viewers.split(',').filter(user => (user === window.dockside.user.username) || (user === window.dockside.user.role_as_meta)).length)
                   );
             case 'all':
                return this.$store.state.containers;

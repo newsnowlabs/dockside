@@ -333,7 +333,12 @@ sub _handler {
                      JSON::XS->new->utf8->convert_blessed->encode(
                         {
                            # FIXME: set 'user' => $User, after simply either (a) changing User object definition to make 'permissions' the derivedPermissions; or (b) the Vue app to check user.derivedPermissions.
-                           'user'    => { 'username' => $User->username, 'permissions' => { 'actions' => $User->permissions() } },
+                           'user'    => {
+                              'username' => $User->username,
+                              'role' => $User->role, # User's role
+                              'role_as_meta' => $User->role_as_meta, # User's role in metadata format
+                              'permissions' => { 'actions' => $User->permissions() } # User's permissions
+                           },
                            'profiles' => $User->profiles(),
                            'containers' => $User->reservations({'client' => 1}),
                            'viewers' => User->viewers(),

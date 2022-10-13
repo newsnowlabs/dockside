@@ -44,12 +44,16 @@
                return obj;
             }, {});
          },
+
+         // Lookup from username or role metadata name to user's name or human-readable role (respectively)
          userIDToUserNameMap() {
             return this.allUsers.reduce((obj, item) => {
                obj[item.username] = item.name;
+               obj[this.role_as_meta(item.role)] = this.roleName(item.role);
                return obj;
             }, {});
          },
+
          // selectedUserIds property contains a comma-separated string of user IDs, so this computed property represents those IDs as an array of obejcts
          selectedUsers: {
             get() {
@@ -60,22 +64,45 @@
                this.$emit('input', this.selectedUserIds );
             }
          },
+
          placeholder() {
-            return this.disabled ? '' : 'Add User';
+            return this.disabled ? '' : 'Add User or Role';
          }
       },
+
       methods: {
          generateAutocompleteItems(currentInput) {
-            return this.allUsers.map(
+            // First, generate items for users
+            const users = this.allUsers.map(
                user => user.name
             ).filter(
                name => name.toLowerCase().indexOf(currentInput.toLowerCase()) !== -1
             ).map(
                name => this.generateInternalTagRepresentation(name, this.userNameToUserIDMap[name])
             );
+
+            // Second, generate items for unique list of roles derived from all users
+            const roles = Object.keys(
+               this.allUsers
+               .map( user => user.role )
+               .reduce((obj, item) => { obj[item] = 1; return obj; }, {})
+            ).map( role => this.generateInternalTagRepresentation(this.roleName(role), this.role_as_meta(role)) );
+
+            return users.concat(roles);
          },
+
          generateInternalTagRepresentation(text, userId) {
             return {text, userId};
+         },
+
+         // How to display a role in the dropdown
+         roleName(role) {
+            return role + ' (Role)';
+         },
+         
+         // How to represent a role in metadata
+         role_as_meta(role) {
+            return 'role:' + role;
          }
       }
    };

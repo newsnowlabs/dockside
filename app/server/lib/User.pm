@@ -100,7 +100,7 @@ sub load {
 }
 
 sub viewers {
-   return [ map { { 'name' => $USERS->{$_}{'name'} // $_, 'username' => $_ } } sort keys %$USERS ];
+   return [ map { { 'name' => $USERS->{$_}{'name'} // $_, 'username' => $_, 'role' => $USERS->{$_}{'role'} } } sort keys %$USERS ];
 }
 
 ################################################################################
@@ -173,6 +173,11 @@ sub username {
 
 sub role {
    return $_[0]->{'role'};
+}
+
+# This sub must match that of same name in UserTagsInput.vue
+sub role_as_meta {
+   return $_[0]->role() ? ('role:' . $_[0]->role()) : undef;
 }
 
 # FIXME: Rename to derivedPermissions
@@ -362,6 +367,7 @@ sub can_on {
    my $action = shift;    # 'view' | 'develop' | 'keepPrivate'
 
    my $username = $self->username();
+   my $role = $self->role_as_meta;
 
    # Users named as a container's owner, developer or viewer can view the container.
    if( $action eq 'view' ) {
@@ -372,9 +378,13 @@ sub can_on {
       # Anyone with viewAllPrivateContainers capability can also view all containers
       return 1 if $self->has_permission( 'viewAllPrivateContainers' );
 
-      return ( $container->meta('owner') eq $username || $container->meta_has_user('viewers', $username) || $container->meta_has_user('developers', $username) )
-        ? 1
-        : 0;
+      return (
+         $container->meta('owner') eq $username ||
+         $container->meta_has_user('viewers', $username) ||
+         $container->meta_has_user('viewers', $role) ||
+         $container->meta_has_user('developers', $username) ||
+         $container->meta_has_user('developers', $role)
+      ) ? 1 : 0;
    }
 
    # Users named as a container's owner or developer can develop the container.
@@ -382,9 +392,10 @@ sub can_on {
       return 1 if $container->meta('owner') eq $username;
       return 0 unless $self->has_permission( 'developContainers' );
       return 1 if $self->has_permission( 'developAllContainers' );    # FIXME This is implementing a 3-way switch with two booleans (always-on, depends-on-container, always-off)
-      return ( $container->meta_has_user('developers', $username) )
-        ? 1
-        : 0;
+      return (
+         $container->meta_has_user('developers', $username) ||
+         $container->meta_has_user('developers', $role)
+      ) ? 1 : 0;
    }
 
    # Only the User named as the container's owner can keep the container private.
@@ -520,7 +531,8 @@ sub reservations {
    }
 
    my $username = $self->username;
-
+   my $role = $self->role_as_meta();
+   
    # Sort reservations by:
    # - those one owns, first
    # - those one is a named developer on, second;
@@ -530,9 +542,9 @@ sub reservations {
    @$viewable = sort {
       ( ($b->meta('owner') eq $username) <=> ($a->meta('owner') eq $username) )
       ||
-      ( $b->meta_has_user('developers', $username) <=> $a->meta_has_user('developers', $username) )
+      ( ($b->meta_has_user('developers', $username) || $b->meta_has_user('developers', $role)) <=> ($a->meta_has_user('developers', $username) || $a->meta_has_user('developers', $role)) )
       ||
-      ( $b->meta_has_user('viewers', $username) <=> $a->meta_has_user('viewers', $username) )
+      ( ($b->meta_has_user('viewers', $username) || $b->meta_has_user('viewers', $role)) <=> ($a->meta_has_user('viewers', $username) || $a->meta_has_user('viewers', $role)) )
       ||
       ( $b->status() <=> $a->status() )
       ||

@@ -181,9 +181,13 @@ sub meta {
       }
    }
    elsif( $key =~ /^(viewers|developers)$/ ) {
-      if( $value =~ /^[a-z0-9\,]*$/ ) {
-         # FIXME: check that username(s) provided are valid
-         # Each of these values is a comma-separated list of usernames, or ''.
+
+      # $value can be a comma-separated list of items of form either '<username>' or 'role:<role>' or ''
+      my @values = split(/,/, $value);
+
+      # Check if all values match the regex
+      if( (grep { /^(role:)?[a-z][a-z0-9]+$/ } @values) == @values ) {
+         # TODO: check that username(s) and role(s) provided are valid
          $self->{'meta'}{$key} = $value || '';
       }
       else {
@@ -817,7 +821,7 @@ sub lookup_container_uri {
 # RESERVATION QUERY METHODS
 #
 
-# Query 'viewers' or 'developers' $key for presence of user $user
+# Query 'viewers' or 'developers' $key for presence of username $user
 sub meta_has_user {
    my $self = shift;
    my $key = shift;
