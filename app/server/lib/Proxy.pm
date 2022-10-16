@@ -28,7 +28,7 @@ sub domain_to_host {
    # we parse the hostname (splitting on '-'-delimited container names).
    # The required container name will be N from the right, where N
    # is the number of '-'-delimited strings in the X-Nest-Level header.
-   if( $host =~ /^([^\.]+)\.(.*)$/ ) {
+   if( $host =~ /^([^\.]+)\.(.*?)(:\d+)?$/ ) {
       my @elements = reverse split(/-/, $1);
       my $domain = $2;
 
