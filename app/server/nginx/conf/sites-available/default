@@ -131,9 +131,8 @@ map $http_upgrade $connection_upgrade {
 
 # Proxying HTTPS server
 server {
-  listen 0.0.0.0:443 default_server;
+  listen 0.0.0.0:443 default_server ssl;
 
-  ssl on;
   ssl_certificate /data/certs/fullchain.pem;
   ssl_certificate_key /data/certs/privkey.pem;
 
