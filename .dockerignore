@@ -2,3 +2,4 @@
 **/*~
 app/client/node_modules
 app/client/dist
+depot.json
