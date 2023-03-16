@@ -8,7 +8,7 @@ RUN apk update && \
 
 ARG OPT_PATH
 ARG THEIA_VERSION
-ARG THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
+ENV THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
 
 WORKDIR $THEIA_PATH/theia
 ADD ./ide/theia/$THEIA_VERSION/build/ ./
@@ -18,7 +18,7 @@ RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && NODE_OPTIONS="--max_old_space_size=409
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
-ENTRYPOINT ["node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
+ENTRYPOINT node ./src-gen/backend/main.js $THEIA_PATH/theia --hostname 0.0.0.0 --port 3131
 
 FROM theia-build as theia-clean
 
