@@ -4,7 +4,7 @@ IMAGE=$(basename $(pwd))
 REPO="newsnowlabs/dockside"
 DOCKERFILE="Dockerfile"
 TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
-THEIA_VERSION=1.27.0
+THEIA_VERSION=1.35.0
 BUILDER=buildkit
 PLATFORMS_DEFAULT_DEPOT="linux/amd64,linux/arm64,linux/arm/v7"
 
