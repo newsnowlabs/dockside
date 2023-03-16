@@ -69,7 +69,7 @@ deploy_cert() {
     chmod 755 $DATA_DIR/certs
     chmod 644 $DATA_DIR/certs/fullchain.pem
     chmod 600 $DATA_DIR/certs/privkey.pem
-    /usr/bin/s6-svc -t /etc/service/nginx
+    /usr/bin/s6-svc -h /etc/service/nginx
 }
 
 unchanged_cert() {
