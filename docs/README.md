@@ -219,11 +219,11 @@ For our current ideas/plans, see our [draft roadmap](roadmap.md).
 
 ## Developing Dockside
 
-See [Developing Dockside](developing.md) and [Building the Dockside image](building-image.md).
+See [Developing Dockside](developing.md) to learn more about how to go about developing Dockside within Dockside, the Dockside application components and building Dockside images.
 
 ## Bugs, issues and support
 
-If you are experiencing an issue or believe you have found a bug, please [raise an issue](https://github.com/newsnowlabs/dockside/issues) or contact via on the [NewsNow Labs Slack Workspace](https://join.slack.com/t/newsnowlabs/shared_invite/zt-wp54l05w-0DTxuc_n8uISJRtks3Xw3A).
+If you are experiencing an issue or believe you may have found a bug, please [raise an issue](https://github.com/newsnowlabs/dockside/issues) or contact via on the [NewsNow Labs Slack Workspace](https://join.slack.com/t/newsnowlabs/shared_invite/zt-wp54l05w-0DTxuc_n8uISJRtks3Xw3A).
 
 ## Contributing
 
@@ -231,7 +231,6 @@ If you would like to contribute a bugfix, patch or feature, we'd be delighted.
 
 Please just [raise an issue](https://github.com/newsnowlabs/dockside/issues/new) or contact us on our [NewsNow Labs Slack Workspace](https://join.slack.com/t/newsnowlabs/shared_invite/zt-wp54l05w-0DTxuc_n8uISJRtks3Xw3A).
 
-If you would like to assist with an item from the [roadmap](#roadmap), please read on.
 
 ## Contact
 

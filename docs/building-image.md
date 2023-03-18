@@ -59,7 +59,7 @@ build stage:
 ```
 
 Theia can then be tested by running this command, then opening
-http://localhost:8080/:
+http://localhost:8080/
 
 ```
 docker run --rm -it -p 8080:3131 newsnowlabs/dockside:theia-build

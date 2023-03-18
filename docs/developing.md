@@ -11,7 +11,7 @@ Simply:
 3. `git pull` the latest main branch from the Github repo
 4. Modify the code, rebuilding [the dockside client](#dockside-client) and restarting the [server](#dockside-server) and [event daemon](#dockside-event-daemon) as necessary.
 5. Test, by clicking `Open` on the devtainer `dockside` router. Admin login credentials can be obtained by running `docker logs <devtainer-name>` within the IDE terminal.
-6. Build a test Dockside image, and launch within a new Dockside devtainer.
+6. [Build a test image](building-image.md), and launch within a new Dockside devtainer.
 
 ## Dockside application components
 
@@ -54,7 +54,7 @@ sudo s6-svc -t /etc/service/nginx
 
 ## Dockside event daemon
 
-To restart the Dockside server, run:
+To restart the Dockside event daemon, run:
 
 ```sh
 sudo s6-svc -t /etc/service/docker-event-daemon
