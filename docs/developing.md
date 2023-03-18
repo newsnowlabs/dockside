@@ -21,6 +21,7 @@ The main components of the Dockside application are:
 2. The [Dockside Server](#dockside-server), currently written in Perl and also embedded in NGINX using mod-http-perl
 3. The [Dockside Client](#dockside-client), written in Vue (HTML/CSS/JavaScript)
 4. The [Dockside Event Daemon](#dockside-event-daemon), written in Perl
+5. The [Eclipse Theia IDE](#eclipse-theia-ide), an open-source IDE framework, written in typescript 
 
 Additional optionally-enabled components are:
 
@@ -60,6 +61,10 @@ To restart the Dockside event daemon, run:
 sudo s6-svc -t /etc/service/docker-event-daemon
 ```
 
+## Eclipse Theia IDE
+
+Read more about [updating Theia](updating-theia.md).
+
 ## Rebuilding documentation
 
 To rebuild the documentation html, run:
@@ -76,4 +81,4 @@ This is useful to do when you want to test that your modified Dockside
 launches as expected, or when you want to launch a modified version of
 Dockside in production on another host.
 
-For instructions, see [Building the Dockside image](building-image.md).
+For instructions, see [Building a Dockside image](building-image.md) and [Building a Production Image](building-production-image.md).
