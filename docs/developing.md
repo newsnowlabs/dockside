@@ -63,7 +63,9 @@ sudo s6-svc -t /etc/service/docker-event-daemon
 
 ## Eclipse Theia IDE
 
-Read more about [updating Theia](updating-theia.md).
+As Eclipse Theia is a third party open source application, developing it is largely outwith the scope of this documentation, the exceptions being updating the version of Theia running within Dockside, and reimplementing the Dockside-specific patches when required.
+
+To learn more about these exceptions, see [updating Theia](updating-theia.md).
 
 ## Rebuilding documentation
 

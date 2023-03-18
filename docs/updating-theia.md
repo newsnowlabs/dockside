@@ -1,9 +1,9 @@
 # Updating Theia
 
-Here is the procedure to follow to update Theia to the latest version.
+Here is the procedure to follow to update Dockside to run the latest version of Theia.
 
 1. Find the latest version of Theia e.g. `1.35.0` via the Eclipse Theia GitHub website (https://github.com/eclipse-theia/theia).
-2. Duplicate the latest Theia folder inside `ide/theia` and rename it to the new Theia version i.e. `1.35.0`
+2. Inside a clone of [the Dockside repo](https://github.com/newsnowlabs/dockside), duplicate the latest Theia folder inside `ide/theia` and rename it to the new Theia version i.e. `1.35.0`
 3. Inside the `build` subdirectory of `1.35.0`
    1. Delete `yarn.lock`.
    2. Inside the `patches` directory, rename each file, changing references to the old Theia version to the new Theia version.
