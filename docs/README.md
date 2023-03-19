@@ -217,9 +217,9 @@ Where are we taking Dockside? As Dockside today satisfactorily serves the needs 
 
 For our current ideas/plans, see our [draft roadmap](roadmap.md).
 
-## Developing Dockside
+## Developing
 
-See [Developing Dockside](developing.md) to learn more about how to go about developing Dockside within Dockside, the Dockside application components and building Dockside images.
+See [Developing Dockside](developing/developing.md) to learn more about how to go about developing Dockside within Dockside, the Dockside application components and building Dockside images.
 
 ## Bugs, issues and support
 

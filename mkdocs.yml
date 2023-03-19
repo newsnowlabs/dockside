@@ -90,5 +90,7 @@ nav:
   - Case Studies: case-studies/NewsNow.md
   - Roadmap: roadmap.md
   - Developing:
-    - Developing: developing.md
-    - Building an image: building-image.md
+    - Developing: developing/developing.md
+    - Building an image: developing/building-image.md
+    - Updating Theia: developing/updating-theia.md
+    - Building a production image: developing/building-production-image.md
