@@ -29,6 +29,9 @@ fi
 
 log "Located Dockside volume '$DOCKSIDE_VOLUME' for Dockside container $DOCKSIDE_HOSTNAME"
 
+log "Pulling latest version of image '$IMAGE' ..."
+docker pull "$IMAGE"
+
 log "Proceeding to launch new Dockside image '$IMAGE' to perform IDE upgrade ..."
 
 docker run --rm -i --entrypoint=/bin/bash --mount=type=volume,src=$DOCKSIDE_VOLUME,dst=/opt/dockside.orig "$IMAGE" -c 'for typepath in /opt/dockside/ide/*; do type=$(basename $typepath); for idepath in $typepath/*; do ide=$(basename $idepath); dstpath=/opt/dockside.orig/ide; if [ -d "$dstpath/$type/$ide" ]; then echo "[--EXISTS--] $type/$ide"; else echo "[INSTALLING] $type/$ide"; cp -a $idepath $dstpath/$type/; fi; done; done'
