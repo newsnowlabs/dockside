@@ -178,84 +178,83 @@ if [ "$SSL" == "letsencrypt" ] && [ -z "${SSL_ZONES[0]}" ]; then
   exit 1
 fi
 
-log "Checking ownership/permissions of /var/run/docker.sock ..."
-if [ -S /var/run/docker.sock ]; then
-  if [ "$(stat -c %G /var/run/docker.sock)" != "docker" ]; then
+if [ "$OPT_RUN_DOCKERD" != 1 ]; then
 
-    log "- Group owner of /var/run/docker.sock is not 'docker', fixing ..."
+  log "Checking ownership/permissions of /var/run/docker.sock ..."
+  if [ -S /var/run/docker.sock ]; then
 
-    # Give access to the docker group inside the container (assumes docker.sock outside the container supports File Access Control Lists);
-    # failing which, change the group.
-    setfacl -m g:docker:rwx /var/run/docker.sock || chgrp docker /var/run/docker.sock
-    log "- Changed or added docker group to /var/run/docker.sock."
+    if [ "$(stat -c %G /var/run/docker.sock)" != "docker" ]; then
+
+      log "- Group owner of /var/run/docker.sock is not 'docker', fixing ..."
+
+      # Give access to the docker group inside the container (assumes docker.sock outside the container supports File Access Control Lists);
+      # failing which, change the group.
+      setfacl -m g:docker:rwx /var/run/docker.sock || chgrp docker /var/run/docker.sock
+      log "- Changed or added docker group to /var/run/docker.sock."
+    else
+      log "- Ownership of /var/run/docker.sock is sufficient."
+    fi
+
+    # Fix MacOS Docker Desktop docker socket group permissions
+    if [[ $(stat -c %A /var/run/docker.sock) =~ ^s....w ]]; then
+      log "- Permissions for /var/run/docker.sock are sufficient."
+    else
+      log "- Adding g+rw permissions to /var/run/docker.sock."
+      chmod g+rw /var/run/docker.sock
+    fi
+
+    # Test the socket, to confirm it is not stale or access-prohibited by Apparmor
+    if ! safe_curl --unix-socket /var/run/docker.sock -H "Content-Type: application/json" -X GET http:/v1.41/info -o /dev/null; then
+      log "- Cannot connect to bind-mounted /var/run/docker.sock: please ensure dockerd is running on host and consider adding docker run option --security-opt=apparmor=unconfined; aborting!"
+      exit 3
+    fi
+
   else
-    log "- Ownership of /var/run/docker.sock is sufficient."
-  fi
 
-  # Fix MacOS Docker Desktop docker socket group permissions
-  if [[ $(stat -c %A /var/run/docker.sock) =~ ^s....w ]]; then
-    log "- Permissions for /var/run/docker.sock are sufficient."
-  else
-    log "- Adding g+rw permissions to /var/run/docker.sock."
-    chmod g+rw /var/run/docker.sock
-  fi
-
-  # Test the socket, to confirm it is not stale or access-prohibited by Apparmor
-  if ! safe_curl --unix-socket /var/run/docker.sock -H "Content-Type: application/json" -X GET http:/v1.41/info -o /dev/null; then
-    log "- Cannot connect to bind-mounted /var/run/docker.sock: please ensure dockerd is running on host and consider adding docker run option --security-opt=apparmor=unconfined; aborting!"
-    exit 3
-  fi
-
-else
-
-  if [ "$OPT_RUN_DOCKERD" != "1" ]; then
     log "- Cannot find bind-mounted /var/run/docker.sock: please bind-mount from host or relaunch using runtime supporting Docker-in-Docker and --run-dockerd; aborting!"
     usage
     exit 2
   fi
 fi
 
-if [ "$OPT_RUN_DOCKERD" == "1" ] && [ -S /var/run/docker.sock ]; then
-  log "Can't launch with --run-dockerd when /var/run/docker.sock already present; aborting!"
-  exit 2
-fi
+if [ "$OPT_RUN_DOCKERD" != "1" ]; then
+  log "Identifying container ID ..."
 
-log "Identifying container ID ..."
+  CGROUP_ID=$(grep -o -P -m1 'docker.*\K[0-9a-f]{64,}' /proc/self/cgroup)
 
-CGROUP_ID=$(grep -o -P -m1 'docker.*\K[0-9a-f]{64,}' /proc/self/cgroup)
+  if [ -n "$CGROUP_ID" ]; then
+    # This only works with cgroup v1 OR with cgroup v2 and --cgroupns=host
+    CTR_ID="$CGROUP_ID"
+    log "- Identified container ID from /proc/self/cgroup as $CTR_ID"
+  elif [ -f "/data/ctr-id" ]; then
+    # This works when using --cidfile <host-data-mount-path>/ctr-id -v <host-data-mount-path>:/data
+    CTR_ID=$(cat /data/ctr-id)
+    log "- Identified container ID from /data/ctr-id as $CTR_ID"
+  else
+    if [[ "$HOSTNAME" =~ ^[0-9a-f]{12}$ ]]; then
+      # This works when not using --network=host
+      CTR_ID="$HOSTNAME"
+      log "- Identified container ID from hex string hostname as $CTR_ID"
+    elif [ -S /var/run/docker.sock ]; then
+      # This works when using --hostname=<name> --name=<name> even when --network=host
+      CTR_ID="$(docker ps -q --filter=Name=$HOSTNAME)"
 
-if [ -n "$CGROUP_ID" ]; then
-  # This only works with cgroup v1 OR with cgroup v2 and --cgroupns=host
-  CTR_ID="$CGROUP_ID"
-  log "- Identified container ID from /proc/self/cgroup as $CTR_ID"
-elif [ -f "/data/ctr-id" ]; then
-  # This works when using --cidfile <host-data-mount-path>/ctr-id -v <host-data-mount-path>:/data
-  CTR_ID=$(cat /data/ctr-id)
-  log "- Identified container ID from /data/ctr-id as $CTR_ID"
-else
-  if [[ "$HOSTNAME" =~ ^[0-9a-f]{12}$ ]]; then
-    # This works when not using --network=host
-    CTR_ID="$HOSTNAME"
-    log "- Identified container ID from hex string hostname as $CTR_ID"
-  elif [ -S /var/run/docker.sock ]; then
-    # This works when using --hostname=<name> --name=<name> even when --network=host
-    CTR_ID="$(docker ps -q --filter=Name=$HOSTNAME)"
-
-    if [ -n "$CTR_ID" ]; then
-      log "- Identified container ID from non-hex-string hostname '$HOSTNAME' as $CTR_ID"
+      if [ -n "$CTR_ID" ]; then
+        log "- Identified container ID from non-hex-string hostname '$HOSTNAME' as $CTR_ID"
+      else
+        log "- Failed to identify container ID from non-hex-string hostname '$HOSTNAME'; aborting!"
+        exit 1
+      fi
     else
-      log "- Failed to identify container ID from non-hex-string hostname '$HOSTNAME'; aborting!"
+      log "- Failed to identify container ID from non-hex-string hostname '$HOSTNAME' without 'docker ps'; aborting!"
       exit 1
     fi
-  elif [ "$OPT_RUN_DOCKERD" != "1" ]; then
-    log "- Failed to identify container ID from non-hex-string hostname '$HOSTNAME' without 'docker ps'; aborting!"
-    exit 1
   fi
-fi
 
-if [ "$OPT_RUN_DOCKERD" != "1" ] && [ -z "$CTR_ID" ]; then
-  log "Can't launch without having identified container ID; aborting!"
-  exit 2
+  if [ -z "$CTR_ID" ]; then
+    log "Can't launch without having identified container ID; aborting!"
+    exit 2
+  fi
 fi
 
 log "Configuring standard services ..."
@@ -263,6 +262,17 @@ for s in bind nginx docker-event-daemon logrotate dehydrated
 do
   log "- Configuring $s"
   mkdir -p /etc/service/$s /etc/service/$s/data
+
+  # CTR_ID and /data/ctr-id
+  # - Store the Dockside container's hostname, when it is running in a container.
+  #   This is mostly used to identify the IDE volume.
+  #
+  # INNER_DOCKERD and /data/inner-dockerd
+  # - Set to 1/true when --run-dockerd is used.
+  #   Whether Dockside is running in a container or not, devtainers will be launched
+  #   using the inner dockerd and the IDE path will be bind mounted.
+  #   CTR_ID/ctr-id will not be used.
+  #
   cat >/etc/service/$s/data/env <<_EOE_
 DATA_DIR=/data
 USER=${USER:-dockside}
