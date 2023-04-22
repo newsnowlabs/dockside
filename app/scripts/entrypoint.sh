@@ -521,6 +521,10 @@ fi
 log "Fixing ownership for data/db, data/cache, data/certs, data/config ..."
 chown -R $USER $DATA_DIR
 
+log "Adding extensions.json ..."
+[ -d "$APP_HOME/.vscode" ] || mkdir -p $APP_HOME/.vscode && chown -R $USER.$USER $APP_HOME/.vscode
+[ -f "$APP_HOME/.vscode/extensions.json" ] || cp -a $APP_DIR/build/development/extensions.json $APP_HOME/.vscode/
+
 log "Launching s6 service supervisor ..."
 mkdir -p /etc/service/.s6-svscan && cat >/etc/service/.s6-svscan/finish <<_EOE_ && chmod 755 /etc/service/.s6-svscan/finish
 #!/bin/sh

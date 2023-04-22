@@ -1,0 +1,19 @@
+{
+	// See https://go.microsoft.com/fwlink/?LinkId=827846
+	// for the documentation about the extensions.json format
+	"recommendations": [
+      "vscode.css",
+      "vscode.docker",
+		"dbaeumer.vscode-eslint",
+      "vscode.html",
+      "vscode.ini",
+      "vscode.javascript",
+      "vscode.json",
+      "vscode.merge-conflict",
+      "vscode.perl",
+      "vscode.scss",
+      "vscode.shellscript",
+      "wayou.vscode-todo-highlight",
+      "octref.vetur"
+	]
+}
