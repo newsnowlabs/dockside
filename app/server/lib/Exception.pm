@@ -10,6 +10,8 @@ package Exception;
 
 use strict;
 
+use Time::HiRes;
+
 ################################################################################
 # SIMPLE ACCESSORS
 # ----------------
@@ -19,11 +21,15 @@ sub code {
 }
 
 sub msg {
-   return $_[0]->{'msg'};
+   return $_[0]->{'msg'} // 'Internal error';
 }
 
 sub dbg {
-   return $_[0]->{'dbg'} || $_->{'msg'};
+   return $_[0]->{'dbg'};
+}
+
+sub time {
+   return $_[0]->{'time'};
 }
 
 ################################################################################
@@ -35,7 +41,7 @@ sub dbg {
 # die Exception->new( 
 #   'msg' => 'Error such-and-such occurred',
 #   'dbg' => 'Error such-and-such occurred with debug information X, Y and Z',  [optional]
-#  'code' => <error-id>                                                         [optional]
+#   'code' => <error-id>                                                        [optional]
 # )
 
 sub new {
@@ -45,11 +51,13 @@ sub new {
    my $self = bless {
       'code' => $args{'code'},
       'msg' => $args{'msg'},
-      'dbg' => $args{'dbg'}
+      'dbg' => $args{'dbg'},
+      'time' => Time::HiRes::time
    }, ( ref($class) || $class );
 
-   $self->{'dbg'} =~ s/\s+$//s;
-   $self->{'msg'} =~ s/\s+$//s;
+   # Remove leading and/or trailing whitespace
+   $args{'msg'} =~ s/(^\s+|\s+$)//g;   
+   $args{'dbg'} =~ s/(^\s+|\s+$)//g;
 
    return $self;
 }
