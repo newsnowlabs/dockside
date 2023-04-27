@@ -46,20 +46,23 @@
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>Image</th>
                            <td v-if="!isPrelaunchMode">{{ container.data.image }} ({{ container.docker ? container.docker.ImageId : '' }})</td>
-                           <td v-else>
-                              <!-- <select class="form-control" v-model="form.image" :disabled="images.length <= 1">
+                           <!-- <td v-else-if="images.length <= 1 && !hasWildcardImages">
+                              <select class="form-control" v-model="form.image" :disabled="images.length <= 1">
                                  <option v-for="image in images" v-bind:key="image">{{ image }}</option>
-                              </select> -->
+                              </select>
+                           </td> -->
+                           <td v-else>
                               <autocomplete
                                  class="autocomplete-class"
-                                 placeholder="Search for an image"
-                                 aria-label="Search for an image"
+                                 placeholder="Choose an image"
+                                 aria-label="Choose an image"
                                  ref="imageAutocompleteInput"
                                  :search="imageAutocompleteSearch"
                                  @submit="imageAutocompleteSubmit"
                                  @blur="imageAutocompleteSubmit"
-                                 :disabled="images.length <= 1"
+                                 :disabled="images.length <= 1 && !hasWildcardImages"
                                  :default-value="images[0]"
+                                 :readonly="!hasWildcardImages"
                               ></autocomplete>
                            </td>
                         </tr>
@@ -260,7 +263,10 @@
             return (this.profile && this.profile.runtimes) ? this.profile.runtimes : [];
          },
          images() {
-            return (this.profile && this.profile.images) ? this.profile.images.filter(x => x !== '*') : [];
+            return (this.profile && this.profile.images) ? this.profile.images.filter(x => !x.includes("*")) : [];
+         },
+         hasWildcardImages() {
+           return ((this.profile && this.profile.images) ? this.profile.images.filter(x => x.includes("*")) : []).length > 0;
          },
          networks() {
             return (this.profile && this.profile.networks) ? this.profile.networks : [];
@@ -403,18 +409,23 @@
       mixins: [routing],
       watch: {
          'form.profile'() {
+            let f = this.form;
+            let p = this.profile;
+
             if(this.isPrelaunchMode) {
-               this.form.image = this.profile.images.filter(x => x !== '*')[0];
-               this.form.runtime = this.profile.runtimes[0];
-               this.form.network = this.profile.networks[0];
-               this.form.access = Object.fromEntries(
-                  this.profile.routers.map(
+               f.image = p.images.length > 0 ? p.images[0].replace("*","") : '';
+               f.runtime = p.runtimes[0];
+               f.network = p.networks[0];
+               f.access = Object.fromEntries(
+                  p.routers.map(
                         r => [r.name ? r.name : r.prefixes[0], r.auth ? r.auth[0] : 'developer']
                   )
                );
 
                // Patch the image into the image autocomplete component.
-               this.$refs.imageAutocompleteInput.setValue(this.form.image);
+               if(f.image && this.$refs.imageAutocompleteInput) {
+                  this.$refs.imageAutocompleteInput.setValue(f.image);
+               }
             }
          }
       }
@@ -467,6 +478,7 @@
 <style lang="scss">
    // Match Bootstrap
    input.autocomplete-input {
+      height: calc(1.5em + 0.75rem + 2px);
       font-size: 0.9rem;
       border-radius: 4px;
       padding-top: 8px;
@@ -481,6 +493,11 @@
    input.autocomplete-input:focus {
       border-color: #8bb8df;
       box-shadow: 0 0 0 0.2rem rgba(51, 122, 183, 0.25);
+   }
+
+   input.autocomplete-input:disabled {
+      background-color: #e9ecef;
+      opacity: 1;
    }
 
    .autocomplete-result {
