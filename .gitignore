@@ -24,4 +24,5 @@
 .sass-cache
 .env
 tmp/
-**/depot.json
+/.vscode-server/
+/.dotnet
