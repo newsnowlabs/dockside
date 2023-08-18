@@ -44,7 +44,7 @@
 
          // {ideUser} will be substituted at launch-time with the user that
          // the IDE will be launched as (as per the "users" option above).
-         { "dst": "/home/{ideUser}/.vscode", "tmpfs-size": "100M" },
+         { "dst": "/home/newsnow/.vscode", "tmpfs-size": "150M" },
 
          // These are good for most Linux distributions
          { "dst": "/tmp", "tmpfs-size": "512M" },

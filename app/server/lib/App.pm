@@ -445,15 +445,15 @@ sub _handler {
       return redirect($r, 302, '/');
    }
    catch {
-      my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
-      
-      flog("Reporting exception: dbg='$dbg'; msg='$msg'; content type='$type'");
+      my ($msg, $dbg, $time) = ref($_) eq 'Exception' ? ($_->msg(), $_->dbg(), $_->time()) : ($_, $_, time);
+
+      flog("Reporting exception at '$time': msg='$msg'; dbg='$dbg'; content type='$type'");
 
       if($type eq 'text') {
-         return text($r, 401, $msg);
+         return text($r, 401, "$msg at $time");
       }
       else {
-         return json($r, 401, { 'status' => '401', 'msg' => $msg });
+         return json($r, 401, { 'status' => '401', 'msg' => "$msg at $time", 'time' => $time });
       }
    };
 

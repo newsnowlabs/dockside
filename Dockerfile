@@ -256,7 +256,8 @@ COPY --chown=$USER:$USER . $HOME/$APP/
 USER $USER
 WORKDIR $HOME
 RUN cp -a ~/$APP/build/development/dot-theia .theia && \
-    ln -s ~/$APP/build/development/perltidyrc ~/.perltidyrc
+    ln -s ~/$APP/build/development/perltidyrc ~/.perltidyrc && \
+    ln -s ~/$APP/build/development/vetur.config.js ~/
 
 ################################################################################
 # Cause the creation of a volume at /opt/dockside.
