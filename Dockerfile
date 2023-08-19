@@ -4,27 +4,58 @@ ARG ALPINE_VERSION=3.14
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} as theia-build
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf
+    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash
 
 ARG OPT_PATH
-ARG THEIA_VERSION
-ENV THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
+ARG TARGETPLATFORM
 
-WORKDIR $THEIA_PATH/theia
-ADD ./ide/theia/$THEIA_VERSION/build/ ./
+# Create:
+# - a BASH_ENV script targeting the desired Theia version for the platform
+#   that sets the THEIA_VERSION and THEIA_PATH variables correctly for each platform
+#   and changes to the Theia build directory (once it exists);
+# - a theia-exec wrapper script used to run the BASH_ENV script before running Theia
+#   in development builds of Theia ('theia-build' and 'theia' build stages/targets).
+#
+# We will set bash as the build shell to allow the BASH_ENV script to be executed,
+# every time a command is RUN and bash is spawned.
+#
+ENV BASH_ENV=/tmp/theia-bash-env
+
+RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
+      THEIA_VERSION=1.35.0; \
+    elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
+      THEIA_VERSION=1.35.0; \
+    elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
+      THEIA_VERSION=1.35.0; \
+    else \
+      THEIA_VERSION=1.35.0; \
+    fi; \
+    echo "export THEIA_VERSION=$THEIA_VERSION" >$BASH_ENV; \
+    echo "export THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION" >>$BASH_ENV; \
+    echo 'echo THEIA_VERSION=$THEIA_VERSION THEIA_PATH=$THEIA_PATH' >>$BASH_ENV; \
+    echo '[ -d $THEIA_PATH/theia ] && cd $THEIA_PATH/theia || true' >>$BASH_ENV; \
+    echo -e '#!/bin/bash\n\nexec "$@"\n' >/tmp/theia-exec && chmod 755 /tmp/theia-exec; \
+    . $BASH_ENV
+
+# The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
+# The THEIA_VERSION and THEIA_PATH variables will thus be set correctly for each platform,
+# (including after running /tmp/theia-exec).
+SHELL ["/bin/bash", "-c"]
+
+ADD ./ide/theia build/development/elf-patcher.sh /tmp/build/ide/theia
+
+RUN mkdir -p $THEIA_PATH && \
+    cp -a /tmp/build/ide/theia/$THEIA_VERSION/build $THEIA_PATH/theia && \
+    cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin $THEIA_PATH/
 
 # Build Theia
 RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && NODE_OPTIONS="--max_old_space_size=4096" && yarn config set network-timeout 600000 -g && yarn
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
-ENTRYPOINT node ./src-gen/backend/main.js $THEIA_PATH/theia --hostname 0.0.0.0 --port 3131
+ENTRYPOINT ["/tmp/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
 
 FROM theia-build as theia-clean
-
-ARG OPT_PATH
-ARG THEIA_VERSION
-ARG THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
 
 RUN yarn autoclean --init && \
     echo '*.ts' >> .yarnclean && \
@@ -39,40 +70,32 @@ RUN yarn autoclean --init && \
     rm -rf node_modules/puppeteer/.local-chromium
 
 # Patch all binaries and dynamic libraries for full portability.
-COPY build/development/elf-patcher.sh $THEIA_PATH/bin/elf-patcher.sh
 
 FROM theia-clean as theia-findelfs
 
-ARG OPT_PATH
-ARG THEIA_VERSION
-ENV THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
 ENV BINARIES="node busybox s6-svscan curl"
 
-RUN $THEIA_PATH/bin/elf-patcher.sh --findelfs
+RUN /tmp/build/ide/theia/elf-patcher.sh --findelfs
 
 FROM theia-findelfs as theia
-
-ARG TARGETPLATFORM
 
 # The version of rg installed by the Theia build on linux/arm/v7
 # depends on libs that are not available on Alpine on this platform.
 # Workaround this by overwriting it with Alpine's own rg.
+ARG TARGETPLATFORM
 RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       apk add --no-cache ripgrep; \
       cp $(which rg) $(find -name rg); \
     fi
 
-RUN $THEIA_PATH/bin/elf-patcher.sh --patchelfs && \
+RUN /tmp/build/ide/theia/elf-patcher.sh --patchelfs && \
     cd $THEIA_PATH/bin && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
     ln -sf busybox pgrep
 
-# Add our Theia-version-specific scripts.
-ADD ./ide/theia/$THEIA_VERSION/bin/ $THEIA_PATH/bin/
-
 # Default diagnostics entrypoint for this stage (uses patched node)
-ENTRYPOINT ["../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
+ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
 
 ################################################################################
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
@@ -135,8 +158,6 @@ FROM node:16-bullseye as dockside-1
 ARG DEBIAN_FRONTEND=noninteractive
 
 ARG OPT_PATH
-ARG THEIA_VERSION
-ARG THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
 ARG USER=dockside
 ARG APP=dockside
 ARG HOME=/home/newsnow
@@ -232,8 +253,7 @@ LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 ARG DEBIAN_FRONTEND=noninteractive
 
 ARG OPT_PATH
-ARG THEIA_VERSION
-ARG THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
+ARG THEIA_PATH=$OPT_PATH/ide/theia
 ARG USER=dockside
 ARG APP=dockside
 ARG HOME=/home/newsnow
@@ -247,6 +267,7 @@ COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plu
 # THEIA INTEGRATION
 #
 COPY --from=theia $THEIA_PATH $THEIA_PATH/
+COPY --from=theia /tmp/theia-bash-env /tmp/theia-bash-env
 
 ################################################################################
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
@@ -273,7 +294,8 @@ VOLUME $OPT_PATH
 # before its own launch.sh runs.
 #
 USER root
-RUN mkdir -p $OPT_PATH/bin && \
+RUN . /tmp/theia-bash-env && \
+    mkdir -p $OPT_PATH/bin && \
     cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
     ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
     cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/ && \
@@ -286,7 +308,7 @@ RUN mkdir -p $OPT_PATH/bin && \
 
 ################################################################################
 # CLEAN UP
-RUN apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/*
+RUN apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
 ################################################################################
 # LAUNCH

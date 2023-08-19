@@ -12,11 +12,11 @@ Here is the procedure to follow to update Dockside to run the latest version of 
       - Audit the list of dependencies to ensure that every dependency referenced in the upstream new Theia version (at e.g. https://github.com/eclipse-theia/theia/blob/release/1.35.0/examples/browser/package.json) is referenced in your `package.json` with the exception of:
          - @theia/api-samples
          - @theia/memory-inspector
-4. Update `build/build.sh` to reference the new Theia version.
+4. Update `Dockerfile` to reference the new Theia version for supported platforms.
 5. Build a test image locally (see below):
    1. Resolve any build issues. e.g. You may need to upgrade the version of Node specified in the `Dockerfile`, or re-implement the patches.
    2. Test the image to ensure all patched functionality is working correctly 
-6. Finally, when everything is tested and working, copy `yarn.lock` from the test image to the `build` subdirectory.
+6. Finally, when everything is tested and working, copy `yarn.lock` from the test image to the same Theia `build` subdirectory as contains the new `package.json` (i.e. `ide/theia/1.35.0/build`).
 7. Don't forget to update the `README` file to describe the patches, should any patch files have been deleted or added.
 
 ## Building a test image, reimplementing patches and obtaining `yarn.lock`
