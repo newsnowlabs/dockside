@@ -22,13 +22,13 @@ ARG TARGETPLATFORM
 ENV BASH_ENV=/tmp/theia-bash-env
 
 RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
-      THEIA_VERSION=1.35.0; \
+      THEIA_VERSION=1.40.0; \
     elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-      THEIA_VERSION=1.35.0; \
+      THEIA_VERSION=1.40.0; \
     elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
       THEIA_VERSION=1.35.0; \
     else \
-      THEIA_VERSION=1.35.0; \
+      THEIA_VERSION=1.40.0; \
     fi; \
     echo "export THEIA_VERSION=$THEIA_VERSION" >$BASH_ENV; \
     echo "export THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION" >>$BASH_ENV; \
