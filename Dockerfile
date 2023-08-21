@@ -261,7 +261,8 @@ ARG HOME=/home/newsnow
 ################################################################################
 # INSTALL DEVELOPMENT VSIX PLUGINS
 #
-COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
+# (disabled as there are currently no VSIX extensions needing to be embedded in the image)
+# COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
 
 ################################################################################
 # THEIA INTEGRATION
