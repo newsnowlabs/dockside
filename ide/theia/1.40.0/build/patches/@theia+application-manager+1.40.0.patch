@@ -12,7 +12,7 @@ index 042b37f..879dfb2 100644
 +// (technically, package.json's theia.frontend.config.devtainerName)
 +// It will be read by our patched window-title-service.js
 +let config = ${this.prettyStringify(this.pck.props.frontend.config)};
-+try { config.devtainerName=document.location.href.split('/')[2].split('.')[0].split('-')[1]; } catch {};
++try { config.devtainerName=document.location.href.split('/')[2].split('.')[0].split('--')[0].split('-').slice(1).join('-'); } catch {};
 +FrontendApplicationConfigProvider.set(config);
  
  ${this.ifMonaco(() => `

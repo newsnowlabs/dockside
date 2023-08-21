@@ -231,8 +231,8 @@ sub validate {
    my $self = shift;
 
    if($self->{'name'} ne '') {
-      # Name must be lower case, consist only of letters and digits, and begin with a letter
-      unless( $self->{'name'} =~ /^[a-z][a-z0-9]+$/ ) {
+      # Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter
+      unless( $self->{'name'} =~ /^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/ ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid name '$self->{'name'}'" );
       }
    }
