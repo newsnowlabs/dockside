@@ -20,7 +20,7 @@
                </h3>
                <h3 v-else>
                   <span><input type="text" v-bind:class="validName ? [] : ['red']" class="form-control" required v-model="form.name" placeholder="Devtainer name" :disabled="!hasProfiles"></span>
-                  <span class="error-info" v-if="!validName">Name must be lower case, consist only of letters and digits, and begin with a letter</span>
+                  <span class="error-info" v-if="!validName">Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter</span>
                </h3>
             </b-card-header>
 
@@ -285,7 +285,7 @@
             return `${window.location.protocol}//${window.location.host}/container/${this.container.name}`;
          },
          validName() {
-            return this.form.name.match('^([a-z][a-z0-9]*|)$');
+            return this.form.name.match('^(?:[a-z](?:-[a-z0-9]+|[a-z0-9]+)+|)$');
          }
       },
       methods: {

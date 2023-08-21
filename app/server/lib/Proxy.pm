@@ -25,19 +25,41 @@ sub domain_to_host {
 
    # Identify the container to which to proxy.
    # In order to support nested dockside containers,
-   # we parse the hostname (splitting on '-'-delimited container names).
+   # we parse the hostname, splitting on '--'-delimited container names,
+   # and splitting the leftmost element again on its first '-'.
+   #
    # The required container name will be N from the right, where N
    # is the number of '-'-delimited strings in the X-Nest-Level header.
+
+   # e.g. Example inputs and outputs, for each nest level:
+   #
+   # www.mydockside.co.uk ->
+   # - 0: 'www', '', 'mydockside.co.uk', 0 (as seen by the outermost Dockside container)
+   #
+   # www-inner.mydockside.co.uk ->
+   # - 0: 'inner', 'www', 'mydockside.co.uk', 0 (as seen by the outermost Dockside container)
+   # - 1: 'www', '', 'mydockside.co.uk', 1 (as seen by an inner Dockside devtainer)
+
+   # www-my-devtainer--inner.mydockside.co.uk ->
+   # - 0: 'inner', 'www-my-devtainer', 'mydockside.co.uk', 0 (as seen by the outermost Dockside container)
+   # - 1: 'my-devtainer', 'www', 'mydockside.co.uk', 1 (as seen by an inner Dockside devtainer; will proxy on to 'my-devtainer')
+
    if( $host =~ /^([^\.]+)\.(.*?)(:\d+)?$/ ) {
-      my @elements = reverse split(/-/, $1);
+      my @elements = reverse split(/--/, $1);
       my $domain = $2;
+
+      # Split again the leftmost element on its first '-'.
+      # Add the devtainer name (if found) to @elements.
+      # Always add the service name to @elements.
+      my ($service, $topHost) = pop(@elements) =~ /^([^-]+)(?:-(.*))?$/;
+      push(@elements, $topHost ? $topHost : (), $service);
 
       my $nestCount = split(/-/, $r->header_in('X-Nest-Level'));
 
       return undef unless $nestCount < @elements;
 
       my $element = $elements[$nestCount];
-      my $prefix = join('-', reverse @elements[($nestCount+1)..(@elements-1)]);
+      my $prefix = join('--', reverse @elements[($nestCount+1)..(@elements-1)]);
 
       wlog("domain_to_host: Host header='$host'; nestCount=$nestCount; container host='$element'; prefix='$prefix'; domain='$domain'");
 

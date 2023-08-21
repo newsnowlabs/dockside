@@ -241,9 +241,18 @@ sub _handler {
 
    # Generate the 'parent fully qualified domain name', i.e.
    # a hostname from which child container hostnames can be generated,
-   # and on which cookies can be assigned,
+   # (and from which a cookie domain can ultimately be derived)
    # by stripping off leading characters up to the first '-' or '.'
+   #
+   # Host header may be of the form:
+   # - www.mydockside.co.uk -> .mydockside.co.uk
+   # - www-mydevtainer.mydockside.co.uk -> --mydevtainer.mydockside.co.uk
+   # - www-mydevtainer--mydocksidedevtainer.mydockside.co.uk -> --mydevtainer--mydocksidedevtainer.mydockside.co.uk
+   #
+   # When Dockside is accessed on a non-standard port, the Host header may also have :<port> suffixed.
+
    my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
+   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
 
    # Determine level of authorisation of requestor.
    my $User = Request->authenticate( { 'cookie' => $r->header_in("Cookie"), 'protocol' => $protocol } );
