@@ -49,7 +49,7 @@ sub versionUpgrade {
             if($routers->[$i]{'auth'}) {
                if(ref($routers->[$i]{'auth'}) ne 'ARRAY') {
                   # Set permissible array of auth modes to just the predefined default.
-                  $routers->[$i]{'auth'} = ($routers->[$i]{'type'} ne 'ide') ? [ 'user', 'developer', 'public', 'viewer', 'owner' ] : [ 'owner', 'developer' ];
+                  $routers->[$i]{'auth'} = ($routers->[$i]{'type'} =~ /^(ide|ssh)$/) ? [ 'owner', 'developer' ] : [ 'user', 'developer', 'public', 'viewer', 'owner' ];
                }
                # else allow current setting.
             }
@@ -146,7 +146,18 @@ sub new {
          # the container IDE launch script.
          "port" => 3131
       },
-   });
+   },
+   {
+      "name" => 'ssh',
+      "type" => 'ssh',
+      "auth" => ['developer', 'owner'],
+      "prefixes" => ["ssh"],
+      "domains" => ["*"],
+      "https" => {
+         "protocol" => "http", 
+         "port" => 2222
+      },
+   }   );
 
    return $self;
 }

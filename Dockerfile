@@ -73,7 +73,9 @@ RUN yarn autoclean --init && \
 
 FROM theia-clean as theia-findelfs
 
-ENV BINARIES="node busybox s6-svscan curl"
+ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey"
+
+RUN apk add --no-cache dropbear
 
 RUN /tmp/build/ide/theia/elf-patcher.sh --findelfs
 
@@ -92,7 +94,8 @@ RUN /tmp/build/ide/theia/elf-patcher.sh --patchelfs && \
     cd $THEIA_PATH/bin && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
-    ln -sf busybox pgrep
+    ln -sf busybox pgrep && \
+    curl -L -o wstunnel https://github.com/erebe/wstunnel/releases/download/v5.1/wstunnel-linux-x64 && chmod 755 wstunnel
 
 # Default diagnostics entrypoint for this stage (uses patched node)
 ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]

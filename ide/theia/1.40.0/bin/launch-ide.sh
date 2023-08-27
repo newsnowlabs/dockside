@@ -30,7 +30,7 @@ log "Launching IDE from IDE_PATH='$IDE_PATH' ..."
 
 log "Backing up and overriding PATH ..."
 export _PATH="$PATH"
-export PATH="$IDE_PATH/theia/bin:$PATH"
+export PATH="$IDE_PATH/bin:$PATH"
 
 # Run ssh-agent if available, but not already running.
 log "Checking for ssh-agent ..."
@@ -38,6 +38,11 @@ if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
    log "Found ssh-agent binary but no running agent, so launching it ..."
    eval $($(which ssh-agent))
 fi
+
+mkdir -p /tmp/dropbear
+dropbearkey -t ed25519 -f /tmp/dropbear/dropbear_ed25519_host_key
+dropbear -R -p 127.0.0.1:2223 -r /tmp/dropbear/dropbear_ed25519_host_key # >/tmp/dockside/dropbear.log 2>&1
+wstunnel --server ws://0.0.0.0:2222 --restrictTo=127.0.0.1:2223 & # >/tmp/dockside/wstunnel.log 2>&1
 
 # See https://github.com/eclipse-theia/theia/blob/master/CHANGELOG.md under v0.13.0
 # 
