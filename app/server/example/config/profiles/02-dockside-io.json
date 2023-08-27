@@ -19,7 +19,7 @@
       "bind": [],
       "volume": [
          // Use this to share encrypted ssh keys in the named volume among team members.
-          { "src": "dockside-ssh-keys", "dst": "/home/{ideUser}/.ssh" } ]
+          { "src": "dockside-ssh-keys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
    },
    "runtimes": [ "runc", "runsc", "sysbox-runc" ],
    "lxcfs": true,
