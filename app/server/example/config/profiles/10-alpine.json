@@ -19,7 +19,8 @@
       "bind": [],
       "volume": [
          // Use this to mount encrypted ssh keys from within a per-user volume.
-          { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
+         // { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh" }
+      ]
    },
    "lxcfs": true,
    "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
