@@ -5,6 +5,7 @@
          <b-row>
             <Sidebar></Sidebar>
             <Main></Main>
+            <SSHInfo></SSHInfo>
          </b-row>
       </b-container>
       <Footer></Footer>
@@ -16,6 +17,7 @@
    import Footer from '@/components/Footer';
    import Sidebar from '@/components/Sidebar';
    import Main from '@/components/Main';
+   import SSHInfo from '@/components/SSHInfo';
 
    export default {
       name: 'App',
@@ -23,7 +25,8 @@
          Header,
          Footer,
          Sidebar,
-         Main
+         Main,
+         SSHInfo
       },
       created() {
          this.updateStateFromRoute(this.$route);

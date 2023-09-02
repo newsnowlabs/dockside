@@ -89,6 +89,7 @@
                            <td v-if="!isEditMode && !isPrelaunchMode">
                               <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
                               <b-button v-if="router.type != 'passthru' && container.status >= 0" size="sm" variant="outline-secondary" v-on:click="copy(makeUri(router))">Copy</b-button>
+                              <b-button v-if="router.type === 'ssh' && container.status >= 0" size="sm" variant="outline-secondary" type="button" v-b-modal="'sshinfo-modal'" v-b-tooltip title="Configure SSH for Dockside">Setup</b-button>
                               ({{ container.meta.access[router.name] }} access)
                            </td>
                            <td v-else>

@@ -450,6 +450,25 @@ sub _handler {
          return json($r, 200, { 'status' => '200', 'data' => $containers });
       }
 
+      ######################################
+      # Load Reservations and container data
+      #
+      if( $route =~ m!^/getAuthCookies/?$! ) {
+
+         my @cookies = $User->generate_auth_cookies($parentFQDN);
+         my ($cookie) = map { s/;.*$//; $_ } grep { /Secure;$/ } @cookies;
+
+         # Append on the globalCookie (if configured in config.json)
+         if( $CONFIG->{'globalCookie'} && $CONFIG->{'globalCookie'}{'name'} && $CONFIG->{'globalCookie'}{'secret'} ) {
+            $cookie .= sprintf("; %s=%s",
+               $CONFIG->{'globalCookie'}{'name'},
+               uri_escape($CONFIG->{'globalCookie'}{'secret'})
+            );
+         }
+
+         return json($r, 200, { 'status' => '200', 'data' => $cookie });
+      }
+
       # Default: redirect to /
       return redirect($r, 302, '/');
    }
