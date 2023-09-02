@@ -1,4 +1,4 @@
-const copyToClipboard = text => {
+const copyToClipboardLegacy = text => {
    const copyTextArea = document.createElement('textarea');
 
    copyTextArea.value = text;
@@ -10,4 +10,12 @@ const copyToClipboard = text => {
    document.body.removeChild(copyTextArea);
 };
 
-export default copyToClipboard;
+export default async function copyToClipboard(text) {
+   try {
+     await navigator.clipboard.writeText(text);
+     console.log("Text copied to clipboard successfully!");
+   } catch (error) {
+     console.error("Unable to copy text to clipboard using navigator.clipboard.writeText; using legacy method", error);
+     copyToClipboardLegacy(text);
+   }
+ }
