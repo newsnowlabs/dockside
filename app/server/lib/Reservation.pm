@@ -11,7 +11,6 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api);
 use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api);
 use Data qw($CONFIG $HOSTNAME);
 
@@ -556,7 +555,7 @@ sub cloneWithConstraints {
          # Skip router if current auth level isn't permitted by the constraints:
          grep {
             $reservationPermissions->{'auth'}{ $clone->meta('access')->{ $_->{'name'} } }
-         } @{$clone->profileObject->{'routers'}}
+         } @{$clone->profileObject->routers}
       ];
    }
 
