@@ -167,17 +167,7 @@ sub cmdline_mounts_lxcfs {
    my $self = shift;
 
    # Disabled unless lxcfs.mountpoints[] specified in config.json.
-   return () unless $CONFIG->{'lxcfs'} && ref($CONFIG->{'lxcfs'}{'mountpoints'}) eq 'ARRAY'
-      && $CONFIG->{'lxcfs'}{'available'} == 1;
-
-   # If lxcfs.default === true in config.json, disable if profile lxcfs === false
-   if( $CONFIG->{'lxcfs'}{'default'} == 1 ) {
-      return () if exists($self->profileObject->{'lxcfs'}) && $self->profileObject->{'lxcfs'} == 0;
-   }
-   # If lxcfs.default === false in config.json, disable unless profile lxcfs === true
-   elsif( $CONFIG->{'lxcfs'}{'default'} == 0 ) {
-      return () unless exists($self->profileObject->{'lxcfs'}) && $self->profileObject->{'lxcfs'} == 1;
-   }
+   return () unless $self->profileObject->has_lxcfs_enabled;
 
    my $mountpoint = $CONFIG->{'lxcfs'}{'mountpoint'} // '/var/lib/lxcfs';
 
@@ -200,6 +190,28 @@ sub cmdline_mounts_lxcfs {
    } @{$CONFIG->{'lxcfs'}{'mountpoints'}};
 }
 
+sub cmdline_mounts_ssh {
+   my $self = shift;
+
+   return () unless $self->profileObject->has_ssh_enabled &&
+      $CONFIG->{'ssh'}{'sharedHostKeys'}{'enabled'} &&
+      $CONFIG->{'ssh'}{'sharedHostKeys'}{'mountpoint'} &&
+      $CONFIG->{'ssh'}{'sharedHostKeys'}{'volume'};
+
+   my $mountpoint = $CONFIG->{'ssh'}{'sharedHostKeys'}{'mountpoint'};
+   my $volume = $CONFIG->{'ssh'}{'sharedHostKeys'}{'volume'};
+   
+   # Remove any trailing '/' as we won't need it.
+   $mountpoint =~ s!/+$!!;
+
+   return () if grep {
+      $_->{'src'} eq $volume || $_->{'dst'} eq $mountpoint
+   } @{$self->profileObject->mounts_all};
+   
+   # Check for $volume or $mountpoint in $self->profileObject->mounts_all;
+   return ("--mount=type=volume,src=$volume,dst=$mountpoint");
+}
+
 sub cmdline_mounts {
    my $self = shift;
    
@@ -207,7 +219,8 @@ sub cmdline_mounts {
       $self->cmdline_mounts_tmpfs(),
       $self->cmdline_mounts_bind(),
       $self->cmdline_mounts_volume(),
-      $self->cmdline_mounts_lxcfs()
+      $self->cmdline_mounts_lxcfs(),
+      $self->cmdline_mounts_ssh()
    );
 }
 
@@ -323,6 +336,15 @@ sub ide_command {
    my @command = @{$self->{'ide'}{'command'} // []};
 
    return map { $self->_placeholders($_) } @command;
+}
+
+
+sub ide_command_env {
+   my $self = shift;
+
+   my $env = $self->{'ide'}{'env'} // {};
+
+   return map { "--env=$_=" . $self->_placeholders($env->{$_}) } keys %$env;
 }
 
 sub unixuser {

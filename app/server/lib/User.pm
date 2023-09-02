@@ -130,7 +130,7 @@ sub new {
       return undef unless $data->{'username'};
 
       $self = bless { 
-         %$data{ qw(username id name email role) },
+         %$data{ qw(username id name email role secrets) },
          '_permissions' => $data->{'permissions'} // {},
          '_resources' => $data->{'resources'} // {},
       }, ( ref($class) || $class );
@@ -197,6 +197,12 @@ sub details {
    my $self = shift;
 
    return { %$self{'username', 'id', 'name', 'email'} };
+}
+
+sub details_full {
+   my $self = shift;
+
+   return { %$self{'username', 'id', 'name', 'email', 'secrets'} };
 }
 
 sub password {

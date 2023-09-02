@@ -221,11 +221,24 @@ sub eventHandler {
 
                      try {
                         if(my @Command = $reservation->ide_command()) {
+
+                           my $owner = $reservation->owner('username');
+                           my $user = User->load($owner);
+                           my $user_details = encode_json($user->details_full);
+                           
+                           flog("eventHandler: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
+                              join(' ', @Command) . "' for owner '$owner' and details '$user_details'");
+
                            # TODO: Configure Profiles to support launching IDE as non-root user
                            flog("eventHandler: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
                               join(' ', @Command)
                            );
-                           run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root', $event->{'Actor'}{'ID'}, @Command);
+                           run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
+                              ($reservation->ide_command_env()),
+                              "--env=OWNER_DETAILS=$user_details",
+                              $event->{'Actor'}{'ID'},
+                              @Command
+                           );
                         }
                         else {
                            flog("eventHandler: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");

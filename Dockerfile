@@ -4,7 +4,7 @@ ARG ALPINE_VERSION=3.14
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} as theia-build
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash
+    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
@@ -73,9 +73,7 @@ RUN yarn autoclean --init && \
 
 FROM theia-clean as theia-findelfs
 
-ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey"
-
-RUN apk add --no-cache dropbear
+ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq"
 
 RUN /tmp/build/ide/theia/elf-patcher.sh --findelfs
 
