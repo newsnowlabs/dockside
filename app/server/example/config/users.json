@@ -18,9 +18,11 @@
          "images": [ "*" ],
          "runtimes": [ "*" ]
       },
-      "ssh": {
-         "authorized_keys": [],
-         "keypairs": {}
+      "secrets": {
+         "ssh": {
+            "authorized_keys": [],
+            "keypairs": {}
+         }
       }
    },
    // Example
@@ -42,9 +44,11 @@
    //       "networks": { "*": 1, "custom-network-we-want-disabled": 0 },
    //       "runtimes": { "sysbox-runc": 0, "gvisor": 1 }
    //    },
-   //    "ssh": {
-   //       "authorized_keys": [],
-   //       "keypairs": {}
+   //    "secrets": {
+   //       "ssh": {
+   //         "authorized_keys": [],
+   //          "keypairs": {}
+   //       }
    //    }
    // }
 }
