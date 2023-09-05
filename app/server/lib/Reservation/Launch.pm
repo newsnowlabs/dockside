@@ -244,10 +244,10 @@ sub cmdline_ide_mount {
       $hostData = $INNER_DOCKERD ? ['bind', $hostDataPath] :
          $HOSTNAME ? Containers->containers->{$HOSTNAME}{'inspect'}{'hostDataVolume'} : undef;
 
-      die Exception->new( 'msg' => "Failed to locate host data volume for host '$HOSTNAME'" ) unless $hostData;
-
-      push(@mounts, "--mount=type=$$hostData[0],src=$$hostData[1],dst=$hostDataPath,ro");
-      flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered host data mount type '$$hostData[0]' src/named '$$hostData[1]'");
+      if($hostData) {
+         push(@mounts, "--mount=type=$$hostData[0],src=$$hostData[1],dst=$hostDataPath,ro");
+         flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered host data mount type '$$hostData[0]' src/named '$$hostData[1]'");
+      }
    }
 
    return @mounts;
