@@ -8,7 +8,7 @@ BUILDER=buildkit
 PLATFORMS_DEFAULT_DEPOT="linux/amd64,linux/arm64,linux/arm/v7"
 
 usage() {
-  echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push|--load] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] [--builder [depot|buildx|buildkit]] [--platform=<platforms>] | [--clean] | [--list]" >&2
+  echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push|--load] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] [--builder [depot|buildx|buildkit]] [--platforms <platforms>] | [--clean] | [--list]" >&2
   exit
 }
 
