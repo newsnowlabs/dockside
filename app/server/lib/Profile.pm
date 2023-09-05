@@ -542,6 +542,14 @@ sub should_mount_ide {
    return 0;
 }
 
+sub should_mount_host_data {
+   my $self = shift;
+
+   return 1 unless exists($self->{'mountHostData'}) && $self->{'mountHostData'} == 0;
+
+   return 0;
+}
+
 sub run_docker_init {
    my $self = shift;
 

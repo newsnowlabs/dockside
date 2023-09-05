@@ -12,6 +12,10 @@ which() {
    return 1
 }
 
+debug() {
+   set -x
+}
+
 # Create busybox shortcut for certain commands
 for a in id; do eval "$a() { busybox $a \"\$@\"; }"; done
 
@@ -73,23 +77,6 @@ create_user() {
    done
 
    echo "$OWNER_DETAILS" >/tmp/dockside/user-details.json
-   local KEYS=$(echo "$OWNER_DETAILS" | jq -re '.secrets.ssh.authorized_keys[]?')
-   if [ -n "$KEYS" ]; then
-
-      # Set up .ssh folder, if it doesn't exist
-      if ! [ -d "$HOME/.ssh" ]; then
-         mkdir -p $HOME/.ssh
-         busybox chown -R $IDE_USER:$IDE_USER $HOME/.ssh
-         busybox chmod 700 $HOME/.ssh
-      fi
-
-      # Set up authorized_keys, if it doesn't exist
-      if ! [ -f $HOME/.ssh/authorized_keys ]; then
-         echo "$KEYS" >$HOME/.ssh/authorized_keys
-         busybox chown $IDE_USER:$IDE_USER $HOME/.ssh/authorized_keys
-         busybox chmod 644 $HOME/.ssh/authorized_keys
-      fi
-   fi
 
    # Set up sudo, in case that package is installed
    if ! [ -f /etc/sudoers.d/$IDE_USER ]; then
@@ -104,6 +91,26 @@ create_user() {
    fi
 }
 
+update_ssh_authorized_keys() {
+   local KEYS=$(echo "$AUTHORIZED_KEYS" | jq -re '.[]?')
+   if [ -n "$KEYS" ]; then
+      local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
+      log "Creating $HOME/.ssh/authorized_keys for $IDE_USER"
+
+      # Set up .ssh folder, if it doesn't exist
+      if ! [ -d "$HOME/.ssh" ]; then
+         busybox mkdir -p $HOME/.ssh
+         busybox chown -R $IDE_USER:$IDE_USER $HOME/.ssh
+         busybox chmod 700 $HOME/.ssh
+      fi
+
+      # Set up authorized_keys, whether or not it exists
+      echo "$KEYS" >$HOME/.ssh/authorized_keys
+      busybox chown $IDE_USER:$IDE_USER $HOME/.ssh/authorized_keys
+      busybox chmod 644 $HOME/.ssh/authorized_keys
+   fi   
+}
+
 create_git_config() {
    local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
 
@@ -112,9 +119,14 @@ create_git_config() {
       return
    fi
 
+   if [ -z "$GIT_COMMITTER_NAME" ] && [ -z "$GIT_COMMITTER_EMAIL" ]; then
+      GIT_COMMITTER_NAME=$(echo "$OWNER_DETAILS" | jq -re '.name')
+      GIT_COMMITTER_EMAIL=$(echo "$OWNER_DETAILS" | jq -re '.email')
+   fi
+
    if [ -n "$GIT_COMMITTER_NAME" ] && [ -n "$GIT_COMMITTER_EMAIL" ]; then
       log "Creating ~/.gitconfig for $IDE_USER"
-      cat >$HOME/.gitconfig <<_EOE_ && busybox chown $IDE_USER:$IDE_USER $HOME/.gitconfig
+      busybox cat >$HOME/.gitconfig <<_EOE_ && busybox chown $IDE_USER:$IDE_USER $HOME/.gitconfig
 [user]
 name = $GIT_COMMITTER_NAME
 email = $GIT_COMMITTER_EMAIL
@@ -127,7 +139,7 @@ launch_sshd() {
 
    log "Launching SSHD ..."
 
-   [ -n "$SSHD_HOSTKEYS" ] || SSHD_HOSTKEYS="/tmp/dropbear"
+   [ -n "$SSHD_HOSTKEYS" ] || SSHD_HOSTKEYS="/opt/dockside/host"
    [ $(id -u) -eq 0 ] && DROPBEAR_PORT=22 || DROPBEAR_PORT=2022
    [ -d "$SSHD_HOSTKEYS" ] || mkdir -p $SSHD_HOSTKEYS
 
@@ -150,21 +162,24 @@ launch_theia() {
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
          # su will retain exported env vars and set new ones.
          # So we use 'env -i' to clear all env vars before setting just the ones needed.
-         export PATH="$_PATH"
-         $IDE_PATH/bin/su $IDE_USER -c "env -i HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
+         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
       else
-         export PATH="$_PATH"
-         IDE_PATH="$IDE_PATH" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
+         PATH="$_PATH" IDE_PATH="$IDE_PATH" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
       fi
 
       sleep 1
    done   
 }
 
-launch_all() {
-   LOG_PATH=/tmp/dockside
-   LOG=$LOG_PATH/launch.log
+launch_ide() {
+   create_user
+   create_git_config
+   update_ssh_authorized_keys
+   launch_sshd
+   launch_theia
+}
 
+init() {
    # Use IDE_PATH if specified and directory exists; otherwise look for the
    # alphanumerically latest subsubdirectory of /opt/dockside/ide.
    #
@@ -173,37 +188,22 @@ launch_all() {
       IDE_PATH="$(ls -d /opt/dockside/ide/*/* | tail -n 1)"
    fi
 
+   [ -n "$IDE_USER" ] || IDE_USER="root"
+
    export _PATH="$PATH"
    PATH="$IDE_PATH/bin:$PATH"
 
+   LOG_PATH=/tmp/dockside
+   LOG=$LOG_PATH/launch.log
    busybox mkdir -p $LOG_PATH && busybox chmod a+rwx,+t $LOG_PATH
-
-   log "Initialised launch log ..."
    busybox touch $LOG && busybox chmod 644 $LOG
 
    exec 1>>$LOG
    exec 2>>$LOG
 
-   log "Launching devtainer with: $@"
-   log "Environment:"
-   env
-
-   [ -n "$IDE_USER" ] || IDE_USER="root"
-   log "Launching with IDE_USER=$IDE_USER"
-   log "Launching with IDE_PATH=$IDE_PATH"
-
-   create_user
-   create_git_config
-   launch_sshd
-   launch_theia
+   log "Executing '$@' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH and environment:"
+   busybox env | busybox sed 's/^/=> /'
 }
 
-launch_ide() {
-   if [ -z "$IDE_PATH" ] || ! [ -d "$IDE_PATH" ]; then
-      IDE_PATH="$(ls -d /opt/dockside/ide/*/* | tail -n 1)"
-   fi
-
-   $0 launch_all
-}
-
+init "$@"
 eval "$@"

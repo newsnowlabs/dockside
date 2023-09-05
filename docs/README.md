@@ -97,6 +97,7 @@ Choose from the following options:
 mkdir -p ~/.dockside && \
 docker run -it --name dockside \
   -v ~/.dockside:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
   --security-opt=apparmor=unconfined \
@@ -116,6 +117,7 @@ docker run -it --name dockside \
 mkdir -p ~/.dockside && \
 docker run -it --name dockside \
   -v ~/.dockside:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
   --security-opt=apparmor=unconfined \
@@ -133,6 +135,7 @@ docker run -it --name dockside \
 mkdir -p ~/.dockside && \
 docker run -d --name dockside \
   -v ~/.dockside:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v <certsdir>:/data/certs \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
@@ -160,6 +163,7 @@ These records are needed to tell the public DNS infrastructure that DNS requests
 mkdir -p ~/.dockside && \
 docker run -d --name dockside \
   -v ~/.dockside:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 -p 53:53/udp \
   --security-opt=apparmor=unconfined \

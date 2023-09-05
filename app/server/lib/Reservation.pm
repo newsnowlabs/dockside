@@ -11,7 +11,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api);
+use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system);
 use Data qw($CONFIG $HOSTNAME);
 
 ################################################################################
@@ -197,12 +197,15 @@ sub meta {
       foreach my $name (keys %$value) {
          # Allow any value from this list:
          # - owner|viewer|developer|user|public|containerCookie
-         # (unless type eq ide, in which case allow only owner|developers).
+         # (unless type eq ide, in which case allow only owner|developer).
          #
          # If no value specified, set to the default ('developers' if none specified in the profile).
          my $access = $value->{$name};
          die Exception->new( 'msg' => "Cannot set auth/access mode for router '$name' to '$access'" )
             unless $access =~ /^(?:owner|viewer|developer|user|public|containerCookie)$/;
+
+         die Exception->new( 'msg' => "Cannot set auth/access mode for router '$name' to '$access'" )
+            if $name =~ /^(?:ide|ssh)$/ && !($access =~ /^(?:owner|developer)$/);
 
          $self->{'meta'}{'access'}{$name} = $access;
       }
@@ -1016,6 +1019,72 @@ sub launch {
       } );
       exit(0);
    };
+}
+
+sub exec {
+   my $reservation = shift;
+   my $command = shift;
+
+   my $reservationId = $reservation->id();
+   my $containerId = $reservation->containerId();
+
+   my @Command = $reservation->ide_command();
+   if(!@Command) {
+      flog("eventHandler: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");
+      return undef;
+   }
+
+   if($command) {
+      $Command[-1] = $command;
+   }
+
+   my @developersMeta = split(',', $reservation->meta('developers'));
+   my @developers = grep { !/^role:/ } @developersMeta;
+   my %developerRoles = map { s/^role://; ($_ => 1); } grep { /^role:/ } @developersMeta;
+
+   flog("eventHandler: developers=[" . join(',', @developers) . "]");
+   flog("eventHandler: developerRoles=[" . join(',', keys %developerRoles) . "]");
+
+   my @usersHavingDeveloperRoles = map { $developerRoles{$_->{'role'}} ? $_->{'username'} : () } @{User->viewers};
+   flog("eventHandler: usersHavingDeveloperRoles=[" . join(',', @usersHavingDeveloperRoles) . "]");
+
+   # Include SSH keys for named developers, and users with named roles
+   # only if the access level for the 'ssh' service is 'developer'
+   my @usernames = unique ($reservation->owner('username'), 
+      $reservation->meta('access')->{'ssh'} eq 'developer' ? (@developers, @usersHavingDeveloperRoles) : ()
+   );
+
+   flog("eventHandler: usernames=[" . join(',', @usernames) . "]");
+
+   my @Users = map { User->load($_) } @usernames;
+   flog("eventHandler: " . join(',', @Users));
+
+   my @authorized_keys = sort { $a cmp $b } unique map { $_ ? @{$_->authorized_keys()} : () } @Users;
+   flog("eventHandler: " . join(',', @authorized_keys));
+
+   my $owner = $reservation->owner('username');
+   my $user = User->load($owner);
+   my $user_details = encode_json($user->details_full);
+   my $keys_json = encode_json(\@authorized_keys);
+   
+   flog("eventHandler: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
+      join(' ', @Command) . "' for owner '$owner', developers '" .
+      join(',', @usernames) . "', owner details '$user_details', keys '$keys_json'"
+   );
+
+   # TODO: Configure Profiles to support launching IDE as non-root user
+   flog("eventHandler: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
+      join(' ', @Command)
+   );
+   run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
+      ($reservation->ide_command_env()),
+      "--env=OWNER_DETAILS=$user_details",
+      "--env=AUTHORIZED_KEYS=$keys_json",
+      $containerId,
+      @Command
+   );
+
+   return 1;
 }
 
 1;

@@ -217,6 +217,12 @@ sub passwordDefined {
    return defined($USER_PASSWD->{$self->username});
 }
 
+sub authorized_keys {
+   my $self = shift;
+
+   return $self->{'secrets'}{'ssh'}{'authorized_keys'} // [];
+}
+
 ################################################################################
 # MUTATORS
 # --------
@@ -826,6 +832,10 @@ sub updateContainerReservation {
 
    # and then acted upon.
    $reservation->update_network();
+
+   if( 1 ) {
+      $reservation->exec('update_ssh_authorized_keys');
+   }
 
    # Create a sanitised clone of the reservation object, before returning.
    return $self->createClientReservation($reservation);

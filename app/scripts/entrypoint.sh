@@ -9,10 +9,19 @@ APP_DIR=$APP_HOME/$APP
 OPT_SSL_ZONES=()
 OPT_PATH="/opt/dockside"
 
+IDE_PATH="$(ls -d $OPT_PATH/ide/*/* | tail -n 1)"
+
 . $APP_DIR/app/scripts/includes/log_do
 
 safe_curl() {
-   curl --fail --silent --retry 7 --max-time 5 "$@"
+   curl --fail --silent --retry 7 --max-time 5 --location "$@"
+}
+
+ide_cmd() {
+   local cmd="$1"
+   shift
+
+   $IDE_PATH/bin/$cmd "$@"
 }
 
 jq_config_set() {
@@ -312,12 +321,28 @@ fi
 log "Creating /var/log/$APP log directory ..."
 mkdir -p /var/log/$APP && chown -R $USER.$USER /var/log/$APP
 
-# Copy container scripts to shared volume
 log "Testing if shared IDE volume '$OPT_PATH' is writeable ..."
 if (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then
   log "- Shared IDE volume is writeable ..."
 else
   log "- Shared IDE volume is not writeable."
+fi
+
+log "Testing if shared host data volume '$OPT_PATH/host' is writeable ..."
+if (>$OPT_PATH/host/.writeable && rm -f $OPT_PATH/host/.writeable) 2>/dev/null; then
+  log "- Shared host data volume is writeable ..."
+
+   if ! [ -f $OPT_PATH/host/ed25519_host_key ]; then
+      log "- No host key '$OPT_PATH/host/ed25519_host_key' found; creating it ..."
+      ide_cmd dropbearkey -t ed25519 -f $OPT_PATH/host/ed25519_host_key
+   fi
+else
+  log "- Shared host data volume is not writeable."
+
+   if ! [ -f $OPT_PATH/host/ed25519_host_key ]; then
+      log "- No host key '$OPT_PATH/host/ed25519_host_key' found in unwriteable host data directory; mount must be read-write or else host key must pre-exist; exiting ..."
+      exit 1
+   fi
 fi
 
 log "Initialising /data, as needed ..."

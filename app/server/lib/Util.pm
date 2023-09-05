@@ -12,6 +12,7 @@ our @EXPORT_OK = ( qw(
    YYYYMMDDHHMMSS TO_JSON
    cache cacheReadWrite cloneHash
    encrypt_password generate_auth_cookie_values validate_auth_cookie
+   unique
    ));
 
 use POSIX qw(strftime);
@@ -467,6 +468,11 @@ sub validate_auth_cookie {
 
    # Everything checks out, so return the authentication cookie data structure.
    return $l;
+}
+
+sub unique {
+   my %k = map { $_ => 1 } grep { defined($_) && $_ ne '' } @_;
+   return keys %k;
 }
 
 1;

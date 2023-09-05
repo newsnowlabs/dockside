@@ -23,23 +23,16 @@
     "ide": {
         "path": "/opt/dockside",
         "env": {
-            "SSHD_HOSTKEYS": "/etc/dropbear"
+            "SSHD_HOSTKEYS": "/opt/dockside/host",
+            "IDE_USER": "{ideUser}"
          },
          "command": [
             "/opt/dockside/launch.sh",
-            "IDE_USER='{ideUser}'",
-            "GIT_COMMITTER_NAME='{user.name}'",
-            "GIT_COMMITTER_EMAIL='{user.email}'",
             "launch_ide"
         ]
     },
     "ssh": {
-      "default": true,
-      "sharedHostKeys": {
-         "enabled": true,
-         "mountpoint": "/etc/dropbear",
-         "volume": "dockside-sshd-hostkeys"
-      }
+      "default": true
     },
     "clientDistPath": "/home/newsnow/dockside/app/client/dist",
     "docker": {

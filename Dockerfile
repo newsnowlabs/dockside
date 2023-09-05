@@ -294,6 +294,10 @@ RUN cp -a ~/$APP/build/development/dot-theia .theia && \
 #
 VOLUME $OPT_PATH
 
+# Create a separate volume for host-specific data to be shared
+# read-only with devtainers
+VOLUME $OPT_PATH/host
+
 ################################################################################
 # INITIALISE /opt/dockside/bin
 #
@@ -304,7 +308,7 @@ VOLUME $OPT_PATH
 #
 USER root
 RUN . /tmp/theia-bash-env && \
-    mkdir -p $OPT_PATH/bin && \
+    mkdir -p $OPT_PATH/bin $OPT_PATH/host && \
     cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
     ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
     cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/ && \
