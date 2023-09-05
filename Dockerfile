@@ -23,16 +23,23 @@ ENV BASH_ENV=/tmp/theia-bash-env
 
 RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
       THEIA_VERSION=1.40.0; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-x86_64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
       THEIA_VERSION=1.40.0; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-arm64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
       THEIA_VERSION=1.35.0; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.1-linux-armv7"; \
     else \
-      THEIA_VERSION=1.40.0; \
+      echo "Build error: Unsupported architecture '$TARGETPLATFORM'" >&2; \
+      exit 1; \
     fi; \
-    echo "export THEIA_VERSION=$THEIA_VERSION" >$BASH_ENV; \
+    echo "export WSTUNNEL_BINARY=$WSTUNNEL_BINARY" >$BASH_ENV; \
+    echo "export THEIA_VERSION=$THEIA_VERSION" >>$BASH_ENV; \
     echo "export THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION" >>$BASH_ENV; \
     echo 'echo THEIA_VERSION=$THEIA_VERSION THEIA_PATH=$THEIA_PATH' >>$BASH_ENV; \
+    echo 'echo WSTUNNEL_BINARY=$WSTUNNEL_BINARY' >>$BASH_ENV; \
+    echo 'echo TARGETPLATFORM=$TARGETPLATFORM' >>$BASH_ENV; \
     echo '[ -d $THEIA_PATH/theia ] && cd $THEIA_PATH/theia || true' >>$BASH_ENV; \
     echo -e '#!/bin/bash\n\nexec "$@"\n' >/tmp/theia-exec && chmod 755 /tmp/theia-exec; \
     . $BASH_ENV
@@ -93,7 +100,7 @@ RUN /tmp/build/ide/theia/elf-patcher.sh --patchelfs && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
     ln -sf busybox pgrep && \
-    curl -L -o wstunnel https://github.com/erebe/wstunnel/releases/download/v5.1/wstunnel-linux-x64 && chmod 755 wstunnel
+    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel
 
 # Default diagnostics entrypoint for this stage (uses patched node)
 ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
