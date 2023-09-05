@@ -569,7 +569,7 @@ sub cloneWithConstraints {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description ) ],
             'profileObject' => [ qw(name routers networks runtimes) ],
-            'data' => [ qw( FQDN parentFQDN image runtime ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime unixuser ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId) ]

@@ -320,14 +320,15 @@
             copyToClipboard(value);
          },
          makeUri(router) {
+            console.log(this.container);
             return router.type !== 'ssh' ? 
               [router.https ? 'https' : 'http', '://', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('') :
-              ['ssh://dockside@', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('');
+              ['ssh://',this.container.data.unixuser,'@', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('');
          },
          copyUri(router) {
             return router.type !== 'ssh' ? copyToClipboard(this.makeUri(router)) :
                copyToClipboard(
-                 ['ssh ', 'dockside@', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('')
+                 ['ssh ', this.container.data.unixuser,'@', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('')
                );
          },
          makeUriTarget(router) {
