@@ -48,16 +48,16 @@ sub new {
    my $class = shift;
    my %args = @_;
 
+   # Remove leading and/or trailing whitespace
+   $args{'msg'} =~ s/(^\s+|\s+$)//g;   
+   $args{'dbg'} =~ s/(^\s+|\s+$)//g;
+
    my $self = bless {
       'code' => $args{'code'},
       'msg' => $args{'msg'},
       'dbg' => $args{'dbg'},
       'time' => Time::HiRes::time
    }, ( ref($class) || $class );
-
-   # Remove leading and/or trailing whitespace
-   $args{'msg'} =~ s/(^\s+|\s+$)//g;   
-   $args{'dbg'} =~ s/(^\s+|\s+$)//g;
 
    return $self;
 }
