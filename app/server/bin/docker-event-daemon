@@ -58,8 +58,8 @@ sub _update {
       $oldContainers = {};
    };
 
-   my $idePath = $CONFIG->{'ide'}{'path'} || '/opt/dockside';
-   my $hostDataPath = "$idePath/host";
+   my $idePath = $CONFIG->{'ide'}{'path'};
+   my $hostDataPath = $CONFIG->{'ssh'}{'path'};
 
    my $newContainers;
    foreach my $c (@$newContainersFromAPI) {

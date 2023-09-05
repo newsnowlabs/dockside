@@ -219,8 +219,8 @@ sub cmdline_ide_mount {
    die Exception->new( 'msg' => "Failed to locate IDE and/or host data volumes because expected Dockside container hostname is undefined" )
       unless $HOSTNAME;
 
-   my $idePath = $CONFIG->{'ide'}{'path'} || '/opt/dockside';
-   my $hostDataPath = "$idePath/host";
+   my $idePath = $CONFIG->{'ide'}{'path'};
+   my $hostDataPath = $CONFIG->{'ssh'}{'path'};
    my $ide;
    my $hostData;
 

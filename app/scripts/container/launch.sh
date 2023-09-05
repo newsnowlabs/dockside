@@ -139,14 +139,14 @@ launch_sshd() {
 
    log "Launching SSHD ..."
 
-   [ -n "$SSHD_HOSTKEYS" ] || SSHD_HOSTKEYS="/opt/dockside/host"
+   [ -n "$HOSTDATA_PATH" ] || HOSTDATA_PATH="/opt/dockside/host"
    [ $(id -u) -eq 0 ] && DROPBEAR_PORT=22 || DROPBEAR_PORT=2022
-   [ -d "$SSHD_HOSTKEYS" ] || mkdir -p $SSHD_HOSTKEYS
+   [ -d "$HOSTDATA_PATH" ] || mkdir -p $HOSTDATA_PATH
 
-   [ -f "$SSHD_HOSTKEYS/ed25519_host_key" ] || dropbearkey -t ed25519 -f $SSHD_HOSTKEYS/ed25519_host_key
+   [ -f "$HOSTDATA_PATH/ed25519_host_key" ] || dropbearkey -t ed25519 -f $HOSTDATA_PATH/ed25519_host_key
 
-   log "Launching dropbear on port $DROPBEAR_PORT with host keys from $SSHD_HOSTKEYS"
-   dropbear -RE -p 127.0.0.1:$DROPBEAR_PORT -r $SSHD_HOSTKEYS/ed25519_host_key >/tmp/dockside/dropbear.log 2>&1
+   log "Launching dropbear on port $DROPBEAR_PORT with host keys from $HOSTDATA_PATH"
+   dropbear -RE -p 127.0.0.1:$DROPBEAR_PORT -r $HOSTDATA_PATH/ed25519_host_key >/tmp/dockside/dropbear.log 2>&1
 
    log "Launching wstunnel on port 2222"
    wstunnel --server ws://0.0.0.0:2222 --restrictTo=127.0.0.1:$DROPBEAR_PORT >/tmp/dockside/wstunnel.log 2>&1 &

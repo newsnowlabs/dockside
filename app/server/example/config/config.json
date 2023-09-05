@@ -23,7 +23,6 @@
     "ide": {
         "path": "/opt/dockside",
         "env": {
-            "SSHD_HOSTKEYS": "/opt/dockside/host",
             "IDE_USER": "{ideUser}"
          },
          "command": [

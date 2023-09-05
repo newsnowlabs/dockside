@@ -76,7 +76,8 @@ my $CONFIG_FILES = {
          # Assign defaults
          $CONFIG->{'docker'}{'socket'} //= '/var/run/docker.sock';
          $CONFIG->{'docker'}{'sizes'} //= 0;
-         $CONFIG->{'ide'}{'env'}{'SSHD_HOSTKEYS'} //= '/etc/dropbear';
+         $CONFIG->{'ide'}{'path'} //= '/opt/dockside';
+         $CONFIG->{'ssh'}{'path'} //= "$CONFIG->{'ide'}{'path'}/host";
       },
       'parse' => \&parse_json
    },

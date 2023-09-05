@@ -1080,6 +1080,7 @@ sub exec {
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
       "--env=AUTHORIZED_KEYS=$keys_json",
+      "--env=HOSTDATA_PATH=$CONFIG->{'ssh'}{'path'}",
       $containerId,
       @Command
    );
