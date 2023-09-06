@@ -6,6 +6,7 @@ use JSON;
 use Expect;
 use Try::Tiny;
 use Tie::File;
+use Storable;
 use Reservation::Mutate qw(update load_clean_map);
 use Reservation::Load;
 use Reservation::Launch;
@@ -1030,11 +1031,12 @@ sub exec {
 
    my @Command = $reservation->ide_command();
    if(!@Command) {
-      flog("eventHandler: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");
+      flog("exec: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");
       return undef;
    }
 
    if($command) {
+      # Replace final element of command array (the default command) with new command.
       $Command[-1] = $command;
    }
 
@@ -1042,11 +1044,11 @@ sub exec {
    my @developers = grep { !/^role:/ } @developersMeta;
    my %developerRoles = map { s/^role://; ($_ => 1); } grep { /^role:/ } @developersMeta;
 
-   flog("eventHandler: developers=[" . join(',', @developers) . "]");
-   flog("eventHandler: developerRoles=[" . join(',', keys %developerRoles) . "]");
+   flog("exec: developers=[" . join(',', @developers) . "]");
+   flog("exec: developerRoles=[" . join(',', keys %developerRoles) . "]");
 
    my @usersHavingDeveloperRoles = map { $developerRoles{$_->{'role'}} ? $_->{'username'} : () } @{User->viewers};
-   flog("eventHandler: usersHavingDeveloperRoles=[" . join(',', @usersHavingDeveloperRoles) . "]");
+   flog("exec: usersHavingDeveloperRoles=[" . join(',', @usersHavingDeveloperRoles) . "]");
 
    # Include SSH keys for named developers, and users with named roles
    # only if the access level for the 'ssh' service is 'developer'
@@ -1054,26 +1056,26 @@ sub exec {
       $reservation->meta('access')->{'ssh'} eq 'developer' ? (@developers, @usersHavingDeveloperRoles) : ()
    );
 
-   flog("eventHandler: usernames=[" . join(',', @usernames) . "]");
+   flog("exec: usernames=[" . join(',', @usernames) . "]");
 
    my @Users = map { User->load($_) } @usernames;
-   flog("eventHandler: " . join(',', @Users));
+   flog("exec: " . join(',', @Users));
 
    my @authorized_keys = sort { $a cmp $b } unique map { $_ ? @{$_->authorized_keys()} : () } @Users;
-   flog("eventHandler: " . join(',', @authorized_keys));
+   flog("exec: " . join(',', @authorized_keys));
 
    my $owner = $reservation->owner('username');
    my $user = User->load($owner);
    my $user_details = encode_json($user->details_full);
    my $keys_json = encode_json(\@authorized_keys);
    
-   flog("eventHandler: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
+   flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
       join(' ', @Command) . "' for owner '$owner', developers '" .
       join(',', @usernames) . "', owner details '$user_details', keys '$keys_json'"
    );
 
    # TODO: Configure Profiles to support launching IDE as non-root user
-   flog("eventHandler: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
+   flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
       join(' ', @Command)
    );
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
