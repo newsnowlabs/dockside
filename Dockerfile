@@ -4,7 +4,7 @@ ARG ALPINE_VERSION=3.14
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} as theia-build
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf
+    apk add --no-cache make gcc g++ python3 libsecret-dev
 
 ARG OPT_PATH
 ARG THEIA_VERSION
@@ -46,9 +46,9 @@ FROM theia-clean as theia-findelfs
 ARG OPT_PATH
 ARG THEIA_VERSION
 ENV THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION
-ENV BINARIES="node busybox s6-svscan curl"
 
-RUN $THEIA_PATH/bin/elf-patcher.sh --findelfs
+RUN apk add --no-cache file && \
+    $THEIA_PATH/bin/elf-patcher.sh --findelfs
 
 FROM theia-findelfs as theia
 
@@ -57,16 +57,22 @@ ARG TARGETPLATFORM
 # The version of rg installed by the Theia build on linux/arm/v7
 # depends on libs that are not available on Alpine on this platform.
 # Workaround this by overwriting it with Alpine's own rg.
-RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
+RUN apk add --no-cache git s6 curl patchelf && \
+    if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       apk add --no-cache ripgrep; \
       cp $(which rg) $(find -name rg); \
     fi
+
+ENV BINARIES="node busybox s6-svscan curl /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http"
 
 RUN $THEIA_PATH/bin/elf-patcher.sh --patchelfs && \
     cd $THEIA_PATH/bin && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
-    ln -sf busybox pgrep
+    ln -sf busybox pgrep && \
+    ln -sf git git-clone && \
+    ln -sf git-remote-http git-remote-https && \
+    cp -a /etc/ssl/certs $THEIA_PATH/
 
 # Add our Theia-version-specific scripts.
 ADD ./ide/theia/$THEIA_VERSION/bin/ $THEIA_PATH/bin/

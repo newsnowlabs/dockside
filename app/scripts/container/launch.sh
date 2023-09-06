@@ -1,4 +1,4 @@
-#!/opt/dockside/theia/bin/sh
+#!/opt/dockside/theia/bin/sh -x
 
 log() {
    local PID="$$"
@@ -37,8 +37,10 @@ create_user() {
    # Fix homedir ownership, since bind-mounts may have created it wrongly.
    # FIXME: Implement a generalised solution to this, whereby Reservation Profile tmpfs
    # mounts are passed by docker-event-daemon to this script
+
    local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
-   chown $IDE_USER.$IDE_USER $HOME $HOME/.vscode
+   chown $IDE_USER.$IDE_USER $HOME
+   [ -d $HOME/.vscode ] && chown $IDE_USER.$IDE_USER $HOME/.vscode
         
    # Set up sudo, in case that package is installed
    if ! [ -f /etc/sudoers.d/$IDE_USER ]; then
@@ -60,6 +62,18 @@ name = $GIT_COMMITTER_NAME
 email = $GIT_COMMITTER_EMAIL
 _EOE_
     fi
+}
+
+create_git_repo() {
+   [ -n "$GIT_URL" ] || return
+
+   local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
+   cd $HOME
+
+   # GIT_EXEC_PATH="$IDE_PATH/bin"
+   # $IDE_PATH/bin/git-clone $GIT_URL && chown -R $IDE_USER.$IDE_USER $(basename $GIT_URL)
+   $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL
+   chown -R $IDE_USER.$IDE_USER $(basename -s .git $GIT_URL)
 }
 
 # Expects:
@@ -88,6 +102,7 @@ launch_ide() {
       echo "IDE_USER=$IDE_USER" >&2
       create_user
       create_git_committer
+      create_git_repo
 
       while true
       do
@@ -102,6 +117,7 @@ launch_ide() {
       echo "IDE_USER=$IDE_USER" >&2
 
       create_git_committer
+      create_git_repo
 
       # Either:
       # - Current user is root and IDE_USER is root;

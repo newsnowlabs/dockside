@@ -11,8 +11,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api);
-use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api);
+use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api get_uri);
 use Data qw($CONFIG $HOSTNAME);
 
 ################################################################################
@@ -155,6 +154,11 @@ sub data {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid unixuser '$value'" );
       }
    }
+   elsif($key eq 'gitURL') {
+      unless( $value eq '' || $value =~ m!^https?://[a-z][a-z0-9\-\.]+/! ) {
+         die Exception->new( 'msg' => "Failed to create Reservation with invalid gitURL '$value'" );
+      }
+   }
 
    $self->{'data'}{$key} = $value;
 
@@ -277,7 +281,8 @@ sub new {
             'image' => "",
             'unixuser' => "",
             'parentFQDN' => $data->{'data'}{'parentFQDN'} // "",
-            'FQDN' => $data->{'data'}{'FQDN'} // ""
+            'FQDN' => $data->{'data'}{'FQDN'} // "",
+            'gitURL' => ""
          },
          'owner' => $data->{'owner'},
          'meta' => {
@@ -567,7 +572,7 @@ sub cloneWithConstraints {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description ) ],
             'profileObject' => [ qw(name routers networks runtimes) ],
-            'data' => [ qw( FQDN parentFQDN image runtime ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime gitURL ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId) ]
@@ -903,6 +908,30 @@ sub store {
    } );
 
    return $self;
+}
+
+sub getGitDevContainer {
+   my $self = shift;
+
+   my $uri = $self->data('gitURL');
+
+   return undef unless $uri;
+
+   if( $uri =~ m!^https://github.com/(.*)\.git$! ) {
+      my $path = $1;
+
+      foreach my $branch (qw( main master )) {
+         my $devcontainerUri = "https://raw.githubusercontent.com/$path/$branch/.devcontainer.json";
+
+         my $result = get_uri($devcontainerUri);
+
+         if( $result && $result->is_success ) {
+            return eval { return decode_json($result->body); };
+         }
+      }
+   }
+
+   return undef;
 }
 
 sub launch {

@@ -21,7 +21,7 @@
          // Use this to share encrypted ssh keys in the named volume among team members.
           { "src": "dockside-ssh-keys", "dst": "/home/{ideUser}/.ssh" } ]
    },
-   "runtimes": [ "runc", "runsc", "sysbox-runc" ],
+   "runtimes": [ "runc" ],
    "lxcfs": true,
    "dockerArgs": ["--memory=2G", "--pids-limit=4000", "--cpus=1"],
    "command": [

@@ -43,6 +43,13 @@
                               </select>
                            </td>
                         </tr>
+                        <tr v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
+                           <th>Git URL</th>
+                           <td v-if="!isPrelaunchMode">{{ container.data.gitURL }}</td>
+                           <td v-else>
+                              <input type="text" class="form-control" required v-model="form.gitURL" placeholder="Git URL" :disabled="!hasProfiles">
+                           </td>
+                        </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>Image</th>
                            <td v-if="!isPrelaunchMode">{{ container.data.image }} ({{ container.docker ? container.docker.ImageId : '' }})</td>
@@ -286,6 +293,15 @@
          },
          validName() {
             return this.form.name.match('^([a-z][a-z0-9]*|)$');
+         },
+         gitURLs() {
+            return (this.profile && this.profile.gitURLs) ? this.profile.gitURLs.filter(x => !x.includes("*")) : [];
+         },
+         allGitURLs() {
+           return (this.profile && this.profile.gitURLs) ? this.profile.gitURLs : [];
+         },
+         hasWildcardGitURLs() {
+           return ((this.profile && this.profile.gitURLs) ? this.profile.gitURLs.filter(x => x.includes("*")) : []).length > 0;
          }
       },
       methods: {
@@ -303,6 +319,7 @@
                id: edit ? this.container.id : '',
                name: edit ? this.container.name : '',
                profile: edit ? this.container.profile : this.profileNames[0],
+               gitURL: edit ? this.container.data.gitURL : '',
                image: edit ? this.container.docker.Image : '',
                runtime: edit ? this.container.docker.Runtime : '',
                network: edit ? this.container.docker.Networks : '',
@@ -414,6 +431,7 @@
 
             if(this.isPrelaunchMode) {
                f.image = p.images.length > 0 ? p.images[0].replace("*","") : '';
+               f.gitURL = p.gitURLs.length > 0 ? p.gitURLs[0].replace("*","") : '';
                f.runtime = p.runtimes[0];
                f.network = p.networks[0];
                f.access = Object.fromEntries(

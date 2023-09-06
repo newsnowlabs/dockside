@@ -21,7 +21,7 @@ use Util qw(flog TO_JSON);
 # ---------------
 
 sub CURRENT_VERSION {
-   return 3;
+   return 4;
 }
 
 ##################
@@ -68,6 +68,11 @@ sub versionUpgrade {
       $self->{'unixusers'} = ['dockside'] unless $self->{'unixusers'} && @{$self->{'unixusers'}} > 0;
       $self->{'version'}++;
    }
+
+   # if($self->version == 3) {
+   #    $self->{'gitURLs'} = [] unless $self->{'gitURLs'} && @{$self->{'gitURLs'}} > 0;
+   #    $self->{'version'}++;
+   # }
 
 }
 
@@ -163,7 +168,7 @@ sub validate {
    return undef unless $self->{'active'};
 
    # A list of allowed properties: a trailing '!' indicates the property is mandatory.
-   $self->do_validate( '', $self, qw( name! version! description active! mountIDE routers runtimes networks! images! unixusers imagePathsFilter mounts runDockerInit dockerArgs command entrypoint metadata lxcfs security ) );
+   $self->do_validate( '', $self, qw( name! version! description active! mountIDE routers runtimes networks! images! gitURLs unixusers imagePathsFilter mounts runDockerInit dockerArgs command entrypoint metadata lxcfs security ) );
 
    return $self;
 }
@@ -351,6 +356,10 @@ sub images {
    return $_[0]->{'images'} // [];
 }
 
+sub gitURLs {
+   return $_[0]->{'gitURLs'} // [];
+}
+
 sub unixusers {
    return $_[0]->{'unixusers'} // [];
 }
@@ -368,6 +377,7 @@ sub has {
    my $value = shift;
 
    my $array;
+
    if($type eq 'image') {
       $array = $self->images;
 
@@ -405,6 +415,29 @@ sub has {
       #    }
       # }
       # return 0;
+
+      return 1;
+   }
+   elsif($type eq 'gitURL') {
+
+      $array = $self->gitURLs;
+
+      if( @$array == 0 ) {
+         return 1 if $value eq '';
+         return 0;
+      }
+
+      return 0 if $value eq '';
+
+      # If $value does not match at least one Profile gitURL or gitURL pattern, reject it.
+      return 0 unless scalar(
+         grep { $value =~ /^${_}$/ }
+         map {
+            my $gitURLRegex = quotemeta($_);
+            $gitURLRegex =~ s/\\\*/\.\*/g;
+            $gitURLRegex;
+         } @$array
+      );
 
       return 1;
    }
@@ -488,6 +521,16 @@ sub default_image {
    return $nonWildcardImages[0] if @nonWildcardImages;
 
    die "No default image found\n";
+}
+
+sub default_gitURL {
+   my $self = shift;
+
+   my @nonWildcardGitURLs = grep { !/\*/ } @{$self->{'GitURLs'}};
+   return $nonWildcardGitURLs[0] if @nonWildcardGitURLs;
+
+   # Default gitURL is '' if none is specified
+   return '';
 }
 
 sub default_command {

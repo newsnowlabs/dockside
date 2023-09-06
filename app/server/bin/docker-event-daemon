@@ -151,7 +151,7 @@ sub eventHandler {
    my $Container; # hashref { <containerID> => <count of events received> }
 
    try {
-      OUTER:
+      RELOAD:
       while(!$SIGNAL_RECEIVED) {
 
          if(scalar(keys %$Container)) {
@@ -177,10 +177,17 @@ sub eventHandler {
 
             flog(sprintf("eventHandler: Received event: error=%d; EOF=%d", $Events->error, $Events->eof));
 
-            last OUTER if $Events->eof || $Events->error;
+            last RELOAD if $Events->eof || $Events->error;
 
             my $events = 0;
             while(my $eventJSON = $Events->getline()) {
+
+               $events++;
+               $lastEventTime = time;
+
+               # In testing, a select timeout of 0.25 seconds delivered a happy medium between responsiveness
+               # and over-reacting to docker container and network events.
+               $timeout = 0.25;
 
                my $event;
                try {
@@ -192,20 +199,25 @@ sub eventHandler {
 
                flog(sprintf("eventHandler($events): Received event: Type=%s, Action=%s, Actor=%s", $event->{'Type'}, $event->{'Action'}, $event->{'Actor'}{'ID'}));
 
-               if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(start|stop|create|destroy)$/ ) {
+               if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(stop|destroy)$/ ) {
                   $Container->{ $event->{'Actor'}{'ID'} }++;
+                  next;
                }
-               elsif( $event->{'Type'} eq 'network' && $event->{'Action'} =~ /^(connect|disconnect)$/ ) {
+
+               if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(create)$/ ) {
+                  $Container->{ $event->{'Actor'}{'ID'} }++;
+
+                  # Ensure this container's details are now loaded.
+                  next RELOAD;
+               }
+
+               if( $event->{'Type'} eq 'network' && $event->{'Action'} =~ /^(connect|disconnect)$/ ) {
                   $Container->{ $event->{'Actor'}{'Attributes'}{'container'} }++;
+                  next;
                }
 
                if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(start)$/ ) {
-
-                  if( $Container->{ $event->{'Actor'}{'ID'} } ) {
-                     # This container's details might not yet have been loaded. Do this now.
-                     flog("eventHandler: Updating docker containers without sizes before reloading reservations");
-                     update( { } );
-                  }
+                  $Container->{ $event->{'Actor'}{'ID'} }++;
 
                   # Reload config, reservations and containers, to access Reservation->load and %CONFIG.
                   # Reload users and roles too, in case we can update owner's name and email [at later date].
@@ -239,14 +251,11 @@ sub eventHandler {
                   else {
                      flog("eventHandler: we don't manage containerId=$event->{'Actor'}{'ID'}");
                   }
+
+                  next;
                }
 
-               $events++;
-               $lastEventTime = time;
-
-               # In testing, a select timeout of 0.25 seconds delivered a happy medium between responsiveness
-               # and over-reacting to docker container and network events.
-               $timeout = 0.25;
+               # Shouldn't reach this line.
             }
 
             flog("eventHandler: Finished reading.");

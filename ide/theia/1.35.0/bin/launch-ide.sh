@@ -30,7 +30,8 @@ log "Launching IDE from IDE_PATH='$IDE_PATH' ..."
 
 log "Backing up and overriding PATH ..."
 export _PATH="$PATH"
-export PATH="$IDE_PATH/theia/bin:$PATH"
+export PATH="$IDE_PATH/bin:$PATH"
+export GIT_EXEC_PATH="$IDE_PATH/bin"
 
 # Run ssh-agent if available, but not already running.
 log "Checking for ssh-agent ..."
