@@ -379,10 +379,6 @@ sub routers {
    return $_[0]->{'routers'} // [];
 }
 
-sub mounts_all {
-   return [ @{$_[0]->{'mounts'}{'tmpfs'}}, @{$_[0]->{'mounts'}{'bind'}}, @{$_[0]->{'mounts'}{'volume'}} ];
-}
-
 # Test if Profile property $type contains (or encompasses) value $value.
 # Returns 0 if not, non-0 if so.
 
