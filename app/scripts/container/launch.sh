@@ -76,6 +76,8 @@ create_user() {
       fi
    done
 
+   # FIXME: Should we hide user details (and not dump env) from the
+   # devtainer?
    echo "$OWNER_DETAILS" >/tmp/dockside/user-details.json
 
    # Set up sudo, in case that package is installed

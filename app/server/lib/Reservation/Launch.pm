@@ -244,6 +244,8 @@ sub cmdline_ide_mount {
       $hostData = $INNER_DOCKERD ? ['bind', $hostDataPath] :
          $HOSTNAME ? Containers->containers->{$HOSTNAME}{'inspect'}{'hostDataVolume'} : undef;
 
+      # FIXME: Should this throw error?
+
       if($hostData) {
          push(@mounts, "--mount=type=$$hostData[0],src=$$hostData[1],dst=$hostDataPath,ro");
          flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered host data mount type '$$hostData[0]' src/named '$$hostData[1]'");
