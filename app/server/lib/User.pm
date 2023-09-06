@@ -816,6 +816,8 @@ sub updateContainerReservation {
       die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
    }
 
+   my $origReservation = Storable::dclone($reservation);
+
    # FIXME: We don't want to update data.network, when we change network; or do we?
    # FIXME: Should calling $reservation->data('network', <network>) call update_network?
    foreach my $m (qw(access viewers developers private network description)) {
@@ -833,7 +835,9 @@ sub updateContainerReservation {
    # and then acted upon.
    $reservation->update_network();
 
-   if( 1 ) {
+   # Only update devtainer authorized_keys if relevant reservation fields change.
+   if( $origReservation->meta('developers') ne $reservation->meta('developers') ||
+      $origReservation->meta('access')->{'ssh'} ne $reservation->meta('access')->{'ssh'} ) {
       $reservation->exec('update_ssh_authorized_keys');
    }
 
