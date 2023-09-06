@@ -63,20 +63,28 @@
                   else {
                      console.error("Error fetching authentication cookie", error);
                   }
+
+                  
                });
          }
       },
       computed: {
          sshHost() {
+            // Port number required if running on non-standard ports
             return window.location.host;         
          },
+         sshHostname() {
+            // No port number requires
+            return window.location.hostname;         
+         },
          sshWildcardHost() {
-            return 'ssh-*' + window.dockside.host;
+            // No port number requires
+            return 'ssh-*' + window.dockside.host.split(':')[0];
          },
          text() {
             return `Host ${this.sshWildcardHost}
-   ProxyCommand <path/to>/wstunnel --hostHeader=%n "--customHeaders=Cookie: ${this.cookies}" -L stdio:127.0.0.1:%p wss://%n:443
-   Hostname ${this.sshHost}
+   ProxyCommand <path/to>/wstunnel --hostHeader=%n "--customHeaders=Cookie: ${this.cookies}" -L stdio:127.0.0.1:%p wss://${this.sshHost}
+   Hostname ${this.sshHostname}
    ForwardAgent yes`;
          }
       }
