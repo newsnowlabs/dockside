@@ -45,13 +45,16 @@ sub domain_to_host {
    # - 1: 'my-devtainer', 'www', 'mydockside.co.uk', 1 (as seen by an inner Dockside devtainer; will proxy on to 'my-devtainer')
 
    if( $host =~ /^([^\.]+)\.(.*?)(:\d+)?$/ ) {
-      my @elements = reverse split(/--/, $1);
+
+      # Split on two and only two dashes; these separate nested Dockside containers
+      my @elements = reverse split(/(*nlb:-)--(*nla:-)/, $1);
       my $domain = $2;
 
-      # Split again the leftmost element on its first '-'.
+      # Retain <service> (e.g. 'ide') or e.g. 8eb55c33-985f-406e-b9e7-a8b0c4962e1e-wv-<service> as $service
       # Add the devtainer name (if found) to @elements.
       # Always add the service name to @elements.
-      my ($service, $topHost) = pop(@elements) =~ /^([^-]+)(?:-(.*))?$/;
+      # See launch-ide.sh THEIA_WEBVIEW_EXTERNAL_ENDPOINT and THEIA_MINI_BROWSER_HOST_PATTERN.
+      my ($service, $topHost) = pop(@elements) =~ /^((?:.*-(?:wv|mb|webview|minibrowser)-)?[^-]+)(?:-(.*))?$/;
       push(@elements, $topHost ? $topHost : (), $service);
 
       my $nestCount = split(/-/, $r->header_in('X-Nest-Level'));
