@@ -320,15 +320,31 @@
             copyToClipboard(value);
          },
          makeUri(router) {
-            return router.type !== 'ssh' ? 
-              [router.https ? 'https' : 'http', '://', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('') :
-              ['ssh://',this.container.data.unixuser,'@', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host.split(':')[0]].join('');
+            const protocol = router.https ? 'https' : 'http';
+            const prefix = router.prefixes[0] ? router.prefixes[0] : 'www';
+            const containerName = this.container.name;
+            const host = window.dockside.host;
+            
+            if (router.type !== 'ssh') {
+               return `${protocol}://${prefix}-${containerName}${host}`;
+            } else {
+               const unixuser = this.container.data.unixuser;
+               const hostname = host.split(':')[0];
+               return `ssh://${unixuser}@${prefix}-${containerName}${hostname}`;
+            }
          },
          copyUri(router) {
-            return router.type !== 'ssh' ? copyToClipboard(this.makeUri(router)) :
-               copyToClipboard(
-                 ['ssh ', this.container.data.unixuser,'@', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host.split(':')[0]].join('')
-               );
+            if (router.type !== 'ssh') {
+               return copyToClipboard(this.makeUri(router));
+            }
+
+            const prefix = router.prefixes[0] ? router.prefixes[0] : 'www';
+            const containerName = this.container.name;
+            const host = window.dockside.host;
+            const unixuser = this.container.data.unixuser;
+            const hostname = host.split(':')[0];
+
+            return `ssh ${unixuser}@${prefix}-${containerName}${hostname}`;
          },
          makeUriTarget(router) {
             return [(router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('');
