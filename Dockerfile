@@ -21,6 +21,10 @@ ARG TARGETPLATFORM
 #
 ENV BASH_ENV=/tmp/theia-bash-env
 
+# Some but not all needed wstunnel binaries are published on https://github.com/erebe/wstunnel.
+# Others we have had to compile from source. To ensure build reliability/reproducibility, we here
+# obtain wstunnel binaries from the Dockside Google Cloud Storage bucket. wstunnel is published
+# under https://github.com/erebe/wstunnel/blob/master/LICENSE.
 RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
       THEIA_VERSION=1.40.0; \
       WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-x86_64"; \

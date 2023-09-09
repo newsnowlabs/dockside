@@ -3,20 +3,31 @@
 <template>
    <b-modal id="sshinfo-modal" size="lg" v-model="showModal" @show="onModalShow" title="How to set up SSH" centered>
       <p>Download a suitable <a href="https://github.com/erebe/wstunnel" target="_blank" v-b-tooltip title="Open wstunnel in new tab"><code>wstunnel</code></a>
-      binary to your local machine:
+      (<a href="https://github.com/erebe/wstunnel/blob/master/LICENSE" target="_blank" v-b-tooltip title="Open in new tab">LICENSE</a>)
+      binary to your local machine, from either the <a href="https://github.com/erebe/wstunnel/releases" target="_blank" v-b-tooltip title="Open wstunnel in new tab"><code>wstunnel</code> releases page</a>
+      or the Dockside public bucket (which comprises copies of officially-released binaries and binaries compiled by Dockside):</p>
+      <p>
          <ul>
-            <li><a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-x86_64" target="_blank">Linux amd64/x86_64 v5.0</a></li>
-            <li><a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-arm64" target="_blank">Linux arm64/aarch64 v5.0</a></li>
-            <li><a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.1-linux-armv7" target="_blank">Linux armv7 (rPi) v5.1</a></li>
-            <li><a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-windows.exe" target="_blank">Windows amd64/x86_64 v5.0</a></li>
-            <li><a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-macos-x86_64" target="_blank">Mac OS amd64/x86-64 v5.0</a></li>
-            <li><a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.1-macos-arm64" target="_blank">Mac OS arm64/aarch64 v5.1</a></li>
+            <li>Linux:
+               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-x86_64" target="_blank">amd64/x86_64 v5.0</a>,
+               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-arm64" target="_blank">arm64/aarch64 v5.0</a>,
+               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.1-linux-armv7" target="_blank">armv7 (rPi) v5.1</a>
+            </li>
+            <li>Windows:
+               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-windows.exe" target="_blank">amd64/x86_64 v5.0</a>
+            </li>
+            <li>Mac OS:
+               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-macos-x86_64" target="_blank">amd64/x86-64 v5.0</a>,
+               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.1-macos-arm64" target="_blank">arm64/aarch64 v5.1</a>
+            </li>
          </ul>
       </p>
       <p>On Unix-like systems, be sure to run <code>chmod 755 &lt;path/to&gt;/wstunnel</code> to make it executable.</p>
       <p>Copy and paste the following into your <code>~/.ssh/config</code> file:</p>
       <pre>{{ text }}</pre>
-      <p>(Comment or remove the <code>Hostname</code> line if you codefer a separate <code>known_hosts</code> record for each devtainer.)</p>
+      <p>N.B. Comment or remove the <code>Hostname</code> line if you prefer a separate <code>known_hosts</code> record for each devtainer;
+      doing this also works around a bug in Mac OS Terminal that repeatedly complains about missing <code>known_hosts</code> entries.
+      For best results on Mac OS, use <a href="https://iterm2.com/" target="_blank" v-b-tooltip title="Open iterm2 in new tab">iTerm2</a>.</p>
       <b-button variant="outline-success" size="sm" type="button" @click="copy(text)">Copy</b-button>
       <template #modal-footer>
          <b-button variant="primary" @click="closeModal">OK</b-button>
@@ -74,11 +85,11 @@
             return window.location.host;         
          },
          sshHostname() {
-            // No port number requires
+            // No port number required
             return window.location.hostname;         
          },
          sshWildcardHost() {
-            // No port number requires
+            // No port number required
             return 'ssh-*' + window.dockside.host.split(':')[0];
          },
          text() {
