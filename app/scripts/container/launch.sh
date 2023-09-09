@@ -59,14 +59,15 @@ create_user() {
       log "Found existing user account: $IDE_USER"
    fi
    
-   # Fix homedir and ~/.vscode ownership, since bind-mounts may have created it wrongly.
+   # Fix homedir ownership, since bind-mounts may have created it wrongly.
    local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
 
    log "Restoring correct ownership for: $HOME"
    busybox chown $IDE_USER:$IDE_USER $HOME
    
    # A generalised solution to docker issue, whereby tmpfs mountpoint ownership and mode
-   # is incorrectly set following container stop/start.
+   # is incorrectly set following container stop/start: find tmpfs inside $HOME and
+   # fixup ownership and permissions.
    for p in $(busybox mount -t tmpfs | busybox awk '{print $3}' | busybox grep "^$HOME")
    do
       if [ -d "$p" ]; then
