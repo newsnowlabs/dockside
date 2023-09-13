@@ -344,7 +344,7 @@
             const unixuser = this.container.data.unixuser;
             const hostname = host.split(':')[0];
 
-            return `ssh ${unixuser}@${prefix}-${containerName}${hostname}`;
+            return copyToClipboard(`ssh ${unixuser}@${prefix}-${containerName}${hostname}`);
          },
          makeUriTarget(router) {
             return [(router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('');
