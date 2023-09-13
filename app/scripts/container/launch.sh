@@ -13,6 +13,7 @@ which() {
 }
 
 debug() {
+   DEBUG=1
    set -x
 }
 
@@ -62,24 +63,20 @@ create_user() {
    # Fix homedir ownership, since bind-mounts may have created it wrongly.
    local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
 
-   log "Restoring correct ownership for: $HOME"
+   log "Restoring correct ownership for HOME: $HOME"
    busybox chown $IDE_USER:$IDE_USER $HOME
    
    # A generalised solution to docker issue, whereby tmpfs mountpoint ownership and mode
    # is incorrectly set following container stop/start: find tmpfs inside $HOME and
    # fixup ownership and permissions.
-   for p in $(busybox mount -t tmpfs | busybox awk '{print $3}' | busybox grep "^$HOME")
+   for p in $(busybox cat /proc/mounts | busybox grep "^tmpfs $HOME[/ ]" | busybox awk '{print $2}')
    do
       if [ -d "$p" ]; then
-         log "Restoring correct ownership and permissions for: $p"
+         log "Restoring correct ownership and permissions for tmpfs: $p"
          busybox chown $IDE_USER:$IDE_USER $p
-         busybox chmod a+rwx,+t $p
+         busybox chmod u=rwx,g=rx,o=rx,+t $p
       fi
    done
-
-   # FIXME: Should we hide user details (and not dump env) from the
-   # devtainer?
-   echo "$OWNER_DETAILS" >/tmp/dockside/user-details.json
 
    # Set up sudo, in case that package is installed
    if ! [ -f /etc/sudoers.d/$IDE_USER ]; then
@@ -96,22 +93,19 @@ create_user() {
 
 update_ssh_authorized_keys() {
    local KEYS=$(echo "$AUTHORIZED_KEYS" | jq -re '.[]?')
-   if [ -n "$KEYS" ]; then
-      local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
-      log "Creating $HOME/.ssh/authorized_keys for $IDE_USER"
+   local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
+   log "Creating $HOME/.ssh/authorized_keys for $IDE_USER"
 
-      # Set up .ssh folder, if it doesn't exist
-      if ! [ -d "$HOME/.ssh" ]; then
-         busybox mkdir -p $HOME/.ssh
-         busybox chown -R $IDE_USER:$IDE_USER $HOME/.ssh
-         busybox chmod 700 $HOME/.ssh
-      fi
+   # Set up .ssh folder, if it doesn't exist
+   busybox mkdir -p $HOME/.ssh
 
-      # Set up authorized_keys, whether or not it exists
-      echo "$KEYS" >$HOME/.ssh/authorized_keys
-      busybox chown $IDE_USER:$IDE_USER $HOME/.ssh/authorized_keys
-      busybox chmod 644 $HOME/.ssh/authorized_keys
-   fi   
+   # Set up authorized_keys, whether or not it exists
+   echo "$KEYS" >$HOME/.ssh/authorized_keys
+
+   # Reset ownership and permissions for $HOME/.ssh and contents
+   log "Recursively resetting ownership and permissions for $HOME/.ssh"
+   busybox chown -R $IDE_USER:$IDE_USER $HOME/.ssh
+   busybox chmod -R u=rwX,g=rX,o=rX  $HOME/.ssh
 }
 
 create_git_config() {
@@ -204,8 +198,12 @@ init() {
    exec 1>>$LOG
    exec 2>>$LOG
 
-   log "Executing '$@' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH and environment:"
-   busybox env | busybox sed 's/^/=> /'
+   if [ -z "$DEBUG" ]; then
+      log "Executing '$@' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH:"
+   else
+      log "Executing '$@' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH and environment:"
+      busybox env | busybox sed 's/^/=> /'}
+   fi
 }
 
 init "$@"
