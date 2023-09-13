@@ -15,11 +15,11 @@
    "images": [ "newsnowlabs/dockside-io" ],
    "unixusers": ["dockside"],
    "mounts": {
-      "tmpfs": [],
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
       "bind": [],
-      "volume": [
-         // Use this to share encrypted ssh keys in the named volume among team members.
-          { "src": "dockside-ssh-keys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
+      "volume": []
    },
    "runtimes": [ "runc", "runsc", "sysbox-runc" ],
    "lxcfs": true,
