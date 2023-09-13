@@ -213,6 +213,12 @@ sub cmdline_name {
    return ('--name', $self->name);
 }
 
+sub cmdline_hostname {
+   my $self = shift;
+   
+   return ('--hostname', $self->name);
+}
+
 sub cmdline_ide_mount {
    my $self = shift;
 
@@ -304,6 +310,7 @@ sub cmdline {
       $self->cmdline_ide_mount(),
       $self->cmdline_init(),
       $self->cmdline_name(),
+      $self->cmdline_hostname(),
       $self->cmdline_entrypoint(),
       $self->cmdline_image(),
       $self->cmdline_command()
