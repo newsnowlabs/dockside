@@ -246,7 +246,7 @@ sub cmdline_ide_mount {
       flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered ide mount type '$$ide[0]' src/named '$$ide[1]'");
    }
 
-   if( $self->profileObject->should_mount_host_data ) {
+   if( $self->profileObject->ssh ) {
       $hostData = $INNER_DOCKERD ? ['bind', $hostDataPath] :
          $HOSTNAME ? Containers->containers->{$HOSTNAME}{'inspect'}{'hostDataVolume'} : undef;
 

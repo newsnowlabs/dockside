@@ -130,7 +130,7 @@ sub new {
       return undef unless $data->{'username'};
 
       $self = bless { 
-         %$data{ qw(username id name email role secrets) },
+         %$data{ qw(username id name email role ssh) },
          '_permissions' => $data->{'permissions'} // {},
          '_resources' => $data->{'resources'} // {},
       }, ( ref($class) || $class );
@@ -202,7 +202,7 @@ sub details {
 sub details_full {
    my $self = shift;
 
-   return { %$self{'username', 'id', 'name', 'email', 'secrets'} };
+   return { %$self{'username', 'id', 'name', 'email', 'ssh'} };
 }
 
 sub password {
@@ -220,7 +220,7 @@ sub passwordDefined {
 sub authorized_keys {
    my $self = shift;
 
-   return $self->{'secrets'}{'ssh'}{'authorized_keys'} // [];
+   return $self->{'ssh'}{'authorized_keys'} // [];
 }
 
 ################################################################################

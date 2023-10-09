@@ -66,6 +66,10 @@ sub versionUpgrade {
    if($self->version == 2) {
       $self->{'runtimes'} = ['runc'] unless $self->{'runtimes'} && @{$self->{'runtimes'}} > 0;
       $self->{'unixusers'} = ['dockside'] unless $self->{'unixusers'} && @{$self->{'unixusers'}} > 0;
+
+      # If unspecified in profile, set to value of config.json default, or true.
+      $self->{'ssh'} //= $CONFIG->{'ssh'}{'default'} // 1;
+
       $self->{'version'}++;
    }
 
@@ -154,7 +158,7 @@ sub new {
    # Add the SSH router, if none specified.
    # N.B. Updating config.json .ssh property WON'T cause this to re-evaluate,
    # not without reloading all profiles.
-   if( $self->has_ssh_enabled && ! grep { $_->{'type'} eq 'ssh' } @{$self->{'routers'}} ) {
+   if( $self->{'ssh'} && ! grep { $_->{'type'} eq 'ssh' } @{$self->{'routers'}} ) {
       push(@{$self->{'routers'}}, {
          "name" => 'ssh',
          "type" => 'ssh',
@@ -163,7 +167,7 @@ sub new {
          "domains" => ["*"],
          "https" => {
             "protocol" => "http", 
-            "port" => 2222
+            "port" => $CONFIG->{'ssh'}{'port'}
          },
       });
    }
@@ -379,6 +383,10 @@ sub routers {
    return $_[0]->{'routers'} // [];
 }
 
+sub ssh {
+   return $_[0]->{'ssh'};
+}
+
 # Test if Profile property $type contains (or encompasses) value $value.
 # Returns 0 if not, non-0 if so.
 
@@ -436,6 +444,9 @@ sub has {
    }
    elsif($type eq 'unixuser') {
       $array = $self->unixusers;
+   }
+   elsif($type eq 'router') {
+      $array = [ map { $_->{'type'} } @{$self->routers} ];
    }
 
    return scalar(grep { $_ eq $value } @$array);
@@ -538,14 +549,6 @@ sub should_mount_ide {
    return 0;
 }
 
-sub should_mount_host_data {
-   my $self = shift;
-
-   return 1 unless exists($self->{'mountHostData'}) && $self->{'mountHostData'} == 0;
-
-   return 0;
-}
-
 sub run_docker_init {
    my $self = shift;
 
@@ -566,24 +569,6 @@ sub has_lxcfs_enabled {
    # If lxcfs.default === false in config.json, disable unless profile lxcfs === true
    elsif( $CONFIG->{'lxcfs'}{'default'} == 0 ) {
       return 0 unless exists($self->{'lxcfs'}) && $self->{'lxcfs'} == 1;
-   }
-
-   return 1;
-}
-
-sub has_ssh_enabled {
-   my $self = shift;
-
-   # Disabled unless ssh props specified in config.json.
-   return 0 unless $CONFIG->{'ssh'};
-
-   # If ssh.default === true in config.json, disable if profile ssh === false
-   if( $CONFIG->{'ssh'}{'default'} == 1 ) {
-      return 0 if exists($self->{'ssh'}) && $self->{'ssh'} == 0;
-   }
-   # If ssh.default === false in config.json, disable unless profile ssh === true
-   elsif( $CONFIG->{'ssh'}{'default'} == 0 ) {
-      return 0 unless exists($self->{'ssh'}) && $self->{'ssh'} == 1;
    }
 
    return 1;

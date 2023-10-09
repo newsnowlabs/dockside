@@ -1040,39 +1040,55 @@ sub exec {
       $Command[-1] = $command;
    }
 
-   my @developersMeta = split(',', $reservation->meta('developers'));
-   my @developers = grep { !/^role:/ } @developersMeta;
-   my %developerRoles = map { s/^role://; ($_ => 1); } grep { /^role:/ } @developersMeta;
-
-   flog("exec: developers=[" . join(',', @developers) . "]");
-   flog("exec: developerRoles=[" . join(',', keys %developerRoles) . "]");
-
-   my @usersHavingDeveloperRoles = map { $developerRoles{$_->{'role'}} ? $_->{'username'} : () } @{User->viewers};
-   flog("exec: usersHavingDeveloperRoles=[" . join(',', @usersHavingDeveloperRoles) . "]");
-
-   # Include SSH keys for named developers, and users with named roles
-   # only if the access level for the 'ssh' service is 'developer'
-   my @usernames = unique ($reservation->owner('username'), 
-      $reservation->meta('access')->{'ssh'} eq 'developer' ? (@developers, @usersHavingDeveloperRoles) : ()
-   );
-
-   flog("exec: usernames=[" . join(',', @usernames) . "]");
-
-   my @Users = map { User->load($_) } @usernames;
-   flog("exec: " . join(',', @Users));
-
-   my @authorized_keys = sort { $a cmp $b } unique map { $_ ? @{$_->authorized_keys()} : () } @Users;
-   flog("exec: " . join(',', @authorized_keys));
-
    my $owner = $reservation->owner('username');
    my $user = User->load($owner);
    my $user_details = encode_json($user->details_full);
-   my $keys_json = encode_json(\@authorized_keys);
-   
-   flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
-      join(' ', @Command) . "' for owner '$owner', developers '" .
-      join(',', @usernames) . "', owner details '$user_details', keys '$keys_json'"
-   );
+
+   my @envSSH;
+   if( $reservation->profileObject->ssh ) {
+
+      my @developersMeta = split(',', $reservation->meta('developers'));
+      my @developers = grep { !/^role:/ } @developersMeta;
+      my %developerRoles = map { s/^role://; ($_ => 1); } grep { /^role:/ } @developersMeta;
+
+      flog("exec: developers=[" . join(',', @developers) . "]");
+      flog("exec: developerRoles=[" . join(',', keys %developerRoles) . "]");
+
+      my @usersHavingDeveloperRoles = map { $developerRoles{$_->{'role'}} ? $_->{'username'} : () } @{User->viewers};
+      flog("exec: usersHavingDeveloperRoles=[" . join(',', @usersHavingDeveloperRoles) . "]");
+
+      # Include SSH keys for named developers, and users with named roles
+      # only if the access level for the 'ssh' service is 'developer'
+      my @usernames = unique ($reservation->owner('username'), 
+         $reservation->meta('access')->{'ssh'} eq 'developer' ? (@developers, @usersHavingDeveloperRoles) : ()
+      );
+
+      flog("exec: usernames=[" . join(',', @usernames) . "]");
+
+      my @Users = map { User->load($_) } @usernames;
+      flog("exec: " . join(',', @Users));
+
+      my @authorized_keys = sort { $a cmp $b } unique map { $_ ? @{$_->authorized_keys()} : () } @Users;
+      flog("exec: " . join(',', @authorized_keys));
+
+      my $keys_json = encode_json(\@authorized_keys);
+
+      @envSSH = (
+         "--env=AUTHORIZED_KEYS=$keys_json",
+         "--env=HOSTDATA_PATH=$CONFIG->{'ssh'}{'path'}",
+         "--env=SSHD_ENABLE=1"
+      );
+
+      flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
+         join(' ', @Command) . "' for owner '$owner', developers '" .
+         join(',', @usernames) . "', owner details '$user_details', keys '$keys_json'"
+      );
+   }
+   else {   
+      flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
+         join(' ', @Command) . "' for owner '$owner'"
+      );
+   }
 
    # TODO: Configure Profiles to support launching IDE as non-root user
    flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
@@ -1081,8 +1097,7 @@ sub exec {
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
-      "--env=AUTHORIZED_KEYS=$keys_json",
-      "--env=HOSTDATA_PATH=$CONFIG->{'ssh'}{'path'}",
+      @envSSH,
       $containerId,
       @Command
    );
