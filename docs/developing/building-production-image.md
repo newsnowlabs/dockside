@@ -23,10 +23,9 @@ We use [Depot](https://depot.dev/) to build multi-architecture images for Docksi
 5. Prepare a new GitHub release with a [semantic versioned](https://semver.org/) tag in the form `vA.B.C` and title and text composed from the git log messages of the intervening commits. Publish the release.
 6. Pull the new git release tag
    1. Make sure `git status` and `git stash list` is clean
-   2. Rebuild the multiplatform docker image with the default production image tag `latest`, pushing it to the image repository; and again with the git release tag used as the image tag.
+   2. Rebuild the multiplatform docker image, tagged with both the git release tag `vA.B.C` and `latest`, pushing it to the image repository.
       ```sh
-      ./build/build.sh --builder depot --push
-      ./build/build.sh --builder depot --tag vA.B.C --push
+      ./build/build.sh --builder depot --tag latest --tag vA.B.C --push
       ```
 7. Announce the release on the NewsNow Labs `#general` Slack channel, in similar language to that used for the GitHub release.
 
