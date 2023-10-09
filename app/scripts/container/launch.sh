@@ -102,10 +102,10 @@ update_ssh_authorized_keys() {
    # Set up authorized_keys, whether or not it exists
    echo "$KEYS" >$HOME/.ssh/authorized_keys
 
-   # Reset ownership and permissions for $HOME/.ssh and contents
-   log "Recursively resetting ownership and permissions for $HOME/.ssh"
-   busybox chown -R $IDE_USER:$IDE_USER $HOME/.ssh
-   busybox chmod -R u=rwX,g=rX,o=rX  $HOME/.ssh
+   log "Resetting ownership and permissions for $HOME/.ssh and $HOME/.ssh/authorized_keys"
+   busybox chown $IDE_USER:$IDE_USER $HOME/.ssh $HOME/.ssh/authorized_keys
+   busybox chmod u=rwX,g=rX,o=rX $HOME/.ssh
+   busybox chmod 600 $HOME/.ssh/authorized_keys
 }
 
 create_git_config() {
