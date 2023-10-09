@@ -78,6 +78,8 @@ my $CONFIG_FILES = {
          $CONFIG->{'docker'}{'sizes'} //= 0;
          $CONFIG->{'ide'}{'path'} //= '/opt/dockside';
          $CONFIG->{'ssh'}{'path'} //= "$CONFIG->{'ide'}{'path'}/host";
+         $CONFIG->{'ssh'}{'port'} //= 2222;
+         $CONFIG->{'ssh'}{'default'} //= 1;
       },
       'parse' => \&parse_json
    },
