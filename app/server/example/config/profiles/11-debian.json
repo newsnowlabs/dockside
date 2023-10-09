@@ -27,6 +27,6 @@
    "lxcfs": true,
    "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "command": [
-      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity"
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo curl); sleep infinity"
    ],
 }

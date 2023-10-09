@@ -24,6 +24,6 @@
    "lxcfs": true,
    "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "command": [
-      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo curl libgcc libstdc++ bash;); sleep infinity"
    ]
 }
