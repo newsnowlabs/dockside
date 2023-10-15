@@ -9,25 +9,30 @@
       <p>
          <ul>
             <li>Linux:
-               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-x86_64" target="_blank">amd64/x86_64 v5.0</a>,
-               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-arm64" target="_blank">arm64/aarch64 v5.0</a>,
-               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.1-linux-armv7" target="_blank">armv7 (rPi) v5.1</a>
+               <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64" target="_blank">amd64/x86_64 v6.0</a>,
+               <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64" target="_blank">arm64/aarch64 v6.0</a>,
+               <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7" target="_blank">armv7 (rPi) v6.0</a>
             </li>
             <li>Windows:
-               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-windows.exe" target="_blank">amd64/x86_64 v5.0</a>
+               <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-windows.exe" target="_blank">amd64/x86_64 v6.0</a>
             </li>
             <li>Mac OS:
-               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-macos-x86_64" target="_blank">amd64/x86-64 v5.0</a>,
-               <a href="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.1-macos-arm64" target="_blank">arm64/aarch64 v5.1</a>
+               <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-macos-x64" target="_blank">amd64/x86_64 v6.0</a>,
+               <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-macos-arm64" target="_blank">arm64/aarch64 v6.0</a>
             </li>
          </ul>
       </p>
-      <p>On Unix-like systems, be sure to run <code>chmod 755 &lt;path/to&gt;/wstunnel</code> to make it executable.</p>
-      <p>Copy and paste the following into your <code>~/.ssh/config</code> file:</p>
+      <p>Copy and paste the following text into your <code>~/.ssh/config</code> file:</p>
       <pre>{{ text }}</pre>
-      <p>N.B. Comment or remove the <code>Hostname</code> line if you prefer a separate <code>known_hosts</code> record for each devtainer;
-      doing this also works around a bug in Mac OS Terminal that repeatedly complains about missing <code>known_hosts</code> entries.
-      For best results on Mac OS, use <a href="https://iterm2.com/" target="_blank" v-b-tooltip title="Open iterm2 in new tab">iTerm2</a>.</p>
+      <p>N.B.
+         <ul>
+            <li>After you paste, don't forget to edit the text to specify the correct path to your downloaded <code>wstunnel</code> binary.</li>
+            <li>On Unix-like systems, be sure to run <code>chmod a+x</code> on your <code>wstunnel</code> binary to make it executable.</li>
+            <li>Comment or remove the <code>Hostname</code> line if you prefer a separate <code>known_hosts</code> record for each devtainer;
+      doing this also works around a bug in Mac OS Terminal that repeatedly complains about missing <code>known_hosts</code> entries.</li>
+            <li>For better results on Mac OS, use <a href="https://iterm2.com/" target="_blank" v-b-tooltip title="Open iterm2 in new tab">iTerm2</a>.</li>
+         </ul>
+      </p>
       <b-button variant="outline-success" size="sm" type="button" @click="copy(text)">Copy</b-button>
       <template #modal-footer>
          <b-button variant="primary" @click="closeModal">OK</b-button>

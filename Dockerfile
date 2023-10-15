@@ -27,13 +27,13 @@ ENV BASH_ENV=/tmp/theia-bash-env
 # under https://github.com/erebe/wstunnel/blob/master/LICENSE.
 RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
       THEIA_VERSION=1.40.0; \
-      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-x86_64"; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
       THEIA_VERSION=1.40.0; \
-      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.0-linux-arm64"; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
       THEIA_VERSION=1.35.0; \
-      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/wstunnel-v5.1-linux-armv7"; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7"; \
     else \
       echo "Build error: Unsupported architecture '$TARGETPLATFORM'" >&2; \
       exit 1; \
