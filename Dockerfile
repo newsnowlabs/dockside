@@ -60,7 +60,10 @@ RUN mkdir -p $THEIA_PATH && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin $THEIA_PATH/
 
 # Build Theia
-RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && NODE_OPTIONS="--max_old_space_size=4096" && yarn config set network-timeout 600000 -g && yarn
+RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && \
+    PUPPETEER_SKIP_DOWNLOAD=1 && \
+    NODE_OPTIONS="--max_old_space_size=4096" && \
+    yarn config set network-timeout 600000 -g && yarn
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
