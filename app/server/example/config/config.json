@@ -30,9 +30,6 @@
             "launch_ide"
         ]
     },
-    "ssh": {
-      "default": true
-    },
     "clientDistPath": "/home/newsnow/dockside/app/client/dist",
     "docker": {
         "bin": "/usr/bin/docker",
@@ -43,6 +40,9 @@
             "apparmor": "unspecified",
             "seccomp": "unspecified"
         }
+    },
+    "ssh": {
+      "default": true
     },
     "lxcfs": {
         "mountpoints": [
