@@ -58,7 +58,7 @@ The currently-supported root properties within a profile are:
 | active | must be set to `true` or the profile will be ignored | mandatory | `false` | `true` |
 | [routers](#profile-routers) | [array] preconfigured services | optional | `[]` | `[{"name": "dockside", "prefixes": [ "www" ], "domains": [ "*" ], "auth": [ "developer", "owner", "viewer", "user", "public" ], "https": { "protocol": "https", "port": 443 } }]`
 | networks | allowed docker networks | mandatory | N/A | `["bridge"]`
-| runtimes | allowed docker runtimes | optional | `["runc"]` | `["runc", "sysbox-runc"]`
+| runtimes | allowed docker runtimes | optional | `["runc"]` | `["runc", "sysbox-runc", "runcvm"]`
 | images | allowed docker images (a wildcard may be used to allow the user to specify an arbitrary element of the image string) | mandatory | N/A | `["alpine:latest","i386/alpine:latest"]` |
 | unixusers | array of the unix user account for which to run the IDE | optional | `["dockside"]` | `["john","jim"]`
 | mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{"tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}]}`
@@ -113,7 +113,7 @@ A user record specifies:
     - `runtimes`: Docker runtimes the user is permitted to use using, subject also to the profile (object or array)
     - `auth`: the auth/access levels the user is permitted to specify for a devtainer's router, subject also to the devtainer's profile (object or array)
 - `ssh`:
-    - `authorized_keys`: an array of strings to be written to a devtainer's `~/.ssh/authorized_keys` file when it is owned by the user or shared with the user as a developer
+    - `authorized_keys`: an array of standard ssh authorized keys strings that will be automatically written to devtainers' `~/.ssh/authorized_keys` files for devtainers owned by, or shared with, the user (as 'developer')
 
 You should add one record to `users.json`, and one record to [`passwd`](#passwords), for each registered user in your team.
 

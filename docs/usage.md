@@ -22,6 +22,8 @@ To edit the developer and users lists, change the connected network, change the 
 
 To open a preconfigured devtainer service, click the `Open` button adjoining the service.
 
+Where SSH has been enabled, you can open an SSH terminal to a devtainer by clicking the `Open` button adjoining the SSH service. SSH support requires setup; see [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support).
+
 > To create and customise a Profile before launching devtainers, see [Profiles](../setup/#profiles).
 
 ## Using the Dockside IDE
@@ -30,30 +32,7 @@ Dockside runs a version of the amazing open-source [Theia IDE](https://theia-ide
 
 Theia aims to be a fully VSCode-compatible IDE, provides an experience highly familiar to VSCode developers, and today seamlessly runs many VSCode extensions, which can be preinstalled or installed on demand via the Extensions tab.
 
-To use `git` functionality of the Theia IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the Theia IDE UI or terminal, you will first need to have provisioned your devtainer with the required SSH keys.
-
-### SSH
-
-When a devtainer is launched, if `ssh-agent` can be found in the launched image, then Dockside will launch `ssh-agent` in the context of the Theia IDE. This will allow IDE functions requiring SSH as well as terminal command-line tools (like `git` and `ssh`) to function as expected.
-
-On launch of a devtainer, you must load your SSH keys into the running agent, by running `ssh-add <path-to-key>` within a terminal, before any such IDE functions or command-line tools may be used. You only need to do this once after launching, or after stopping and starting, a devtainer.
-
-SSH public and private key files may be dragged-and-dropped into the Theia IDE file explorer. However, to automatically provision key files into newly-launched devtainers, you may configure the relevant profile to mount a docker volume (or bind-mount a host directory) containing your users' encrypted key files. e.g.
-
-```
-   "volume": [
-      // Use this to share encrypted ssh keys in the named volume among team members.
-      { "src": "myprofile-ssh-keys", "dst": "/home/newsnow/.ssh" }
-   ]
-```
-
-(For an example of how this may be done, please see the [`dockside.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/dockside.json) profile.)
-
-> N.B.
-> 
-> 1. Although this approach means that users of a profile will have access to each others public and private key files, it will not confer access to a user's key _as long as_ the private key file is encrypted.
-> 2. It is __not recommended__ to share unencrypted SSH keys files between users in this fashion.
-> 3. If you share access to a devtainer IDE, you share access to any unencrypted keys/key files within the container. We recommend __only using encrypted key files__, running `ssh-add` to decrypt them as needed, and running `ssh-add -D` to delete stored unencrypted identities, or `ssh-add -x` to lock the agent, before sharing the IDE with untrusted users.
+To use `git` functionality of the Theia IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the Theia IDE UI or terminal, you will first need to have provisioned your devtainer with the required SSH keys. See [SSH: Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support).
 
 ### Root access within Devtainers
 
