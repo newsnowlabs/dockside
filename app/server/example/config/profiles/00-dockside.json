@@ -60,6 +60,9 @@
       ],
 
       "volume": [
+         // Use this to mount encrypted ssh keys from within a per-user volume.
+         // N.B. Don't overwrite /home/{ideUser}/.ssh if integrated SSH server support is enabled!
+         { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh/keys" }
       ]
    },
 
