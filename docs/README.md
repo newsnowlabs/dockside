@@ -20,6 +20,7 @@ Core features:
 - Instantly launch and clone an almost infinite multiplicity of disposable devtainers - one for each task, bug, feature or design iteration.
 - Powerful VS Code-compatible IDE.
 - HTTPS automatically provisioned for every devtainer.
+- SSH server and access automatically provisioned for every devtainer.
 - User authentication and access control to running devtainers and their web services.
 - Fine-grained user and role-based access control to devtainer functionality and underlying system resources.
 - Launch devtainers from stock Docker images, or from your own.
@@ -31,6 +32,7 @@ Benefits for developers:
 - Switch between and hand over tasks instantly. No more laborious branch switching, or committing code before it’s ready. ‘git stash’ will be a thing of the past.
 - Work from anywhere. All you need is a browser.
 - Unifying on an IDE within a team can deliver great productivity benefits for collaborative teams through improved knowledge-share, better choices and configuration of plugins and other tooling.
+- SSH access facilitates use of any terminal editor or command line tool and seamless [VS Code remote development](https://code.visualstudio.com/docs/remote/ssh) via the [Remote SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) extension.
 - Develop against production databases (or production database clones) when necessary.
 
 Benefits for code reviewers:
@@ -97,6 +99,7 @@ Choose from the following options:
 mkdir -p ~/.dockside && \
 docker run -it --name dockside \
   -v ~/.dockside:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
   --security-opt=apparmor=unconfined \
@@ -116,6 +119,7 @@ docker run -it --name dockside \
 mkdir -p ~/.dockside && \
 docker run -it --name dockside \
   -v ~/.dockside:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
   --security-opt=apparmor=unconfined \
@@ -133,6 +137,7 @@ docker run -it --name dockside \
 mkdir -p ~/.dockside && \
 docker run -d --name dockside \
   -v ~/.dockside:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v <certsdir>:/data/certs \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
@@ -160,6 +165,7 @@ These records are needed to tell the public DNS infrastructure that DNS requests
 mkdir -p ~/.dockside && \
 docker run -d --name dockside \
   -v ~/.dockside:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 -p 53:53/udp \
   --security-opt=apparmor=unconfined \
@@ -206,6 +212,8 @@ See [Securing profiles and devtainers](securing.md)
 - [Docker-in-Dockside devtainers](extensions/runtimes/sysbox.md#sysbox-docker-in-dockside-devtainers) -- support for running devtainers using the sysbox runtime
 - [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox runtime
 - [Backups](extensions/backups.md) -- strategies for backing up devtainers
+- [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows one-click SSH into any devtainer and auto-generated provision of `~/.ssh/authorized_keys` files
+- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality of the Theia IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the Theia IDE UI or terminal
 
 ## Case-study: Dockside in production at NewsNow
 

@@ -22,11 +22,11 @@
     },
     "ide": {
         "path": "/opt/dockside",
-        "command": [
+        "env": {
+            "IDE_USER": "{ideUser}"
+         },
+         "command": [
             "/opt/dockside/launch.sh",
-            "IDE_USER='{ideUser}'",
-            "GIT_COMMITTER_NAME='{user.name}'",
-            "GIT_COMMITTER_EMAIL='{user.email}'",
             "launch_ide"
         ]
     },
@@ -40,6 +40,9 @@
             "apparmor": "unspecified",
             "seccomp": "unspecified"
         }
+    },
+    "ssh": {
+      "default": true
     },
     "lxcfs": {
         "mountpoints": [

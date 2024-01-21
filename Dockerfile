@@ -4,7 +4,7 @@ ARG ALPINE_VERSION=3.14
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} as theia-build
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash
+    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
@@ -21,18 +21,29 @@ ARG TARGETPLATFORM
 #
 ENV BASH_ENV=/tmp/theia-bash-env
 
+# Some but not all needed wstunnel binaries are published on https://github.com/erebe/wstunnel.
+# Others we have had to compile from source. To ensure build reliability/reproducibility, we here
+# obtain wstunnel binaries from the Dockside Google Cloud Storage bucket. wstunnel is published
+# under https://github.com/erebe/wstunnel/blob/master/LICENSE.
 RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
       THEIA_VERSION=1.40.0; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
       THEIA_VERSION=1.40.0; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
       THEIA_VERSION=1.35.0; \
+      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7"; \
     else \
-      THEIA_VERSION=1.40.0; \
+      echo "Build error: Unsupported architecture '$TARGETPLATFORM'" >&2; \
+      exit 1; \
     fi; \
-    echo "export THEIA_VERSION=$THEIA_VERSION" >$BASH_ENV; \
+    echo "export WSTUNNEL_BINARY=$WSTUNNEL_BINARY" >$BASH_ENV; \
+    echo "export THEIA_VERSION=$THEIA_VERSION" >>$BASH_ENV; \
     echo "export THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION" >>$BASH_ENV; \
     echo 'echo THEIA_VERSION=$THEIA_VERSION THEIA_PATH=$THEIA_PATH' >>$BASH_ENV; \
+    echo 'echo WSTUNNEL_BINARY=$WSTUNNEL_BINARY' >>$BASH_ENV; \
+    echo 'echo TARGETPLATFORM=$TARGETPLATFORM' >>$BASH_ENV; \
     echo '[ -d $THEIA_PATH/theia ] && cd $THEIA_PATH/theia || true' >>$BASH_ENV; \
     echo -e '#!/bin/bash\n\nexec "$@"\n' >/tmp/theia-exec && chmod 755 /tmp/theia-exec; \
     . $BASH_ENV
@@ -49,7 +60,10 @@ RUN mkdir -p $THEIA_PATH && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin $THEIA_PATH/
 
 # Build Theia
-RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && NODE_OPTIONS="--max_old_space_size=4096" && yarn config set network-timeout 600000 -g && yarn
+RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && \
+    PUPPETEER_SKIP_DOWNLOAD=1 && \
+    NODE_OPTIONS="--max_old_space_size=4096" && \
+    yarn config set network-timeout 600000 -g && yarn
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
@@ -73,7 +87,7 @@ RUN yarn autoclean --init && \
 
 FROM theia-clean as theia-findelfs
 
-ENV BINARIES="node busybox s6-svscan curl"
+ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq"
 
 RUN /tmp/build/ide/theia/elf-patcher.sh --findelfs
 
@@ -92,7 +106,8 @@ RUN /tmp/build/ide/theia/elf-patcher.sh --patchelfs && \
     cd $THEIA_PATH/bin && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
-    ln -sf busybox pgrep
+    ln -sf busybox pgrep && \
+    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel
 
 # Default diagnostics entrypoint for this stage (uses patched node)
 ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
@@ -286,6 +301,10 @@ RUN cp -a ~/$APP/build/development/dot-theia .theia && \
 #
 VOLUME $OPT_PATH
 
+# Create a separate volume for host-specific data to be shared
+# read-only with devtainers
+VOLUME $OPT_PATH/host
+
 ################################################################################
 # INITIALISE /opt/dockside/bin
 #
@@ -296,7 +315,7 @@ VOLUME $OPT_PATH
 #
 USER root
 RUN . /tmp/theia-bash-env && \
-    mkdir -p $OPT_PATH/bin && \
+    mkdir -p $OPT_PATH/bin $OPT_PATH/host && \
     cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
     ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
     cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/ && \

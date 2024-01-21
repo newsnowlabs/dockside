@@ -6,7 +6,7 @@
 
 log() {
   local PID="$$"
-  local S=$(printf "%s|%15s|%5d|" "$(date +%Y-%m-%d.%H:%M:%S)" "child-ide" "$PID")
+  local S=$(printf "%s|%15s|%5d|" "$(date +%Y-%m-%d.%H:%M:%S)" "theia" "$PID")
   echo "$S$1" >&2
 }
 
@@ -15,7 +15,7 @@ which() {
   for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && break; done
 }
 
-LOG=/tmp/theia.log
+LOG=/tmp/dockside/theia.log
 
 log "Creating logfile '$LOG' ..."
 touch $LOG && chmod 666 $LOG
@@ -28,9 +28,9 @@ eval "$@"
 
 log "Launching IDE from IDE_PATH='$IDE_PATH' ..."
 
-log "Backing up and overriding PATH ..."
+log "Backing up and overriding PATH=$PATH ..."
 export _PATH="$PATH"
-export PATH="$IDE_PATH/theia/bin:$PATH"
+export PATH="$IDE_PATH/bin:$PATH"
 
 # Run ssh-agent if available, but not already running.
 log "Checking for ssh-agent ..."

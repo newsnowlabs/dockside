@@ -41,4 +41,9 @@ const controlContainer = (id, cmd) => {
    return axios.get(url).then(response => response.data);
 };
 
-export { getContainers, putContainer, controlContainer, createReservationUri, getReservationLogsUri };
+const getAuthCookies = () => {
+   const url = `/getAuthCookies`;
+   return axios.get(url).then(response => response.data);
+};
+
+export { getContainers, putContainer, controlContainer, createReservationUri, getReservationLogsUri, getAuthCookies };

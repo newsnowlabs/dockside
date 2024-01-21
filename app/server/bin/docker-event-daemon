@@ -20,7 +20,7 @@ use IPC::Open2;
 use Time::HiRes qw(time);
 use URI::Escape;
 
-use Util qw(cacheReadWrite flog call_socket_api run_system);
+use Util qw(cacheReadWrite flog call_socket_api run_system unique);
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
@@ -58,13 +58,15 @@ sub _update {
       $oldContainers = {};
    };
 
-   my $idePath = $CONFIG->{'ide'}{'path'} || '/opt/dockside';
+   my $idePath = $CONFIG->{'ide'}{'path'};
+   my $hostDataPath = $CONFIG->{'ssh'}{'path'};
 
    my $newContainers;
    foreach my $c (@$newContainersFromAPI) {
 
       my $ID = substr($c->{'Id'}, 0, 12);
       my ($ideVolume) = map { $_->{'Type'} eq 'volume' ? ['volume', $_->{'Name'}] : ['bind', $_->{'Source'}] } grep { $_->{'Destination'} eq $idePath } @{$c->{'Mounts'}};
+      my ($hostDataVolume) = map { $_->{'Type'} eq 'volume' ? ['volume', $_->{'Name'}] : ['bind', $_->{'Source'}] } grep { $_->{'Destination'} eq $hostDataPath } @{$c->{'Mounts'}};
 
       $newContainers->{$ID}{'docker'} = {
          'ID' => $ID, # Short ID (for now)
@@ -84,7 +86,8 @@ sub _update {
       $newContainers->{$ID}{'inspect'} = { 
          'Networks' => $c->{'NetworkSettings'}{'Networks'},
          'Ports' => $ports,
-         'ideVolume' => $ideVolume
+         'ideVolume' => $ideVolume,
+         'hostDataVolume' => $hostDataVolume
       };
 
       # Copy the container Size from the oldContainer record if we haven't requested the Size on this run.
@@ -188,6 +191,7 @@ sub eventHandler {
                }
                catch {
                   flog("eventHandler: failed to parse event JSON '$eventJSON'");
+                  next;
                };
 
                flog(sprintf("eventHandler($events): Received event: Type=%s, Action=%s, Actor=%s", $event->{'Type'}, $event->{'Action'}, $event->{'Actor'}{'ID'}));
@@ -212,35 +216,27 @@ sub eventHandler {
                   Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
 
                   my $reservations = Reservation->load({ 'containerId' => $event->{'Actor'}{'ID'} });
-                  if( @$reservations) {
-                     my $reservation = $reservations->[0];
-                     my $reservationId = $reservation->id;
-                     my $containerId = $reservation->containerId;
-
-                     flog("eventHandler: we manage reservationId=$reservationId with containerId=$containerId");
-
-                     try {
-                        if(my @Command = $reservation->ide_command()) {
-                           # TODO: Configure Profiles to support launching IDE as non-root user
-                           flog("eventHandler: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
-                              join(' ', @Command)
-                           );
-                           run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root', $event->{'Actor'}{'ID'}, @Command);
-                        }
-                        else {
-                           flog("eventHandler: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");
-                        }
-                     }
-                     catch {
-                        my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
-                        flog("eventHandler: failed to launch IDE: dbg='$dbg'; msg='$msg'");
-                     };
-                  }
-                  else {
+                  if(!@$reservations) {
                      flog("eventHandler: we don't manage containerId=$event->{'Actor'}{'ID'}");
+                     next;
                   }
-               }
 
+                  my $reservation = $reservations->[0];
+                  my $reservationId = $reservation->id;
+                  my $containerId = $reservation->containerId;
+
+                  flog("eventHandler: we manage reservationId=$reservationId with containerId=$containerId");
+
+                  try {
+                     $reservation->exec();
+                  }
+                  catch {
+                     my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
+                     flog("eventHandler: failed to launch IDE for reservationId=$reservationId with containerId=$containerId: dbg='$dbg'; msg='$msg'");
+                  };
+               }
+            }
+            continue {
                $events++;
                $lastEventTime = time;
 
@@ -251,7 +247,6 @@ sub eventHandler {
 
             flog("eventHandler: Finished reading.");
          }
-
       }
    }
    catch {

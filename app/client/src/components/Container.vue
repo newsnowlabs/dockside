@@ -88,7 +88,8 @@
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
                               <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
-                              <b-button v-if="router.type != 'passthru' && container.status >= 0" size="sm" variant="outline-secondary" v-on:click="copy(makeUri(router))">Copy</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status >= 0" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
+                              <b-button v-if="router.type === 'ssh' && container.status >= 0" size="sm" variant="outline-secondary" type="button" v-b-modal="'sshinfo-modal'" v-b-tooltip title="Configure SSH for Dockside">Setup</b-button>
                               ({{ container.meta.access[router.name] }} access)
                            </td>
                            <td v-else>
@@ -319,7 +320,31 @@
             copyToClipboard(value);
          },
          makeUri(router) {
-            return [router.https ? 'https' : 'http', '://', (router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('');
+            const protocol = router.https ? 'https' : 'http';
+            const prefix = router.prefixes[0] ? router.prefixes[0] : 'www';
+            const containerName = this.container.name;
+            const host = window.dockside.host;
+            
+            if (router.type !== 'ssh') {
+               return `${protocol}://${prefix}-${containerName}${host}`;
+            } else {
+               const unixuser = this.container.data.unixuser;
+               const hostname = host.split(':')[0];
+               return `ssh://${unixuser}@${prefix}-${containerName}${hostname}`;
+            }
+         },
+         copyUri(router) {
+            if (router.type !== 'ssh') {
+               return copyToClipboard(this.makeUri(router));
+            }
+
+            const prefix = router.prefixes[0] ? router.prefixes[0] : 'www';
+            const containerName = this.container.name;
+            const host = window.dockside.host;
+            const unixuser = this.container.data.unixuser;
+            const hostname = host.split(':')[0];
+
+            return copyToClipboard(`ssh ${unixuser}@${prefix}-${containerName}${hostname}`);
          },
          makeUriTarget(router) {
             return [(router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('');

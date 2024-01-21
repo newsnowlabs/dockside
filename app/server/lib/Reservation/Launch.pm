@@ -167,17 +167,7 @@ sub cmdline_mounts_lxcfs {
    my $self = shift;
 
    # Disabled unless lxcfs.mountpoints[] specified in config.json.
-   return () unless $CONFIG->{'lxcfs'} && ref($CONFIG->{'lxcfs'}{'mountpoints'}) eq 'ARRAY'
-      && $CONFIG->{'lxcfs'}{'available'} == 1;
-
-   # If lxcfs.default === true in config.json, disable if profile lxcfs === false
-   if( $CONFIG->{'lxcfs'}{'default'} == 1 ) {
-      return () if exists($self->profileObject->{'lxcfs'}) && $self->profileObject->{'lxcfs'} == 0;
-   }
-   # If lxcfs.default === false in config.json, disable unless profile lxcfs === true
-   elsif( $CONFIG->{'lxcfs'}{'default'} == 0 ) {
-      return () unless exists($self->profileObject->{'lxcfs'}) && $self->profileObject->{'lxcfs'} == 1;
-   }
+   return () unless $self->profileObject->has_lxcfs_enabled;
 
    my $mountpoint = $CONFIG->{'lxcfs'}{'mountpoint'} // '/var/lib/lxcfs';
 
@@ -223,43 +213,52 @@ sub cmdline_name {
    return ('--name', $self->name);
 }
 
+sub cmdline_hostname {
+   my $self = shift;
+   
+   return ('--hostname', $self->name);
+}
+
 sub cmdline_ide_mount {
    my $self = shift;
 
-   unless( $self->profileObject->should_mount_ide ) {
-      return ();
-   }
+   die Exception->new( 'msg' => "Failed to locate IDE and/or host data volumes because expected Dockside container hostname is undefined" )
+      unless $HOSTNAME || $INNER_DOCKERD;
 
-   my $idePath = $CONFIG->{'ide'}{'path'} || '/opt/dockside';
+   my $idePath = $CONFIG->{'ide'}{'path'};
+   my $hostDataPath = $CONFIG->{'ssh'}{'path'};
    my $ide;
+   my $hostData;
 
-   # If $HOSTNAME is undefined, try to bind-mount the ideVolume from the 'host',
-   # assuming the ide.path provided in config.json. This is appropriate where Dockside
-   # is launched in a Sysbox container or other container in which the host docker.sock is not bind-mounted
-   # and /opt/dockside from within the Dockside container image should be bind-mounted.
-   if($INNER_DOCKERD) {
-      # When launching a devtainer using an inner dockerd instance, whether using Sysbox, Docker-in-Docker, or Podman
-      # the devtainer cannot mount the Dockside volume (as there is no Dockside container, or volume, accessible to the inner dockerd).
-      # Instead, bind-mount $idePath from the Dockside container to the devtainer.
-      $ide = ['bind', $idePath];
+   my @mounts;
+
+   # When launching a devtainer using an inner dockerd instance, whether using Sysbox, Docker-in-Docker, Podman,
+   # RunCVM or some other approach where the docker.sock is not bind-mounted
+   # the devtainer cannot mount the Dockside volume (as there is no Dockside container, or volume, accessible to the inner dockerd).
+   # In this case we bind-mount $idePath from the Dockside container to the devtainer.
+   if( $self->profileObject->should_mount_ide ) {
+      $ide = $INNER_DOCKERD ? ['bind', $idePath] : 
+         $HOSTNAME ? Containers->containers->{$HOSTNAME}{'inspect'}{'ideVolume'} : undef;
+
+      die Exception->new( 'msg' => "Failed to locate IDE volume for host '$HOSTNAME'" ) unless $ide;
+
+      push(@mounts, "--mount=type=$$ide[0],src=$$ide[1],dst=$idePath,ro");
+      flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered ide mount type '$$ide[0]' src/named '$$ide[1]'");
    }
-   else {
-      # When launching a devtainer within the same dockerd instance as is running Dockside, identify the Docker volume, or bind-mount path, to mount in the devtainer.
-      if($HOSTNAME) {
-         $ide = Containers->containers->{$HOSTNAME}{'inspect'}{'ideVolume'};
+
+   if( $self->profileObject->ssh ) {
+      $hostData = $INNER_DOCKERD ? ['bind', $hostDataPath] :
+         $HOSTNAME ? Containers->containers->{$HOSTNAME}{'inspect'}{'hostDataVolume'} : undef;
+
+      # FIXME: Should this throw error?
+
+      if($hostData) {
+         push(@mounts, "--mount=type=$$hostData[0],src=$$hostData[1],dst=$hostDataPath,ro");
+         flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered host data mount type '$$hostData[0]' src/named '$$hostData[1]'");
       }
-      else {
-         die Exception->new( 'msg' => "Failed to locate IDE volume because expected Dockside container hostname is undefined" );
-      }
    }
 
-   if(!$ide) {
-      die Exception->new( 'msg' => "Failed to locate IDE volume for hostname '$HOSTNAME'" );
-   }
-
-   flog("Reservation::createContainerReservation: for hostname '$HOSTNAME', discovered ide mount type '$$ide[0]' src/named '$$ide[1]'");
-
-   return ("--mount=type=$$ide[0],src=$$ide[1],dst=$idePath,ro");
+   return @mounts;
 }
 
 sub cmdline_init {
@@ -311,6 +310,7 @@ sub cmdline {
       $self->cmdline_ide_mount(),
       $self->cmdline_init(),
       $self->cmdline_name(),
+      $self->cmdline_hostname(),
       $self->cmdline_entrypoint(),
       $self->cmdline_image(),
       $self->cmdline_command()
@@ -323,6 +323,15 @@ sub ide_command {
    my @command = @{$self->{'ide'}{'command'} // []};
 
    return map { $self->_placeholders($_) } @command;
+}
+
+
+sub ide_command_env {
+   my $self = shift;
+
+   my $env = $self->{'ide'}{'env'} // {};
+
+   return map { "--env=$_=" . $self->_placeholders($env->{$_}) } keys %$env;
 }
 
 sub unixuser {

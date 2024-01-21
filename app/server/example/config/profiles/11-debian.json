@@ -18,15 +18,15 @@
    ],
    "unixusers": ["dockside"],
    "mounts": {
-      "tmpfs": [],
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
       "bind": [],
-      "volume": [
-         // Use this to mount encrypted ssh keys from within a per-user volume.
-          { "src": "dockside-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
+      "volume": []
    },
    "lxcfs": true,
    "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "command": [
-      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity"
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo curl); sleep infinity"
    ],
 }

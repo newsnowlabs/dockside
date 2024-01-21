@@ -16,15 +16,15 @@
    "images": [ "newsnowlabs/dockside-debian-desktop:latest" ],
    "unixusers": ["dockside"],
    "mounts": {
-      "tmpfs": [],
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
       "bind": [],
-      "volume": [
-         // Use this to share encrypted ssh keys in the named volume among team members.
-          { "src": "dockside-ssh-keys-{user.username}", "dst": "/home/{ideUser}/.ssh" } ]
+      "volume": []
    },
    "lxcfs": true,
    "dockerArgs": [],
    "command": [
-      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); /usr/local/bin/websockify --daemon --web /opt/noVNC-1.3.0/ 0.0.0.0:8080 localhost:5901; vncserver -xstartup /usr/bin/openbox-session -desktop '{container.hostname}' :1; sleep infinity"
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo curl); /usr/local/bin/websockify --daemon --web /opt/noVNC-1.3.0/ 0.0.0.0:8080 localhost:5901; vncserver -xstartup /usr/bin/openbox-session -desktop '{container.hostname}' :1; sleep infinity"
    ],
 }

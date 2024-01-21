@@ -130,7 +130,7 @@ sub new {
       return undef unless $data->{'username'};
 
       $self = bless { 
-         %$data{ qw(username id name email role) },
+         %$data{ qw(username id name email role ssh) },
          '_permissions' => $data->{'permissions'} // {},
          '_resources' => $data->{'resources'} // {},
       }, ( ref($class) || $class );
@@ -199,6 +199,12 @@ sub details {
    return { %$self{'username', 'id', 'name', 'email'} };
 }
 
+sub details_full {
+   my $self = shift;
+
+   return { %$self{'username', 'id', 'name', 'email', 'ssh'} };
+}
+
 sub password {
    my $self = shift;
 
@@ -209,6 +215,12 @@ sub passwordDefined {
    my $self = shift;
 
    return defined($USER_PASSWD->{$self->username});
+}
+
+sub authorized_keys {
+   my $self = shift;
+
+   return $self->{'ssh'}{'authorized_keys'} // [];
 }
 
 ################################################################################
@@ -804,6 +816,8 @@ sub updateContainerReservation {
       die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
    }
 
+   my $origReservation = Storable::dclone($reservation);
+
    # FIXME: We don't want to update data.network, when we change network; or do we?
    # FIXME: Should calling $reservation->data('network', <network>) call update_network?
    foreach my $m (qw(access viewers developers private network description)) {
@@ -820,6 +834,12 @@ sub updateContainerReservation {
 
    # and then acted upon.
    $reservation->update_network();
+
+   # Only update devtainer authorized_keys if relevant reservation fields change.
+   if( $origReservation->meta('developers') ne $reservation->meta('developers') ||
+      $origReservation->meta('access')->{'ssh'} ne $reservation->meta('access')->{'ssh'} ) {
+      $reservation->exec('update_ssh_authorized_keys');
+   }
 
    # Create a sanitised clone of the reservation object, before returning.
    return $self->createClientReservation($reservation);

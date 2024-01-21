@@ -15,7 +15,9 @@
    "images": [ "nginx:latest" ],
    "unixusers": ["dockside"],
    "mounts": {
-      "tmpfs": []
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ]
    },
    "security": {
       "apparmor": "unconfined"

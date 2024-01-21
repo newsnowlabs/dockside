@@ -76,6 +76,10 @@ my $CONFIG_FILES = {
          # Assign defaults
          $CONFIG->{'docker'}{'socket'} //= '/var/run/docker.sock';
          $CONFIG->{'docker'}{'sizes'} //= 0;
+         $CONFIG->{'ide'}{'path'} //= '/opt/dockside';
+         $CONFIG->{'ssh'}{'path'} //= "$CONFIG->{'ide'}{'path'}/host";
+         $CONFIG->{'ssh'}{'port'} //= 2222;
+         $CONFIG->{'ssh'}{'default'} //= 1;
       },
       'parse' => \&parse_json
    },
@@ -154,7 +158,8 @@ sub load {
    my @configFiles = @_; # Optional: list of config files to check for changes and load.
 
    if(!@configFiles) {
-      @configFiles = sort keys %$CONFIG_FILES;
+      # Ensure we load config.json first; other modules might depend upon it.
+      @configFiles = ('config.json', grep { $_ ne 'config.json' } sort keys %$CONFIG_FILES);
    }
 
    # FIXME: Throttle checking config files to 1/5s

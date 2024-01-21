@@ -58,7 +58,7 @@ The currently-supported root properties within a profile are:
 | active | must be set to `true` or the profile will be ignored | mandatory | `false` | `true` |
 | [routers](#profile-routers) | [array] preconfigured services | optional | `[]` | `[{"name": "dockside", "prefixes": [ "www" ], "domains": [ "*" ], "auth": [ "developer", "owner", "viewer", "user", "public" ], "https": { "protocol": "https", "port": 443 } }]`
 | networks | allowed docker networks | mandatory | N/A | `["bridge"]`
-| runtimes | allowed docker runtimes | optional | `["runc"]` | `["runc", "sysbox-runc"]`
+| runtimes | allowed docker runtimes | optional | `["runc"]` | `["runc", "sysbox-runc", "runcvm"]`
 | images | allowed docker images (a wildcard may be used to allow the user to specify an arbitrary element of the image string) | mandatory | N/A | `["alpine:latest","i386/alpine:latest"]` |
 | unixusers | array of the unix user account for which to run the IDE | optional | `["dockside"]` | `["john","jim"]`
 | mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{"tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}]}`
@@ -69,6 +69,7 @@ The currently-supported root properties within a profile are:
 | command | [array] command to run on devtainer launch | mandatory if image does not specify a long-running entrypoint or command | `[]` | `["/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"]`
 | entrypoint | command with which to override image entrypoint | optional | `[]` | `["/my-entrypoint.sh"]` |
 | mountIDE | disable mounting the Dockside IDE volume (strictly for use with images, such as the Dockside image, that embed their own IDE volume) | optional | `false` | `true` |
+| ssh | whether to enable ssh access | optional | as specified in `config.json` | `true` |
 
 ### Profile routers
 
@@ -83,7 +84,7 @@ A profile may specify zero or more routers. Each router consists of:
 
 ### Router auth/access levels
 
-The available router auth/access levels are, from most to least restrictive, are:
+The available router auth/access levels, from most to least restrictive, are:
 
 - Devtainer owner only (`owner`): router may be accessed only by the devtainer owner (the user who launched the devtainer)
 - Devtainer developers only (`developer`): router may be accessed only by users named as developers of the devtainer
@@ -111,6 +112,8 @@ A user record specifies:
     - `images`: Docker images the user is permitted to launch, subject also to the profile (object or array)
     - `runtimes`: Docker runtimes the user is permitted to use using, subject also to the profile (object or array)
     - `auth`: the auth/access levels the user is permitted to specify for a devtainer's router, subject also to the devtainer's profile (object or array)
+- `ssh`:
+    - `authorized_keys`: an array of standard ssh authorized keys strings that will be automatically written to devtainers' `~/.ssh/authorized_keys` files for devtainers owned by, or shared with, the user (as 'developer')
 
 You should add one record to `users.json`, and one record to [`passwd`](#passwords), for each registered user in your team.
 
@@ -193,3 +196,5 @@ The `config.json` file contains global config for the Dockside instance. Not all
 - `globalCookie`: for an extra layer of security for the security-conscious, you may specify a name, domain and secret value for a global cookie which must be present before any part of Dockside, including the UI will respond to a web request; use this if you are uncomfortable with either the Dockside UI login screen, or devtainer services that may be set to 'public' to be exposed publicly
 - `lxcfs`:  is a fuse filesystem that allows processes running with docker containers to measure their own cpu, memory, and disk usage; refer to [LXCFS](extensions/lxcfs.md) for details of the LXCFS extension
 - `docker.security`: the default `apparmor` and `seccomp` security profiles (may be overriden within Dockside profiles)
+- `ssh`:
+    - `default`: a boolean indicating whether devtainers launched from profiles that do not contain an `ssh` property should have ssh access enabled (default true)
