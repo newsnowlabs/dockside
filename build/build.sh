@@ -149,3 +149,5 @@ case "$BUILDER" in
     ;;
 
 esac
+
+exit 0
