@@ -19,9 +19,14 @@
        "*~": true,
        "*.bak": true,
        "*.tdy": true,
-       "*.vsix": true
+       "*.vsix": true,
+       ".cache/**": true,
+       ".vscode*/**": true,
+       ".npm/**": true,
+       ".git/**": true
    },
    "search.lineNumbers": true,
    "workbench.iconTheme": "theia-file-icons",
-   "workbench.editor.highlightModifiedTabs": true
+   "workbench.editor.highlightModifiedTabs": true,
+   "git-graph.maxDepthOfRepoSearch": 1
 }
