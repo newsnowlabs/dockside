@@ -30,7 +30,7 @@
    ],
 
    "networks": [ "bridge" ],
-   "images": [ "newsnowlabs/dockside:latest" ],
+   "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:test" ],
 
    "unixusers": [ "dockside" ],
 
