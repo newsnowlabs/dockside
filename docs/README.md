@@ -178,7 +178,7 @@ Assuming you have provisioned <my-domain> correctly, Dockside will use LetsEncry
 
 > **Launch using Google Cloud Deployment Manager**
 >
-> An implementation of the above procedure within [Google Deployment Manager](https://console.cloud.google.com/dm/deployments) is available [here](/examples/cloud/google-deployment-manager/). To use it, you must first configure a managed zone within [Google Cloud DNS](https://console.cloud.google.com/net-services/dns/zones).
+> An implementation of the above procedure within [Google Deployment Manager](https://console.cloud.google.com/dm/deployments) is available [here](https://github.com/newsnowlabs/dockside/tree/main/examples/cloud/google-deployment-manager). To use it, you must first configure a managed zone within [Google Cloud DNS](https://console.cloud.google.com/net-services/dns/zones).
 >
 > Then sign into Cloud Shell, and run:
 > ```sh
@@ -213,7 +213,7 @@ See [Securing profiles and devtainers](securing.md)
 - [Docker-in-Dockside devtainers](extensions/runtimes/sysbox.md#sysbox-docker-in-dockside-devtainers) -- support for running devtainers using the sysbox runtime
 - [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox runtime
 - [Backups](extensions/backups.md) -- strategies for backing up devtainers
-- [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows one-click SSH into any devtainer and auto-generated provision of `~/.ssh/authorized_keys` files
+- [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows seamless one-click SSH access to devtainers from the command line and accessing devtainers using VS Code
 - [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality of the Theia IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the Theia IDE UI or terminal
 
 ## Case-study: Dockside in production at NewsNow

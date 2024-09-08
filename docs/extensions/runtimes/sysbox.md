@@ -30,9 +30,9 @@ will attempt to launch its own `dockerd` within the Dockside container.
 Thereafter, when Dockside launches a devtainer using the standard `runc` runtime, it will be launched within the Docker context of the
 'parent' Dockside Sysbox container and will have no relationship or access to the Docker daemon running on the host.
 
-The benefits of this use of Sysbox are different to [Docker-in-Dockside devtainers](#docker-in-dockside-devtainers):
+The benefits of this use of Sysbox are different to Docker-in-Dockside devtainers:
 
-| [Docker-in-Dockside devtainers](#docker-in-dockside-devtainers) | [Self-contained Docker-in-Dockside](#self-contained-docker-in-dockside) |
+| Docker-in-Dockside devtainers | Self-contained Docker-in-Dockside |
 | - | - |
 | Launch Dockside using `runc` | Launch Dockside using `sysbox` |
 | Host's `/var/run/docker.sock` must be bind-mounted | Host's `/var/run/docker.sock` must not be bind-mounted |

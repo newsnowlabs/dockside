@@ -24,7 +24,7 @@ To open a preconfigured devtainer service, click the `Open` button adjoining the
 
 Where SSH has been enabled, you can open an SSH terminal to a devtainer by clicking the `Open` button adjoining the SSH service. SSH support requires setup; see [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support).
 
-> To create and customise a Profile before launching devtainers, see [Profiles](../setup/#profiles).
+> To create and customise a Profile before launching devtainers, see [Profiles](setup.md#profiles).
 
 ## Using the Dockside IDE
 

@@ -9,7 +9,7 @@ Notably, the default `dockside.json` profile bind-mounts the host's Docker socke
 > **N.B.**
 >
 > 1. **It is the responsibility of the Dockside admin to configure the available profiles, and the profiles that individual users are allowed to launch, such that users are not given unwanted access to host resources.**
-> 2. **The _Dockside Sysbox_ profile does not require the host's Docker socket be bind-mounted, but does require [Sysbox](https://github.com/nestybox/sysbox) be pre-installed on the host. Through Sysbox, users can be securely provided with access to [Docker-in-Dockside](#docker-in-dockside) devtainers.**
+> 2. **The _Dockside Sysbox_ profile does not require the host's Docker socket be bind-mounted, but does require [Sysbox](https://github.com/nestybox/sysbox) be pre-installed on the host. Through Sysbox, users can be securely provided with access to Docker-in-Dockside devtainers. Read more about [Dockside and Sysbox](extensions/runtimes/sysbox.md)**
 
 ### Securing devtainer services from other devtainers
 

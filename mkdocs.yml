@@ -87,6 +87,7 @@ nav:
     - Multiarch: extensions/multiarch.md
     - Sysbox: extensions/runtimes/sysbox.md
     - Backups: extensions/backups.md
+    - SSH: extensions/ssh.md
   - Case Studies: case-studies/NewsNow.md
   - Roadmap: roadmap.md
   - Developing:

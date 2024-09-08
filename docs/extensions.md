@@ -7,5 +7,6 @@ A variety of extensions are available to facilitate advanced usage:
 - [Sysbox runtime](extensions/runtimes/sysbox.md) extensions
     - for running devtainers using the Sysbox runtime
     - for running Dockside using the Sysbox runtime
+- [Integrated SSH server support](extensions/ssh.md) -- allows seamless SSH access to devtainers from the command line and accessing devtainers using VS Code
 - Firewall or redirect outgoing devtainer traffic using custom Docker networks.
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications
