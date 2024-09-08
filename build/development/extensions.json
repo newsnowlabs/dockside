@@ -15,6 +15,7 @@
       "vscode.scss",
       "vscode.shellscript",
       "wayou.vscode-todo-highlight",
-      "octref.vetur"
+      "octref.vetur",
+      "mhutchie.git-graph"
    ]
 }

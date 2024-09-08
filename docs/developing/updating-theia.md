@@ -44,7 +44,7 @@ The process for reimplementing Theia patches involves launching Theia, developin
       ```sh
       apk add git; yarn patch-package <package>
       ```
-4. Finally, the `yarn.lock` file you need is the one present in the `my-theia-build` container home directory. You can copy it to the `ide/theia/<version>/build` directory of your repo, assuming you are already in that directory, using:
+4. Finally, the `yarn.lock` file you need is the one present in the `my-theia-build` container home directory. You should copy it to the `ide/theia/<version>/build` directory of your repo, assuming you are already in that directory, using e.g.:
    ```sh
    docker cp my-theia-build:/opt/dockside/ide/theia/theia-1.35.0/theia/yarn.lock ~/dockside/ide/theia/1.35.0/build/
    ```
@@ -57,13 +57,12 @@ In order to test that the Dockside Theia patches exhibit the desired functionali
 
 Perform the following steps within the IDE of a devtainer launched from a test Dockside image using the `Dockside (IDE from image)` profile:
 
-1. Install the Git Graph extension
+1. [If not preinstalled] Install the Git Graph extension
    - View > Extensions
    - Search for 'Git Graph'
    - Click 'Install'
-2. Run command `Git Graph: Add Git Repository`, select the `dockside` folder and click `Open`.
-3. Run command `Git Graph: View Git Graph (git log)`.
-4. Confirm that the Git Graph git log display opens up.
+2. Click `Git Graph` in the IDE status bar (or run command `Git Graph: View Git Graph (git log)`).
+3. Confirm that the Git Graph git log display opens up.
 
 ### Testing patch to modify browser title to incorporate devtainer name
 
