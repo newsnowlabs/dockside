@@ -1,0 +1,30 @@
+diff --git a/node_modules/@theia/core/lib/browser/core-preferences.js b/node_modules/@theia/core/lib/browser/core-preferences.js
+index 23b07eb..526d133 100644
+--- a/node_modules/@theia/core/lib/browser/core-preferences.js
++++ b/node_modules/@theia/core/lib/browser/core-preferences.js
+@@ -95,7 +95,7 @@ exports.corePreferenceSchema = {
+         'window.title': {
+             type: 'string',
+             default: os_1.isOSX
+-                ? '${activeEditorShort}${separator}${rootName}'
++                ? '${activeEditorShort}${separator}${rootName}${separator}${appName}'
+                 : '${dirty} ${activeEditorShort}${separator}${rootName}${separator}${appName}',
+             scope: 'application',
+             markdownDescription: windowTitleDescription
+diff --git a/node_modules/@theia/core/lib/browser/window/window-title-service.js b/node_modules/@theia/core/lib/browser/window/window-title-service.js
+index 11cc54c..49dbb8d 100644
+--- a/node_modules/@theia/core/lib/browser/window/window-title-service.js
++++ b/node_modules/@theia/core/lib/browser/window/window-title-service.js
+@@ -44,7 +44,11 @@ exports.InitialWindowTitleParts = {
+     appName: frontend_application_config_provider_1.FrontendApplicationConfigProvider.get().applicationName,
+     remoteName: undefined,
+     dirty: undefined,
+-    developmentHost: undefined
++    // Obtain this value from the in-memory frontend config
++    // (technically, package.json's theia.frontend.config.devtainerName, which is set
++    // not in our package.json file, but dynamically during app load by our patched
++    // frontend-generator.js)
++    developmentHost: frontend_application_config_provider_1.FrontendApplicationConfigProvider.get().devtainerName || '[devtainer]'
+ };
+ let WindowTitleService = class WindowTitleService {
+     constructor() {
