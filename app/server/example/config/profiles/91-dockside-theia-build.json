@@ -1,0 +1,66 @@
+{
+   "version": 2,
+   "name": "Dockside (Theia Dev Build)",
+   "description": "Launch Theia Development Build",
+   "active": true,
+   "routers": [
+      {
+         "name": "theia",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+
+         // This normally implies public port 443
+         "https": { "protocol": "http", "port": 3131 },
+      },
+      {
+         "name": "passthru",
+         "prefixes": ["**"],
+         "domains": ["*"],
+         "type": "passthru",
+
+         // This normally implies public port 443
+         "https": { "protocol": "http", "port": 3131 },
+      },
+   ],
+
+   "networks": [ "bridge" ],
+   "images": [ 
+	   "newsnowlabs/dockside:theia-build"
+   ],
+
+   "unixusers": [ "root" ],
+
+   "imagePathsFilter" : [],
+
+   "mounts": {
+
+      // Use this to identify paths in your containers that will contain ephemeral data that will be lost
+      // when the container is stopped, and which will not be duplicated in a clone operation.
+      "tmpfs": [
+
+         // {ideUser} will be substituted at launch-time with the user that
+         // the IDE will be launched as (as per the "users" option above).
+         { "dst": "/home/newsnow/.vscode", "tmpfs-size": "150M" },
+         { "dst": "/home/newsnow/.ssh", "tmpfs-size": "1M" },
+
+         // These are good for most Linux distributions
+         { "dst": "/var/tmp", "tmpfs-size": "128M" },
+         { "dst": "/run", "tmpfs-size": "64M" }
+      ],
+
+      // Use this to bind-mount shared development resources, or shared application data, from the host
+      // into your containers, and which will not be duplicated in a clone operation.
+      "bind": [ 
+      ],
+
+      "volume": [
+      ]
+   },
+
+   "security": {
+   },
+
+   "dockerArgs": ["--memory=2G", "--pids-limit=4000", "--env=THEIA_WEBVIEW_EXTERNAL_ENDPOINT={{uuid}}-wv-{{hostname}}", "--env=THEIA_MINI_BROWSER_HOST_PATTERN={{uuid}}-mb-{{hostname}}"],
+   "runDockerInit": false,
+}
