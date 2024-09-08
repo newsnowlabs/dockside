@@ -1,7 +1,7 @@
 ARG NODE_VERSION=20
 ARG ALPINE_VERSION=3.16
 
-FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} as theia-build
+FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS theia-build
 
 RUN apk update && \
     apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq
@@ -72,7 +72,7 @@ RUN export \
 WORKDIR $THEIA_PATH/theia
 ENTRYPOINT ["/tmp/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
 
-FROM theia-build as theia-clean
+FROM theia-build AS theia-clean
 
 RUN echo '*.ts' >> .yarnclean && \
     echo '*.ts.map' >> .yarnclean && \
@@ -90,13 +90,13 @@ RUN echo '*.ts' >> .yarnclean && \
 
 # Patch all binaries and dynamic libraries for full portability.
 
-FROM theia-clean as theia-findelfs
+FROM theia-clean AS theia-findelfs
 
 ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq"
 
 RUN /tmp/build/ide/theia/elf-patcher.sh --findelfs
 
-FROM theia-findelfs as theia
+FROM theia-findelfs AS theia
 
 # The version of rg installed by the Theia build on linux/arm/v7
 # depends on libs that are not available on Alpine on this platform.
@@ -121,7 +121,7 @@ ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/roo
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
 #
 
-FROM alpine as vsix-plugins
+FROM alpine AS vsix-plugins
 
 COPY build/development/install-vsix.sh /root/install-vsix.sh
 
@@ -133,7 +133,7 @@ RUN apk update && \
 # BUILD DEVELOPMENT VSIX PLUGINS DEPENDENCIES
 # - libperl-languageserver-perl, libcompiler-lexer-perl, libanyevent-aio-perl
 
-FROM debian:bullseye as vsix-plugins-deps
+FROM debian:bullseye AS vsix-plugins-deps
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -173,7 +173,7 @@ RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
 # MAIN DOCKSIDE BUILD
 #
 
-FROM node:16-bullseye as dockside-1
+FROM node:16-bullseye AS dockside-1
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -267,7 +267,7 @@ COPY --chown=$USER:$USER mkdocs.yml $HOME/$APP/
 WORKDIR $HOME/$APP
 RUN pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/.local/bin/mkdocs build && rm -rf ~/.cache/pip
 
-FROM dockside-1 as dockside
+FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 
 ARG DEBIAN_FRONTEND=noninteractive
