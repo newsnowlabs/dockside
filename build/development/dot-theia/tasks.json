@@ -1,12 +1,71 @@
 {
-	// See https://go.microsoft.com/fwlink/?LinkId=733558
-	// for the documentation about the tasks.json format
-	"version": "2.0.0",
-	"tasks": [
+   // See https://go.microsoft.com/fwlink/?LinkId=733558
+   // for the documentation about the tasks.json format
+   "version": "2.0.0",
+   "inputs": [
       {
-         "label": "npm: start",
+         "type": "pickString",
+         "id": "builder",
+         "description": "Select the builder",
+         "options": ["buildkit", "depot"],
+         "default": "buildkit"
+      },
+      {
+         "type": "pickString",
+         "id": "platforms",
+         "description": "Select the platform(s)",
+         "options": ["linux/amd64", "linux/arm64", "linux/arm/v7", "linux/amd64,linux/arm64", "linux/amd64,linux/arm64,linux/arm/v7"],
+         "default": "linux/amd64"
+      },
+      {
+         "type": "pickString",
+         "id": "push",
+         "description": "Select whether to push",
+         "options": ["", "--push", "--load"],
+         "default": ""
+      }
+   ],
+   "tasks": [
+      {
+         "label": "Build Dockside Vue app (npm: start)",
          "type": "shell",
          "command": ". ~/.nvm/nvm.sh && cd ~/dockside/app/client && npm run start",
+         "group": "build",
+         "problemMatcher": []
+      },
+      {
+         "label": "Build Dockside test image",
+         "type": "shell",
+         "command": "~/dockside/build/build.sh",
+         "args": [
+               "--builder", "${input:builder}",
+               "--platforms", "${input:platforms}",
+               "${input:push}",
+               "--tag", "test"
+         ],
+         "options": {
+            "env": { "PATH": "/home/newsnow/.depot/bin:/usr/local/bin:/usr/bin:/bin" },
+            "cwd": "/home/newsnow/dockside",
+            "shell": { "executable": "/bin/bash" }
+         },
+         "group": "build",
+         "problemMatcher": []
+      },
+      {
+         "label": "Build Dockside Theia image",
+         "type": "shell",
+         "command": "~/dockside/build/build.sh",
+         "args": [
+               "--builder", "${input:builder}",
+               "--platforms", "${input:platforms}",
+               "--stage", "theia-build",
+               "${input:push}"
+         ],
+         "options": {
+            "env": { "PATH": "/home/newsnow/.depot/bin:/usr/local/bin:/usr/bin:/bin" },
+            "cwd": "/home/newsnow/dockside",
+            "shell": { "executable": "/bin/bash" }
+         },
          "group": "build",
          "problemMatcher": []
       }
