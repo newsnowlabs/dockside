@@ -46,7 +46,7 @@ The process for reimplementing Theia patches involves launching Theia, developin
       ```
 4. Finally, the `yarn.lock` file you need is the one present in the `my-theia-build` container home directory. You can copy it to the `ide/theia/<version>/build` directory of your repo, assuming you are already in that directory, using:
    ```sh
-   docker cp my-theia-build:/opt/dockside/theia/theia/yarn.lock .
+   docker cp my-theia-build:/opt/dockside/ide/theia/theia-1.35.0/theia/yarn.lock ~/dockside/ide/theia/1.35.0/build/
    ```
 
 ## Testing for desired functionality of Theia patches
