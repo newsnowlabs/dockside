@@ -1,5 +1,5 @@
-ARG NODE_VERSION=14
-ARG ALPINE_VERSION=3.14
+ARG NODE_VERSION=20
+ARG ALPINE_VERSION=3.16
 
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} as theia-build
 
@@ -26,10 +26,10 @@ ENV BASH_ENV=/tmp/theia-bash-env
 # obtain wstunnel binaries from the Dockside Google Cloud Storage bucket. wstunnel is published
 # under https://github.com/erebe/wstunnel/blob/master/LICENSE.
 RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
-      THEIA_VERSION=1.40.0; \
+      THEIA_VERSION=1.53.2; \
       WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-      THEIA_VERSION=1.40.0; \
+      THEIA_VERSION=1.53.2; \
       WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
       THEIA_VERSION=1.35.0; \
@@ -41,6 +41,7 @@ RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
     echo "export WSTUNNEL_BINARY=$WSTUNNEL_BINARY" >$BASH_ENV; \
     echo "export THEIA_VERSION=$THEIA_VERSION" >>$BASH_ENV; \
     echo "export THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION" >>$BASH_ENV; \
+    echo "export TARGETPLATFORM=$TARGETPLATFORM" >>$BASH_ENV; \
     echo 'echo THEIA_VERSION=$THEIA_VERSION THEIA_PATH=$THEIA_PATH' >>$BASH_ENV; \
     echo 'echo WSTUNNEL_BINARY=$WSTUNNEL_BINARY' >>$BASH_ENV; \
     echo 'echo TARGETPLATFORM=$TARGETPLATFORM' >>$BASH_ENV; \
@@ -60,26 +61,31 @@ RUN mkdir -p $THEIA_PATH && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin $THEIA_PATH/
 
 # Build Theia
-RUN PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && \
-    PUPPETEER_SKIP_DOWNLOAD=1 && \
-    NODE_OPTIONS="--max_old_space_size=4096" && \
+RUN export \
+        PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 \
+        PUPPETEER_SKIP_DOWNLOAD=1 \
+        NODE_OPTIONS="--max_old_space_size=4096" \
+    && \
     yarn config set network-timeout 600000 -g && yarn
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
+WORKDIR $THEIA_PATH/theia
 ENTRYPOINT ["/tmp/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
 
 FROM theia-build as theia-clean
 
-RUN yarn autoclean --init && \
-    echo '*.ts' >> .yarnclean && \
+RUN echo '*.ts' >> .yarnclean && \
     echo '*.ts.map' >> .yarnclean && \
     echo '*.tsx' >> .yarnclean && \
     echo '*.spec.*' >> .yarnclean && \
     echo '*.js.map' >> .yarnclean && \
+    echo '*.tsbuildinfo' >>.yarnclean && \
+    echo '*.md' >>.yarnclean && \
     yarn autoclean --force && \
     yarn cache clean && \
     find lib -name '*.js.map' -delete && \
+    find lib -name '*.js.map.gz' -delete && \
     rm -rf patches && \
     rm -rf node_modules/puppeteer/.local-chromium
 
