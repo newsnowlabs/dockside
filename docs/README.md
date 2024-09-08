@@ -52,6 +52,7 @@ Advanced features:
 - Runtime agnostic: use runC (Docker's default), [sysbox](https://github.com/nestybox/sysbox), [gvisor](https://gvisor.dev/), or others.
 - Apply Docker system resource limits to devtainers, and communicate available system resources to devtainers using [LXCFS](extensions/lxcfs.md).
 - Support for launching [multi-architecture devtainers](extensions/multiarch.md) using [qemu-user-static](https://github.com/multiarch/qemu-user-static).
+- Support for launching KVM VMs on amd64 hardware using [RunCVM](https://github.com/newsnowlabs/runcvm)
 - Firewall or redirect outgoing devtainer traffic using custom Docker networks.
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications.
 
