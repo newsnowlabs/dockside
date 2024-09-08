@@ -22,6 +22,7 @@
        "*.vsix": true,
        ".cache/**": true,
        ".vscode*/**": true,
+       ".theia/**": true,
        ".npm/**": true,
        ".git/**": true
    },
