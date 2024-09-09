@@ -4,7 +4,7 @@
    <b-modal id="sshinfo-modal" size="lg" v-model="showModal" @show="onModalShow" title="How to set up SSH" centered>
       <p>Download a suitable <a href="https://github.com/erebe/wstunnel" target="_blank" v-b-tooltip title="Open wstunnel in new tab"><code>wstunnel</code></a>
       (<a href="https://github.com/erebe/wstunnel/blob/master/LICENSE" target="_blank" v-b-tooltip title="Open in new tab">LICENSE</a>)
-      binary to your local machine, from either the <a href="https://github.com/erebe/wstunnel/releases" target="_blank" v-b-tooltip title="Open wstunnel in new tab"><code>wstunnel</code> releases page</a>
+      binary to your local machine PATH, from either the <a href="https://github.com/erebe/wstunnel/releases" target="_blank" v-b-tooltip title="Open wstunnel in new tab"><code>wstunnel</code> releases page</a>
       or the Dockside public bucket (which comprises copies of officially-released binaries and binaries compiled by Dockside):</p>
       <p>
          <ul>
@@ -24,17 +24,18 @@
       </p>
       <p>Copy and paste the following text into your <code>~/.ssh/config</code> file:</p>
       <pre>{{ text }}</pre>
-      <p>N.B.
+      <b-button variant="outline-success" size="sm" type="button" @click="copy(text)">Copy</b-button>
+      <p style="margin-top: 5px">
          <ul>
-            <li>After you paste, don't forget to edit the text to specify the correct path to your downloaded <code>wstunnel</code> binary.</li>
+            <li>After you paste, edit to specify the correct path to your <code>wstunnel</code> binary (if its not in your PATH).</li>
             <li>On Unix-like systems, be sure to run <code>chmod a+x</code> on your <code>wstunnel</code> binary to make it executable.</li>
             <li>Comment or remove the <code>Hostname</code> line if you prefer a separate <code>known_hosts</code> record for each devtainer;
       doing this also works around a bug in Mac OS Terminal that repeatedly complains about missing <code>known_hosts</code> entries.</li>
             <li>For better results on Mac OS, use <a href="https://iterm2.com/" target="_blank" v-b-tooltip title="Open iterm2 in new tab">iTerm2</a>.</li>
          </ul>
       </p>
-      <b-button variant="outline-success" size="sm" type="button" @click="copy(text)">Copy</b-button>
       <template #modal-footer>
+         <b-button variant="outline-success" size="sm" type="button" @click="copy(text)">Copy</b-button>
          <b-button variant="primary" @click="closeModal">OK</b-button>
       </template>
   </b-modal>
@@ -99,7 +100,7 @@
          },
          text() {
             return `Host ${this.sshWildcardHost}
-   ProxyCommand <path/to>/wstunnel --hostHeader=%n "--customHeaders=Cookie: ${this.cookies}" -L stdio:127.0.0.1:%p wss://${this.sshHost}
+   ProxyCommand wstunnel --hostHeader=%n "--customHeaders=Cookie: ${this.cookies}" -L stdio:127.0.0.1:%p wss://${this.sshHost}
    Hostname ${this.sshHostname}
    ForwardAgent yes`;
          }
