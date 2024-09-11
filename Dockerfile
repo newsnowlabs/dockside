@@ -173,7 +173,7 @@ RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
 # MAIN DOCKSIDE BUILD
 #
 
-FROM node:16-bullseye AS dockside-1
+FROM node:20-bullseye AS dockside-1
 
 ARG DEBIAN_FRONTEND=noninteractive
 
