@@ -1,0 +1,66 @@
+{
+   "version": 2,
+   "name": "Dockside (on RunCVM runtime)",
+   "description": "Dockside devtainer with built-in IDE (RunCVM runtime)",
+   "active": true,
+   "mountIDE": false,
+   "routers": [
+      {
+         "name": "dockside",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+
+         // This normally implies public port 443
+         "https": { "protocol": "https", "port": 443 },
+      },
+      {
+         "name": "passthru",
+         "prefixes": ["**"],
+         "domains": ["*"],
+         "type": "passthru",
+
+         // This normally implies public port 80.
+         // protocol will default to the public protocol if unspecified.
+         "http": { "protocol": "http", "port": 80 },
+
+         // This normally implies public port 443
+         "https": { "protocol": "https", "port": 443 },
+      },
+   ],
+
+   "runtimes": [ "runcvm" ],
+   "networks": [ "bridge" ],
+   "images": [ "newsnowlabs/dockside:latest" ],
+
+   "unixusers": [ "dockside" ],
+
+   "imagePathsFilter" : [],
+
+   "mounts": {
+
+      // Use this to identify paths in your containers that will contain ephemeral data that will be lost
+      // when the container is stopped, and which will not be duplicated in a clone operation.
+      "tmpfs": [
+         { "dst": "/home/newsnow/.vscode", "tmpfs-size": "100M" },
+         { "dst": "/home/newsnow/.ssh", "tmpfs-size": "1M" },
+   
+         // These are good for most Linux distributions
+         { "dst": "/tmp", "tmpfs-size": "128M" },
+         { "dst": "/var/tmp", "tmpfs-size": "128M" },
+         { "dst": "/run", "tmpfs-size": "64M" }
+      ],
+
+      // Use this to bind-mount shared development resources, or shared application data, from the host
+      // into your containers, and which will not be duplicated in a clone operation.
+      "bind": [ 
+      ],
+
+      "volume": [
+      ]
+   },
+
+   "runDockerInit": false,
+   "dockerArgs": ["--memory=2G", "--env=RUNCVM_DISKS=/disks/docker,/var/lib/docker,ext4,1G;/disks/sysbox,/var/lib/sysbox,ext4,1G", "--env=RUNCVM_KERNEL_DEBUG=1"],
+   "command": ["--ssl-selfsigned", "--ssl-zone", "{container.hostname}", "--passwd-stdout", "--run-dockerd"]
+}

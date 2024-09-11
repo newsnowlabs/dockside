@@ -1,6 +1,6 @@
 {
    "version": 2,
-   "name": "Dockside Sysbox",
+   "name": "Dockside (on Sysbox runtime)",
    "description": "Dockside devtainer with built-in IDE (Sysbox runtime)",
    "active": true,
    "mountIDE": false,
