@@ -29,4 +29,8 @@ RUN mkdir -p $BUNDLE_PATH && \
 # Add rest of repo
 ADD --chown=dockside:dockside ./ ./
 
+# Uncomment to enable package upgrades during image build;
+# otherwise inbuilt node_modules/* will be used.
+# RUN npm install && npm upgrade && npm cache clean --force
+
 ENTRYPOINT [ "/bin/sh", "-c", "/home/dockside/script/server --incremental" ]
