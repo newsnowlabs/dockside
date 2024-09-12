@@ -26,13 +26,6 @@ RUN mkdir -p $BUNDLE_PATH && \
     curl https://github.com/envygeeks/pathutil/commit/3451a10c362fc867b20c7e471a551b31c40a0246.patch | patch -p1 -f -d $(dirname $(find $BUNDLE_PATH -name pathutil.rb))/.. || true && \
     ln -s ./script/.profile ~/
 
-# Add HTML Language Basics plugin
-ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/html/1.62.3/file/vscode.html-1.62.3.vsix /home/dockside/theia-plugins/
-ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/scss/1.54.1/file/vscode.scss-1.54.1.vsix /home/dockside/theia-plugins/
-ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/shellscript/1.54.1/file/vscode.shellscript-1.54.1.vsix /home/dockside/theia-plugins/
-ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/docker/1.54.1/file/vscode.docker-1.54.1.vsix /home/dockside/theia-plugins/
-ADD --chown=dockside:dockside https://open-vsx.org/api/vscode/json/1.54.1/file/vscode.json-1.54.1.vsix /home/dockside/theia-plugins/
-
 # Add rest of repo
 ADD --chown=dockside:dockside ./ ./
 
