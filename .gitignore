@@ -26,3 +26,5 @@
 tmp/
 /.vscode-server/
 /.dotnet
+/.npm
+/node_modules
