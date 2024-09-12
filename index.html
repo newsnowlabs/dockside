@@ -6,7 +6,7 @@ permalink: /
 ---
 
   <div class="container-md p-responsive py-4 py-lg-6 my-xl-4 text-center">
-    <h1 class="alt-h1 my-2 text-white">Develop in clones of your production environment</h1>
+    <h1 class="alt-h1 my-2 text-white">A self-hosted dev and staging platform for web dev teams</h1>
   </div>
 </div>
 
@@ -15,9 +15,22 @@ permalink: /
 <section id="features" class="mini-section mt-6">
   <div class="container-lg p-responsive text-center text-md-left">
 
-    <!-- <h2 class="alt-h2 text-center mb-3 mt-lg-6">What is Dockside?</h2> -->
-    <h2 class="alt-h2 text-center mb-3 mt-lg-6">A dev and staging environment in one</h2>
+    <h2 class="alt-h2 text-center mb-3 mt-lg-6">&#8220;Like having your own self-hosted <em>Github Codespaces</em>
+      &#x2014;&nbsp;but&nbsp;better&#8221;</h2>
     <p class="alt-lead text-gray text-center col-md-12 mx-auto pb-3">Dockside lets dev teams code from anywhere in clones of their production environment and share and stage their work online for stakeholders.</p>
+
+    <!-- Screenshot -->
+    <div class="clearfix p-sm-5 col-md-12 mx-auto mb-6 pb-1 f4">
+      <div class="Box-row">
+        <div class="preview animate-in">
+          <h2 class="alt-h2 text-center mb-3">Launch dev environments in seconds...</h2>
+            <a href="/assets/img/Dockside-Quick-Launch.gif?v=20220214" title="Dockside in action"><img src="/assets/img/Dockside-Quick-Launch.gif" alt="Dockside in action" /></a>
+        </div>
+      </div>
+      <p class="text-center">Dockside launches each dev environment fully equipped with custom domain name, HTTPS reverse proxy, seamless SSH access, plus a built-in web-based IDE (Theia), and fine-grained access controls so its IDE and web services can be shared with/staged for exactly whom you wish &#x2013; and no further.</p>
+    </div>
+
+    <h3 class="alt-h2 mb-4 text-center">Features</h3>
 
     <div class="mt-md-6 clearfix gutter-md-spacious">
       <div class="mb-3 mb-md-5 col-md-6 float-left">
@@ -26,8 +39,7 @@ permalink: /
           Work online from anywhere
         </h2>
         <p class="text-gray">
-        Dockside makes working from anywhere from your browser a breeze,
-        thanks to the incredible Eclipse Theia online IDE, featuring professional UI, complete with syntax highlighting, terminals and support for VS Code extensions.
+        Use either the built-in VS Code-compatible Theia web-based IDE; any IDE like VS Code or JetBrains, Eclipse, Atom or Sublime that supports remote development over SSH; or any console text editor. Terminal and SSH with root access.
         </p>
       </div>
       <div class="mb-3 mb-md-5 col-md-6 float-left">
@@ -35,7 +47,7 @@ permalink: /
           {% octicon rocket height:28 class:"fill-blue d-inline mr-2" %}
           Launch a clone for each task or fork
         </h2>
-        <p class="text-gray">Spin up a dev environment (or '<span class="tooltipped tooltipped-s tooltipped-multiline dockside-underline" aria-label="Dockside shorthand for 'development container': a development environment, running in a disposable container, that clones your production environment">devtainer</span>') in seconds. Launch one for each task, from your preprepared profiles. Switch between multiple tasks, just as you switch between browser tabs. If you mess up, just start afresh.</p>
+        <p class="text-gray">Spin up a dev environment (or '<span class="tooltipped tooltipped-s tooltipped-multiline dockside-underline" aria-label="Dockside shorthand for 'dev container': a development environment, running in a disposable container, which can be based on a clone your production environment">devtainer</span>') in seconds. Launch one for each task, from your preprepared profiles. Switch between multiple tasks, just as you switch between browser tabs. If you mess up, just start afresh.</p>
       </div>
     </div>
   
@@ -45,7 +57,7 @@ permalink: /
           {% octicon share height:28 class:"fill-blue d-inline mr-2" %}
           Share work with stakeholders instantly
         </h2>
-        <p class="text-gray">Stage any devtainer, either privately or on the public internet, for review, sign-off or testing, by colleagues, clients or management. Access secured by HTTPS.</p>
+        <p class="text-gray">Stage your work publicly or privately and securely, allowing instant feedback on your work from colleagues, testers, PMs, managers and clients.</p>
       </div>
       <div class="mb-3 mb-md-5 col-md-6 float-left">
         <h2 class="alt-h3 mb-2">
@@ -53,7 +65,7 @@ permalink: /
           Eliminate errors, deploy confidently
         </h2>
         <p class="text-gray">Eliminate whole classes of error arising from production environment differences.
-        Develop with confidence: if your code runs in your devtainer, then it runs in production.</p>
+        Develop with confidence: if your code runs in your <span class="tooltipped tooltipped-s tooltipped-multiline dockside-underline" aria-label="Dockside shorthand for 'development container': a development environment, running in a disposable container, which can be based on a clone your production environment">devtainer</span>, then it runs in production.</p>
       </div>
     </div>
 
@@ -63,14 +75,16 @@ permalink: /
           {% octicon lock height:28 class:"fill-blue d-inline mr-2" %}
           Safe and powerful
         </h2>
-        <p class="text-gray">For power users, Dockside provides devtainers with access to underlying system resources and alternative runtimes and architectures, while locking down access for other users through a role-based access control scheme.</p>
+        <p class="text-gray">
+          Everything preconfigurable. Fine-grained permissions system lets you lock down runtimes, networks &amp; images for new starters, give trusted devs more control but PMs and management web service visibility only.
+        </p>
       </div>
       <div class="mb-3 mb-md-5 col-md-6 float-left">
         <h2 class="alt-h3 mb-2">
           {% octicon infinity height:28 class:"fill-blue d-inline mr-2"aria-label: %}
           Low footprint
         </h2>
-        <p class="text-gray">Dockside’s resource requirements are minimal. Proven to support large numbers of devtainers on relatively small servers, VMs or cloud instances.</p>
+        <p class="text-gray">Dockside’s resource requirements are minimal. Proven to support large numbers of <span class="tooltipped tooltipped-s tooltipped-multiline dockside-underline" aria-label="Dockside shorthand for 'development container': a development environment, running in a disposable container, which can be based on a clone your production environment">devtainer</span> on relatively small servers, VMs or cloud instances.</p>
       </div>
     </div>
 
@@ -89,16 +103,6 @@ permalink: /
       <span>Learn more on GitHub →</span>
       </a>
     </p>
-
-    <!-- Screenshot -->
-    <div class="clearfix p-sm-5 col-md-12 mx-auto mb-6 pb-1 f4">
-      <div class="Box-row">
-        <div class="preview animate-in">
-                <h2 class="alt-h2 text-center mb-3">Launch devtainers in seconds</h2>
-                <a href="/assets/img/Dockside-Quick-Launch.gif?v=20220214" title="Dockside in action"><img src="/assets/img/Dockside-Quick-Launch.gif" alt="Dockside in action" /></a>
-        </div>
-       </div>
-    </div>
 
   </div>
 </section>
@@ -132,7 +136,15 @@ permalink: /
         1. If you have Docker running locally, install Dockside by running:
       </div>
       <div class="Box-header">
-        <code class="wrap-text">mkdir -p ~/.dockside &amp;&amp; \<br>docker run -it --name dockside \<br>  -v ~/.dockside:/data \<br>  -v /var/run/docker.sock:/var/run/docker.sock \<br>  -p 443:443 -p 80:80 \<br>  --security-opt=apparmor=unconfined \<br>  newsnowlabs/dockside --ssl-builtin
+        <code class="wrap-text">
+          mkdir -p ~/.dockside &amp;&amp; \<br />
+          docker run -it --name dockside \<br />
+          --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \<br />
+          -v ~/.dockside:/data \<br />
+          -v /var/run/docker.sock:/var/run/docker.sock \<br />
+          -p 443:443 -p 80:80 \<br />
+          --security-opt=apparmor=unconfined \<br />
+          newsnowlabs/dockside --ssl-builtin
         </code>
       </div>
       <div class="Box-body">
@@ -144,7 +156,7 @@ permalink: /
         </li>
       </ul>
       <div class="Box-footer">
-        4. Follow the on-screen instruction to launch your first devtainer!
+        4. Follow the on-screen instruction to launch your first <span class="tooltipped tooltipped-s tooltipped-multiline dockside-underline" aria-label="Dockside shorthand for 'dev container': a development environment, running in a disposable container, which can be based on a clone your production environment">devtainer</span>!
       </div>
     </div>
 
@@ -159,15 +171,42 @@ permalink: /
        </div>
     </div>
 
-    <div class="container-lg p-responsive pb-5 pb-md-6 text-center">  
-      <p class="alt-lead text-gray text-center col-md-10 mx-auto">Dockside comes into its own when self-hosted online, whether on-premises or in the cloud.</p>
-      <p class="text-center">
-        <a href="https://github.com/newsnowlabs/dockside#launch-in-production-with-auto-generated-letsencrypt-public-ssl-certificate" class="btn btn-outline mr-2" role="button" target="_blank" title="Learn how to launch Dockside in production on GitHub">{% octicon mark-github height:16 class:"right left" aria-label:hi %}
-        <span>Learn more on GitHub →</span>
-        </a>
-      </p>
-    </div>
+  </div>
+</section>
 
+<a id="comparison"></a>
+
+<section class="bg-gray-light">
+  <div class="container-lg p-responsive py-5 py-md-6 text-center">
+    <span class="text-center">
+      {% octicon people height:42 class:"d-block mx-auto mb-4 text-center fill-gray" aria-label:person %}
+    </span>
+    <h3 class="alt-h2 mb-4">Comparison</h3>
+    <p class="alt-lead text-gray text-center col-md-10 mx-auto">Dockside offers many of the same features as Github Codespaces, Gitpod and VS Code for the Web, but offers unique staging features and advanced multi-user access controls
+    </p>
+    <p class="text-center">
+      <a href="https://github.com/newsnowlabs/dockside#launch-in-production-with-auto-generated-letsencrypt-public-ssl-certificate" class="btn btn-outline mr-2" role="button" target="_blank" title="Learn how to launch Dockside in production on GitHub">{% octicon mark-github height:16 class:"right left" aria-label:hi %}
+      <span>Learn more on GitHub →</span>
+      </a>
+    </p>
+  </div>
+</section>
+
+<a id="platforms"></a>
+
+<section class="bg-gray-light">
+  <div class="container-lg p-responsive py-5 py-md-6 text-center">
+    <span class="text-center">
+      {% octicon people height:42 class:"d-block mx-auto mb-4 text-center fill-gray" aria-label:person %}
+    </span>
+    <h3 class="alt-h2 mb-4">Platforms</h3>
+    <p class="alt-lead text-gray text-center col-md-10 mx-auto">Dockside can be run on local machine with Docker (on Linux, on Mac (Intel/M1/M2), and even on Raspberry Pi 4+) ... but comes into its own when self-hosted on-premises or in the cloud.
+    </p>
+    <p class="text-center">
+      <a href="https://github.com/newsnowlabs/dockside#launch-in-production-with-auto-generated-letsencrypt-public-ssl-certificate" class="btn btn-outline mr-2" role="button" target="_blank" title="Learn how to launch Dockside in production on GitHub">{% octicon mark-github height:16 class:"right left" aria-label:hi %}
+      <span>Learn more on GitHub →</span>
+      </a>
+    </p>
   </div>
 </section>
 
