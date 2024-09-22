@@ -853,7 +853,7 @@ sub action {
       $command = 'stop';
    }
    elsif($action eq 'remove') {
-      $command = 'rm';
+      $command = 'rm --volumes';
    }
    elsif($action eq 'getLogs') {
       return $self->load_container_logs({
