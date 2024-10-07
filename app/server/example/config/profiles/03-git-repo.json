@@ -1,6 +1,6 @@
 {
    "version": 2,
-   "name": "Dockside.io",
+   "name": "Git Repo",
    "active": true,
    "routers": [
       {
@@ -8,11 +8,16 @@
          "prefixes": [ "www" ],
          "domains": [ "*" ],
          "https": { "protocol": "http", "port": 8080 },
-         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
       }
    ],
    "networks": [ "bridge" ],
-   "images": [ "newsnowlabs/dockside-io" ],
+   "images": [
+      "ubuntu:latest",
+      "debian:latest",
+      "alpine:latest"
+   ],
+   "gitURLs": ["*"],
    "unixusers": ["dockside"],
    "mounts": {
       "tmpfs": [
@@ -21,10 +26,9 @@
       "bind": [],
       "volume": []
    },
-   "runtimes": [ "runc" ],
    "lxcfs": true,
-   "dockerArgs": ["--memory=2G", "--pids-limit=4000", "--cpus=1"],
+   "dockerArgs": ["--memory=1G", "--pids-limit=4000"],
    "command": [
-      "/bin/sh", "-c", "/home/dockside/script/server --incremental & sleep infinity"
-   ]
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity"
+   ],
 }

@@ -18,7 +18,7 @@ debug() {
 }
 
 # Create busybox shortcut for certain commands
-for a in id; do eval "$a() { busybox $a \"\$@\"; }"; done
+for a in id chown chmod; do eval "$a() { busybox $a \"\$@\"; }"; done
 
 # Assumes getent can be found in PATH
 create_user() {
@@ -153,6 +153,48 @@ launch_sshd() {
    wstunnel --server ws://0.0.0.0:2222 --restrictTo=127.0.0.1:$DROPBEAR_PORT >/tmp/dockside/wstunnel.log 2>&1 &
 }
 
+create_git_repo() {
+   [ -n "$GIT_URL" ] || return
+
+   log "Creating git repo for '$GIT_URL' ..."
+   log "GIT_KEYS=$GIT_KEYS"
+
+   local KEY_PATH="$HOME/.ssh/key"
+
+   [ -f "$KEY_PATH" ] || echo "$GIT_KEYS" | jq -re '.private' >$KEY_PATH
+   [ -f "$KEY_PATH.pub" ] || echo "$GIT_KEYS" | jq -re '.public' >$KEY_PATH.pub
+
+   chmod 400 $KEY_PATH $KEY_PATH.pub
+
+   $IDE_PATH/bin/ssh-add "$KEY_PATH"
+   $IDE_PATH/bin/ssh-add -L
+   
+   # GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -i $KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+   # $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL
+
+   log "- Running: $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL"
+   GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL
+}
+
+spawn_ssh_agent() {
+   log "Checking for ssh-agent ..."
+   if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
+      log "Found ssh-agent binary but no running agent, so launching it ..."
+      
+      eval $($(which ssh-agent))
+      export SSH_AUTH_SOCK
+   fi
+}
+
+launch_nonroot() {
+   log "Launching subprocess for non-root user '$IDE_USER' ..."
+
+   local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
+   cd $HOME
+
+   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" /opt/dockside/launch.sh run_nonroot"
+}
+
 launch_theia() {
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    while true
@@ -165,11 +207,17 @@ launch_theia() {
          # So we use 'env -i' to clear all env vars before setting just the ones needed.
          $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
       else
-         PATH="$_PATH" IDE_PATH="$IDE_PATH" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
+         env -i PATH="$_PATH" IDE_PATH="$IDE_PATH" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
       fi
 
       sleep 1
    done   
+}
+
+run_nonroot() {
+   spawn_ssh_agent
+   create_git_repo
+   launch_theia
 }
 
 launch_ide() {
@@ -177,7 +225,7 @@ launch_ide() {
    create_git_config
    update_ssh_authorized_keys
    launch_sshd
-   launch_theia
+   launch_nonroot
 }
 
 init() {
@@ -195,9 +243,10 @@ init() {
    PATH="$IDE_PATH/bin:$PATH"
 
    LOG_PATH=/tmp/dockside
-   LOG=$LOG_PATH/launch.log
-   busybox mkdir -p $LOG_PATH && busybox chmod a+rwx,+t $LOG_PATH
-   busybox touch $LOG && busybox chmod 644 $LOG
+   LOG=$LOG_PATH/launch-$(id -u).log
+
+   [ -d $LOG_PATH ] || busybox mkdir -p $LOG_PATH && busybox chmod a+rwx,+t $LOG_PATH
+   [ -d $LOG ] || busybox touch $LOG && busybox chmod 644 $LOG
 
    exec 1>>$LOG
    exec 2>>$LOG

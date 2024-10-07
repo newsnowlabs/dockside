@@ -19,7 +19,13 @@
          "runtimes": [ "*" ]
       },
       "ssh": {
-         "authorized_keys": []
+         "authorized_keys": [],
+         "keypairs": {
+            "example": {
+               "private": "",
+               "public": ""
+            }
+         }
       }
    },
    // Example

@@ -4,7 +4,8 @@ ARG ALPINE_VERSION=3.16
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS theia-build
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq
+    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq \
+    git openssh-client-default
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
@@ -92,7 +93,7 @@ RUN echo '*.ts' >> .yarnclean && \
 
 FROM theia-clean AS theia-findelfs
 
-ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq"
+ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent"
 
 RUN /tmp/build/ide/theia/elf-patcher.sh --findelfs
 
@@ -112,7 +113,10 @@ RUN /tmp/build/ide/theia/elf-patcher.sh --patchelfs && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
     ln -sf busybox pgrep && \
-    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel
+    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel && \
+    ln -sf git git-clone && \
+    ln -sf git-remote-http git-remote-https && \
+    cp -a /etc/ssl/certs $THEIA_PATH/
 
 # Default diagnostics entrypoint for this stage (uses patched node)
 ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]

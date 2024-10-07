@@ -8,6 +8,7 @@ our @EXPORT_OK = ( qw(
    get_config
    trim is_true
    call_socket_api
+   get_uri
    run run_system clean_pty run_pty
    YYYYMMDDHHMMSS TO_JSON
    cache cacheReadWrite cloneHash
@@ -101,6 +102,24 @@ sub call_socket_api {
    my $result;
    try {
       $result = $ua->get($uri => {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'})->result;
+   }
+   catch {
+      return undef;
+   };
+
+   return $result;
+}
+
+sub get_uri {
+   my $uri = shift;
+
+   my $ua = Mojo::UserAgent->new();
+
+   flog("get_uri: $uri");
+
+   my $result;
+   try {
+      $result = $ua->get($uri)->result;
    }
    catch {
       return undef;
