@@ -15,7 +15,8 @@ use User;
 #
 # Returns:
 # - a User object, if $username matches a users.json record and $password can be validated; OR
-# - undef.
+# - 'NOTFOUND'; OR
+# - 'INVALID'
 
 sub authenticate_by_credentials {
    my $class = shift; # User class
@@ -26,7 +27,7 @@ sub authenticate_by_credentials {
    
    # Check that $user is also named in the users.json file
    unless($user->load($username)) {
-      return undef;
+      return 'NOTFOUND';
    }
 
    my $passwordEntry = $user->password();
@@ -36,7 +37,7 @@ sub authenticate_by_credentials {
 
    # Check that $password is correct for $user in the password file.
    unless( $salt && $encryptedPasswd && encrypt_password( $password, $salt ) eq $passwordEntry ) {
-      return undef;
+      return 'INVALID';
    }
 
    return $user;

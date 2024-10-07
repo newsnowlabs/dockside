@@ -194,7 +194,9 @@ sub handle_login_form {
 
    try {
 
-      if( my $User = Request->authenticate_by_credentials( $credentials{'username'}, $credentials{'password'} ) ) {
+      my $User = Request->authenticate_by_credentials( $credentials{'username'}, $credentials{'password'} );
+
+      if( ref($User) ) {
          my @cookies = $User->generate_auth_cookies($parentFQDN);
 
          # On successful login, redirect with 302 to current URI
@@ -203,8 +205,16 @@ sub handle_login_form {
          ]);
          return 1;
       }
+      elsif( $User eq 'INVALID' ) {
+         flog("auth_cookie: credentials not valid for user '$credentials{'username'}'");
+         return 0;
+      }
+      elsif( $User eq 'NOTFOUND' ) {
+         flog("auth_cookie: user '$credentials{'username'}' not found in users.json: check file for errors");
+         return 0;
+      }
       else {
-         flog("auth_cookie: credentials not valid");
+         flog("auth_cookie: unknown error authenticating: check users.json for errors");
          return 0;
       }
    }
