@@ -64,7 +64,7 @@ rm -f /tmp/cmd-elf-bin
 for bin in $BINARIES
 do
   cp -a $(which $bin) $THEIA_PATH/bin
-  echo $THEIA_PATH/bin/$bin >>/tmp/cmd-elf-bin
+  echo $THEIA_PATH/bin/$(basename $bin) >>/tmp/cmd-elf-bin
 done
 
 # Using ldd, generate list of resolved library filepaths for each ELF binary and library,
