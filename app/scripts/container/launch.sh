@@ -183,6 +183,8 @@ spawn_ssh_agent() {
       
       eval $($(which ssh-agent))
       export SSH_AUTH_SOCK
+
+      log "Launched ssh-agent binary with SSH_AUTH_SOCK='$SSH_AUTH_SOCK'"
    fi
 }
 
@@ -207,7 +209,7 @@ launch_theia() {
          # So we use 'env -i' to clear all env vars before setting just the ones needed.
          $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
       else
-         env -i PATH="$_PATH" IDE_PATH="$IDE_PATH" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
+         env -i PATH="$_PATH" IDE_PATH="$IDE_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
       fi
 
       sleep 1
