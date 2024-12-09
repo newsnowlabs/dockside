@@ -169,6 +169,9 @@ create_git_repo() {
    $IDE_PATH/bin/ssh-add "$KEY_PATH"
    $IDE_PATH/bin/ssh-add -L
    
+   log "- Running: IDE_PATH/bin/ssh-keyscan github.com >$HOME/.ssh/known_hosts"
+   $IDE_PATH/bin/ssh-keyscan github.com >$HOME/.ssh/known_hosts
+   
    # GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -i $KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
    # $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL
 
