@@ -93,7 +93,7 @@ RUN echo '*.ts' >> .yarnclean && \
 
 FROM theia-clean AS theia-findelfs
 
-ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent"
+ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan"
 
 RUN /tmp/build/ide/theia/elf-patcher.sh --findelfs
 
