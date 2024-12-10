@@ -27,10 +27,10 @@ ENV BASH_ENV=/tmp/theia-bash-env
 # obtain wstunnel binaries from the Dockside Google Cloud Storage bucket. wstunnel is published
 # under https://github.com/erebe/wstunnel/blob/master/LICENSE.
 RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
-      THEIA_VERSION=1.53.2; \
+      THEIA_VERSION=1.56.0; \
       WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-      THEIA_VERSION=1.53.2; \
+      THEIA_VERSION=1.56.0; \
       WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"; \
     elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
       THEIA_VERSION=1.35.0; \
