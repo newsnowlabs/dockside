@@ -1,0 +1,19 @@
+diff --git a/node_modules/@theia/application-manager/lib/generator/frontend-generator.js b/node_modules/@theia/application-manager/lib/generator/frontend-generator.js
+index 042b37f..879dfb2 100644
+--- a/node_modules/@theia/application-manager/lib/generator/frontend-generator.js
++++ b/node_modules/@theia/application-manager/lib/generator/frontend-generator.js
+@@ -75,7 +75,13 @@ require('setimmediate');
+ const { Container } = require('inversify');
+ const { FrontendApplicationConfigProvider } = require('@theia/core/lib/browser/frontend-application-config-provider');
+ 
+-FrontendApplicationConfigProvider.set(${this.prettyStringify(this.pck.props.frontend.config)});
++// Determine Dockside devtainer name from document href hostname,
++// and write the value to the in-memory frontend config
++// (technically, package.json's theia.frontend.config.devtainerName)
++// It will be read by our patched window-title-service.js
++let config = ${this.prettyStringify(this.pck.props.frontend.config)};
++try { config.devtainerName=document.location.href.split('/')[2].split('.')[0].split('--')[0].split('-').slice(1).join('-'); } catch {};
++FrontendApplicationConfigProvider.set(config);
+ 
+ ${this.ifMonaco(() => `
+ self.MonacoEnvironment = {
