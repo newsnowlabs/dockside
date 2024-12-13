@@ -1124,7 +1124,6 @@ sub exec {
    if( $reservation->gitURL() ) {
       @envGit = (
          "--env=GIT_URL=" . $reservation->gitURL(),
-         "--env=GIT_KEYS=" . encode_json( $user->keypairs('*') )
       );
    }
 
@@ -1135,6 +1134,7 @@ sub exec {
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
+      "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
       @envGit,
       @envSSH,
       $containerId,

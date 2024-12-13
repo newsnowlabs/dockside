@@ -156,19 +156,6 @@ launch_sshd() {
 create_git_repo() {
    [ -n "$GIT_URL" ] || return
 
-   log "Creating git repo for '$GIT_URL' ..."
-   log "GIT_KEYS=$GIT_KEYS"
-
-   local KEY_PATH="$HOME/.ssh/key"
-
-   [ -f "$KEY_PATH" ] || echo "$GIT_KEYS" | jq -re '.private' >$KEY_PATH
-   [ -f "$KEY_PATH.pub" ] || echo "$GIT_KEYS" | jq -re '.public' >$KEY_PATH.pub
-
-   chmod 400 $KEY_PATH $KEY_PATH.pub
-
-   $IDE_PATH/bin/ssh-add "$KEY_PATH"
-   $IDE_PATH/bin/ssh-add -L
-   
    log "- Running: IDE_PATH/bin/ssh-keyscan github.com >$HOME/.ssh/known_hosts"
    $IDE_PATH/bin/ssh-keyscan github.com >$HOME/.ssh/known_hosts
    
@@ -188,6 +175,27 @@ spawn_ssh_agent() {
       export SSH_AUTH_SOCK
 
       log "Launched ssh-agent binary with SSH_AUTH_SOCK='$SSH_AUTH_SOCK'"
+   fi
+}
+
+populate_ssh_agent_keys() {
+   local SAVEKEYS="1"
+   log "SSH_AGENT_KEYS=$SSH_AGENT_KEYS"
+
+   log "Populating ssh agent keys to '$KEY_PATH' and ssh-agent ..."
+   local KEY_PATH="$HOME/.ssh/key"
+
+   [ -f "$KEY_PATH" ] || echo "$SSH_AGENT_KEYS" | jq -re '.private' >$KEY_PATH
+   [ -f "$KEY_PATH.pub" ] || echo "$SSH_AGENT_KEYS" | jq -re '.public' >$KEY_PATH.pub
+
+   chmod 400 $KEY_PATH $KEY_PATH.pub
+
+   $IDE_PATH/bin/ssh-add "$KEY_PATH"
+   $IDE_PATH/bin/ssh-add -L
+
+   if [ -z "$SAVEKEYS" ]; then
+      log "Deleting keys from '$KEY_PATH'"
+      rm -f $KEY_PATH $KEY_PATH.pub
    fi
 }
 
@@ -221,6 +229,7 @@ launch_theia() {
 
 run_nonroot() {
    spawn_ssh_agent
+   populate_ssh_agent_keys
    create_git_repo
    launch_theia
 }
