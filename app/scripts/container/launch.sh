@@ -147,10 +147,10 @@ launch_sshd() {
    [ -f "$HOSTDATA_PATH/ed25519_host_key" ] || dropbearkey -t ed25519 -f $HOSTDATA_PATH/ed25519_host_key
 
    log "(1/2) Launching dropbear on port $DROPBEAR_PORT with host keys from $HOSTDATA_PATH"
-   dropbear -RE -p 127.0.0.1:$DROPBEAR_PORT -r $HOSTDATA_PATH/ed25519_host_key >/tmp/dockside/dropbear.log 2>&1
+   dropbear -RE -p 127.0.0.1:$DROPBEAR_PORT -r $HOSTDATA_PATH/ed25519_host_key >$LOG_PATH/dropbear.log 2>&1
 
    log "(2/2) Launching wstunnel on port 2222"
-   wstunnel --server ws://0.0.0.0:2222 --restrictTo=127.0.0.1:$DROPBEAR_PORT >/tmp/dockside/wstunnel.log 2>&1 &
+   wstunnel --server ws://0.0.0.0:2222 --restrictTo=127.0.0.1:$DROPBEAR_PORT >$LOG_PATH/wstunnel.log 2>&1 &
 }
 
 create_git_repo() {
@@ -218,9 +218,9 @@ launch_theia() {
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
          # su will retain exported env vars and set new ones.
          # So we use 'env -i' to clear all env vars before setting just the ones needed.
-         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
+         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
       else
-         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
+         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
       fi
 
       sleep 1

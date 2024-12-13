@@ -2,6 +2,7 @@
 
 # Expects:
 # - IDE_PATH
+# - LOG_PATH
 # 
 
 log() {
@@ -15,9 +16,9 @@ which() {
   for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && break; done
 }
 
-LOG=/tmp/dockside/theia.log
+LOG=$LOG_PATH/theia.log
 
-log "Creating logfile '$LOG' ..."
+log "Switching logging to '$LOG' ..."
 touch $LOG && chmod 666 $LOG
 
 exec 1>>$LOG
