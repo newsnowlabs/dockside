@@ -32,6 +32,7 @@ log "Launching IDE from IDE_PATH='$IDE_PATH' ..."
 log "Backing up and overriding PATH=$PATH ..."
 export _PATH="$PATH"
 export PATH="$IDE_PATH/bin:$PATH"
+export GIT_EXEC_PATH="$IDE_PATH/bin"
 
 # Run ssh-agent if available, but not already running.
 log "Checking for ssh-agent ..."
@@ -54,7 +55,7 @@ export THEIA_WEBVIEW_EXTERNAL_ENDPOINT='{{uuid}}-wv-{{hostname}}'
 export THEIA_MINI_BROWSER_HOST_PATTERN='{{uuid}}-mb-{{hostname}}'
 export SHELL="$IDE_PATH/bin/dummysh"
 
-THEIA_PATH=$IDE_PATH
+THEIA_PATH="$IDE_PATH"
 log "Launching IDE using: $THEIA_PATH/bin/node $THEIA_PATH/theia/src-gen/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 ..."
 
 unset IDE_PATH
