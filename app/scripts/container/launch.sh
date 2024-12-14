@@ -156,9 +156,6 @@ launch_sshd() {
 create_git_repo() {
    [ -n "$GIT_URL" ] || return
 
-   log "- Running: IDE_PATH/bin/ssh-keyscan github.com >$HOME/.ssh/known_hosts"
-   $IDE_PATH/bin/ssh-keyscan github.com >$HOME/.ssh/known_hosts
-   
    # GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -i $KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
    # $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL
 
@@ -175,6 +172,17 @@ spawn_ssh_agent() {
       export SSH_AUTH_SOCK
 
       log "Launched ssh-agent binary with SSH_AUTH_SOCK='$SSH_AUTH_SOCK'"
+   fi
+}
+
+populate_known_hosts() {
+   log "Populating known_hosts via ssh keyscan for domains: '$SSH_KNOWN_HOSTS_DOMAINS' ..."
+
+   if [ -n "$SSH_KNOWN_HOSTS_DOMAINS" ]; then
+      local DOMAINS="$(echo $SSH_KNOWN_HOSTS_DOMAINS | tr ',' ' ')"
+
+      log "- Running: IDE_PATH/bin/ssh-keyscan $DOMAINS >$HOME/.ssh/known_hosts"
+      $IDE_PATH/bin/ssh-keyscan $DOMAINS >$HOME/.ssh/known_hosts
    fi
 }
 
@@ -230,6 +238,7 @@ launch_theia() {
 run_nonroot() {
    spawn_ssh_agent
    populate_ssh_agent_keys
+   populate_known_hosts
    create_git_repo
    launch_theia
 }

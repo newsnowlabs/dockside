@@ -1106,7 +1106,8 @@ sub exec {
       @envSSH = (
          "--env=AUTHORIZED_KEYS=$keys_json",
          "--env=HOSTDATA_PATH=$CONFIG->{'ssh'}{'path'}",
-         "--env=SSHD_ENABLE=1"
+         "--env=SSHD_ENABLE=1",
+         "--env=SSH_KNOWN_HOSTS_DOMAINS=github.com,gitlab.com"
       );
 
       flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
