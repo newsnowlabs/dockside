@@ -18,7 +18,7 @@ debug() {
 }
 
 # Create busybox shortcut for certain commands
-for a in id chown chmod; do eval "$a() { busybox $a \"\$@\"; }"; done
+for a in id chown chmod date find grep mkdir mv tr; do eval "$a() { busybox $a \"\$@\"; }"; done
 
 # Assumes getent can be found in PATH
 create_user() {
@@ -207,11 +207,65 @@ populate_ssh_agent_keys() {
    fi
 }
 
+find_files_of_type() {
+   find $HOME/* -type d -name "node_modules" -prune -o -type f $@ -print -quit | grep -q .
+}
+
+find_files_having() {
+   local grep="$1"
+
+   find "$HOME" -type d -name "node_modules" -o -name ".*" -prune -o -type f -exec head -n 1 {} \; 2>/dev/null | $IDE_PATH/bin/busybox grep -qE '^#!.*('$grep')'
+}
+
+populate_vscode_extensions() {
+   local DIR="$HOME/.vscode"
+   local FILE="$DIR/extensions.json"
+
+   log "Checking for $FILE ..."
+
+   if [ -f $FILE ]; then
+      log "Found prexisting $FILE."
+   elif [ -n "$DEVCONTAINER_VSCODE" ]; then
+      log "Populating $FILE with '$DEVCONTAINER_VSCODE'"
+      mkdir -p "$DIR"
+      echo "$DEVCONTAINER_VSCODE" | jq -re '{recommendations: .extensions}' >$FILE
+   else
+      echo '{"recommendations": []}' >$FILE
+   fi
+
+   local EXTS=""
+   find_files_of_type -name '*.sh' || find_files_having 'bash|sh' && EXTS="$EXTS vscode.shellscript"
+   find_files_of_type -name '*.pl' -o -name '*.pm' || find_files_having 'perl' && EXTS="$EXTS vscode.perl"
+   find_files_of_type -name '*.py' || find_files_having 'python' && EXTS="$EXTS vscode.python"
+   find_files_of_type -name '*.css' && EXTS="$EXTS vscode.css"
+   find_files_of_type -name '*.js' && EXTS="$EXTS vscode.javascript"
+   find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
+   find_files_of_type -name '*.htm*' && EXTS="$EXTS vscode.html"
+   find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
+   find_files_of_type -name '*.md'  && EXTS="$EXTS vscode.markdown"
+   find_files_of_type -regex '.*\.ya*ml' && EXTS="$EXTS vscode.yaml"
+   find_files_of_type -name 'Dockerfile' && EXTS="$EXTS vscode.docker"
+   find_files_of_type -name '*.rb'  && EXTS="$EXTS vscode.ruby"
+   find_files_of_type -name '*.java'  && EXTS="$EXTS vscode.java"
+   find_files_of_type -name '*.php*'  && EXTS="$EXTS vscode.php"
+   find_files_of_type -name '*.ts'  && EXTS="$EXTS vscode.typescript"
+   find_files_of_type -name '*.go'  && EXTS="$EXTS vscode.go"
+      
+   if [ -n "$EXTS" ]; then
+      log "Populating $FILE with (in JSON): $EXTS"
+
+      grep -v '//.*$' "$FILE" | jq --argjson new_items "$(echo "$EXTS" | jq -R 'split(" ") | map(select(. != ""))')" '.recommendations += $new_items | .recommendations |= unique' >$FILE.new && mv $FILE.new $FILE
+   fi
+}
+
 launch_nonroot() {
    log "Launching subprocess for non-root user '$IDE_USER' ..."
 
    local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
    cd $HOME
+
+   # Exported env vars made available to run_nonroot:
+   export DEVCONTAINER_VSCODE
 
    $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" /opt/dockside/launch.sh run_nonroot"
 }
@@ -240,6 +294,7 @@ run_nonroot() {
    populate_ssh_agent_keys
    populate_known_hosts
    create_git_repo
+   populate_vscode_extensions
    launch_theia
 }
 
