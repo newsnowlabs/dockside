@@ -934,7 +934,6 @@ sub createContainerReservation {
 
    my $dc = $reservation->getGitDevContainer();
    if($dc) {
-      flog(Dumper($dc)); use Data::Dumper;
 
       if($dc->{'image'}) {
          $reservation->data('image', $dc->{'image'});
@@ -947,6 +946,7 @@ sub createContainerReservation {
 
       $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
       $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
+      $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
    }
 
    flog("cmdline-2: " . join('|', $reservation->cmdline()) );

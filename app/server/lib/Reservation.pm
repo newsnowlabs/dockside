@@ -918,19 +918,31 @@ sub getGitDevContainer {
    my $self = shift;
 
    my $uri = $self->data('gitURL');
+   flog("getGitDevContainer: uri=$uri");
 
    return undef unless $uri;
 
-   if( $uri =~ m!^https://github.com/(.*)\.git$! ) {
+   if( $uri =~ m!^(?:https://github.com/|git\@github\.com:)(.*)\.git$! ) {
       my $path = $1;
 
       foreach my $branch (qw( main master )) {
-         my $devcontainerUri = "https://raw.githubusercontent.com/$path/$branch/.devcontainer.json";
+         # git@github.com:dwavesystems/ocean-devcontainer.git =>
+         # https://github.com/dwavesystems/ocean-devcontainer.git =>
+         # https://raw.githubusercontent.com/dwavesystems/ocean-devcontainer/refs/heads/main/.devcontainer/devcontainer.json
+         my $devcontainerUri = "https://raw.githubusercontent.com/$path/refs/heads/$branch/.devcontainer/devcontainer.json";
 
          my $result = get_uri($devcontainerUri);
+         flog("getGitDevContainer: uri=$devcontainerUri; result=$result; is_success=" . $result->is_success);
 
          if( $result && $result->is_success ) {
-            return eval { return decode_json($result->body); };
+            flog("getGitDevContainer-1: " . $result->body);
+
+            # Strip comments
+            my $body = $result->body;
+            $body =~ s!//.*$!!gm;
+            flog("getGitDevContainer-2: " . $body);
+
+            return eval { return decode_json($body); };
          }
       }
    }
@@ -1128,6 +1140,11 @@ sub exec {
       );
    }
 
+   my @envDevContainer;
+   @envDevContainer = (
+      "--env=DEVCONTAINER_VSCODE=" . encode_json( $reservation->data('vscode') )
+   );
+
    # TODO: Configure Profiles to support launching IDE as non-root user
    flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
       join(' ', @Command)
@@ -1138,6 +1155,7 @@ sub exec {
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
       @envGit,
       @envSSH,
+      @envDevContainer,
       $containerId,
       @Command
    );
