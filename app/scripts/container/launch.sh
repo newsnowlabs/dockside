@@ -337,5 +337,5 @@ init() {
    fi
 }
 
-init "$@"
+[ "$1" = "nop" ] && shift || init "$@"
 eval "$@"
