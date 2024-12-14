@@ -188,10 +188,10 @@ populate_known_hosts() {
 
 populate_ssh_agent_keys() {
    local SAVEKEYS="1"
-   log "SSH_AGENT_KEYS=$SSH_AGENT_KEYS"
+   local KEY_PATH="$HOME/.ssh/key"
 
    log "Populating ssh agent keys to '$KEY_PATH' and ssh-agent ..."
-   local KEY_PATH="$HOME/.ssh/key"
+   log "SSH_AGENT_KEYS=$SSH_AGENT_KEYS"
 
    [ -f "$KEY_PATH" ] || echo "$SSH_AGENT_KEYS" | jq -re '.private' >$KEY_PATH
    [ -f "$KEY_PATH.pub" ] || echo "$SSH_AGENT_KEYS" | jq -re '.public' >$KEY_PATH.pub
