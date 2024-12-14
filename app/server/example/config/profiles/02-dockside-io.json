@@ -21,7 +21,7 @@
       "bind": [],
       "volume": []
    },
-   "runtimes": [ "runc", "runsc", "sysbox-runc" ],
+   "runtimes": [ "runc" ],
    "lxcfs": true,
    "dockerArgs": ["--memory=2G", "--pids-limit=4000", "--cpus=1"],
    "command": [
