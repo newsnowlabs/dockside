@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.3-labs
 
 ARG NODE_VERSION=20
-ARG ALPINE_VERSION=3.16
+ARG ALPINE_VERSION=3.19
 
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS theia-build
 
