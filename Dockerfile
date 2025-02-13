@@ -70,7 +70,8 @@ RUN export \
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
-WORKDIR /theia # Matches $THEIA_BUILD_PATH
+# Matches $THEIA_BUILD_PATH
+WORKDIR /theia
 ENTRYPOINT ["/tmp/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
 
 FROM theia-build AS theia-clean
