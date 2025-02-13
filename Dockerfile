@@ -90,8 +90,6 @@ RUN echo '*.ts' >> .yarnclean && \
     rm -rf node_modules/puppeteer/.local-chromium
 
 # Patch all binaries and dynamic libraries for full portability.
-
-
 FROM theia-clean AS theia
 
 # The version of rg installed by the Theia build on linux/arm/v7
@@ -102,21 +100,21 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       apk add --no-cache ripgrep; \
       cp $(which rg) $(find -name rg); \
     fi
-ADD build/development/elf-patcher.sh /tmp/build/ide/theia
+ADD build/development/makerelexec.sh /tmp/build/ide/theia
 
 RUN export \
-        BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq" \
-        DYNAMIC_PATHS="$THEIA_BUILD_PATH" \
-        CODE_PATH="$THEIA_DST_PATH" \
-        LIBPATH_TYPE="relative" \
-        MERGE_BINDIRS="1" && \
-    /tmp/build/ide/theia/elf-patcher.sh --patchelfs && \
+        RELEXEC_BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq" \
+        RELEXEC_DYNAMIC_PATHS="$THEIA_BUILD_PATH" \
+        RELEXEC_CODE_PATH="$THEIA_DST_PATH" \
+        RELEXEC_LIBPATH_TYPE="relative" \
+        RELEXEC_MERGE_BINDIRS="1" && \
+    /tmp/build/ide/theia/makerelexec.sh --patchelfs && \
     cd $THEIA_DST_PATH/bin && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
     ln -sf busybox pgrep && \
     curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel && \
-    cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin/* $CODE_PATH/bin && \
+    cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin/* $THEIA_DST_PATH/bin && \
     cd $THEIA_DST_PATH/.. && \
     ln -s theia-$THEIA_VERSION theia
 

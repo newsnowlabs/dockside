@@ -1,48 +1,77 @@
 #!/bin/sh
 
-# Patches all required binaries and dynamic libraries (ELF libs) for full path-portability.
-# - Copies all required binaries and ELF libs to the install location (CODE_PATH).
-# - Sets the interpreter for all binaries to the exec location (EXEC_PATH), to allow for mounting the CODE_PATH at EXEC_PATH.
-# - Sets the RPATH for all binaries and ELF libs to an absolute or relative path (according to LIBPATH_TYPE).
-# - Adds a link to the dynamic linker (ld-musl-*.so.1) in the install location (CODE_PATH/lib/ld).
+# Licence: Apache 2.0
+# Authors: Struan Bartlett, NewsNow Labs, NewsNow Publishing Ltd
+
+# MAKERELEXEC - ELF binary and library patcher for relocatable executables
+# ------------------------------------------------------------------------
+#
+# makerelexec.sh is used to prepare and package ELF binaries and their 
+# dynamic library dependencies for relocation to and execution from a new location,
+# making them completely portable and independent of the original distribution.
+#
+# It can be used, for example, to package Alpine Linux binaries and libraries 
+# for running within, and completely independently of, any other distribution.
+#
+# It is a core technology component of:
+# - https://github.com/newsnowlabs/dockside (to allow running a complex IDE inside a container running any arbitrary Linux distribution)
+# - https://github.com/newsnowlabs/runcvm (to allow running QEMU, virtiofsd, dnsmasq and other tools inside a container (and a VM) running any arbitrary Linux distribution)
+# 
+# It:
+#   - Copies all required binaries and ELF dynamic library dependencies to the
+#     install location (RELEXEC_CODE_PATH).
+#   - Patches all required binaries and dynamic libraries to run from the exec
+#     location (RELEXEC_EXEC_PATH, defaults to RELEXEC_CODE_PATH) for full
+#     portability and independence from any underlying or surrounding
+#     distribution. This comprises:
+#     - Setting the interpreter for all binaries to the exec location
+#       (RELEXEC_EXEC_PATH)
+#    - Setting the RPATH for all binaries and ELF libs to an absolute or
+#      relative path (according to RELEXEC_LIBPATH_TYPE)
+#    - Adding a link to the dynamic linker (ld-musl-*.so.1) in the install
+#      location (RELEXEC_CODE_PATH/lib/ld)
+#
+# N.B. RELEXEC_CODE_PATH can be different to RELEXEC_EXEC_PATH, to allow for
+#      mounting the former at RELEXEC_EXEC_PATH
+#
 
 # Environment variable inputs:
-# - BINARIES - list required binaries to be scanned and copied
-# - DYNAMIC_PATHS - list optional paths to be scanned and copied
-# - EXTRA_LIBS - list extra libraries to be scanned and copied
-# - CODE_PATH - path where binaries and libraries will be copied to
-# - EXEC_PATH - path where binaries and libraries will be executed from
-# = MERGE_BINDIRS - non-empty if all specified binaries should be moved to $CODE_PATH/bin
-# - LIBPATH_TYPE - whether to use absolute or relative paths (the default) for RPATH
+# - RELEXEC_BINARIES - list required binaries to be scanned and copied
+# - RELEXEC_DYNAMIC_PATHS - list optional paths to be scanned and copied
+# - RELEXEC_EXTRA_LIBS - list extra libraries to be scanned and copied
+# - RELEXEC_CODE_PATH - path where binaries and libraries will be copied to
+# - RELEXEC_EXEC_PATH - path where binaries and libraries will be executed from
+# = RELEXEC_MERGE_BINDIRS - non-empty if all specified binaries should be copied to $RELEXEC_CODE_PATH/bin
+# - RELEXEC_LIBPATH_TYPE - whether to use absolute or relative paths (the default) for RPATH
 
-# EXEC_PATH defaults to CODE_PATH
-EXEC_PATH="${EXEC_PATH:-$CODE_PATH}"
+# RELEXEC_EXEC_PATH defaults to RELEXEC_CODE_PATH
+RELEXEC_EXEC_PATH="${RELEXEC_EXEC_PATH:-$RELEXEC_CODE_PATH}"
+
+# Whether to use absolute or relative paths for RPATH
+RELEXEC_LIBPATH_TYPE="${RELEXEC_LIBPATH_TYPE:-relative}"
 
 # Determine LD_MUSL filename, which is architecture-dependent
 # e.g. ld-musl-aarch64.so.1 (linux/arm64), ld-musl-armhf.so.1 (linux/arm/v7), ld-musl-x86_64.so.1 (linux/amd64)
 LD_MUSL_PATH=$(ls -1 /lib/ld-musl-* | head -n 1)
 LD_MUSL_BIN=$(basename $LD_MUSL_PATH)
 
-# Whether to use absolute or relative paths for RPATH
-LIBPATH_TYPE="${LIBPATH_TYPE:-relative}"
-
 append() {
   while read line; do echo "${line}${1}"; done
 }
 
-# Check that all dynamic library dependencies are correctly being resolved to versions stored within CODE_PATH.
+# Check that all dynamic library dependencies are correctly being resolved to versions stored within RELEXEC_CODE_PATH.
 # Prints any 
 _checkelfs() {
   local status=0
 
-  # Deduce CODE_PATH from elf-patcher.sh execution path, if none provided (useful when called with --checkelfs within an alternative environment).
-  [ -z $CODE_PATH ] && CODE_PATH=$(realpath $(dirname $0)/..)
+  # Deduce RELEXEC_CODE_PATH from elf-patcher.sh execution path, if none provided (useful when called with --checkelfs within an alternative environment).
+  [ -z $RELEXEC_CODE_PATH ] && RELEXEC_CODE_PATH=$(realpath $(dirname $0)/..)
 
   # Now check the ELF files
-  for lib in $(cat $CODE_PATH/.binelfs $CODE_PATH/.libelfs)
+  for lib in $(cat $RELEXEC_CODE_PATH/.binelfs $RELEXEC_CODE_PATH/.libelfs)
   do
     echo -n "Checking: $lib ... " >&2
-    $CODE_PATH$LD_MUSL_PATH --list $lib 2>/dev/null | sed -nr '/=>/!d; s/^\s*(\S+)\s*=>\s*(.*?)(\s*\(0x[0-9a-f]+\))?$/- \2 \1/;/^.+$/p;' | egrep -v "^- ($CODE_PATH/|$EXEC_PATH/.*/$LD_MUSL_BIN)"
+    $RELEXEC_CODE_PATH$LD_MUSL_PATH --list $lib 2>/dev/null | sed -nr '/=>/!d; s/^\s*(\S+)\s*=>\s*(.*?)(\s*\(0x[0-9a-f]+\))?$/- \2 \1/;/^.+$/p;' | egrep -v "^- ($RELEXEC_CODE_PATH/|$RELEXEC_EXEC_PATH/.*/$LD_MUSL_BIN)"
   
     # If any libraries do not match the expected pattern, grep returns true
     if [ $? -eq 0 ]; then
@@ -68,10 +97,10 @@ copy_binaries() {
   # Copy any binaries we require to the install location.
   # Write their paths to cmd-elf-bin.
 
-  if [ -n "$MERGE_BINDIRS" ]; then
-    mkdir -p $CODE_PATH/bin
+  if [ -n "$RELEXEC_MERGE_BINDIRS" ]; then
+    mkdir -p $RELEXEC_CODE_PATH/bin
   else
-    mkdir -p $CODE_PATH
+    mkdir -p $RELEXEC_CODE_PATH
   fi
 
   for bin in "$@"
@@ -79,12 +108,12 @@ copy_binaries() {
     local file=$(which $bin)
 
     if [ -n "$file" ]; then
-      if [ -z "$MERGE_BINDIRS" ]; then
-        tar cv $file 2>/dev/null | tar x -C $CODE_PATH/
-        echo "$CODE_PATH$file"
+      if [ -z "$RELEXEC_MERGE_BINDIRS" ]; then
+        tar cv $file 2>/dev/null | tar x -C $RELEXEC_CODE_PATH/
+        echo "$RELEXEC_CODE_PATH$file"
       else
-        cp -p $file $CODE_PATH/bin/
-        echo "$CODE_PATH/bin/$bin"
+        cp -p $file $RELEXEC_CODE_PATH/bin/
+        echo "$RELEXEC_CODE_PATH/bin/$bin"
       fi
     fi
   done
@@ -111,7 +140,7 @@ find_lib_deps() {
 }
 
 copy_libs() {
-  mkdir -p $CODE_PATH
+  mkdir -p $RELEXEC_CODE_PATH
 
   # For each resolved library filepath:
   # - Copy $dest to the install location.
@@ -126,18 +155,18 @@ copy_libs() {
     # Copy $dest; and if $dest is a symlink, copy its target.
     # This could conceivably result in duplicates if multiple symlinks point to the same target,
     # but is much simpler than trying to copy symlinks and targets separately.
-    cp -a --parents -L $dest $CODE_PATH
+    cp -a --parents -L $dest $RELEXEC_CODE_PATH
 
     # If needed, add a symlink from $lib to $(basename $dest)
     if [ "$(basename $dest)" != "$lib" ]; then
-      if cd $CODE_PATH/$(dirname $dest); then
+      if cd $RELEXEC_CODE_PATH/$(dirname $dest); then
         ln -s $(basename $dest) $lib
         cd - >/dev/null
       fi
     fi
 
     if [ "$dest" != "$LD_MUSL_PATH" ]; then
-        echo "$CODE_PATH$dest"
+        echo "$RELEXEC_CODE_PATH$dest"
     fi
   done
 }
@@ -145,8 +174,8 @@ copy_libs() {
 patch_binary() {
   local bin="$1"
 
-  if patchelf --set-interpreter $EXEC_PATH$LD_MUSL_PATH $bin 2>/dev/null; then
-    echo patchelf --set-interpreter $EXEC_PATH$LD_MUSL_PATH $bin >>/tmp/patchelf.log
+  if patchelf --set-interpreter $RELEXEC_EXEC_PATH$LD_MUSL_PATH $bin 2>/dev/null; then
+    echo patchelf --set-interpreter $RELEXEC_EXEC_PATH$LD_MUSL_PATH $bin >>/tmp/patchelf.log
     return 0
   fi
 
@@ -192,14 +221,14 @@ patch_binaries_and_libs_rpath() {
   for lib in $(sort -u "$@")
   do
 
-    if [ "$LIBPATH_TYPE" = "absolute" ]; then
-      echo patchelf --force-rpath --set-rpath $CODE_PATH/lib:$CODE_PATH/usr/lib:$CODE_PATH/usr/lib/xtables $lib >>/tmp/patchelf.log
-      patchelf --force-rpath --set-rpath $CODE_PATH/lib:$CODE_PATH/usr/lib:$CODE_PATH/usr/lib/xtables $lib >>/tmp/patchelf.log 2>&1 || exit 1
+    if [ "$RELEXEC_LIBPATH_TYPE" = "absolute" ]; then
+      echo patchelf --force-rpath --set-rpath $RELEXEC_CODE_PATH/lib:$RELEXEC_CODE_PATH/usr/lib:$RELEXEC_CODE_PATH/usr/lib/xtables $lib >>/tmp/patchelf.log
+      patchelf --force-rpath --set-rpath $RELEXEC_CODE_PATH/lib:$RELEXEC_CODE_PATH/usr/lib:$RELEXEC_CODE_PATH/usr/lib/xtables $lib >>/tmp/patchelf.log 2>&1 || exit 1
 
       # Add node as a needed library to '.node' files, to avoid misleading ldd errors in checkelfs()
       if [ -n "$NODE_PATH" ] && echo "$lib" | grep -qE "\.node$"; then
-        echo patchelf --add-needed "$CODE_PATH$NODE_PATH" $lib >>/tmp/patchelf.log
-        patchelf --add-needed "$CODE_PATH$NODE_PATH" $lib >>/tmp/patchelf.log 2>&1 || exit 1
+        echo patchelf --add-needed "$RELEXEC_CODE_PATH$NODE_PATH" $lib >>/tmp/patchelf.log
+        patchelf --add-needed "$RELEXEC_CODE_PATH$NODE_PATH" $lib >>/tmp/patchelf.log 2>&1 || exit 1
       fi
 
     else
@@ -207,7 +236,7 @@ patch_binaries_and_libs_rpath() {
       # To prevent this, we un-hardlink any hardlinked files before we patch them.
       replace_hard_link "$lib"
 
-      p=$(dirname "$lib" | sed -r "s|^$CODE_PATH[/]+||; s|[^/]+|..|g")
+      p=$(dirname "$lib" | sed -r "s|^$RELEXEC_CODE_PATH[/]+||; s|[^/]+|..|g")
       rpath="\$ORIGIN/$p/lib:\$ORIGIN/$p/usr/lib:\$ORIGIN/$p/usr/lib/xtables"
 
       # Add node as a needed library to '.node' files, to avoid misleading ldd errors in checkelfs()
@@ -222,7 +251,7 @@ patch_binaries_and_libs_rpath() {
         echo patchelf --add-needed "$NODE_BASENAME" "$lib" >>/tmp/patchelf.log
         patchelf --add-needed "$NODE_BASENAME" "$lib" >>/tmp/patchelf.log 2>&1 || exit 1
 
-        # patchelf --add-needed "$CODE_PATH$NODE_PATH" $lib || exit 1
+        # patchelf --add-needed "$RELEXEC_CODE_PATH$NODE_PATH" $lib || exit 1
       fi
 
       echo patchelf --force-rpath --set-rpath "$rpath" "$lib" >>/tmp/patchelf.log
@@ -243,11 +272,11 @@ copy_and_scan_for_dynamics() {
   # - This should includes all Theia .node files and spawn-helper, but not statically-linked binaries like 'rg'
   # - The only way to tell if a file is an ELF binary (or library) is to check the first 4 bytes for the magic byte sequence.
 
-  mkdir -p $CODE_PATH
+  mkdir -p $RELEXEC_CODE_PATH
 
   for q in "$@"
   do
-    tar cv "$q" 2>/dev/null | tar x -C $CODE_PATH/
+    tar cv "$q" 2>/dev/null | tar x -C $RELEXEC_CODE_PATH/
 
     # find "$q" -type f ! -name '*.o' -exec hexdump -n 4 -e '4/1 "%2x" " {}\n"' {} \; | sed '/^7f454c46/!d; s/^7f454c46 //' | xargs -n 1 -P 4 file | grep dynamically
 
@@ -256,17 +285,17 @@ copy_and_scan_for_dynamics() {
 }
 
 get_dynamics_interpretable() {
-  grep interpreter "$@" | cut -d':' -f1 | sed -r "s!^!$CODE_PATH!"
+  grep interpreter "$@" | cut -d':' -f1 | sed -r "s!^!$RELEXEC_CODE_PATH!"
 }
 
 get_dynamics_noninterpretable() {
-  grep -v interpreter "$@" | cut -d':' -f1 | sed -r "s!^!$CODE_PATH!"
+  grep -v interpreter "$@" | cut -d':' -f1 | sed -r "s!^!$RELEXEC_CODE_PATH!"
 }
 
 write_digest() {
   # Prepare full and unique list of ELF binaries and libs for reference purposes and for checking
-  sort -u /tmp/cmd-elf-bin >$CODE_PATH/.binelfs
-  sort -u /tmp/cmd-elf-lib >$CODE_PATH/.libelfs
+  sort -u /tmp/cmd-elf-bin >$RELEXEC_CODE_PATH/.binelfs
+  sort -u /tmp/cmd-elf-lib >$RELEXEC_CODE_PATH/.libelfs
 }
 
 init() {
@@ -279,11 +308,11 @@ init() {
 }
 
 all() {
-  # Copy elf binaries to CODE_PATH and generate 'cmd-elf-bin' list of ELF binaries
-  copy_binaries $BINARIES >>/tmp/cmd-elf-bin
+  # Copy elf binaries to RELEXEC_CODE_PATH and generate 'cmd-elf-bin' list of ELF binaries
+  copy_binaries $RELEXEC_BINARIES >>/tmp/cmd-elf-bin
 
   # Scan for additional dynamic binaries and libs
-  copy_and_scan_for_dynamics $DYNAMIC_PATHS >>/tmp/scanned-dynamics
+  copy_and_scan_for_dynamics $RELEXEC_DYNAMIC_PATHS >>/tmp/scanned-dynamics
 
   # Add the intepretable dynamics to 'cmd-elf-bin'
   get_dynamics_interpretable /tmp/scanned-dynamics >>/tmp/cmd-elf-bin
@@ -295,9 +324,9 @@ all() {
   find_lib_deps /tmp/cmd-elf-bin /tmp/cmd-elf-lib >>/tmp/libs-tuples
 
   # Scan for extra libraries not formally declared as dependencies, and append tuples to 'libs'
-  scan_extra_libs $EXTRA_LIBS >>/tmp/libs-extra-tuples
+  scan_extra_libs $RELEXEC_EXTRA_LIBS >>/tmp/libs-extra-tuples
 
-  # Copy the library tuples from 'libs' to CODE_PATH and append to 'cmd-elf-lib'
+  # Copy the library tuples from 'libs' to RELEXEC_CODE_PATH and append to 'cmd-elf-lib'
   copy_libs /tmp/libs-tuples /tmp/libs-extra-tuples >>/tmp/cmd-elf-lib
 
   # Patch interpreter on all ELF binaries in 'cmd-elf-bin'
@@ -307,17 +336,17 @@ all() {
   # TODO: This duplicates running patch_binaries_interpreter on all 'cmd-elf-bin' files, in order that it can be run in relaxed mode on 'cmd-elf-lib'
   patch_binaries_and_libs_rpath /tmp/cmd-elf-bin /tmp/cmd-elf-lib
 
-  # Write a summary of binaries and libraries to CODE_PATH
+  # Write a summary of binaries and libraries to RELEXEC_CODE_PATH
   write_digest
 
   # Symlink ld-musl-*.so.1 to ld
-  ln -s $LD_MUSL_BIN $CODE_PATH/lib/ld
+  ln -s $LD_MUSL_BIN $RELEXEC_CODE_PATH/lib/ld
 }
 
 init
 
 # Run with --checkelfs from within any distribution, to check that all dynamic library dependencies
-# are correctly being resolved to versions stored within CODE_PATH.
+# are correctly being resolved to versions stored within RELEXEC_CODE_PATH.
 if [ "$1" = "--checkelfs" ]; then
   # Check the full list for any library dependencies being inadvertently resolved outside the install location.
   # Returns true if OK, false on any problems.
