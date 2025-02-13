@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.3-labs
+
 ARG NODE_VERSION=20
 ARG ALPINE_VERSION=3.16
 
