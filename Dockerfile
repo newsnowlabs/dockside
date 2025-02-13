@@ -125,7 +125,7 @@ ENV BASH_ENV=""
 WORKDIR $OPT_PATH/ide/theia/theia/theia
 ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
 
-FROM debian AS openvscode-build
+FROM debian AS openvscode
 
 RUN apt update && apt -y install curl patchelf bsdextrautils file
 
@@ -314,7 +314,7 @@ ARG HOME=/home/newsnow
 #
 COPY --from=theia $THEIA_DST_PATH $THEIA_DST_PATH/
 COPY --from=theia /tmp/theia-bash-env /tmp/theia-bash-env
-COPY --from=openvscode-build ${VSCODE_DST_PATH} ${VSCODE_DST_PATH}/
+COPY --from=openvscode ${VSCODE_DST_PATH} ${VSCODE_DST_PATH}/
 
 ################################################################################
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
