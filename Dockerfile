@@ -101,6 +101,7 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       apk add --no-cache ripgrep; \
       cp $(which rg) $(find -name rg); \
     fi
+
 ADD build/development/makerelexec.sh /tmp/build/ide/theia
 
 RUN export \
