@@ -195,14 +195,14 @@ SHELL ["/bin/bash", "-c"]
 #
 RUN apt-get update && \
     apt-get -y upgrade && \
-    apt-get -y install \
+    apt-get -y --no-install-recommends --no-install-suggests install \
         apt-transport-https ca-certificates \
         curl \
         gnupg2 && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - && \
     echo "deb https://download.docker.com/linux/debian buster stable" >/etc/apt/sources.list.d/docker.list && \
     apt-get update && \
-    apt-get -y install \
+    apt-get -y --no-install-recommends --no-install-suggests install \
     sudo \
     nginx-light libnginx-mod-http-perl \
     wamerican \
@@ -223,8 +223,9 @@ RUN apt-get update && \
 
 COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
 
-RUN apt-get -y install \
+RUN apt-get -y --no-install-recommends --no-install-suggests install \
         libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
+        libio-aio-perl \
         git tig perltidy \
         procps vim less curl locales \
         /tmp/vsix-deps/*.deb && \
