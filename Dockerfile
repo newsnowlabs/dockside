@@ -124,6 +124,22 @@ ENV BASH_ENV=""
 WORKDIR $OPT_PATH/ide/theia/theia/theia
 ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
 
+FROM debian AS openvscode-build
+
+RUN apt update && apt -y install curl patchelf bsdextrautils file
+
+RUN curl -L https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v1.96.4/openvscode-server-v1.96.4-linux-x64.tar.gz | tar xz -C / && \
+    mv -v /openvs* /openvscode
+
+ADD build/development/makerelexec.sh /tmp/
+
+RUN export \
+        RELEXEC_BINARIES="" \
+        RELEXEC_DYNAMIC_PATHS="/openvscode" \
+        RELEXEC_CODE_PATH="/opt/dockside/ide/openvscode/1.96.4" \
+        RELEXEC_LIBPATH_TYPE="relative" && \
+    /tmp/makerelexec.sh --patchelfs
+
 ################################################################################
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
 #
@@ -281,6 +297,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 ARG OPT_PATH
 ARG THEIA_DST_PATH=$OPT_PATH/ide/theia
+ARG VSCODE_DST_PATH=$OPT_PATH/ide/openvscode
 ARG USER=dockside
 ARG APP=dockside
 ARG HOME=/home/newsnow
@@ -296,6 +313,7 @@ ARG HOME=/home/newsnow
 #
 COPY --from=theia $THEIA_DST_PATH $THEIA_DST_PATH/
 COPY --from=theia /tmp/theia-bash-env /tmp/theia-bash-env
+COPY --from=openvscode-build ${VSCODE_DST_PATH} ${VSCODE_DST_PATH}/
 
 ################################################################################
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
