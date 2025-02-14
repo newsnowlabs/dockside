@@ -334,7 +334,7 @@ RUN . /tmp/theia-bash-env && \
     mkdir -p $OPT_PATH/bin $OPT_PATH/host && \
     cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
     ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
-    cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/ && \
+    cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/frontend/ && \
     ln -sf $THEIA_PATH/bin/launch-ide.sh $OPT_PATH/bin/launch-ide.sh && \
     ln -sfr $THEIA_PATH $OPT_PATH/theia && \
     ln -sf $HOME/$APP/app/scripts/entrypoint.sh /entrypoint.sh && \
