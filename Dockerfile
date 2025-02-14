@@ -43,11 +43,13 @@ RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
     echo "export WSTUNNEL_BINARY=$WSTUNNEL_BINARY" >$BASH_ENV; \
     echo "export THEIA_VERSION=$THEIA_VERSION" >>$BASH_ENV; \
     echo "export THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION" >>$BASH_ENV; \
+    echo "export THEIA_BUILD_PATH=/theia" >>$BASH_ENV; \
     echo "export TARGETPLATFORM=$TARGETPLATFORM" >>$BASH_ENV; \
-    echo 'echo THEIA_VERSION=$THEIA_VERSION THEIA_PATH=$THEIA_PATH' >>$BASH_ENV; \
-    echo 'echo WSTUNNEL_BINARY=$WSTUNNEL_BINARY' >>$BASH_ENV; \
-    echo 'echo TARGETPLATFORM=$TARGETPLATFORM' >>$BASH_ENV; \
-    echo '[ -d $THEIA_PATH/theia ] && cd $THEIA_PATH/theia || true' >>$BASH_ENV; \
+    echo 'echo Running command with environment:' >>$BASH_ENV; \
+    echo 'echo - THEIA_VERSION=$THEIA_VERSION THEIA_BUILD_PATH=$THEIA_BUILD_PATH THEIA_PATH=$THEIA_PATH' >>$BASH_ENV; \
+    echo 'echo - WSTUNNEL_BINARY=$WSTUNNEL_BINARY' >>$BASH_ENV; \
+    echo 'echo - TARGETPLATFORM=$TARGETPLATFORM' >>$BASH_ENV; \
+    echo '[ -d $THEIA_BUILD_PATH ] && cd $THEIA_BUILD_PATH || true' >>$BASH_ENV; \
     echo -e '#!/bin/bash\n\nexec "$@"\n' >/tmp/theia-exec && chmod 755 /tmp/theia-exec; \
     . $BASH_ENV
 
@@ -56,11 +58,10 @@ RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
 # (including after running /tmp/theia-exec).
 SHELL ["/bin/bash", "-c"]
 
-ADD ./ide/theia build/development/elf-patcher.sh /tmp/build/ide/theia
+ADD ./ide/theia /tmp/build/ide/theia
 
-RUN mkdir -p $THEIA_PATH && \
-    cp -a /tmp/build/ide/theia/$THEIA_VERSION/build $THEIA_PATH/theia && \
-    cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin $THEIA_PATH/
+RUN mkdir -p $THEIA_BUILD_PATH && \
+    cp -a /tmp/build/ide/theia/$THEIA_VERSION/build/* $THEIA_BUILD_PATH
 
 # Build Theia
 RUN export \
@@ -71,7 +72,8 @@ RUN export \
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
-WORKDIR $THEIA_PATH/theia
+# Matches $THEIA_BUILD_PATH
+WORKDIR /theia
 ENTRYPOINT ["/tmp/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
 
 FROM theia-build AS theia-clean
@@ -91,14 +93,7 @@ RUN echo '*.ts' >> .yarnclean && \
     rm -rf node_modules/puppeteer/.local-chromium
 
 # Patch all binaries and dynamic libraries for full portability.
-
-FROM theia-clean AS theia-findelfs
-
-ENV BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq"
-
-RUN /tmp/build/ide/theia/elf-patcher.sh --findelfs
-
-FROM theia-findelfs AS theia
+FROM theia-clean AS theia
 
 # The version of rg installed by the Theia build on linux/arm/v7
 # depends on libs that are not available on Alpine on this platform.
@@ -109,14 +104,27 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       cp $(which rg) $(find -name rg); \
     fi
 
-RUN /tmp/build/ide/theia/elf-patcher.sh --patchelfs && \
+ADD build/development/make-bundelf-bundle.sh /tmp/build/ide/theia
+
+RUN export \
+        BUNDELF_BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq" \
+        BUNDELF_DYNAMIC_PATHS="$THEIA_BUILD_PATH" \
+        BUNDELF_CODE_PATH="$THEIA_PATH" \
+        BUNDELF_LIBPATH_TYPE="relative" \
+        BUNDELF_MERGE_BINDIRS="1" && \
+    /tmp/build/ide/theia/make-bundelf-bundle.sh --bundle && \
     cd $THEIA_PATH/bin && \
     ln -sf busybox sh && \
     ln -sf busybox su && \
     ln -sf busybox pgrep && \
-    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel
+    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel && \
+    cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin/* $THEIA_PATH/bin && \
+    cd $THEIA_PATH/.. && \
+    ln -sf theia-$THEIA_VERSION theia
 
-# Default diagnostics entrypoint for this stage (uses patched node)
+# Default diagnostics entrypoint for this stage (uses relocatable node and Theia, loses BASH_ENV build environment)
+ENV BASH_ENV=""
+WORKDIR $OPT_PATH/ide/theia/theia/theia
 ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
 
 ################################################################################
