@@ -62,7 +62,7 @@ ADD ./ide/theia /tmp/build/ide/theia
 
 RUN mkdir -p $THEIA_BUILD_PATH && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/build/* $THEIA_BUILD_PATH
-
+    
 # Build Theia
 RUN export \
         PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 \
@@ -126,6 +126,29 @@ RUN export \
 ENV BASH_ENV=""
 WORKDIR $OPT_PATH/ide/theia/theia/theia
 ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
+
+################################################################################
+# DOWNLOAD AND BUILD OPENVSCODE
+#
+FROM debian AS openvscode
+
+ARG OPT_PATH
+
+RUN apt update && \
+    apt -y --no-install-recommends --no-install-suggests install \
+        curl ca-certificates patchelf bsdextrautils file
+
+RUN curl -L https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v1.96.4/openvscode-server-v1.96.4-linux-x64.tar.gz | tar xz -C / && \
+    mv -v /openvs* /openvscode
+
+ADD build/development/make-bundelf-bundle.sh /tmp/
+
+RUN export \
+        BUNDELF_BINARIES="" \
+        BUNDELF_DYNAMIC_PATHS="/openvscode" \
+        BUNDELF_CODE_PATH="$OPT_PATH/ide/openvscode/1.96.4" \
+        BUNDELF_LIBPATH_TYPE="relative" && \
+    /tmp/make-bundelf-bundle.sh --bundle
 
 ################################################################################
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
@@ -285,6 +308,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 ARG OPT_PATH
 ARG THEIA_PATH=$OPT_PATH/ide/theia
+ARG VSCODE_PATH=$OPT_PATH/ide/openvscode
 ARG USER=dockside
 ARG APP=dockside
 ARG HOME=/home/newsnow
@@ -300,6 +324,7 @@ ARG HOME=/home/newsnow
 #
 COPY --from=theia $THEIA_PATH $THEIA_PATH/
 COPY --from=theia /tmp/theia-bash-env /tmp/theia-bash-env
+COPY --from=openvscode ${VSCODE_PATH} ${VSCODE_PATH}/
 
 ################################################################################
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
