@@ -6,7 +6,8 @@ ARG ALPINE_VERSION=3.19
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS theia-build
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq
+    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq \
+    git openssh-client-default
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
@@ -107,7 +108,7 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
 ADD build/development/make-bundelf-bundle.sh /tmp/build/ide/theia
 
 RUN export \
-        BUNDELF_BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq" \
+        BUNDELF_BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan" \
         BUNDELF_DYNAMIC_PATHS="$THEIA_BUILD_PATH" \
         BUNDELF_CODE_PATH="$THEIA_PATH" \
         BUNDELF_LIBPATH_TYPE="relative" \
@@ -117,6 +118,9 @@ RUN export \
     ln -sf busybox sh && \
     ln -sf busybox su && \
     ln -sf busybox pgrep && \
+    ln -sf git git-clone && \
+    ln -sf git-remote-http git-remote-https && \
+    cp -a /etc/ssl/certs $THEIA_PATH/ && \
     curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin/* $THEIA_PATH/bin && \
     cd $THEIA_PATH/.. && \
