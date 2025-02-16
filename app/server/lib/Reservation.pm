@@ -12,7 +12,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system);
+use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri);
 use Data qw($CONFIG $HOSTNAME);
 
 ################################################################################
@@ -155,6 +155,31 @@ sub data {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid unixuser '$value'" );
       }
    }
+   elsif($key eq 'gitURL') {
+      unless(
+         $value eq '' ||
+         $value =~ qr!^https://
+                     (?:
+                        [a-zA-Z0-9]
+                        (?:[a-zA-Z0-9-]*[a-zA-Z0-9])?
+                     \.)+          # Subdomains
+                     [a-zA-Z]{2,}  # Top-level domain
+                     /
+                     .+            # Non-empty path
+                     \.git$!x ||
+         $value =~ qr!^[a-zA-Z][\w-]*@ # Username
+                     (?:
+                        [a-zA-Z0-9]
+                        (?:[a-zA-Z0-9-]*[a-zA-Z0-9])?
+                     \.)+          # Subdomains
+                     [a-zA-Z]{2,}  # Top-level domain
+                     :
+                     .+            # Non-empty path
+                     \.git$!x
+         ) {
+         die Exception->new( 'msg' => "Failed to create Reservation with invalid gitURL '$value'" );
+      }
+   }
 
    $self->{'data'}{$key} = $value;
 
@@ -280,7 +305,8 @@ sub new {
             'image' => "",
             'unixuser' => "",
             'parentFQDN' => $data->{'data'}{'parentFQDN'} // "",
-            'FQDN' => $data->{'data'}{'FQDN'} // ""
+            'FQDN' => $data->{'data'}{'FQDN'} // "",
+            'gitURL' => ""
          },
          'owner' => $data->{'owner'},
          'meta' => {
@@ -570,7 +596,7 @@ sub cloneWithConstraints {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description ) ],
             'profileObject' => [ qw(name routers networks runtimes) ],
-            'data' => [ qw( FQDN parentFQDN image runtime unixuser ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId) ]
@@ -908,6 +934,38 @@ sub store {
    return $self;
 }
 
+sub getGitDevContainer {
+   my $self = shift;
+
+   my $uri = $self->data('gitURL');
+   flog("getGitDevContainer: uri=$uri");
+
+   return undef unless $uri;
+
+   if( $uri =~ m!^(?:https://github.com/|git\@github\.com:)(.*)\.git$! ) {
+      my $path = $1;
+
+      foreach my $branch (qw( main master )) {
+         # git@github.com:dwavesystems/ocean-devcontainer.git =>
+         # https://github.com/dwavesystems/ocean-devcontainer.git =>
+         # https://raw.githubusercontent.com/dwavesystems/ocean-devcontainer/refs/heads/main/.devcontainer/devcontainer.json
+         my $devcontainerUri = "https://raw.githubusercontent.com/$path/refs/heads/$branch/.devcontainer/devcontainer.json";
+
+         my $result = get_uri($devcontainerUri);
+         flog("getGitDevContainer: uri=$devcontainerUri; result=$result; is_success=" . ($result && $result->is_success) . "; body='" . ($result ? $result->body : 'N/A') . "'");
+
+         if( $result && $result->is_success ) {
+            # Strip comments
+            my $body = $result->body;
+            $body =~ s!//.*$!!gm;
+            return eval { return decode_json($body); };
+         }
+      }
+   }
+
+   return undef;
+}
+
 sub launch {
    my $self = shift;
 
@@ -1090,6 +1148,20 @@ sub exec {
       );
    }
 
+   my @envGit;
+   if( $reservation->gitURL() ) {
+      my ($git_domain) = $reservation->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
+      @envGit = (
+         "--env=GIT_URL=" . $reservation->gitURL(),
+         "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"
+      );
+   }
+
+   my @envDevContainer;
+   @envDevContainer = (
+      "--env=DEVCONTAINER_VSCODE=" . encode_json( $reservation->data('vscode') )
+   );
+
    # TODO: Configure Profiles to support launching IDE as non-root user
    flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
       join(' ', @Command)
@@ -1097,7 +1169,10 @@ sub exec {
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
+      "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
+      @envGit,
       @envSSH,
+      @envDevContainer,
       $containerId,
       @Command
    );

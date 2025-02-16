@@ -1,0 +1,34 @@
+{
+   "version": 2,
+   "name": "Git Repo",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+      }
+   ],
+   "networks": [ "bridge" ],
+   "images": [
+      "ubuntu:latest",
+      "debian:latest",
+      "alpine:latest"
+   ],
+   "gitURLs": ["*"],
+   "unixusers": ["dockside"],
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
+      "bind": [],
+      "volume": []
+   },
+   "lxcfs": true,
+   "dockerArgs": ["--memory=1G", "--pids-limit=4000"],
+   "command": [
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity"
+   ],
+}
