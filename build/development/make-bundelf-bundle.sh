@@ -5,7 +5,7 @@
 #
 # Licence: Apache 2.0
 # Authors: Struan Bartlett, NewsNow Labs, NewsNow Publishing Ltd
-# Version: 1.0.0
+# Version: 1.0.1
 # Git: https://github.com/newsnowlabs/bundelf
 
 # make-bundelf-bundle.sh is used to prepare and package ELF binaries and their 
@@ -109,7 +109,8 @@ copy_binaries() {
 
   for bin in "$@"
   do
-    local file=$(which $bin)
+    local file="$(which "$bin")"
+    local basename="$(basename "$file")"
 
     if [ -n "$file" ]; then
       if [ -z "$BUNDELF_MERGE_BINDIRS" ]; then
@@ -117,7 +118,7 @@ copy_binaries() {
         echo "$BUNDELF_CODE_PATH$file"
       else
         cp -p $file $BUNDELF_CODE_PATH/bin/
-        echo "$BUNDELF_CODE_PATH/bin/$bin"
+        echo "$BUNDELF_CODE_PATH/bin/$basename"
       fi
     fi
   done
