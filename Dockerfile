@@ -3,83 +3,123 @@
 ARG NODE_VERSION=20
 ARG ALPINE_VERSION=3.19
 
-FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS theia-build
+################################################################################
+# SET UP 'BASE' BUILD ENVIRONMENT
+#
 
-RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq \
-    git openssh-client-default
+FROM alpine:${ALPINE_VERSION} AS base
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
 
 # Create:
-# - a BASH_ENV script targeting the desired Theia version for the platform
-#   that sets the THEIA_VERSION and THEIA_PATH variables correctly for each platform
-#   and changes to the Theia build directory (once it exists);
+# - a BASH_ENV script targeting the desired versions of IDE for the platform,
+#   that sets environment variables correctly and changes to the Theia build directory (once it exists);
 # - a theia-exec wrapper script used to run the BASH_ENV script before running Theia
 #   in development builds of Theia ('theia-build' and 'theia' build stages/targets).
 #
 # We will set bash as the build shell to allow the BASH_ENV script to be executed,
 # every time a command is RUN and bash is spawned.
 #
-ENV BASH_ENV=/tmp/theia-bash-env
+ENV BASH_ENV=/tmp/dockside/bash-env
 
 # Some but not all needed wstunnel binaries are published on https://github.com/erebe/wstunnel.
 # Others we have had to compile from source. To ensure build reliability/reproducibility, we here
 # obtain wstunnel binaries from the Dockside Google Cloud Storage bucket. wstunnel is published
 # under https://github.com/erebe/wstunnel/blob/master/LICENSE.
-RUN if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then \
-      THEIA_VERSION=1.56.0; \
-      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"; \
-    elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then \
-      THEIA_VERSION=1.56.0; \
-      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"; \
-    elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then \
-      THEIA_VERSION=1.35.0; \
-      WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7"; \
-    else \
-      echo "Build error: Unsupported architecture '$TARGETPLATFORM'" >&2; \
-      exit 1; \
-    fi; \
-    echo "export WSTUNNEL_BINARY=$WSTUNNEL_BINARY" >$BASH_ENV; \
-    echo "export THEIA_VERSION=$THEIA_VERSION" >>$BASH_ENV; \
-    echo "export THEIA_PATH=$OPT_PATH/ide/theia/theia-$THEIA_VERSION" >>$BASH_ENV; \
-    echo "export THEIA_BUILD_PATH=/theia" >>$BASH_ENV; \
-    echo "export TARGETPLATFORM=$TARGETPLATFORM" >>$BASH_ENV; \
-    echo 'echo Running command with environment:' >>$BASH_ENV; \
-    echo 'echo - THEIA_VERSION=$THEIA_VERSION THEIA_BUILD_PATH=$THEIA_BUILD_PATH THEIA_PATH=$THEIA_PATH' >>$BASH_ENV; \
-    echo 'echo - WSTUNNEL_BINARY=$WSTUNNEL_BINARY' >>$BASH_ENV; \
-    echo 'echo - TARGETPLATFORM=$TARGETPLATFORM' >>$BASH_ENV; \
-    echo '[ -d $THEIA_BUILD_PATH ] && cd $THEIA_BUILD_PATH || true' >>$BASH_ENV; \
-    echo -e '#!/bin/bash\n\nexec "$@"\n' >/tmp/theia-exec && chmod 755 /tmp/theia-exec; \
-    . $BASH_ENV
+RUN <<EOF
+if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
+    THEIA_VERSION="1.56.0"
+    WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"
+    OPENVSCODE_VERSION="1.96.4"
+    OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-x64.tar.gz"
+elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
+    THEIA_VERSION="1.56.0"
+    WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"
+    OPENVSCODE_VERSION="1.96.4"
+    OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-arm64.tar.gz"
+elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then
+    THEIA_VERSION="1.35.0"
+    THEIA_BUILD_EXTRA_PACKAGES="ripgrep"
+    WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7"
+    OPENVSCODE_VERSION="1.96.4"
+    OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-armhf.tar.gz"
+    OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="libatomic1"
+else
+    echo "Build error: Unsupported architecture '$TARGETPLATFORM'" >&2;
+    exit 1;
+fi
+
+mkdir -p $(dirname $BASH_ENV)
+
+cat <<_EOE_ >$BASH_ENV
+export TARGETPLATFORM="$TARGETPLATFORM"
+
+export WSTUNNEL_BINARY="$WSTUNNEL_BINARY"
+
+export THEIA_VERSION="$THEIA_VERSION"
+export THEIA_PATH="$OPT_PATH/ide/theia/theia-$THEIA_VERSION"
+export THEIA_BUILD_PATH="/theia"
+export THEIA_BUILD_EXTRA_PACKAGES="$THEIA_BUILD_EXTRA_PACKAGES"
+
+export OPENVSCODE_VERSION="$OPENVSCODE_VERSION"
+export OPENVSCODE_BINARY="$OPENVSCODE_BINARY"
+export OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="$OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES"
+
+echo "Running command with environment:"
+echo "- TARGETPLATFORM=\$TARGETPLATFORM"
+echo "- WSTUNNEL_BINARY=\$WSTUNNEL_BINARY"
+echo "- THEIA_VERSION=\$THEIA_VERSION THEIA_BUILD_PATH=\$THEIA_BUILD_PATH THEIA_PATH=\$THEIA_PATH"
+echo "- OPENVSCODE_BINARY=\$OPENVSCODE_BINARY"
+
+### [ -d \$THEIA_BUILD_PATH ] && cd \$THEIA_BUILD_PATH || true
+_EOE_
+
+cat <<'_EOE_' >/tmp/dockside/theia-exec && chmod 755 /tmp/dockside/theia-exec
+#!/bin/bash
+
+[ -d $THEIA_BUILD_PATH ] && cd $THEIA_BUILD_PATH || true
+
+exec "$@"
+_EOE_
+EOF
+
+FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS theia-build
+
+COPY --from=base /tmp/dockside /tmp/dockside
+ENV BASH_ENV=/tmp/dockside/bash-env
+
+RUN apk update && \
+    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq \
+    git openssh-client-default
 
 # The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
 # The THEIA_VERSION and THEIA_PATH variables will thus be set correctly for each platform,
-# (including after running /tmp/theia-exec).
+# (including after running /tmp/theia-dockside/exec).
 SHELL ["/bin/bash", "-c"]
 
 ADD ./ide/theia /tmp/build/ide/theia
 
 RUN mkdir -p $THEIA_BUILD_PATH && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/build/* $THEIA_BUILD_PATH
-    
+
 # Build Theia
 RUN export \
         PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 \
         PUPPETEER_SKIP_DOWNLOAD=1 \
     && \
+    cd $THEIA_BUILD_PATH && \
     yarn config set network-timeout 600000 -g && yarn
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
 # Matches $THEIA_BUILD_PATH
-WORKDIR /theia
-ENTRYPOINT ["/tmp/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
+ENTRYPOINT ["/tmp/dockside/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
 
 FROM theia-build AS theia-clean
 
-RUN echo '*.ts' >> .yarnclean && \
+RUN cd $THEIA_BUILD_PATH && \
+    echo '*.ts' >> .yarnclean && \
     echo '*.ts.map' >> .yarnclean && \
     echo '*.tsx' >> .yarnclean && \
     echo '*.spec.*' >> .yarnclean && \
@@ -96,13 +136,15 @@ RUN echo '*.ts' >> .yarnclean && \
 # Patch all binaries and dynamic libraries for full portability.
 FROM theia-clean AS theia
 
+ARG OPT_PATH
+
 # The version of rg installed by the Theia build on linux/arm/v7
 # depends on libs that are not available on Alpine on this platform.
 # Workaround this by overwriting it with Alpine's own rg.
-ARG TARGETPLATFORM
+# ARG TARGETPLATFORM
 RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       apk add --no-cache ripgrep; \
-      cp $(which rg) $(find -name rg); \
+      cp $(which rg) $(find $THEIA_BUILD_PATH -name rg); \
     fi
 
 ADD build/development/make-bundelf-bundle.sh /tmp/build/ide/theia
@@ -124,12 +166,12 @@ RUN export \
     curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin/* $THEIA_PATH/bin && \
     cd $THEIA_PATH/.. && \
-    ln -sf theia-$THEIA_VERSION theia
+    ln -sf theia-$THEIA_VERSION latest
 
 # Default diagnostics entrypoint for this stage (uses relocatable node and Theia, loses BASH_ENV build environment)
 ENV BASH_ENV=""
-WORKDIR $OPT_PATH/ide/theia/theia/theia
-ENTRYPOINT ["/tmp/theia-exec", "../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
+WORKDIR $OPT_PATH/ide/theia/latest/theia
+ENTRYPOINT ["../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
 
 ################################################################################
 # DOWNLOAD AND BUILD OPENVSCODE
@@ -138,21 +180,36 @@ FROM debian AS openvscode
 
 ARG OPT_PATH
 
+# The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
+COPY --from=base /tmp/dockside /tmp/dockside
+ENV BASH_ENV=/tmp/dockside/bash-env
+SHELL ["/bin/bash", "-c"]
+
 RUN apt update && \
     apt -y --no-install-recommends --no-install-suggests install \
-        curl ca-certificates patchelf bsdextrautils file
+        curl ca-certificates patchelf bsdextrautils file \
+        $OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES
 
-RUN curl -L https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v1.96.4/openvscode-server-v1.96.4-linux-x64.tar.gz | tar xz -C / && \
+RUN curl -L "$OPENVSCODE_BINARY" | tar xz -C / && \
     mv -v /openvs* /openvscode
 
+ADD ./ide/openvscode/bin /tmp/bin
 ADD build/development/make-bundelf-bundle.sh /tmp/
 
 RUN export \
         BUNDELF_BINARIES="" \
         BUNDELF_DYNAMIC_PATHS="/openvscode" \
-        BUNDELF_CODE_PATH="$OPT_PATH/ide/openvscode/1.96.4" \
+        BUNDELF_CODE_PATH="$OPT_PATH/ide/openvscode/$OPENVSCODE_VERSION" \
         BUNDELF_LIBPATH_TYPE="relative" && \
-    /tmp/make-bundelf-bundle.sh --bundle
+    /tmp/make-bundelf-bundle.sh --bundle && \
+    cd $BUNDELF_CODE_PATH/.. && \
+    ln -s $OPENVSCODE_VERSION latest && \
+    cp -a /tmp/bin $OPENVSCODE_VERSION/
+
+# Default diagnostics entrypoint for this stage (uses relocatable node and openvscode, loses BASH_ENV build environment)
+ENV BASH_ENV=""
+WORKDIR $OPT_PATH/ide/openvscode/latest/openvscode
+ENTRYPOINT ["./node", "./out/server-main.js", "--host", "0.0.0.0", "--port", "3131", "--without-connection-token"]
 
 ################################################################################
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
@@ -235,14 +292,14 @@ RUN apt-get update && \
         curl \
         gnupg2 && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - && \
-    echo "deb https://download.docker.com/linux/debian buster stable" >/etc/apt/sources.list.d/docker.list && \
+    echo "deb https://download.docker.com/linux/debian $(cat /etc/os-release | grep VERSION_CODENAME | cut -d '=' -f2) stable" >/etc/apt/sources.list.d/docker.list && \
     apt-get update && \
     apt-get -y --no-install-recommends --no-install-suggests install \
     sudo \
     nginx-light libnginx-mod-http-perl \
     wamerican \
     bind9 dnsutils \
-    docker-ce docker-ce-cli containerd.io gcc- \
+    docker-ce docker-ce-cli docker-buildx-plugin containerd.io gcc- \
     perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
     python3-pip \
     acl \
@@ -327,7 +384,7 @@ ARG HOME=/home/newsnow
 # THEIA INTEGRATION
 #
 COPY --from=theia $THEIA_PATH $THEIA_PATH/
-COPY --from=theia /tmp/theia-bash-env /tmp/theia-bash-env
+COPY --from=base /tmp/dockside /tmp/dockside
 COPY --from=openvscode ${VSCODE_PATH} ${VSCODE_PATH}/
 
 ################################################################################
@@ -337,7 +394,8 @@ COPY --chown=$USER:$USER . $HOME/$APP/
 
 USER $USER
 WORKDIR $HOME
-RUN cp -a ~/$APP/build/development/dot-theia .theia && \
+RUN cp -a ~/$APP/build/development/dot-theia .vscode && \
+    cd ~ && ln -s .vscode .theia && cd - && \
     ln -s ~/$APP/build/development/perltidyrc ~/.perltidyrc && \
     ln -s ~/$APP/build/development/vetur.config.js ~/
 
@@ -359,13 +417,14 @@ VOLUME $OPT_PATH/host
 # before its own launch.sh runs.
 #
 USER root
-RUN . /tmp/theia-bash-env && \
+RUN . /tmp/dockside/bash-env && \
     mkdir -p $OPT_PATH/bin $OPT_PATH/host && \
     cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
     ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
-    cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/frontend/ && \
-    ln -sf $THEIA_PATH/bin/launch-ide.sh $OPT_PATH/bin/launch-ide.sh && \
+    if [ "$THEIA_VERSION" = "1.35.0" ]; then cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/; else cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/frontend/; fi && \
+    # ln -sf $THEIA_PATH/bin/launch-ide.sh $OPT_PATH/bin/launch-ide.sh && \
     ln -sfr $THEIA_PATH $OPT_PATH/theia && \
+    ln -sfr $THEIA_PATH $OPT_PATH/system && \
     ln -sf $HOME/$APP/app/scripts/entrypoint.sh /entrypoint.sh && \
     ln -sf $HOME/$APP/app/server/bin/password-wrapper /usr/local/bin/password && \
     ln -sf $HOME/$APP/app/server/bin/upgrade /usr/local/bin/upgrade && \
