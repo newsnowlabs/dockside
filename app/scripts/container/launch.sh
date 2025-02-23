@@ -1,4 +1,6 @@
-#!/opt/dockside/theia/bin/sh
+#!/opt/dockside/system/bin/sh
+
+DOCKSIDE_ROOT="/opt/dockside"
 
 log() {
    local PID="$$"
@@ -277,7 +279,7 @@ launch_nonroot() {
    # Exported env vars made available to run_nonroot:
    export DEVCONTAINER_VSCODE
 
-   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" /opt/dockside/launch.sh run_nonroot"
+   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" $DOCKSIDE_ROOT/launch.sh run_nonroot"
 }
 
 launch_theia() {
@@ -290,13 +292,32 @@ launch_theia() {
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
          # su will retain exported env vars and set new ones.
          # So we use 'env -i' to clear all env vars before setting just the ones needed.
-         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
+         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
       else
-         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
+         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
       fi
 
       sleep 1
    done   
+}
+
+launch_openvscode() {
+   # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
+   while true
+   do
+
+      log "Launching and supervising the openvscode IDE at $IIDE_PATH"
+
+      if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
+         # su will retain exported env vars and set new ones.
+         # So we use 'env -i' to clear all env vars before setting just the ones needed.
+         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
+      else
+         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
+      fi
+
+      sleep 1
+   done
 }
 
 run_nonroot() {
@@ -304,7 +325,13 @@ run_nonroot() {
    populate_ssh_agent_keys
    populate_known_hosts
    (create_git_repo; populate_vscode_extensions) &
-   launch_theia
+
+   if [ "$IDE" = "openvscode/latest" ]; then
+      IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/openvscode/* | tail -n 1)"
+      launch_openvscode
+   else
+      launch_theia
+   fi
 }
 
 launch_ide() {
@@ -321,7 +348,7 @@ init() {
    #
    # N.B. Assume we can find ls and tail in the PATH
    if [ -z "$IDE_PATH" ] || ! [ -d "$IDE_PATH" ]; then
-      IDE_PATH="$(ls -d /opt/dockside/ide/*/* | tail -n 1)"
+      IDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/*/* | tail -n 1)"
    fi
 
    [ -n "$IDE_USER" ] || IDE_USER="root"
