@@ -135,12 +135,14 @@
                         <!-- FIXME: Only owner or admin should be able to specify developers -->
                         <tr v-if="container.permissions.actions.setContainerDevelopers && isSelected">
                            <th>Developers</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode"><UserTagsInput v-model="container.meta.developers" :disabled="true"/></td>
+                           <td v-if="!isEditMode && !isPrelaunchMode && container.meta.developers"><UserTagsInput v-model="container.meta.developers" :disabled="true"/></td>
+                           <td v-if="!isEditMode && !isPrelaunchMode && !container.meta.developers"><em>[ Edit to share with developers (by name or role) ]</em></td>
                            <td v-else><UserTagsInput v-model="form.developers"/></td>
                         </tr>
                         <tr v-if="container.permissions.actions.setContainerViewers && isSelected">
                            <th>Viewers</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode"><UserTagsInput v-model="container.meta.viewers" :disabled="true"/></td>
+                           <td v-if="!isEditMode && !isPrelaunchMode && container.meta.viewers"><UserTagsInput v-model="container.meta.viewers" :disabled="true"/></td>
+                           <td v-if="!isEditMode && !isPrelaunchMode && !container.meta.viewers"><em>[ Edit to share with viewers (by name or role) ]</em></td>
                            <td v-else><UserTagsInput v-model="form.viewers"/></td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && container.status >= 0 && isSelected">
@@ -343,7 +345,7 @@
                description: edit ? this.container.meta.description : ''
             };
 
-            console.log('initialiseForm:' + this.profile);
+            console.log('initialiseForm:', this.form);
          },
          copy(value) {
             copyToClipboard(value);
