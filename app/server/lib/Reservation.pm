@@ -247,6 +247,15 @@ sub meta {
    elsif( $key eq 'description' ) {
       $self->{'meta'}{$key} = $value;
    }
+   elsif($key eq 'IDE') {
+      # Allow: theia|openvscode|theia/<version>|openvscode/<version>
+      # where <version> is a valid semver version string or 'latest'.
+      if( $value !~ m!^(?:theia|openvscode)(?:/(?:\d+\.\d+\.\d+|latest))?$! ) {
+         die Exception->new( 'msg' => "Failed to create Reservation with invalid IDE '$value'" );
+      }
+
+      $self->{'meta'}{$key} = $value;
+   }
 
    return $self;
 }
@@ -594,8 +603,8 @@ sub cloneWithConstraints {
       $clone->sanitise(
          {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
-            'meta' => [ qw( owner developers viewers private access description ) ],
-            'profileObject' => [ qw(name routers networks runtimes) ],
+            'meta' => [ qw( owner developers viewers private access description IDE ) ],
+            'profileObject' => [ qw( name routers networks runtimes IDEs ) ],
             'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL ) ],
             'dockerLaunchLogs' => 1
          },
@@ -1157,6 +1166,10 @@ sub exec {
       );
    }
 
+   my @envIDE = (
+      "--env=IDE=" . $reservation->meta('IDE')
+   );
+
    my @envDevContainer;
    @envDevContainer = (
       "--env=DEVCONTAINER_VSCODE=" . encode_json( $reservation->data('vscode') )
@@ -1166,6 +1179,7 @@ sub exec {
    flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
       join(' ', @Command)
    );
+
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
@@ -1173,6 +1187,7 @@ sub exec {
       @envGit,
       @envSSH,
       @envDevContainer,
+      @envIDE,
       $containerId,
       @Command
    );

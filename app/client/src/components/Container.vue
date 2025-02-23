@@ -103,6 +103,15 @@
                               </select>
                            </td>
                         </tr>
+                        <tr v-if="container.permissions.auth.developer && isSelected">
+                           <th>IDE</th>
+                           <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.IDE }}</td>
+                           <td v-else>
+                              <select class="form-control" v-model="form.IDE" :disabled="IDEs.length <= 1">
+                                 <option v-for="IDE in IDEs" v-bind:key="IDE">{{ IDE }}</option>
+                              </select>
+                           </td>
+                        </tr>
                         <tr v-for="(router, index) in routers" v-bind:key="index" v-bind:class="{'list-item':true}">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
@@ -290,6 +299,9 @@
          hasWildcardImages() {
            return ((this.profile && this.profile.images) ? this.profile.images.filter(x => x.includes("*")) : []).length > 0;
          },
+         IDEs() {
+            return (this.profile && this.profile.IDEs) ? this.profile.IDEs : [];
+         },
          networks() {
             return (this.profile && this.profile.networks) ? this.profile.networks : [];
          },
@@ -342,7 +354,8 @@
                access: edit ? this.container.meta.access : {},
                viewers: edit ? this.container.meta.viewers : '',
                developers: edit ? this.container.meta.developers : '',
-               description: edit ? this.container.meta.description : ''
+               description: edit ? this.container.meta.description : '',
+               IDE: edit ? this.container.meta.IDE : ''
             };
 
             console.log('initialiseForm:', this.form);
@@ -355,13 +368,14 @@
             const prefix = router.prefixes[0] ? router.prefixes[0] : 'www';
             const containerName = this.container.name;
             const host = window.dockside.host;
+            const path = ''; // router.type === 'ide' ? '/?folder=/home/dockside' : '';
             
-            if (router.type !== 'ssh') {
-               return `${protocol}://${prefix}-${containerName}${host}`;
-            } else {
+            if (router.type === 'ssh') {
                const unixuser = this.container.data.unixuser;
                const hostname = host.split(':')[0];
                return `ssh://${unixuser}@${prefix}-${containerName}${hostname}`;
+            } else {
+               return `${protocol}://${prefix}-${containerName}${host}${path}`;
             }
          },
          copyUri(router) {
@@ -486,6 +500,7 @@
                f.gitURL = p.gitURLs && p.gitURLs.length > 0 ? p.gitURLs[0].replace("*","") : '';
                f.runtime = p.runtimes[0];
                f.network = p.networks[0];
+               f.IDE = p.IDEs[0];
                f.access = Object.fromEntries(
                   p.routers.map(
                         r => [r.name ? r.name : r.prefixes[0], r.auth ? r.auth[0] : 'developer']
