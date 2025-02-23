@@ -8,7 +8,7 @@
          "prefixes": [ "www" ],
          "domains": [ "*" ],
          "https": { "protocol": "http", "port": 8080 },
-         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
       }
    ],
    "networks": [ "bridge" ],
@@ -25,5 +25,5 @@
    "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
    "command": [
       "/bin/sh", "-c", "sleep infinity"
-   ],
+   ]
 }
