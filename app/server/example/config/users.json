@@ -16,7 +16,8 @@
          "profiles": [ "*" ],
          "auth": [ "*" ],
          "images": [ "*" ],
-         "runtimes": [ "*" ]
+         "runtimes": [ "*" ],
+         "IDEs": [ "*" ]
       },
       "ssh": {
          "authorized_keys": [],
@@ -27,7 +28,7 @@
             }
          }
       }
-   },
+   }
    // Example
    // "johnsmith": {
    //    "id": 2,

@@ -336,7 +336,7 @@ sub updateDerivedResourceConstraints {
    }
 
    my $resourceConstraints = {};
-   foreach my $resourceType (qw( profiles runtimes networks auth images )) {
+   foreach my $resourceType (qw( profiles runtimes networks auth images IDEs )) {
 
       # Disallow all resources by default
       $resourceConstraints->{$resourceType} = { '*' => 0 };
@@ -628,7 +628,7 @@ sub set {
       # Not permitted
       return 0 unless
          # The createContainerReservation permission doesn't need to be checked:
-         # the image can only be set on launch, and the permission has already been
+         # the gitURL can only be set on launch, and the permission has already been
          # checked in createContainerReservation.
          defined($value) && # Check we were able to identify a default $value (if needed)
          $profileObject->has('gitURL', $value); # The requested gitURL is in the profile list
@@ -636,7 +636,7 @@ sub set {
       return $reservation->data('gitURL', $value);
    }
 
-   if( $property eq 'image') {
+   elsif( $property eq 'image') {
 
       if( $value eq '' ) {
          # Select default for this profile (and, where required, user).
@@ -654,7 +654,7 @@ sub set {
       return $reservation->data('image', $value);
    }
 
-   if( $property eq 'runtime') {
+   elsif( $property eq 'runtime') {
 
       if( $value eq '' ) {
          # Select default for this profile (and, where required, user).
@@ -708,6 +708,30 @@ sub set {
          $profileObject->has( 'unixuser', $value); # The requested unixuser is in the profile list
 
       return $reservation->data('unixuser', $value);
+   }
+
+   elsif( $property eq 'IDE') {
+
+      # Permitted, if no change in value is requested, or empty value requested when non-empty value already set.
+      if( $reservation->meta('IDE') eq $value || ($reservation->meta('IDE') ne '' && ($value eq '')) ) {
+         return 1;
+      }
+
+      if( $value eq '' ) {
+         # Select default for this profile (and, where required, user).
+         $value = $profileObject->default_IDE;
+      }
+
+      # Not permitted
+      return 0 unless
+         # The createContainerReservation permission doesn't need to be checked:
+         # the image can only be set on launch, and the permission has already been
+         # checked in createContainerReservation.
+         defined($value) && # Check we were able to identify a default $value (if needed)
+         $profileObject->has('IDE', $value) && # The requested gitURL is in the profile list
+         $self->can_on( $reservation, 'develop' ); # We can develop on the given container; IDE might be changed after launch.
+
+      return $reservation->meta('IDE', $value);
    }
 
    elsif( $property eq 'description') {
@@ -845,7 +869,7 @@ sub updateContainerReservation {
 
    # FIXME: We don't want to update data.network, when we change network; or do we?
    # FIXME: Should calling $reservation->data('network', <network>) call update_network?
-   foreach my $m (qw(access viewers developers private network description)) {
+   foreach my $m (qw( access viewers developers private network description IDE )) {
       # Don't try and update arguments that don't exist or are undefined.
       if(defined($args->{$m})) {
          $self->set($reservation, $m, $args->{$m}) || 
@@ -923,7 +947,7 @@ sub createContainerReservation {
       }
    );
 
-   foreach my $m (qw(profile image runtime network unixuser access viewers developers private description gitURL)) {
+   foreach my $m (qw( profile image runtime network unixuser access viewers developers private description gitURL IDE )) {
       $self->set($reservation, $m, $args->{$m}) || 
          die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
    }

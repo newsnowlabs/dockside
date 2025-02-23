@@ -66,6 +66,7 @@ sub versionUpgrade {
    if($self->version == 2) {
       $self->{'runtimes'} = ['runc'] unless $self->{'runtimes'} && @{$self->{'runtimes'}} > 0;
       $self->{'unixusers'} = ['dockside'] unless $self->{'unixusers'} && @{$self->{'unixusers'}} > 0;
+      $self->{'IDEs'} = ['theia/latest', 'openvscode/latest'] unless $self->{'IDEs'} && @{$self->{'IDEs'}} > 0;
 
       # If unspecified in profile, set to value of config.json default, or true.
       $self->{'ssh'} //= $CONFIG->{'ssh'}{'default'} // 1;
@@ -210,6 +211,7 @@ sub validate {
          ssh
          security
          gitURLs
+         IDEs
       )
    );
 
@@ -403,6 +405,10 @@ sub gitURLs {
    return $_[0]->{'gitURLs'} // [];
 }
 
+sub IDEs {
+   return $_[0]->{'IDEs'} // [];
+}
+
 sub unixusers {
    return $_[0]->{'unixusers'} // [];
 }
@@ -494,6 +500,9 @@ sub has {
    elsif($type eq 'network') {
       $array = $self->networks;
    }
+   elsif($type eq 'IDE') {
+      $array = $self->IDEs;
+   }
    elsif($type eq 'unixuser') {
       $array = $self->unixusers;
    }
@@ -583,6 +592,15 @@ sub default_gitURL {
    return '';
 }
 
+sub default_IDE {
+   my $self = shift;
+
+   return $self->{'IDEs'}[0] if @{$self->{'IDEs'}};
+
+   # Default IDE is '' if none is specified
+   return '';
+}
+
 sub default_command {
    my $self = shift;
 
@@ -660,7 +678,7 @@ sub applyConstraints {
    my $self = shift;
    my $constraints = shift;
 
-   foreach my $resourceType (qw( runtimes networks auth images )) {
+   foreach my $resourceType (qw( runtimes networks auth images IDEs )) {
 
       # This constraint is defined in User->updateDerivedResourceConstraints.
       # It is assumed all required constraints will have been generated.
