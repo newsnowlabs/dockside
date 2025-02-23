@@ -343,7 +343,7 @@
                description: edit ? this.container.meta.description : ''
             };
 
-            console.log('initialiseForm:' + this.profile);
+            console.log('initialiseForm:', this.form);
          },
          copy(value) {
             copyToClipboard(value);
