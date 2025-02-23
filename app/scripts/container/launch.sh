@@ -20,7 +20,7 @@ debug() {
 }
 
 # Create busybox shortcut for certain commands
-for a in id chown chmod date find grep mkdir mv tr; do eval "$a() { busybox $a \"\$@\"; }"; done
+for a in id chown chmod date find grep mkdir mv sed sort tr xargs; do eval "$a() { busybox $a \"\$@\"; }"; done
 
 # Assumes getent can be found in PATH
 create_user() {
@@ -161,7 +161,7 @@ create_git_repo() {
    log "- Running: $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL"
    GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL
 
-   # If $GIR_URL is an https:// URI, then store sslcainfo in .gitconfig
+   # If $GIT_URL is an https:// URI, then store sslcainfo in .gitconfig
    if echo "$GIT_URL" | grep -qE '^https?://'; then
       log "Updating ~/.gitconfig with http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt"
       $IDE_PATH/bin/git config -f $HOME/.gitconfig --add http.sslcainfo $IDE_PATH/certs/ca-certificates.crt
@@ -181,14 +181,34 @@ spawn_ssh_agent() {
 }
 
 populate_known_hosts() {
-   log "Populating known_hosts via ssh keyscan for domains: '$SSH_KNOWN_HOSTS_DOMAINS' ..."
 
    if [ -n "$SSH_KNOWN_HOSTS_DOMAINS" ]; then
-      local DOMAINS="$(echo $SSH_KNOWN_HOSTS_DOMAINS | tr ',' ' ')"
-
-      log "- Running: IDE_PATH/bin/ssh-keyscan $DOMAINS >$HOME/.ssh/known_hosts"
-      $IDE_PATH/bin/ssh-keyscan $DOMAINS >$HOME/.ssh/known_hosts
+      # Replace any ',' with spaces
+      SSH_KNOWN_HOSTS_DOMAINS=$(echo $SSH_KNOWN_HOSTS_DOMAINS | tr ',' ' ')
+      log "Known-hosts domains specifically requested: '$SSH_KNOWN_HOSTS_DOMAINS'"
    fi
+
+   # Scan home folder for preexisting GIT repos and extract list of remote urls
+   log "Scanning for known-hosts domains from preexisting git repos: ..."
+   local SSH_KNOWN_HOSTS_REPO_DOMAINS=$(
+      find $HOME -type d -name .git -exec echo "{}/config" \; | \
+         xargs -I '{}' grep url '{}' | \
+         sed -r 's|\s*url\s*=\s*||; /^[^@]+@/!d; s|^[^@]+@([^:]+).*$|\1|' | \
+         sort -u
+   )
+   log "Scan for known-hosts domains found: '$SSH_KNOWN_HOSTS_REPO_DOMAINS'"
+
+   local SSH_KNOWN_HOSTS_DOMAINS_ALL=$(
+      echo $SSH_KNOWN_HOSTS_REPO_DOMAINS $SSH_KNOWN_HOSTS_DOMAINS | \
+      tr ' ' '\012' | \
+      sort -u
+   )
+
+   if [ -n "$SSH_KNOWN_HOSTS_DOMAINS_ALL" ]; then
+      log "- Running: IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >$HOME/.ssh/known_hosts"
+      $IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >$HOME/.ssh/known_hosts
+   fi
+
 }
 
 populate_ssh_agent_keys() {

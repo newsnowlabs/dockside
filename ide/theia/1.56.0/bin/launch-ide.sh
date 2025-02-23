@@ -11,11 +11,6 @@ log() {
   echo "$S$1" >&2
 }
 
-which() {
-  local cmd="$1"
-  for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && break; done
-}
-
 LOG=$LOG_PATH/theia.log
 
 log "Switching logging to '$LOG' ..."
@@ -31,15 +26,8 @@ log "Launching IDE from IDE_PATH='$IDE_PATH' ..."
 
 log "Backing up and overriding PATH=$PATH ..."
 export _PATH="$PATH"
-export PATH="$IDE_PATH/bin:$PATH"
+export PATH="$PATH:$IDE_PATH/bin"
 export GIT_EXEC_PATH="$IDE_PATH/bin"
-
-# Run ssh-agent if available, but not already running.
-log "Checking for ssh-agent ..."
-if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
-   log "Found ssh-agent binary but no running agent, so launching it ..."
-   eval $($(which ssh-agent))
-fi
 
 # See https://github.com/eclipse-theia/theia/blob/master/CHANGELOG.md under v0.13.0
 # 
