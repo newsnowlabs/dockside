@@ -26,7 +26,7 @@ log "Launching IDE from IDE_PATH='$IDE_PATH' ..."
 
 log "Backing up and overriding PATH=$PATH ..."
 export _PATH="$PATH"
-export PATH="$IDE_PATH/bin:$PATH"
+export PATH="$PATH:$IDE_PATH/bin"
 export GIT_EXEC_PATH="$IDE_PATH/bin"
 
 # See https://github.com/eclipse-theia/theia/blob/master/CHANGELOG.md under v0.13.0
