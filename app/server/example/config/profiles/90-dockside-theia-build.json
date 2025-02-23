@@ -11,7 +11,7 @@
          "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
 
          // This normally implies public port 443
-         "https": { "protocol": "http", "port": 3131 },
+         "https": { "protocol": "http", "port": 3131 }
       },
       {
          "name": "passthru",
@@ -20,8 +20,8 @@
          "type": "passthru",
 
          // This normally implies public port 443
-         "https": { "protocol": "http", "port": 3131 },
-      },
+         "https": { "protocol": "http", "port": 3131 }
+      }
    ],
 
    "networks": [ "bridge" ],
@@ -62,5 +62,5 @@
    },
 
    "dockerArgs": ["--memory=2G", "--pids-limit=4000", "--env=THEIA_WEBVIEW_EXTERNAL_ENDPOINT={{uuid}}-wv-{{hostname}}", "--env=THEIA_MINI_BROWSER_HOST_PATTERN={{uuid}}-mb-{{hostname}}"],
-   "runDockerInit": false,
+   "runDockerInit": false
 }

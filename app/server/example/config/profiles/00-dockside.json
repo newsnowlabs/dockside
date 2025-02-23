@@ -12,7 +12,7 @@
          "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
 
          // This normally implies public port 443
-         "https": { "protocol": "https", "port": 443 },
+         "https": { "protocol": "https", "port": 443 }
       },
       {
          "name": "passthru",
@@ -25,14 +25,15 @@
          "http": { "protocol": "http", "port": 80 },
 
          // This normally implies public port 443
-         "https": { "protocol": "https", "port": 443 },
-      },
+         "https": { "protocol": "https", "port": 443 }
+      }
    ],
 
    "networks": [ "bridge" ],
    "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:test" ],
 
    "unixusers": [ "dockside" ],
+   "home": "/home/newsnow",
 
    "imagePathsFilter" : [],
 
@@ -56,7 +57,7 @@
       // Use this to bind-mount shared development resources, or shared application data, from the host
       // into your containers, and which will not be duplicated in a clone operation.
       "bind": [ 
-         { "src": "/var/run/docker.sock", "dst": "/var/run/docker.sock" },
+         { "src": "/var/run/docker.sock", "dst": "/var/run/docker.sock" }
       ],
 
       "volume": [

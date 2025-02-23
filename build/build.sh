@@ -1,11 +1,11 @@
 #!/bin/bash
 
-IMAGE=$(basename $(pwd))
 REPO="newsnowlabs/dockside"
 DOCKERFILE="Dockerfile"
 TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
 BUILDER=buildkit
 PLATFORMS_DEFAULT_DEPOT="linux/amd64,linux/arm64,linux/arm/v7"
+DIR=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/..
 
 usage() {
   echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push|--load] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] [--builder [depot|buildx|buildkit]] [--platforms <platforms>] | [--clean] | [--list]" >&2
@@ -113,6 +113,9 @@ build_env
 
 [ -z "$DOCKER_BUILDKIT" ] && DOCKER_BUILDKIT=1
 export DOCKER_BUILDKIT
+
+echo "$0: Changing directory to '$DIR'" >&2
+cd $DIR || exit 1
 
 case "$BUILDER" in
 
