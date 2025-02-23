@@ -3,6 +3,7 @@
    // for the documentation about the extensions.json format
    "recommendations": [
       "richterger.perl",
+      "ms-azuretools.vscode-docker",
       "vscode.css",
       "vscode.docker",
       "dbaeumer.vscode-eslint",
