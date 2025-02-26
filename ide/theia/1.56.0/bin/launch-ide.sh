@@ -1,4 +1,4 @@
-#!/opt/dockside/theia/bin/sh -l
+#!/opt/dockside/system/latest/bin/sh -l
 
 # Expects:
 # - IDE_PATH
@@ -41,12 +41,12 @@ export GIT_EXEC_PATH="$IDE_PATH/bin"
 #export THEIA_MINI_BROWSER_HOST_PATTERN='{{uuid}}-minibrowser-{{hostname}}'
 export THEIA_WEBVIEW_EXTERNAL_ENDPOINT='{{uuid}}-wv-{{hostname}}'
 export THEIA_MINI_BROWSER_HOST_PATTERN='{{uuid}}-mb-{{hostname}}'
-export SHELL="$IDE_PATH/bin/dummysh"
+export SHELL="$IIDE_PATH/bin/dummysh"
 
-THEIA_PATH="$IDE_PATH"
+THEIA_PATH="$IIDE_PATH"
 log "Launching IDE using: $THEIA_PATH/bin/node $THEIA_PATH/theia/src-gen/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 ..."
 
-unset IDE_PATH
+unset IDE_PATH IIDE_PATH IDE LOG_PATH
 cd $THEIA_PATH/theia || exit 1
 
 log "Listing launch environment variables ..."

@@ -1,4 +1,4 @@
-#!/opt/dockside/system/bin/sh -l
+#!/opt/dockside/system/latest/bin/sh -l
 
 # Expects:
 # - IDE_PATH
@@ -9,11 +9,6 @@ log() {
   local PID="$$"
   local S=$(printf "%s|%15s|%5d|" "$(date +%Y-%m-%d.%H:%M:%S)" "openvscode" "$PID")
   echo "$S$1" >&2
-}
-
-which() {
-  local cmd="$1"
-  for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && break; done
 }
 
 LOG=$LOG_PATH/openvscode.log
@@ -33,7 +28,7 @@ export GIT_EXEC_PATH="$IDE_PATH/bin"
 
 log "Launching IDE from IIDE_PATH='$IIDE_PATH' using: ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token ..."
 
-cd $IDE_PATH/../../openvscode/latest/openvscode
+cd $IIDE_PATH/openvscode
 unset IDE_PATH IDE IIDE_PATH LOG_PATH
 
 log "- environment variables:"
