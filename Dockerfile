@@ -2,11 +2,12 @@
 
 ARG NODE_VERSION=20
 ARG ALPINE_VERSION=3.19
+ARG DEBIAN_VERSION=bullseye
 
 ################################################################################
 # SET UP 'BASE' BUILD ENVIRONMENT
 #
-
+# (/tmp/dockside will be used by other build stages)
 FROM alpine:${ALPINE_VERSION} AS base
 
 ARG OPT_PATH
@@ -66,13 +67,13 @@ export OPENVSCODE_VERSION="$OPENVSCODE_VERSION"
 export OPENVSCODE_BINARY="$OPENVSCODE_BINARY"
 export OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="$OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES"
 
+export DS_PATH=$OPT_PATH/system/latest
+
 echo "Running command with environment:"
 echo "- TARGETPLATFORM=\$TARGETPLATFORM"
 echo "- WSTUNNEL_BINARY=\$WSTUNNEL_BINARY"
 echo "- THEIA_VERSION=\$THEIA_VERSION THEIA_BUILD_PATH=\$THEIA_BUILD_PATH THEIA_PATH=\$THEIA_PATH"
 echo "- OPENVSCODE_BINARY=\$OPENVSCODE_BINARY"
-
-### [ -d \$THEIA_BUILD_PATH ] && cd \$THEIA_BUILD_PATH || true
 _EOE_
 
 cat <<'_EOE_' >/tmp/dockside/theia-exec && chmod 755 /tmp/dockside/theia-exec
@@ -82,21 +83,23 @@ cat <<'_EOE_' >/tmp/dockside/theia-exec && chmod 755 /tmp/dockside/theia-exec
 
 exec "$@"
 _EOE_
+
+apk add --no-cache bash
 EOF
 
+################################################################################
+# BUILD THEIA IDE
+#
 FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS theia-build
+
+RUN apk add --no-cache bash
 
 COPY --from=base /tmp/dockside /tmp/dockside
 ENV BASH_ENV=/tmp/dockside/bash-env
+SHELL ["/bin/bash", "-c"]
 
 RUN apk update && \
-    apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq \
-    git openssh-client-default
-
-# The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
-# The THEIA_VERSION and THEIA_PATH variables will thus be set correctly for each platform,
-# (including after running /tmp/theia-dockside/exec).
-SHELL ["/bin/bash", "-c"]
+    apk add --no-cache make gcc g++ python3 libsecret-dev
 
 ADD ./ide/theia /tmp/build/ide/theia
 
@@ -116,6 +119,9 @@ RUN export \
 # Matches $THEIA_BUILD_PATH
 ENTRYPOINT ["/tmp/dockside/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
 
+################################################################################
+# CLEAN THEIA IDE
+#
 FROM theia-build AS theia-clean
 
 RUN cd $THEIA_BUILD_PATH && \
@@ -133,8 +139,11 @@ RUN cd $THEIA_BUILD_PATH && \
     rm -rf patches && \
     rm -rf node_modules/puppeteer/.local-chromium
 
+################################################################################
+# BUILD THEIA IDE BUNDLE
+#
 # Patch all binaries and dynamic libraries for full portability.
-FROM theia-clean AS theia
+FROM theia-clean AS theia-ide
 
 ARG OPT_PATH
 
@@ -147,23 +156,18 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       cp $(which rg) $(find $THEIA_BUILD_PATH -name rg); \
     fi
 
-ADD build/development/make-bundelf-bundle.sh /tmp/build/ide/theia
+RUN apk add --no-cache file patchelf
+
+ADD build/development/make-bundelf-bundle.sh /tmp
 
 RUN export \
-        BUNDELF_BINARIES="node busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan" \
+        BUNDELF_BINARIES="node" \
         BUNDELF_DYNAMIC_PATHS="$THEIA_BUILD_PATH" \
         BUNDELF_CODE_PATH="$THEIA_PATH" \
         BUNDELF_LIBPATH_TYPE="relative" \
         BUNDELF_MERGE_BINDIRS="1" && \
-    /tmp/build/ide/theia/make-bundelf-bundle.sh --bundle && \
+    /tmp/make-bundelf-bundle.sh --bundle && \
     cd $THEIA_PATH/bin && \
-    ln -sf busybox sh && \
-    ln -sf busybox su && \
-    ln -sf busybox pgrep && \
-    ln -sf git git-clone && \
-    ln -sf git-remote-http git-remote-https && \
-    cp -a /etc/ssl/certs $THEIA_PATH/ && \
-    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin/* $THEIA_PATH/bin && \
     cd $THEIA_PATH/.. && \
     ln -sf theia-$THEIA_VERSION latest
@@ -174,9 +178,44 @@ WORKDIR $OPT_PATH/ide/theia/latest/theia
 ENTRYPOINT ["../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
 
 ################################################################################
-# DOWNLOAD AND BUILD OPENVSCODE
+# BUILD DOCKSIDE 'SYSTEM' BINARY BUNDLE
 #
-FROM debian AS openvscode
+# Patch all binaries and dynamic libraries for full portability.
+FROM base AS system
+
+# The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
+# COPY --from=base /tmp/dockside /tmp/dockside
+ENV BASH_ENV=/tmp/dockside/bash-env
+SHELL ["/bin/bash", "-c"]
+
+RUN apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq git openssh-client-default
+
+ADD build/development/make-bundelf-bundle.sh /tmp
+
+RUN cat /tmp/dockside/bash-env
+
+RUN export \
+        BUNDELF_BINARIES="busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan" \
+        BUNDELF_CODE_PATH="$DS_PATH" \
+        BUNDELF_LIBPATH_TYPE="relative" \
+        BUNDELF_MERGE_BINDIRS="1" && \
+    env | sort && \
+    /tmp/make-bundelf-bundle.sh --bundle
+
+RUN cd $DS_PATH/bin && \
+    ln -sf busybox sh && \
+    ln -sf busybox su && \
+    ln -sf busybox pgrep && \
+    ln -sf git git-clone && \
+    ln -sf git-remote-http git-remote-https && \
+    cp -a /etc/ssl/certs $DS_PATH/ && \
+    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel
+
+################################################################################
+# BUILD OPENVSCODE IDE BINARY BUNDLE
+#
+# Patch all binaries and dynamic libraries for full portability.
+FROM debian AS openvscode-ide
 
 ARG OPT_PATH
 
@@ -214,7 +253,6 @@ ENTRYPOINT ["./node", "./out/server-main.js", "--host", "0.0.0.0", "--port", "31
 ################################################################################
 # DOWNLOAD AND INSTALL DEVELOPMENT VSIX PLUGINS
 #
-
 FROM alpine AS vsix-plugins
 
 COPY build/development/install-vsix.sh /root/install-vsix.sh
@@ -226,10 +264,10 @@ RUN apk update && \
 ################################################################################
 # BUILD DEVELOPMENT VSIX PLUGINS DEPENDENCIES
 # - libperl-languageserver-perl, libcompiler-lexer-perl, libanyevent-aio-perl
+#
+FROM debian:$DEBIAN_VERSION AS vsix-plugins-deps
 
-FROM debian:bullseye AS vsix-plugins-deps
-
-ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Install dependencies
 RUN apt-get update && apt-get -y install \
@@ -250,38 +288,34 @@ RUN mkdir -p /home/newsnow/.cpan
 # Configure CPAN
 COPY --chown=newsnow:newsnow build/development/cpan/MyConfig.pm /home/newsnow/.cpan/CPAN/MyConfig.pm
 
-# BUILD libcompiler-lexer-perl_*.deb
+# # BUILD libcompiler-lexer-perl_*.deb
 RUN git clone https://github.com/goccy/p5-Compiler-Lexer && cd ~/p5-Compiler-Lexer && rm -rf .git && dh-make-perl make . || true
 RUN cd ~/p5-Compiler-Lexer && DEB_BUILD_OPTIONS=nocheck fakeroot ./debian/rules binary
 RUN sudo dpkg -i libcompiler-lexer-perl_*.deb
 
-# BUILD libanyevent-aio-perl
+# # # BUILD libanyevent-aio-perl
 RUN PERL_YAML_BACKEND=YAML::XS cpan2deb AnyEvent::AIO && sudo dpkg -i libanyevent-aio-perl_1.1-1_all.deb
 
 # BUILD Perl::LanguageServer
-# RUN cpan2deb Perl::LanguageServer --version 2.1.0
 RUN git clone https://github.com/NewsNow/Perl-LanguageServer.git && cd ~/Perl-LanguageServer && rm -rf .git && dh-make-perl make . || true
 RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
 
 ################################################################################
 # MAIN DOCKSIDE BUILD
 #
+FROM node:20-$DEBIAN_VERSION AS dockside-1
 
-FROM node:20-bullseye AS dockside-1
-
-ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 
 ARG OPT_PATH
 ARG USER=dockside
 ARG APP=dockside
 ARG HOME=/home/newsnow
 
-################################################################################
-# USE BASH SHELL
-#
+# Use bash shell
 SHELL ["/bin/bash", "-c"]
 
-################################################################################
+# ---------------------------
 # DOCKER INSTALL DEPENDENCIES
 # (See https://docs.docker.com/install/linux/docker-ce/debian/)
 #
@@ -295,40 +329,20 @@ RUN apt-get update && \
     echo "deb https://download.docker.com/linux/debian $(cat /etc/os-release | grep VERSION_CODENAME | cut -d '=' -f2) stable" >/etc/apt/sources.list.d/docker.list && \
     apt-get update && \
     apt-get -y --no-install-recommends --no-install-suggests install \
-    sudo \
-    nginx-light libnginx-mod-http-perl \
-    wamerican \
-    bind9 dnsutils \
-    docker-ce docker-ce-cli docker-buildx-plugin containerd.io gcc- \
-    perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
-    python3-pip \
-    acl \
-    s6 \
-    jq \
-    kmod \
-    logrotate cron- bcron- exim4-
+        sudo \
+        nginx-light libnginx-mod-http-perl \
+        wamerican \
+        bind9 dnsutils \
+        docker-ce docker-ce-cli docker-buildx-plugin containerd.io gcc- \
+        perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
+        python3-pip \
+        acl \
+        s6 \
+        jq \
+        kmod \
+        logrotate cron- bcron- exim4-
 
-################################################################################
-# DEVELOPMENT DEPENDENCIES
-#
-# Perl::LanguageServer dependencies
-
-COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
-
-RUN apt-get -y --no-install-recommends --no-install-suggests install \
-        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
-        libio-aio-perl \
-        git tig perltidy \
-        procps vim less curl locales \
-        /tmp/vsix-deps/*.deb && \
-    rm -rf /tmp/vsix-deps
-
-################################################################################
-# GCLOUD SDK: https://cloud.google.com/sdk/docs/quickstart-debian-ubuntu
-#
-# RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg  add - && apt-get update && apt-get -y install google-cloud-sdk
-
-################################################################################
+# -----------------------------------------
 # CREATE USER, AND HOME AND LOG DIRECTORIES
 #
 # Create the user, add to the docker and bind groups, set home directory
@@ -340,20 +354,20 @@ RUN useradd -l -U -m $USER -s /bin/bash -d $HOME && \
     touch /var/log/$APP/$APP.log && \
     chown -R $USER.$USER $HOME /var/log/$APP/$APP.log
 
-################################################################################
+# ----------------
 # DEHYDRATED SETUP
 #
 USER $USER
 COPY --chown=$USER:$USER dehydrated $HOME/$APP/dehydrated/
 
-################################################################################
+# ------------------
 # VUE CLIENT INSTALL
 #
 COPY --chown=$USER:$USER app/client $HOME/$APP/app/client/
 WORKDIR $HOME/$APP/app/client
 RUN npm install && npm run build && npm cache clean --force
 
-################################################################################
+# --------------
 # MKDOCS INSTALL
 #
 COPY --chown=$USER:$USER app/server/assets $HOME/$APP/app/server/assets/
@@ -365,33 +379,31 @@ RUN pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/.l
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 
-ARG DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 
 ARG OPT_PATH
 ARG THEIA_PATH=$OPT_PATH/ide/theia
 ARG VSCODE_PATH=$OPT_PATH/ide/openvscode
+ARG DS_PATH=$OPT_PATH/system
 ARG USER=dockside
 ARG APP=dockside
 ARG HOME=/home/newsnow
 
-################################################################################
-# INSTALL DEVELOPMENT VSIX PLUGINS
+# ------------------
+# BUNDLE INTEGRATION
 #
-# (disabled as there are currently no VSIX extensions needing to be embedded in the image)
-# COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
-
-################################################################################
-# THEIA INTEGRATION
-#
-COPY --from=theia $THEIA_PATH $THEIA_PATH/
 COPY --from=base /tmp/dockside /tmp/dockside
-COPY --from=openvscode ${VSCODE_PATH} ${VSCODE_PATH}/
+COPY --from=system $DS_PATH $DS_PATH/
+COPY --from=theia-ide $THEIA_PATH $THEIA_PATH/
+COPY --from=openvscode-ide $VSCODE_PATH $VSCODE_PATH/
 
-################################################################################
+# ---------------------------------------------
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
 #
 COPY --chown=$USER:$USER . $HOME/$APP/
 
+# -----------------------------
+# Last things for dockside user
 USER $USER
 WORKDIR $HOME
 RUN cp -a ~/$APP/build/development/dot-theia .vscode && \
@@ -399,42 +411,62 @@ RUN cp -a ~/$APP/build/development/dot-theia .vscode && \
     ln -s ~/$APP/build/development/perltidyrc ~/.perltidyrc && \
     ln -s ~/$APP/build/development/vetur.config.js ~/
 
-################################################################################
-# Cause the creation of a volume at /opt/dockside.
-#
-VOLUME $OPT_PATH
-
-# Create a separate volume for host-specific data to be shared
-# read-only with devtainers
-VOLUME $OPT_PATH/host
-
-################################################################################
-# INITIALISE /opt/dockside/bin
-#
-# launch.sh will overwrite them on launch;
-# but when launching a container within the app,
-# the inner container will have its own /opt/dockside, and will expect to access these scripts
-# before its own launch.sh runs.
-#
+# -------------------------
+# Last things for root user
 USER root
 RUN . /tmp/dockside/bash-env && \
     mkdir -p $OPT_PATH/bin $OPT_PATH/host && \
     cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
     ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
     if [ "$THEIA_VERSION" = "1.35.0" ]; then cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/; else cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/frontend/; fi && \
-    # ln -sf $THEIA_PATH/bin/launch-ide.sh $OPT_PATH/bin/launch-ide.sh && \
-    ln -sfr $THEIA_PATH $OPT_PATH/theia && \
-    ln -sfr $THEIA_PATH $OPT_PATH/system && \
     ln -sf $HOME/$APP/app/scripts/entrypoint.sh /entrypoint.sh && \
     ln -sf $HOME/$APP/app/server/bin/password-wrapper /usr/local/bin/password && \
     ln -sf $HOME/$APP/app/server/bin/upgrade /usr/local/bin/upgrade && \
-    chown -R root.root $OPT_PATH/bin/
+    chown -R root.root $OPT_PATH/bin/ && \
+    apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
-################################################################################
-# CLEAN UP
-RUN apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
+# ------------------------
+# DEVELOPMENT DEPENDENCIES
+#
+# Perl::LanguageServer dependencies
+COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
+
+RUN apt-get -y --no-install-recommends --no-install-suggests install \
+        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
+        libio-aio-perl \
+        git tig perltidy \
+        procps vim less curl locales \
+        /tmp/vsix-deps/*.deb && \
+    rm -rf /tmp/vsix-deps && \
+    apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
+
+# ----------
+# GCLOUD SDK
+# - https://cloud.google.com/sdk/docs/quickstart-debian-ubuntu
+#
+# RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyring /usr/share/keyrings/cloud.google.gpg  add - && apt-get update && apt-get -y install google-cloud-sdk
+
+# --------------------------------
+# INSTALL DEVELOPMENT VSIX PLUGINS
+#
+# (disabled as there are currently no VSIX extensions needing to be embedded in the image)
+# COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
+
+# -----------------------------------------------
+# Cause the creation of a volume at /opt/dockside
+#
+VOLUME $OPT_PATH
+
+# ------------------------------------------------------------
+# Create a separate volume for host-specific data to be shared
+# read-only with devtainers
+VOLUME $OPT_PATH/host
 
 ################################################################################
 # LAUNCH
 #
 ENTRYPOINT ["/entrypoint.sh"]
+
+FROM scratch AS dockside-prod
+# ARG OPT_PATH
+COPY --from=dockside / /
