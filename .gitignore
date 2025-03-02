@@ -24,7 +24,8 @@
 .sass-cache
 .env
 tmp/
-/.vscode-server/
+/.*vscode-server/
+/.cache
 /.dotnet
 /.npm
 /node_modules
