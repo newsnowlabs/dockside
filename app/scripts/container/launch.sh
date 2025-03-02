@@ -236,7 +236,7 @@ populate_ssh_agent_keys() {
 }
 
 find_files_of_type() {
-   find $HOME/* -type d -name "node_modules" -prune -o -type f $@ -print -quit | grep -q .
+   find $HOME/* -type d -name "node_modules" -prune -o -type f "$@" -print -quit | grep -q .
 }
 
 find_files_having() {
