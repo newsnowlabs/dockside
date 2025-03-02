@@ -145,8 +145,7 @@ sub eventHandler {
    $Events->autoflush(1);
    $Events->blocking(0);
 
-   my $s = IO::Select->new();
-   $s->add($Events);
+   my $s = IO::Select->new($Events);
 
    my $lastSizesUpdateTime = 0;
    my $lastEventTime = 0;
@@ -158,7 +157,7 @@ sub eventHandler {
       while(!$SIGNAL_RECEIVED) {
 
          if(scalar(keys %$Container)) {
-            flog("eventHandler: Updating docker containers without sizes");
+            flog("eventHandler: updating docker containers without sizes");
             update( { } );
          }
 
@@ -168,33 +167,52 @@ sub eventHandler {
          if(time - $lastEventTime >= 5 && time - $lastSizesUpdateTime >= 55) {
             $lastSizesUpdateTime = time;
             $lastEventTime = 0;
-            flog("eventHandler: Updating docker containers with sizes");
+            flog("eventHandler: updating docker containers with sizes");
             update( { 'updateSizes' => 1 } );
          }
 
          $Container = {};
-         $timeout = 30;
+         $timeout = 5;
          while(1) {
-            flog("eventHandler: Waiting ${timeout}s for events ...");
-            last unless $s->can_read( $timeout );
+            flog("eventHandler.can_read(): waiting up to ${timeout}s for events ...");
 
-            flog(sprintf("eventHandler: Received event: error=%d; EOF=%d", $Events->error, $Events->eof));
+            my @ready;
+            unless( @ready = $s->can_read( $timeout ) ) {
+               flog(sprintf("eventHandler.can_read(): timed out waiting ${timeout}s for events: error=%d; EOF=%d", $Events->error, $Events->eof));
+               $Events->clearerr;
+               last;
+            }
 
-            last OUTER if $Events->eof || $Events->error;
+            if($Events->eof || $Events->error) {
+               flog(sprintf("eventHandler.can_read(): received error or EOF event (error=%d; EOF=%d); relaunching `docker events`", $Events->error, $Events->eof));
+               last OUTER;
+            }
+
+            flog(sprintf("eventHandler.can_read(): received event line (error=%d; EOF=%d)", $Events->error, $Events->eof));
 
             my $events = 0;
-            while(my $eventJSON = $Events->getline()) {
+            while(my $eventJSON .= $Events->getline()) {
+
+               if($eventJSON =~ /^\s*$/) {
+                  flog("eventHandler.getLine(try #$events): empty event JSON; skipping.");
+                  next;
+               }
 
                my $event;
                try {
                   $event = decode_json($eventJSON);
                }
                catch {
-                  flog("eventHandler: failed to parse event JSON '$eventJSON'");
+                  flog("eventHandler.getLine(try #$events): failed to parse event JSON '$eventJSON'");
                   next;
                };
 
-               flog(sprintf("eventHandler($events): Received event: Type=%s, Action=%s, Actor=%s", $event->{'Type'}, $event->{'Action'}, $event->{'Actor'}{'ID'}));
+               flog(
+                  sprintf("eventHandler.getLine(try #$events): received event: Type=%s, Action=%s, Actor=%s (error=%d; EOF=%d)",
+                     $event->{'Type'}, $event->{'Action'}, $event->{'Actor'}{'ID'},
+                     $Events->error, $Events->eof
+                  )
+               );
 
                if( $event->{'Type'} eq 'container' && $event->{'Action'} =~ /^(start|stop|create|destroy)$/ ) {
                   $Container->{ $event->{'Actor'}{'ID'} }++;
@@ -207,7 +225,7 @@ sub eventHandler {
 
                   if( $Container->{ $event->{'Actor'}{'ID'} } ) {
                      # This container's details might not yet have been loaded. Do this now.
-                     flog("eventHandler: Updating docker containers without sizes before reloading reservations");
+                     flog("eventHandler.getLine(try #$events): Updating docker containers without sizes before reloading reservations");
                      update( { } );
                   }
 
@@ -217,7 +235,7 @@ sub eventHandler {
 
                   my $reservations = Reservation->load({ 'containerId' => $event->{'Actor'}{'ID'} });
                   if(!@$reservations) {
-                     flog("eventHandler: we don't manage containerId=$event->{'Actor'}{'ID'}");
+                     flog("eventHandler.getLine(try #$events): we don't manage containerId=$event->{'Actor'}{'ID'}");
                      next;
                   }
 
@@ -225,14 +243,14 @@ sub eventHandler {
                   my $reservationId = $reservation->id;
                   my $containerId = $reservation->containerId;
 
-                  flog("eventHandler: we manage reservationId=$reservationId with containerId=$containerId");
+                  flog("eventHandler.getLine(try #$events): we manage reservationId=$reservationId with containerId=$containerId");
 
                   try {
                      $reservation->exec();
                   }
                   catch {
                      my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
-                     flog("eventHandler: failed to launch IDE for reservationId=$reservationId with containerId=$containerId: dbg='$dbg'; msg='$msg'");
+                     flog("eventHandler.getLine(try #$events): failed to launch IDE for reservationId=$reservationId with containerId=$containerId: dbg='$dbg'; msg='$msg'");
                   };
                }
             }
@@ -242,10 +260,13 @@ sub eventHandler {
 
                # In testing, a select timeout of 0.25 seconds delivered a happy medium between responsiveness
                # and over-reacting to docker container and network events.
-               $timeout = 0.25;
+               $timeout = 2; # 0.25;
             }
 
-            flog("eventHandler: Finished reading.");
+            flog("eventHandler.getLine(try #$events): finished reading and clearing handle error status");
+
+            # Reset error flag, following final failed $Events->getline() (needed from Debian bookworm IO::Handle)
+            $Events->clearerr;
          }
       }
    }
