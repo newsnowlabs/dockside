@@ -2,7 +2,7 @@
 
 ARG NODE_VERSION=20
 ARG ALPINE_VERSION=3.19
-ARG DEBIAN_VERSION=bullseye
+ARG DEBIAN_VERSION=bookworm-slim
 
 ################################################################################
 # SET UP 'BASE' BUILD ENVIRONMENT
@@ -215,7 +215,7 @@ RUN cd $DS_PATH/bin && \
 # BUILD OPENVSCODE IDE BINARY BUNDLE
 #
 # Patch all binaries and dynamic libraries for full portability.
-FROM debian AS openvscode-ide
+FROM debian:$DEBIAN_VERSION AS openvscode-ide
 
 ARG OPT_PATH
 
@@ -262,45 +262,6 @@ RUN apk update && \
     /root/install-vsix.sh
 
 ################################################################################
-# BUILD DEVELOPMENT VSIX PLUGINS DEPENDENCIES
-# - libperl-languageserver-perl, libcompiler-lexer-perl, libanyevent-aio-perl
-#
-FROM debian:$DEBIAN_VERSION AS vsix-plugins-deps
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install dependencies
-RUN apt-get update && apt-get -y install \
-   sudo procps vim less curl locales \
-   libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libmodule-build-xsutil-perl \
-   libdata-dump-perl \
-   git dh-make-perl fakeroot
-
-RUN sudo bash -c 'echo NewsNow.co.uk >/etc/mailname'
-
-# Create build user 'newsnow' (could be anything)
-RUN useradd -l -U -u 1000 -md /home/newsnow -s /bin/bash newsnow && echo "newsnow ALL=(ALL) NOPASSWD: ALL" >/etc/sudoers.d/newsnow
-USER newsnow
-WORKDIR /home/newsnow
-
-RUN mkdir -p /home/newsnow/.cpan
-
-# Configure CPAN
-COPY --chown=newsnow:newsnow build/development/cpan/MyConfig.pm /home/newsnow/.cpan/CPAN/MyConfig.pm
-
-# # BUILD libcompiler-lexer-perl_*.deb
-RUN git clone https://github.com/goccy/p5-Compiler-Lexer && cd ~/p5-Compiler-Lexer && rm -rf .git && dh-make-perl make . || true
-RUN cd ~/p5-Compiler-Lexer && DEB_BUILD_OPTIONS=nocheck fakeroot ./debian/rules binary
-RUN sudo dpkg -i libcompiler-lexer-perl_*.deb
-
-# # # BUILD libanyevent-aio-perl
-RUN PERL_YAML_BACKEND=YAML::XS cpan2deb AnyEvent::AIO && sudo dpkg -i libanyevent-aio-perl_1.1-1_all.deb
-
-# BUILD Perl::LanguageServer
-RUN git clone https://github.com/NewsNow/Perl-LanguageServer.git && cd ~/Perl-LanguageServer && rm -rf .git && dh-make-perl make . || true
-RUN cd ~/Perl-LanguageServer && fakeroot ./debian/rules binary
-
-################################################################################
 # MAIN DOCKSIDE BUILD
 #
 FROM node:20-$DEBIAN_VERSION AS dockside-1
@@ -335,7 +296,7 @@ RUN apt-get update && \
         bind9 dnsutils \
         docker-ce docker-ce-cli docker-buildx-plugin containerd.io gcc- \
         perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
-        python3-pip \
+        python3-venv \
         acl \
         s6 \
         jq \
@@ -374,7 +335,7 @@ COPY --chown=$USER:$USER app/server/assets $HOME/$APP/app/server/assets/
 COPY --chown=$USER:$USER docs $HOME/$APP/docs/
 COPY --chown=$USER:$USER mkdocs.yml $HOME/$APP/
 WORKDIR $HOME/$APP
-RUN pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/.local/bin/mkdocs build && rm -rf ~/.cache/pip
+RUN python3 -m venv ~/mkdocs && ~/mkdocs/bin/pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/mkdocs/bin/mkdocs build && rm -rf ~/.cache/pip
 
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
@@ -422,22 +383,17 @@ RUN . /tmp/dockside/bash-env && \
     ln -sf $HOME/$APP/app/scripts/entrypoint.sh /entrypoint.sh && \
     ln -sf $HOME/$APP/app/server/bin/password-wrapper /usr/local/bin/password && \
     ln -sf $HOME/$APP/app/server/bin/upgrade /usr/local/bin/upgrade && \
-    chown -R root.root $OPT_PATH/bin/ && \
+    chown -R root:root $OPT_PATH/bin/ && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
 # ------------------------
 # DEVELOPMENT DEPENDENCIES
 #
-# Perl::LanguageServer dependencies
-COPY --from=vsix-plugins-deps /home/newsnow/*.deb /tmp/vsix-deps/
-
-RUN apt-get -y --no-install-recommends --no-install-suggests install \
-        libfile-find-rule-perl libmoose-perl libcoro-perl libjson-perl libjson-xs-perl libdata-dump-perl libterm-readline-gnu-perl \
-        libio-aio-perl \
+RUN apt-get update && \
+    apt-get -y --no-install-recommends --no-install-suggests install \
+        libfile-find-rule-perl libperl-languageserver-perl \
         git tig perltidy \
-        procps vim less curl locales \
-        /tmp/vsix-deps/*.deb && \
-    rm -rf /tmp/vsix-deps && \
+        procps vim less curl locales && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
 # ----------
