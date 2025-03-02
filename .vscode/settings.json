@@ -1,0 +1,10 @@
+{
+    "files.exclude": {
+        ".vscode": true,
+        ".openvscode-server": true,
+        ".theia": true,
+        ".cache": true,
+        ".bundle": true,
+        ".ssh": true
+    }
+}
