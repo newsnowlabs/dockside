@@ -35,5 +35,5 @@ log "- environment variables:"
 env | sed -r 's/^/    /' >&2
 
 # FIXME: Parametrise /opt/dockside here
-mkdir -p $HOME/.openvscode-server/data/Machine && echo '{ "git.path": "/opt/dockside/ide/theia/latest/bin/git", "git.confirmSync": false }' >$HOME/.openvscode-server/data/Machine/settings.json
+mkdir -p $HOME/.openvscode-server/data/Machine && echo '{ "git.path": "/opt/dockside/system/latest/bin/git", "git.confirmSync": false }' >$HOME/.openvscode-server/data/Machine/settings.json
 exec ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token
