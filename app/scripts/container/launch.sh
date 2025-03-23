@@ -294,19 +294,18 @@ populate_vscode_settings() {
    local DIR="$HOME/.vscode"
    local FILE="$DIR/settings.json"
 
-   log "Checking for settings.json file '$FILE' ..."
-   if [ -f "$FILE" ]; then
-      log "Found prexisting file '$FILE'."
-      return
-   fi
-
-   log "Creating '$DIR' ..."
+   log "Creating $DIR ..."
    mkdir -p "$DIR"
 
-   log "Creating empty file '$FILE'."
-   echo '{}' >$FILE
+   log "Checking for settings.json file '$FILE' ..."
+   if [ -f $FILE ]; then
+      log "Found prexisting file '$FILE'."
+   else
+      log "Creating empty file '$FILE'."
+      echo '{}' >$FILE
+   fi
 
-   local EXCLUDES='.vscode .openvscode-server .theia .cache .ssh .git'
+   local EXCLUDES='.vscode .*vscode-server .theia .cache .ssh .git'
    if [ -n "$EXCLUDES" ]; then
       log "Populating '$FILE' with 'files.exclude' exclusions (in JSON): $EXCLUDES"
 
@@ -368,7 +367,7 @@ run_nonroot() {
    spawn_ssh_agent
    populate_ssh_agent_keys
    populate_known_hosts
-   (create_git_repo; populate_vscode_extensions; populate_vscode_settings) &
+   (create_git_repo; populate_vscode_extensions; populate_vscode_settings;) &
 
    if [ "$IDE" = "openvscode/latest" ]; then
       IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/openvscode/* | tail -n 1)"
