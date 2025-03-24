@@ -878,10 +878,10 @@ sub updateContainerReservation {
    }
 
    # If we reach this point, the user was permitted to make the proposed changes,
-   # which can now be stored;
+   # which can now be stored ...
    $reservation->store();
 
-   # and then acted upon.
+   # ... and then acted upon.
    $reservation->update_network();
 
    # Only update devtainer authorized_keys if relevant reservation fields change.
@@ -890,7 +890,7 @@ sub updateContainerReservation {
       $reservation->exec('update_ssh_authorized_keys');
    }
 
-   # Create a sanitised clone of the reservation object, before returning.
+   # Create and return a sanitised clone of the reservation object.
    return $self->createClientReservation($reservation);
 }
 
