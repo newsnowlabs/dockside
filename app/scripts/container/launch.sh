@@ -326,6 +326,8 @@ launch_nonroot() {
 }
 
 launch_theia() {
+   IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/theia/* | tail -n 1)"
+   
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    while true
    do
@@ -345,6 +347,8 @@ launch_theia() {
 }
 
 launch_openvscode() {
+   IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/openvscode/* | tail -n 1)"
+
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    while true
    do
@@ -370,10 +374,8 @@ run_nonroot() {
    (create_git_repo; populate_vscode_extensions; populate_vscode_settings;) &
 
    if [ "$IDE" = "openvscode/latest" ]; then
-      IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/openvscode/* | tail -n 1)"
       launch_openvscode
    else
-      IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/theia/* | tail -n 1)"
       launch_theia
    fi
 }
