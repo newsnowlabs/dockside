@@ -116,7 +116,7 @@
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
                               <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
-                              <b-button v-if="router.type != 'passthru' && container.status >= 0" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
                               <b-button v-if="router.type === 'ssh' && container.status >= 0" size="sm" variant="outline-secondary" type="button" v-b-modal="'sshinfo-modal'" v-b-tooltip title="Configure SSH for Dockside">Setup</b-button>
                               ({{ container.meta.access[router.name] }} access)
                            </td>
@@ -368,14 +368,26 @@
             const prefix = router.prefixes[0] ? router.prefixes[0] : 'www';
             const containerName = this.container.name;
             const host = window.dockside.host;
-            const path = ''; // router.type === 'ide' ? '/?folder=/home/dockside' : '';
             
             if (router.type === 'ssh') {
                const unixuser = this.container.data.unixuser;
                const hostname = host.split(':')[0];
                return `ssh://${unixuser}@${prefix}-${containerName}${hostname}`;
-            } else {
+            } else if (router.type === 'ide') {
+               const IDE = this.container.data.runningIDE;
+               const homeDir = this.container.data.homeDir || `/home/${this.container.data.unixuser}`;
+               let path;
+               
+               if (IDE.match(/^openvscode/)) {
+                  path = '/?folder=' + homeDir;
+               }
+               else {
+                  path = '/#' + homeDir;
+               }
                return `${protocol}://${prefix}-${containerName}${host}${path}`;
+            }
+            else {
+               return '';
             }
          },
          copyUri(router) {

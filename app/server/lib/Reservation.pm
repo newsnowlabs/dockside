@@ -605,7 +605,7 @@ sub cloneWithConstraints {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description IDE ) ],
             'profileObject' => [ qw( name routers networks runtimes IDEs ) ],
-            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL runningIDE ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId) ]
@@ -1191,6 +1191,9 @@ sub exec {
       $containerId,
       @Command
    );
+
+   # Update data.runningIDE to match meta.IDE.
+   $reservation->data('runningIDE', $reservation->meta('IDE'))->data('xyzzy','12345')->store();
 
    return 1;
 }
