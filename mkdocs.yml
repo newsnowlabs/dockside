@@ -5,7 +5,7 @@ site_description: >-
   A tool for provisioning lightweight access-controlled IDEs, staging environments and sandboxes - aka 'devtainers' - on local machine, self-hosted on-premises (on raw metal or VM) or in the cloud
 
 # Filesystem configuration
-site_dir: '/home/newsnow/dockside/app/server/nginx/html/docs/'
+site_dir: '/home/dockside/dockside/app/server/nginx/html/docs/'
 
 # Repository
 repo_name: NewsNow Labs/Dockside
