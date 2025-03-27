@@ -4,7 +4,7 @@
     "editor.autoSave": "on",
     "editor.fontSize": 13,
     "editor.tabSize": 3,
-    "perl.perlInc": ["/home/newsnow/dockside/app/server/lib"],
+    "perl.perlInc": ["/home/dockside/dockside/app/server/lib"],
     "perl.ignoreDirs": [".vscode", ".openvscode-server", ".git", ".ssh", ".cpan", ".config", ".npm", ".nvm", ".theia", "node_modules"],
     "terminal.integrated.fontSize": 13,
     "terminal.integrated.scrollback": 10000,

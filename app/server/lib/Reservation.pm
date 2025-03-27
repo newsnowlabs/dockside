@@ -1042,7 +1042,7 @@ sub launch {
 
       # Set PATH required for 'docker run' to launch external credential helpers, like gcloud.
       local $ENV{'PATH'} = $CONFIG->{'docker'}{'PATH'};
-      local $ENV{'HOME'} = $CONFIG->{'docker'}{'HOME'} // '/home/newsnow';
+      local $ENV{'HOME'} = $CONFIG->{'docker'}{'HOME'} // '/home/dockside';
 
       # Enable this to simulate slow launches.
       # sleep(30);
