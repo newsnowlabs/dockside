@@ -303,7 +303,7 @@ sub validate_profile_routers {
    }
 
    for( my $i = 0; $i < @$data; $i++ ) {
-      $self->do_validate( "$type\[$i\]", $data->[$i], qw( name type auth prefixes! domains! http https ) );
+      $self->do_validate( "$type\[$i\]", $data->[$i], qw( name type auth prefixes! domains! http https publicURLs ) );
 
       # Choose a name, if none provided.
       $data->[$i]{'name'} //= $data->[$i]{'prefixes'}[0] // "router-$i";

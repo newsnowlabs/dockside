@@ -180,8 +180,17 @@ sub get_server_port {
 
    # Now check if $User can access services (on any running reservation) with access level $props->{'auth'}
    my $reservationPermissions = $User->reservationPermissions($reservation);
-   if( $reservationPermissions->{'auth'}{ $props->{'auth'} } ) {
+   if( $reservationPermissions->{'auth'}{ $props->{'route'}{'auth'} } ) {
+      wlog( "get_server_port($protocol): user allowed to access reservation" );
       return $props->{'uri'};
+   }
+
+   # Allow public access to any specific URLs
+   if( my $publicURLs = $props->{'route'}{'publicURLs'} ) {
+      if( my @allowedURLs = grep { $_ eq $r->uri } @$publicURLs ) {
+         wlog( "get_server_port($protocol): allowed public access to path '$allowedURLs[0]'" );
+         return $props->{'uri'};
+      }
    }
 
    return $errorCode;
