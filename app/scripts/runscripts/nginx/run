@@ -11,7 +11,7 @@ echo "$GIT_TAG ($GIT_COMMIT_ID)" >./data/version
 
 if [ -f "/data/certs/fullchain.pem" ] && [ -f "/data/certs/privkey.pem" ]; then
   log "Launching nginx"
-  exec /usr/sbin/nginx -g 'daemon off;' -c /home/newsnow/dockside/app/server/nginx/conf/nginx.conf
+  exec /usr/sbin/nginx -g 'daemon off;' -c /home/dockside/dockside/app/server/nginx/conf/nginx.conf
 fi
 
 # If no certificates are available, sleep, then exit; the s6 supervisor will restart us.

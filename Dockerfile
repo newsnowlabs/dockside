@@ -271,7 +271,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG OPT_PATH
 ARG USER=dockside
 ARG APP=dockside
-ARG HOME=/home/newsnow
+ARG HOME=/home/dockside
 
 # Use bash shell
 SHELL ["/bin/bash", "-c"]
@@ -348,7 +348,7 @@ ARG VSCODE_PATH=$OPT_PATH/ide/openvscode
 ARG DS_PATH=$OPT_PATH/system
 ARG USER=dockside
 ARG APP=dockside
-ARG HOME=/home/newsnow
+ARG HOME=/home/dockside
 
 # ------------------
 # BUNDLE INTEGRATION

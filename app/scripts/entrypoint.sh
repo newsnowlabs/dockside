@@ -3,7 +3,7 @@
 DATA_DIR=/data
 USER=${USER:-dockside}
 APP=${APP:-dockside}
-APP_HOME=${APP_HOME:-/home/newsnow}
+APP_HOME=${APP_HOME:-/home/dockside}
 APP_DIR=$APP_HOME/$APP
 
 OPT_SSL_ZONES=()
@@ -286,7 +286,7 @@ do
 DATA_DIR=/data
 USER=${USER:-dockside}
 APP=${APP:-dockside}
-APP_HOME=${APP_HOME:-/home/newsnow}
+APP_HOME=${APP_HOME:-/home/dockside}
 APP_DIR=$APP_HOME/$APP
 CTR_ID=${CTR_ID:0:12}
 INNER_DOCKERD="$OPT_RUN_DOCKERD"

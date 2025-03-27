@@ -11,7 +11,7 @@
 # See:
 # - http://nginx.org/en/docs/http/ngx_http_perl_module.html
 
-perl_modules /home/newsnow/dockside/app/server/lib;
+perl_modules /home/dockside/dockside/app/server/lib;
 perl_require Proxy.pm;
 perl_require App.pm;
 
@@ -141,7 +141,7 @@ server {
      internal;
      auth_basic off;
      add_header Cache-Control "no-store" always;
-     root /home/newsnow/dockside/app/server/nginx/html;
+     root /home/dockside/dockside/app/server/nginx/html;
   }
 
   location / {
@@ -152,7 +152,7 @@ server {
     perl App::handlerHTTPS;
 
     # This will only be served statically, if the above handler returns nginx::DECLINED.
-    root /home/newsnow/dockside/app/server/nginx/html;
+    root /home/dockside/dockside/app/server/nginx/html;
 
     if ($upstream_https = '400') {
       # Container not found.
