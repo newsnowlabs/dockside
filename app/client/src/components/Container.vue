@@ -43,14 +43,33 @@
                               </select>
                            </td>
                         </tr>
+                        <tr v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
+                           <th>Git URL</th>
+                           <td v-if="!isPrelaunchMode">{{ container.data.gitURL }}</td>
+                           <td v-else>
+                              <autocomplete
+                                 auto-select
+                                 class="autocomplete-class"
+                                 placeholder="Choose a gitURL"
+                                 aria-label="Choose a gitURL"
+                                 ref="gitURLAutocompleteInput"
+                                 :search="gitURLAutocompleteSearch"
+                                 @submit="gitURLAutocompleteSubmit"
+                                 @blur="gitURLAutocompleteSubmit"
+                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
+                                 :default-value="gitURLs[0]"
+                                 :readonly="!hasWildcardGitURLs"
+                              ></autocomplete>
+                           </td>
+                        </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>Image</th>
                            <td v-if="!isPrelaunchMode">{{ container.data.image }} ({{ container.docker ? container.docker.ImageId : '' }})</td>
-                           <!-- <td v-else-if="images.length <= 1 && !hasWildcardImages">
+                           <td v-else-if="images.length > 1 && !hasWildcardImages">
                               <select class="form-control" v-model="form.image" :disabled="images.length <= 1">
                                  <option v-for="image in images" v-bind:key="image">{{ image }}</option>
                               </select>
-                           </td> -->
+                           </td>
                            <td v-else>
                               <autocomplete
                                  class="autocomplete-class"
@@ -116,12 +135,14 @@
                         <!-- FIXME: Only owner or admin should be able to specify developers -->
                         <tr v-if="container.permissions.actions.setContainerDevelopers && isSelected">
                            <th>Developers</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode"><UserTagsInput v-model="container.meta.developers" :disabled="true"/></td>
+                           <td v-if="!isEditMode && !isPrelaunchMode && container.meta.developers"><UserTagsInput v-model="container.meta.developers" :disabled="true"/></td>
+                           <td v-if="!isEditMode && !isPrelaunchMode && !container.meta.developers"><em>[ Edit to share with developers (by name or role) ]</em></td>
                            <td v-else><UserTagsInput v-model="form.developers"/></td>
                         </tr>
                         <tr v-if="container.permissions.actions.setContainerViewers && isSelected">
                            <th>Viewers</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode"><UserTagsInput v-model="container.meta.viewers" :disabled="true"/></td>
+                           <td v-if="!isEditMode && !isPrelaunchMode && container.meta.viewers"><UserTagsInput v-model="container.meta.viewers" :disabled="true"/></td>
+                           <td v-if="!isEditMode && !isPrelaunchMode && !container.meta.viewers"><em>[ Edit to share with viewers (by name or role) ]</em></td>
                            <td v-else><UserTagsInput v-model="form.viewers"/></td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && container.status >= 0 && isSelected">
@@ -287,6 +308,15 @@
          },
          validName() {
             return this.form.name.match('^(?:[a-z](?:-[a-z0-9]+|[a-z0-9]+)+|)$');
+         },
+         gitURLs() {
+            return (this.profile && this.profile.gitURLs) ? this.profile.gitURLs.filter(x => !x.includes("*")) : [];
+         },
+         allGitURLs() {
+           return (this.profile && this.profile.gitURLs) ? this.profile.gitURLs : [];
+         },
+         hasWildcardGitURLs() {
+           return ((this.profile && this.profile.gitURLs) ? this.profile.gitURLs.filter(x => x.includes("*")) : []).length > 0;
          }
       },
       methods: {
@@ -304,6 +334,7 @@
                id: edit ? this.container.id : '',
                name: edit ? this.container.name : '',
                profile: edit ? this.container.profile : this.profileNames[0],
+               gitURL: edit ? this.container.data.gitURL : '',
                image: edit ? this.container.docker.Image : '',
                runtime: edit ? this.container.docker.Runtime : '',
                network: edit ? this.container.docker.Networks : '',
@@ -314,7 +345,7 @@
                description: edit ? this.container.meta.description : ''
             };
 
-            console.log('initialiseForm:' + this.profile);
+            console.log('initialiseForm:', this.form);
          },
          copy(value) {
             copyToClipboard(value);
@@ -428,7 +459,20 @@
             if (matchingImages || input.length < 1) { return this.images; }
             return this.images.filter(image => {
                return image.toLowerCase().includes(input.toLowerCase());
-               });
+            });
+         },
+         gitURLAutocompleteSubmit() { 
+            this.form.gitURL = this.$refs.gitURLAutocompleteInput.value;
+         },
+         gitURLAutocompleteSearch(input) {
+            const matchingGitURLs = this.gitURLs.filter(gitURL => {
+               return gitURL === input;
+            }).length;
+
+            if (matchingGitURLs || input.length < 1) { return this.gitURLs; }
+            return this.gitURLs.filter(gitURL => {
+               return gitURL.toLowerCase().includes(input.toLowerCase());
+            });
          }
       },
       mixins: [routing],
@@ -439,6 +483,7 @@
 
             if(this.isPrelaunchMode) {
                f.image = p.images.length > 0 ? p.images[0].replace("*","") : '';
+               f.gitURL = p.gitURLs && p.gitURLs.length > 0 ? p.gitURLs[0].replace("*","") : '';
                f.runtime = p.runtimes[0];
                f.network = p.networks[0];
                f.access = Object.fromEntries(
@@ -450,6 +495,11 @@
                // Patch the image into the image autocomplete component.
                if(f.image && this.$refs.imageAutocompleteInput) {
                   this.$refs.imageAutocompleteInput.setValue(f.image);
+               }
+
+               // Patch the gitURL into the gitURL autocomplete component.
+               if(f.gitURL && this.$refs.gitURLAutocompleteInput) {
+                  this.$refs.gitURLAutocompleteInput.setValue(f.gitURL);
                }
             }
          }

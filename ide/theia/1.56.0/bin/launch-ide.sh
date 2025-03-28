@@ -2,6 +2,7 @@
 
 # Expects:
 # - IDE_PATH
+# - LOG_PATH
 # 
 
 log() {
@@ -10,14 +11,9 @@ log() {
   echo "$S$1" >&2
 }
 
-which() {
-  local cmd="$1"
-  for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && break; done
-}
+LOG=$LOG_PATH/theia.log
 
-LOG=/tmp/dockside/theia.log
-
-log "Creating logfile '$LOG' ..."
+log "Switching logging to '$LOG' ..."
 touch $LOG && chmod 666 $LOG
 
 exec 1>>$LOG
@@ -30,14 +26,8 @@ log "Launching IDE from IDE_PATH='$IDE_PATH' ..."
 
 log "Backing up and overriding PATH=$PATH ..."
 export _PATH="$PATH"
-export PATH="$IDE_PATH/bin:$PATH"
-
-# Run ssh-agent if available, but not already running.
-log "Checking for ssh-agent ..."
-if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
-   log "Found ssh-agent binary but no running agent, so launching it ..."
-   eval $($(which ssh-agent))
-fi
+export PATH="$PATH:$IDE_PATH/bin"
+export GIT_EXEC_PATH="$IDE_PATH/bin"
 
 # See https://github.com/eclipse-theia/theia/blob/master/CHANGELOG.md under v0.13.0
 # 
@@ -53,7 +43,7 @@ export THEIA_WEBVIEW_EXTERNAL_ENDPOINT='{{uuid}}-wv-{{hostname}}'
 export THEIA_MINI_BROWSER_HOST_PATTERN='{{uuid}}-mb-{{hostname}}'
 export SHELL="$IDE_PATH/bin/dummysh"
 
-THEIA_PATH=$IDE_PATH
+THEIA_PATH="$IDE_PATH"
 log "Launching IDE using: $THEIA_PATH/bin/node $THEIA_PATH/theia/src-gen/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 ..."
 
 unset IDE_PATH

@@ -1,11 +1,11 @@
 #!/bin/bash
 
-IMAGE=$(basename $(pwd))
 REPO="newsnowlabs/dockside"
 DOCKERFILE="Dockerfile"
 TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
 BUILDER=buildkit
 PLATFORMS_DEFAULT_DEPOT="linux/amd64,linux/arm64,linux/arm/v7"
+DIR=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/..
 
 usage() {
   echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push|--load] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] [--builder [depot|buildx|buildkit]] [--platforms <platforms>] | [--clean] | [--list]" >&2
@@ -34,26 +34,36 @@ clean() {
 }
 
 parse_commandline() {
-  while true
+  local opt
+  local val
+
+  while [ "$#" -gt 0 ]
   do
     case "$1" in
-      --stage|--target) shift; STAGE="$1"; shift; continue; ;;
-            --no-cache) shift; NO_CACHE="1"; continue; ;;
-            --force-rm) shift; FORCE_RM="1"; continue; ;;
-                 --tag) shift; TAGS+=("$REPO:$1"); shift; continue; ;;
-                --repo) shift; REPO="$1"; shift; continue; ;;
-      --progress-plain) shift; PROGRESS="plain"; continue; ;;
-            --progress) shift; PROGRESS="$1"; shift; continue; ;;
-               --theia) shift; THEIA_VERSION="$1"; shift; continue; ;;
+      --*=*) opt="${1%%=*}"; val="${1#*=}"; shift; ;;
+        --*) opt="$1"; val=""; shift; ;;
+          *) break; ;;
+    esac
 
-             --builder) shift; BUILDER="$1"; shift; continue; ;;
-           --platform*) shift; PLATFORMS="$1"; shift; continue; ;;
+    case "$opt" in
+      --stage|--target) [ -z "$val" ] && val="$1" && shift; STAGE="$val"; continue; ;;
+                 --tag) [ -z "$val" ] && val="$1" && shift; TAGS+=("$REPO:$val"); continue; ;;
+                --repo) [ -z "$val" ] && val="$1" && shift; REPO="$val"; continue; ;;
+            --progress) [ -z "$val" ] && val="$1" && shift; PROGRESS="$val"; continue; ;;
+               --theia) [ -z "$val" ] && val="$1" && shift; THEIA_VERSION="$val"; continue; ;;
+
+             --builder) [ -z "$val" ] && val="$1" && shift; BUILDER="$val"; continue; ;;
+           --platform*) [ -z "$val" ] && val="$1" && shift; PLATFORMS="$val"; continue; ;;
 	    
-               --clean) shift; clean; exit 0; ;;
-           --list|--ls) shift; list "$@"; exit 0; ;;
+            --no-cache) NO_CACHE="1"; continue; ;;
+            --force-rm) FORCE_RM="1"; continue; ;;
+      --progress-plain) PROGRESS="plain"; continue; ;;
+      
+               --clean) clean; exit 0; ;;
+           --list|--ls) list "$@"; exit 0; ;;
 	 
-                --push) shift; PUSH="1"; ;;
-                --load) shift; LOAD="1"; ;;
+                --push) PUSH="1"; ;;
+                --load) LOAD="1"; ;;
 	      
              -h|--help) usage; ;;
                      *) break; ;;
@@ -103,6 +113,9 @@ build_env
 
 [ -z "$DOCKER_BUILDKIT" ] && DOCKER_BUILDKIT=1
 export DOCKER_BUILDKIT
+
+echo "$0: Changing directory to '$DIR'" >&2
+cd $DIR || exit 1
 
 case "$BUILDER" in
 

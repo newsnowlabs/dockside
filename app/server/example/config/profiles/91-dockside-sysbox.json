@@ -12,7 +12,7 @@
          "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
 
          // This normally implies public port 443
-         "https": { "protocol": "https", "port": 443 },
+         "https": { "protocol": "https", "port": 443 }
       },
       {
          "name": "passthru",
@@ -25,8 +25,8 @@
          "http": { "protocol": "http", "port": 80 },
 
          // This normally implies public port 443
-         "https": { "protocol": "https", "port": 443 },
-      },
+         "https": { "protocol": "https", "port": 443 }
+      }
    ],
 
    "runtimes": [ "sysbox-runc" ],

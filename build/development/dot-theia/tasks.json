@@ -45,8 +45,7 @@
          ],
          "options": {
             "env": { "PATH": "/home/newsnow/.depot/bin:/usr/local/bin:/usr/bin:/bin" },
-            "cwd": "/home/newsnow/dockside",
-            "shell": { "executable": "/bin/bash" }
+            "cwd": "/home/newsnow/dockside"
          },
          "group": "build",
          "problemMatcher": []
@@ -63,8 +62,7 @@
          ],
          "options": {
             "env": { "PATH": "/home/newsnow/.depot/bin:/usr/local/bin:/usr/bin:/bin" },
-            "cwd": "/home/newsnow/dockside",
-            "shell": { "executable": "/bin/bash" }
+            "cwd": "/home/newsnow/dockside"
          },
          "group": "build",
          "problemMatcher": []

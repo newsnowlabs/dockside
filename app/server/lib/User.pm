@@ -223,6 +223,13 @@ sub authorized_keys {
    return $self->{'ssh'}{'authorized_keys'} // [];
 }
 
+sub keypairs {
+   my $self = shift;
+   my $prefix = shift;
+
+   return $self->{'ssh'}{'keypairs'}{$prefix};
+}
+
 ################################################################################
 # MUTATORS
 # --------
@@ -611,6 +618,24 @@ sub set {
 
    my $profileObject = $reservation->profileObject->cloneWithConstraints($self->derivedResourceConstraints);
 
+   if( $property eq 'gitURL') {
+
+      if( $value eq '' ) {
+         # Select default for this profile (and, where required, user).
+         $value = $profileObject->default_gitURL;
+      }
+
+      # Not permitted
+      return 0 unless
+         # The createContainerReservation permission doesn't need to be checked:
+         # the image can only be set on launch, and the permission has already been
+         # checked in createContainerReservation.
+         defined($value) && # Check we were able to identify a default $value (if needed)
+         $profileObject->has('gitURL', $value); # The requested gitURL is in the profile list
+
+      return $reservation->data('gitURL', $value);
+   }
+
    if( $property eq 'image') {
 
       if( $value eq '' ) {
@@ -898,13 +923,30 @@ sub createContainerReservation {
       }
    );
 
-   foreach my $m (qw(profile image runtime network unixuser access viewers developers private description)) {
+   foreach my $m (qw(profile image runtime network unixuser access viewers developers private description gitURL)) {
       $self->set($reservation, $m, $args->{$m}) || 
          die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
    }
 
    # Test if we can construct the command line; on failure, we'll throw an error.
    $reservation->cmdline();
+
+   my $dc = $reservation->getGitDevContainer();
+   if($dc) {
+
+      if($dc->{'image'}) {
+         $reservation->data('image', $dc->{'image'});
+         
+         if(!$dc->{'overrideCommand'}) {
+            $reservation->data('entrypoint', '/bin/sh');
+            $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+         }
+      }
+
+      $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
+      $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
+      $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
+   }
 
    # Store, launch, and create a sanitised clone of the reservation object, before returning.
    return $self->createClientReservation( $reservation->store()->launch() );

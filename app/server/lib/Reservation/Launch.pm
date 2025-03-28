@@ -14,7 +14,8 @@ my $PLACEHOLDERS = {
    'ideUser' => 'unixuser',
    'user' => 'owner',
    'container' => 'container',
-   'metadata' => 'metadata_server'
+   'metadata' => 'metadata_server',
+   'gitURL' => 'gitURL'
 };
 
 sub _placeholders {
@@ -285,11 +286,18 @@ sub cmdline_command {
 sub cmdline_entrypoint {
    my $self = shift;
 
-   if(my $entrypoint = $self->profileObject->entrypoint) {
-      return ('--entrypoint', $entrypoint);
+   my $entrypoint;
+   if($self->data('entrypoint')) {
+      $entrypoint = $self->data('entrypoint');
+   }
+   elsif($self->profileObject->entrypoint) {
+      $entrypoint = $self->profileObject->entrypoint;
+   }
+   else {
+      return ();
    }
 
-   return ();
+   return ('--entrypoint', $entrypoint);
 }
 
 sub cmdline {
@@ -350,6 +358,12 @@ sub container {
    }->{$prop};
 
    return $dataProp ? $self->data($dataProp) : '';
+}
+
+sub gitURL {
+   my $self = shift;
+
+   return $self->data('gitURL');
 }
 
 # If the dockside container and launched container share the default 
