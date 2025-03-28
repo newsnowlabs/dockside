@@ -26,6 +26,7 @@ sub versionUpgrade {
    my $self = shift;
 
    if($self->version == 0) {
+      $self->{'_resources'}{'IDEs'} //= ['*'];
       $self->{'version'}++;
    }
 }
@@ -135,10 +136,9 @@ sub new {
          '_resources' => $data->{'resources'} // {},
       }, ( ref($class) || $class );
 
+      $self->versionUpgrade();
       $self->updateDerivedPermissions();
       $self->updateDerivedResourceConstraints();
-
-      # $self->versionUpgrade();
 
       return $self;
    }
