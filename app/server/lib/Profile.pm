@@ -66,7 +66,7 @@ sub versionUpgrade {
    if($self->version == 2) {
       $self->{'runtimes'} = ['runc'] unless $self->{'runtimes'} && @{$self->{'runtimes'}} > 0;
       $self->{'unixusers'} = ['dockside'] unless $self->{'unixusers'} && @{$self->{'unixusers'}} > 0;
-      $self->{'IDEs'} = ['theia/latest', 'openvscode/latest'] unless $self->{'IDEs'} && @{$self->{'IDEs'}} > 0;
+      $self->{'IDEs'} = $CONFIG->{'ide'}{'IDEs'} // ['theia/latest', 'openvscode/latest'] unless $self->{'IDEs'} && @{$self->{'IDEs'}} > 0;
 
       # If unspecified in profile, set to value of config.json default, or true.
       $self->{'ssh'} //= $CONFIG->{'ssh'}{'default'} // 1;
