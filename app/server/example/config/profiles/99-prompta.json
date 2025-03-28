@@ -13,9 +13,7 @@
       }
    ],
    "networks": [ "bridge" ],
-   "images": [
-      "netstart.vm.dc.lan:5001/prompta"
-   ],
+   "images": [ "newsnowlabs/dockside-debian-desktop:latest" ],
    "unixusers": ["prompta"],
    "runtimes": ["runc"],
    "mounts": {
