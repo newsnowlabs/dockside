@@ -28,7 +28,8 @@
          "command": [
             "/opt/dockside/launch.sh",
             "launch_ide"
-        ]
+        ],
+        "IDEs": ["theia/latest", "openvscode/latest"]
     },
     "clientDistPath": "/home/dockside/dockside/app/client/dist",
     "docker": {
