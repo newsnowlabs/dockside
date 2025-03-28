@@ -374,7 +374,7 @@
                const hostname = host.split(':')[0];
                return `ssh://${unixuser}@${prefix}-${containerName}${hostname}`;
             } else if (router.type === 'ide') {
-               const IDE = this.container.data.runningIDE;
+               const IDE = this.container.data.runningIDE || '';
                const homeDir = this.container.data.homeDir || `/home/${this.container.data.unixuser}`;
                let path;
                
@@ -387,7 +387,7 @@
                return `${protocol}://${prefix}-${containerName}${host}${path}`;
             }
             else {
-               return '';
+               return `${protocol}://${prefix}-${containerName}${host}`;
             }
          },
          copyUri(router) {
