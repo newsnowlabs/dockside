@@ -384,6 +384,8 @@ RUN . /tmp/dockside/bash-env && \
     ln -sf $HOME/$APP/app/server/bin/password-wrapper /usr/local/bin/password && \
     ln -sf $HOME/$APP/app/server/bin/upgrade /usr/local/bin/upgrade && \
     chown -R root:root $OPT_PATH/bin/ && \
+    # For backwards compatibility with legacy config.json /home/newsnow paths
+    ln -sf $HOME /home/newsnow && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
 # ------------------------
