@@ -74,8 +74,8 @@ sub versionUpgrade {
    }
 
    if($self->version == 3) {
-      $self->{'IDEs'} = $CONFIG->{'ide'}{'IDEs'} // ['theia/latest', 'openvscode/latest'] unless $self->{'IDEs'} && @{$self->{'IDEs'}} > 0;
-      
+      $self->{'IDEs'} = $CONFIG->{'ide'}{'IDEs'} unless defined($self->{'IDEs'});
+
       $self->{'version'}++;
    }
 
