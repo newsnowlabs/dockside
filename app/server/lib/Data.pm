@@ -80,6 +80,7 @@ my $CONFIG_FILES = {
          $CONFIG->{'ssh'}{'path'} //= "$CONFIG->{'ide'}{'path'}/host";
          $CONFIG->{'ssh'}{'port'} //= 2222;
          $CONFIG->{'ssh'}{'default'} //= 1;
+         $CONFIG->{'ide'}{'IDEs'} //= ['theia/latest', 'openvscode/latest'];
       },
       'parse' => \&parse_json
    },
