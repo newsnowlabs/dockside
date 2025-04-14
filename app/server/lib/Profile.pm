@@ -64,8 +64,8 @@ sub versionUpgrade {
    }
 
    if($self->version == 2) {
-      $self->{'runtimes'} = ['runc'] unless $self->{'runtimes'} && @{$self->{'runtimes'}} > 0;
-      $self->{'unixusers'} = ['dockside'] unless $self->{'unixusers'} && @{$self->{'unixusers'}} > 0;
+      $self->{'runtimes'} = ['runc'] unless defined($self->{'runtimes'}) && (ref($self->{'runtimes'}) eq 'ARRAY') && @{$self->{'runtimes'}} > 0;
+      $self->{'unixusers'} = ['dockside'] unless defined($self->{'unixusers'}) && (ref($self->{'unixusers'}) eq 'ARRAY') && @{$self->{'unixusers'}} > 0;
 
       # If unspecified in profile, set to value of config.json default, or true.
       $self->{'ssh'} //= $CONFIG->{'ssh'}{'default'} // 1;
@@ -78,7 +78,19 @@ sub versionUpgrade {
 
       $self->{'version'}++;
    }
+}
 
+sub applyDefaults {
+   my $self = shift;
+
+   if(my $routers = $self->{'routers'}) {
+      for(my $i = 0; $i < @$routers; $i++) {
+         $routers->[$i]{'name'} //= $routers->[$i]{'prefixes'}[0] // "router-$i";
+
+         # Define default auth options, if none specified in the profile
+         $routers->[$i]{'auth'} //= [ 'owner', 'developer' ];
+      }
+   }
 }
 
 ################################################################################
@@ -139,6 +151,7 @@ sub new {
    my $self = bless { %$data }, ( ref($class) || $class );
 
    $self->versionUpgrade();
+   $self->applyDefaults();
 
    return $self if $validated;
 
@@ -193,34 +206,58 @@ sub validate {
    return undef unless $self->{'active'};
 
    # A list of allowed properties: a trailing '!' indicates the property is mandatory.
-   $self->do_validate( '', $self,
+   $self->do_validate(
+      '',
+      Storable::dclone($self),
       qw(
-         name!
-         version!
-         description
-         active!
-         mountIDE
-         routers
-         runtimes
-         networks!
-         images!
-         unixusers
-         imagePathsFilter
-         mounts
-         runDockerInit
-         dockerArgs
-         command
-         entrypoint
+         name=s!
+         version=s!
+         description=s
+         active=b!
+         mountIDE=b
+         routers=@
+         runtimes=@
+         networks=@!
+         images=@!
+         unixusers=@
+         imagePathsFilter=@
+         mounts=%
+         runDockerInit=b
+         dockerArgs=@
+         command=@
+         entrypoint=s
          metadata
-         lxcfs
-         ssh
-         security
-         gitURLs
-         IDEs
+         lxcfs=b
+         ssh=b
+         security=%
+         gitURLs=@
+         IDEs=@
       )
    );
 
    return $self;
+}
+
+sub _parse_props {
+   my $propcodes = shift;
+
+   my $propsLookup;
+
+   foreach my $propNcode ( @$propcodes ) {
+      # Split propNcode into name and code strings
+      my ($prop, $codestring) = $propNcode =~ /^([^=]+)(?:=(.*))?$/;
+      my %codesLookup;
+
+      # Split code string into an array of 1-char strings
+      my @codes = split( //, $codestring );
+
+      # Covert the code array into a hash lookup
+      @codesLookup{@codes} = (1) x scalar(@codes);
+
+      $propsLookup->{$prop} = \%codesLookup;
+   }
+
+   return $propsLookup;
 }
 
 # Validate an Object (not an Array)
@@ -229,21 +266,55 @@ sub do_validate {
    my $self  = shift;
    my $type  = shift;
    my $data  = shift;
-   my @props = @_;
+   my @propcodes = @_;
 
-   my $propsString = join( ', ', @props );
+   my $props = _parse_props(\@propcodes);
+   my @propList = sort { lc($a) cmp lc($b) } keys %$props;
+   my $propsString = join( ', ', @propList );
+   my $propsRE = join( '|', @propList );
 
-   my $propsRE = join( '|', map { s/[\?\!]//; $_; } @props );
-
+   # This sub only validates Objects, so check passed data is a hash or blessed hash of this package.
    unless( ref($data) eq 'HASH' || ref($data) eq __PACKAGE__ ) {
-      return $self->errors( $type, "'$type' must be an Object with the following properties: $propsString" );
+      return $self->errors( $type, "'$type' must be a JSON Object with the following properties: $propsString" );
    }
 
-   foreach my $prop ( sort keys %$data ) {
+   # Check each mandatory 'prop' has been specified.
+   foreach my $prop ( @propList ) {
+      if( $props->{$prop}->{'!'} && !exists($data->{$prop}) ) {
+         $self->errors( $type, sprintf( 'mandatory property "%s" not found', $prop ) );
+         next;
+      }
+   }
+
+   # Check each prop in supplied data
+   foreach my $prop ( sort { $a cmp $b } keys %$data ) {
+
+      # Skip the 'errors' pseudo-property
+      next if $prop eq 'errors';
 
       # Check the proposed 'prop' is allowed.
       unless( $prop =~ /^(?:$propsRE)$/ ) {
          $self->errors( $type, sprintf( 'property "%s" unknown, must be one of: %s', $prop, $propsString ) );
+         next;
+      }
+
+      if( $props->{$prop}->{'@'} && ref($data->{$prop}) ne 'ARRAY' ) {
+         $self->errors( $type, sprintf( 'property "%s" must be JSON type Array', $prop ) );
+         next;
+      }
+
+      if( $props->{$prop}->{'%'} && ref($data->{$prop}) ne 'HASH' ) {
+         $self->errors( $type, sprintf( 'property "%s" must be JSON type Object', $prop ) );
+         next;
+      }
+
+      if( $props->{$prop}->{'b'} && $data->{$prop} != 0 && $data->{$prop} != 1 ) {
+         $self->errors( $type, sprintf( 'property "%s" must be JSON type Boolean, not %s', $prop, $data->{$prop} ) );
+         next;
+      }
+
+      if( $props->{$prop}->{'s'} && ref($data->{$prop}) ) {
+         $self->errors( $type, sprintf( 'property "%s" must be JSON type String', $prop ) );
          next;
       }
 
@@ -269,13 +340,16 @@ sub do_validate {
       $self->$sub( "$type.$prop", $data->{$prop} );
    }
 
-   foreach my $prop ( @props ) {
-      # Check the proposed 'prop' is allowed.
-      if( $prop =~ /\!$/ && !exists($data->{$prop}) ) {
-         $self->errors( $type, sprintf( 'property "%s" not found but must be specified', $prop ) );
-         next;
-      }
-   }   
+}
+
+sub validate_profile_IDEs {
+   my $self = shift;
+   my $type = shift;
+   my $data = shift;
+
+   unless( ref($data) eq 'ARRAY' ) {
+      return $self->errors( $type, "must be an Array" );
+   }
 }
 
 sub validate_profile_mounts_tmpfs_dst {
@@ -294,16 +368,21 @@ sub validate_profile_mounts_tmpfs {
    my $type = shift;
    my $data = shift;
 
-   # FIXME:
-   # Checking that we have an Array,
-   # and looping through the Array elements,
-   # is standard logic for Arrays in the data model.
-   #
-   # Should we abstract them back to do_validate?
-   #
-   # If so, we need to can() and call two subs:
-   # - one for each Array element (e.g. ${type}_Instance or $type)
-   # - one for the whole Array - that just checks we have the required Array elements - (e.g. $type or $type_Array)
+   unless( ref($data) eq 'ARRAY' ) {
+      return $self->errors( $type, "must be an Array" );
+   }
+
+   for( my $i = 0; $i < @$data; $i++ ) {
+      $self->do_validate( "$type\[$i\]", $data->[$i], 
+         qw( dst=s! tmpfs-size=s tmpfs-mode=s tmpfs-uid=s tmpfs-gid=s tmpfs-noexec=b tmpfs-nosuid=b tmpfs-nodev=b )
+      );
+   }
+}
+
+sub validate_profile_mounts_bind {
+   my $self = shift;
+   my $type = shift;
+   my $data = shift;
 
    unless( ref($data) eq 'ARRAY' ) {
       return $self->errors( $type, "must be an Array" );
@@ -311,7 +390,23 @@ sub validate_profile_mounts_tmpfs {
 
    for( my $i = 0; $i < @$data; $i++ ) {
       $self->do_validate( "$type\[$i\]", $data->[$i], 
-         qw( dst! tmpfs-size tmpfs-mode tmpfs-uid tmpfs-gid tmpfs-noexec tmpfs-nosuid tmpfs-nodev )
+         qw( dst=s! src=s! )
+      );
+   }
+}
+
+sub validate_profile_mounts_volume {
+   my $self = shift;
+   my $type = shift;
+   my $data = shift;
+
+   unless( ref($data) eq 'ARRAY' ) {
+      return $self->errors( $type, "must be an Array" );
+   }
+
+   for( my $i = 0; $i < @$data; $i++ ) {
+      $self->do_validate( "$type\[$i\]", $data->[$i], 
+         qw( dst=s! src=s )
       );
    }
 }
@@ -334,13 +429,7 @@ sub validate_profile_routers {
    }
 
    for( my $i = 0; $i < @$data; $i++ ) {
-      $self->do_validate( "$type\[$i\]", $data->[$i], qw( name type auth prefixes! domains! http https ) );
-
-      # Choose a name, if none provided.
-      $data->[$i]{'name'} //= $data->[$i]{'prefixes'}[0] // "router-$i";
-
-      # Assign default permitted authorisation modes, if none provided.
-      $data->[$i]{'auth'} //= [ 'owner', 'developer' ];
+      $self->do_validate( "$type\[$i\]", $data->[$i], qw( name=s type=s auth=@ prefixes=@! domains=@! http=% https=% ) );
    }
 }
 
