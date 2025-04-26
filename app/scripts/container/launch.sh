@@ -257,12 +257,24 @@ populate_vscode_extensions() {
    log "Checking for $FILE ..."
 
    if [ -f $FILE ]; then
-      log "Found prexisting $FILE."
-   elif [ -n "$DEVCONTAINER_VSCODE" ] && [ "$DEVCONTAINER_VSCODE" != "null" ]; then
-      log "Populating $FILE with '$DEVCONTAINER_VSCODE'"
-      echo "$DEVCONTAINER_VSCODE" | jq -re '{recommendations: .extensions}' >$FILE
+      log "Prexisting '$FILE' found."
    else
-      echo '{"recommendations": []}' >$FILE
+      log "Prexisting '$FILE' not found, creating new."
+      cat <<'_EOE_' >$FILE
+{
+   // See https://go.microsoft.com/fwlink/?LinkId=827846 to learn about workspace recommendations.
+   // Extension identifier format: ${publisher}.${name}. Example: vscode.csharp
+   // List of extensions which should be recommended for users of this workspace.
+   "recommendations": [],
+   // List of extensions that should not be recommended for users of this workspace.
+   "unwantedRecommendations": []
+}
+_EOE_
+   fi
+
+   if [ -n "$DEVCONTAINER_VSCODE" ] && [ "$DEVCONTAINER_VSCODE" != "null" ]; then
+      log "Populating '$FILE' with '$DEVCONTAINER_VSCODE'"
+      echo "$DEVCONTAINER_VSCODE" | jq -re '{recommendations: .extensions}' >$FILE
    fi
 
    local EXTS=""
@@ -305,7 +317,7 @@ populate_vscode_settings() {
       echo '{}' >$FILE
    fi
 
-   local EXCLUDES='.vscode .*vscode-server .theia .cache .ssh .git'
+   local EXCLUDES='**/.vscode **/.openvscode-server **/.theia **/.cache **/.ssh **/.git'
    if [ -n "$EXCLUDES" ]; then
       log "Populating '$FILE' with 'files.exclude' exclusions (in JSON): $EXCLUDES"
 
