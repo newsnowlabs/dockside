@@ -75,6 +75,7 @@ sub versionUpgrade {
 
    if($self->version == 3) {
       $self->{'IDEs'} = $CONFIG->{'ide'}{'IDEs'} unless defined($self->{'IDEs'});
+      $self->{'entrypoint'} = [ $self->{'entrypoint'} ] if $self->{'entrypoint'} && !ref($self->{'entrypoint'});
 
       $self->{'version'}++;
    }
@@ -225,7 +226,7 @@ sub validate {
          runDockerInit=b
          dockerArgs=@
          command=@
-         entrypoint=s
+         entrypoint=@
          metadata
          lxcfs=b
          ssh=b
