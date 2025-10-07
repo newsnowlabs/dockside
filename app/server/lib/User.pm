@@ -859,38 +859,44 @@ sub updateContainerReservation {
    my $self = shift;
    my $args = shift;
 
+   # Retrieve the reservation object using the provided reservation ID
    my $reservation = $self->reservation( $args->{'id'} );
 
+   # Throw an exception if the reservation is not found
    unless($reservation) {
       die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
    }
 
+   # Create a deep clone of the original reservation for comparison
    my $origReservation = Storable::dclone($reservation);
 
-   # FIXME: We don't want to update data.network, when we change network; or do we?
-   # FIXME: Should calling $reservation->data('network', <network>) call update_network?
+   # Update metadata fields if they are defined in the arguments
    foreach my $m (qw( access viewers developers private network description IDE )) {
-      # Don't try and update arguments that don't exist or are undefined.
       if(defined($args->{$m})) {
          $self->set($reservation, $m, $args->{$m}) || 
             die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
       }
    }
 
-   # If we reach this point, the user was permitted to make the proposed changes,
-   # which can now be stored ...
+   # Store the changes if all updates are successful
    $reservation->store();
 
-   # ... and then acted upon.
+   # Apply any network changes
    $reservation->update_network();
 
-   # Only update devtainer authorized_keys if relevant reservation fields change.
+   # Check if the IDE has changed
+   if ($origReservation->meta('IDE') ne $reservation->meta('IDE')) {
+       # Execute a command to update the running IDE
+       $reservation->exec('update_ide');
+   }
+
+   # Update SSH authorized keys if there are changes in developers or access fields
    if( $origReservation->meta('developers') ne $reservation->meta('developers') ||
       $origReservation->meta('access')->{'ssh'} ne $reservation->meta('access')->{'ssh'} ) {
       $reservation->exec('update_ssh_authorized_keys');
    }
 
-   # Create and return a sanitised clone of the reservation object.
+   # Return a sanitized clone of the reservation object for client-side use
    return $self->createClientReservation($reservation);
 }
 

@@ -1096,6 +1096,22 @@ sub exec {
    my $reservationId = $reservation->id();
    my $containerId = $reservation->containerId();
 
+   if ($command eq 'update_ide') {
+      # Logic to update the running IDE
+      # This could involve stopping the current IDE process and starting the new one
+      flog("exec: updating selected IDE for reservationId=$reservationId, containerId=$containerId");
+
+      # Example command to restart the IDE
+      my @Command = $reservation->ide_command();
+      run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root', $containerId, @Command);
+
+      # Assume (for now) update was successful and update data.runningIDE to match meta.IDE
+      $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+
+      return 1;
+   }
+
+   # Existing logic for other commands
    my @Command = $reservation->ide_command();
    if(!@Command) {
       flog("exec: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");
@@ -1172,7 +1188,7 @@ sub exec {
 
    my @envDevContainer;
    @envDevContainer = (
-      "--env=DEVCONTAINER_VSCODE=" . encode_json( $reservation->data('vscode') )
+      "--env=DEVCONTAINER_VSCODE_EXTENSIONS=" . encode_json( $reservation->data('vscode') )
    );
 
    # TODO: Configure Profiles to support launching IDE as non-root user
