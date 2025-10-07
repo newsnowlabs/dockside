@@ -27,6 +27,21 @@ use Reservation;
 use Containers;
 use User;
 
+# Updates the container state by retrieving the current container list
+# from the Docker API and merging it with the existing container data.
+#
+# Parameters:
+# - $oldJSON: A JSON string representing the previous state of the containers.
+# - $opts: A hash reference containing options, specifically 'updateSizes',
+#   which determines whether to include container sizes in the API request.
+#
+# Returns:
+# A JSON string representing the updated container state, including
+# both the existing and newly retrieved container data.
+#
+# Throws:
+# Exception if unable to retrieve the container list from the Docker API
+# or if the API response is not successful.
 sub _update {
    my $oldJSON = shift;
    my $opts = shift; # hashref: { 'updateSizes' => undef|1 }
@@ -104,6 +119,20 @@ sub _update {
    return encode_json($newContainersFile);
 }
 
+# Updates the container state by retrieving the current container list
+# from the Docker API and merging it with the existing container data.
+#
+# Parameters:
+# - $opts: A hash reference containing options, specifically 'updateSizes',
+#   which determines whether to include container sizes in the API request.
+#
+# Returns:
+# A JSON string representing the updated container state, including
+# both the existing and newly retrieved container data.
+#
+# Throws:
+# Exception if unable to retrieve the container list from the Docker API
+# or if the API response is not successful.
 sub update {
    my $opts = shift;  # hashref: { 'updateSizes' => undef|1 }
 
