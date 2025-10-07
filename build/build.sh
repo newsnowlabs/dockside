@@ -21,6 +21,7 @@ push() {
   done
 }
 
+# Lists Docker images that match the repository filter.
 list() {
   local FILTERS="--filter=reference=$REPO "
   
@@ -33,6 +34,23 @@ clean() {
   docker rmi -f $IMAGES
 }
 
+# Parses command line arguments and sets corresponding variables.
+# Options:
+# --stage, --target: Specify the build stage or target. Default is unset.
+# --tag: Specify the tag for the Docker image. Default is 'latest' if not provided.
+# --repo: Specify the repository for the Docker image. Default is 'newsnowlabs/dockside'.
+# --progress: Specify the progress output style. Default is unset.
+# --theia: Specify the version of Theia to use. Default is unset.
+# --builder: Specify the builder to use (depot, buildx, buildkit). Default is 'buildkit'.
+# --platforms: Specify the platforms to build for. Default is unset.
+# --no-cache: Do not use cache when building the image.
+# --force-rm: Always remove intermediate containers.
+# --progress-plain: Use plain progress output.
+# --clean: Remove all images matching the repository filter.
+# --list, --ls: List all images matching the repository filter.
+# --push: Push the built image to the repository.
+# --load: Load the built image into Docker.
+# -h, --help: Display usage information.
 parse_commandline() {
   local opt
   local val
