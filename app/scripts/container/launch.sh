@@ -182,6 +182,11 @@ spawn_ssh_agent() {
 
 populate_known_hosts() {
 
+   if [ -f "$HOME/.ssh/known_hosts" ]; then
+      log "Leaving existing ~/.ssh/known_hosts"
+      return
+   fi
+
    if [ -n "$SSH_KNOWN_HOSTS_DOMAINS" ]; then
       # Replace any ',' with spaces
       SSH_KNOWN_HOSTS_DOMAINS=$(echo $SSH_KNOWN_HOSTS_DOMAINS | tr ',' ' ')
@@ -193,7 +198,7 @@ populate_known_hosts() {
    local SSH_KNOWN_HOSTS_REPO_DOMAINS=$(
       find $HOME -type d -name .git -exec echo "{}/config" \; | \
          xargs -I '{}' grep url '{}' | \
-         sed -r 's|\s*url\s*=\s*||; /^[^@]+@/!d; s|^[^@]+@([^:]+).*$|\1|' | \
+         sed -r 's|\s*url\s*=\s*||; /^[^@]+@/!d; s|^[^@]+@([^:/]+).*$|\1|' | \
          sort -u
    )
    log "Scan for known-hosts domains found: '$SSH_KNOWN_HOSTS_REPO_DOMAINS'"
@@ -205,17 +210,16 @@ populate_known_hosts() {
    )
 
    if [ -n "$SSH_KNOWN_HOSTS_DOMAINS_ALL" ]; then
-      log "- Running: IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >$HOME/.ssh/known_hosts"
-      $IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >$HOME/.ssh/known_hosts
+      log "- Running: IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >>$HOME/.ssh/known_hosts"
+      $IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >>$HOME/.ssh/known_hosts
    fi
 
 }
 
 populate_ssh_agent_keys() {
    local SAVEKEYS="1"
-   local KEY_PATH="$HOME/.ssh/key"
-
-   log "Populating ssh agent keys to '$KEY_PATH' and ssh-agent ..."
+   local DEFAULT_KEY_PATH="$HOME/.ssh/dockside"
+   local KEY_PATH="$DEFAULT_KEY_PATH"
 
    local KEY_PRIVATE=$(echo "$SSH_AGENT_KEYS" | jq -re '.private')
    local KEY_PUBLIC=$(echo "$SSH_AGENT_KEYS" | jq -re '.public')
@@ -223,15 +227,26 @@ populate_ssh_agent_keys() {
    log "SSH_AGENT_KEYS(PUBLIC)=$KEY_PUBLIC"
    log "SSH_AGENT_KEYS(PRIVATE)=${KEY_PRIVATE:0:36}..."
 
-   [ -f "$KEY_PATH" ] || echo "$KEY_PRIVATE" >$KEY_PATH
-   [ -f "$KEY_PATH.pub" ] || echo "$KEY_PUBLIC" >$KEY_PATH.pub
+   if [ "$KEY_PUBLIC" = "null" ] || [ "$KEY_PRIVATE" = "null" ] || [ -z "$KEY_PUBLIC" ] || [ -z "$KEY_PRIVATE" ]; then
+      log "SSH_AGENT_KEYS is null, so not saving keys to '$KEY_PATH'"
+      return
+   fi
 
+   if [ -f "$KEY_PATH" ] && [ -f "$KEY_PATH.pub" ]; then
+      log "Leaving existing keys unchanged in '$KEY_PATH'; adding using temporary path ..."
+      KEY_PATH="$(busybox mktemp dockside.XXXXXX)"
+   fi
+
+   log "Populating ssh agent keys to '$KEY_PATH' and ssh-agent ..."
+
+   echo "$KEY_PRIVATE" >$KEY_PATH
+   echo "$KEY_PUBLIC" >$KEY_PATH.pub
    chmod 400 $KEY_PATH $KEY_PATH.pub
 
    $IDE_PATH/bin/ssh-add "$KEY_PATH"
    $IDE_PATH/bin/ssh-add -L
 
-   if [ -z "$SAVEKEYS" ]; then
+   if [ "$SAVEKEYS" != "1" ] || [ "$KEY_PATH" != "$DEFAULT_KEY_PATH" ]; then
       log "Deleting keys from '$KEY_PATH'"
       rm -f $KEY_PATH $KEY_PATH.pub
    fi
@@ -247,6 +262,11 @@ find_files_having() {
    find "$HOME" -type d -name "node_modules" -o -name ".*" -prune -o -type f -exec head -n 1 {} \; 2>/dev/null | $IDE_PATH/bin/busybox grep -qE '^#!.*('$grep')'
 }
 
+# Populate ~/.vscode/extensions.json
+# TODO: Should not alter the file if it already exists, unless:
+# - DEVCONTAINER_VSCODE_EXTENSIONS set to a list of extensions
+# - DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS is set to a list of extensions
+# - DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT set to "1"
 populate_vscode_extensions() {
    local DIR="$HOME/.vscode"
    local FILE="$DIR/extensions.json"
@@ -257,14 +277,37 @@ populate_vscode_extensions() {
    log "Checking for $FILE ..."
 
    if [ -f $FILE ]; then
-      log "Found prexisting $FILE."
-   elif [ -n "$DEVCONTAINER_VSCODE" ] && [ "$DEVCONTAINER_VSCODE" != "null" ]; then
-      log "Populating $FILE with '$DEVCONTAINER_VSCODE'"
-      echo "$DEVCONTAINER_VSCODE" | jq -re '{recommendations: .extensions}' >$FILE
+      log "Prexisting '$FILE' found."
    else
-      echo '{"recommendations": []}' >$FILE
+      log "Prexisting '$FILE' not found, creating new."
+      cat <<'_EOE_' >$FILE
+{
+   // See https://go.microsoft.com/fwlink/?LinkId=827846 to learn about workspace recommendations.
+   // Extension identifier format: ${publisher}.${name}. Example: vscode.csharp
+   // List of extensions which should be recommended for users of this workspace.
+   "recommendations": [],
+   // List of extensions that should not be recommended for users of this workspace.
+   "unwantedRecommendations": []
+}
+_EOE_
    fi
 
+   if [ -n "$DEVCONTAINER_VSCODE_EXTENSIONS" ] && [ "$DEVCONTAINER_VSCODE_EXTENSIONS" != "null" ]; then
+      log "Populating '$FILE' with '$DEVCONTAINER_VSCODE_EXTENSIONS'"
+      echo "$DEVCONTAINER_VSCODE_EXTENSIONS" | jq -re '{recommendations: .extensions}' >$FILE
+   fi
+
+   if [ -n "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" ] && [ "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" != "null" ]; then
+      log "Populating '$FILE' with unwanted extensions '$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS'"
+      echo "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" | jq -re '{unwantedRecommendations: .extensions}' >$FILE
+   fi
+
+   if [ "$DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT" != "1" ]; then
+      log "Skipping auto-detection of extensions, since DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT='$DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT'"
+      return
+   fi
+
+   log "Auto-detecting extensions for '$FILE' ..."
    local EXTS=""
    find_files_of_type -name '*.sh' || find_files_having 'bash|sh' && EXTS="$EXTS vscode.shellscript"
    find_files_of_type -name '*.pl' -o -name '*.pm' || find_files_having 'perl' && EXTS="$EXTS vscode.perl"
@@ -305,7 +348,7 @@ populate_vscode_settings() {
       echo '{}' >$FILE
    fi
 
-   local EXCLUDES='.vscode .*vscode-server .theia .cache .ssh .git'
+   local EXCLUDES='**/.vscode **/.openvscode-server **/.theia **/.cache **/.ssh **/.git'
    if [ -n "$EXCLUDES" ]; then
       log "Populating '$FILE' with 'files.exclude' exclusions (in JSON): $EXCLUDES"
 
