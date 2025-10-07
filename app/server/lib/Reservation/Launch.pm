@@ -108,6 +108,12 @@ sub cmdline_docker_args {
       @{$self->profileObject->{'dockerArgs'}} : ();
 }
 
+# This function generates mount options for tmpfs mounts.
+# The source of a tmpfs mount is always the empty string.
+# However, additional options may be specified.
+# If any of the options 'tmpfs-uid', 'tmpfs-gid', 'tmpfs-noexec', 'tmpfs-nosuid' or 'tmpfs-nodev'
+# are specified, the mount is generated using the --tmpfs option.
+# Otherwise, it is generated using the --mount option.
 sub cmdline_mounts_tmpfs {
    my $self = shift;
    
@@ -138,6 +144,8 @@ sub cmdline_mounts_tmpfs {
    } @{ $self->profileObject->{'mounts'}{'tmpfs'} };
 }
 
+# This function generates mount options for bind mounts.
+# The source of a bind mount must always be specified.
 sub cmdline_mounts_bind {
    my $self = shift;
    
@@ -146,11 +154,15 @@ sub cmdline_mounts_bind {
          "--mount=type=bind",
          "dst=" . $self->_placeholders($_->{'dst'}),
          "src=$_->{'src'}",
+         $_->{'readonly'} ? 'readonly=true' : (),
       )
    # FIXME: Add profile accessor
    } @{ $self->profileObject->{'mounts'}{'bind'} };
 }
 
+# This function generates mount options for named volumes.
+# The source of a volume mount may be omitted, in which case Docker
+# will create a new named volume with the specified destination path.
 sub cmdline_mounts_volume {
    my $self = shift;
    
@@ -159,6 +171,7 @@ sub cmdline_mounts_volume {
          "--mount=type=volume",
          "dst=" . $self->_placeholders($_->{'dst'}),
          $_->{'src'} ? ("src=" . $self->_placeholders($_->{'src'})) : (),
+         $_->{'readonly'} ? 'readonly=true' : (),
       )
    # FIXME: Add profile accessor
    } @{ $self->profileObject->{'mounts'}{'volume'} };

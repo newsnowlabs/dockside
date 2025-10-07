@@ -391,7 +391,7 @@ sub validate_profile_mounts_bind {
 
    for( my $i = 0; $i < @$data; $i++ ) {
       $self->do_validate( "$type\[$i\]", $data->[$i], 
-         qw( dst=s! src=s! )
+         qw( dst=s! src=s! readonly=b )
       );
    }
 }
@@ -407,7 +407,7 @@ sub validate_profile_mounts_volume {
 
    for( my $i = 0; $i < @$data; $i++ ) {
       $self->do_validate( "$type\[$i\]", $data->[$i], 
-         qw( dst=s! src=s )
+         qw( dst=s! src=s readonly=b )
       );
    }
 }
