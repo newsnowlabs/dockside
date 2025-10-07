@@ -61,13 +61,13 @@ The currently-supported root properties within a profile are:
 | runtimes | allowed docker runtimes | optional | `["runc"]` | `["runc", "sysbox-runc", "runcvm"]`
 | images | allowed docker images (a wildcard may be used to allow the user to specify an arbitrary element of the image string) | mandatory | N/A | `["alpine:latest","i386/alpine:latest"]` |
 | unixusers | array of the unix user account for which to run the IDE | optional | `["dockside"]` | `["john","jim"]`
-| mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{"tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}]}`
+| mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{ "tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}], "bind": [{"src": "/source/path", "dst": "/dest/path", "readonly": true}] }`
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
 | lxcfs | whether to mount [lxcfs](extensions/lxcfs.md) | optional | as specified in `config.json` | `true` |
 | security | `docker run` security options | optional | as specified in `config.json` | `{ "apparmor": "unconfined", "seccomp": "unconfined" }` |
 | command | [array] command to run on devtainer launch | mandatory if image does not specify a long-running entrypoint or command | `[]` | `["/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"]`
-| entrypoint | command with which to override image entrypoint | optional | `[]` | `["/my-entrypoint.sh"]` |
+| entrypoint | [array] command with which to override image entrypoint | optional | `[]` | `["/my-entrypoint.sh"]` |
 | mountIDE | disable mounting the Dockside IDE volume (strictly for use with images, such as the Dockside image, that embed their own IDE volume) | optional | `false` | `true` |
 | ssh | whether to enable ssh access | optional | as specified in `config.json` | `true` |
 
