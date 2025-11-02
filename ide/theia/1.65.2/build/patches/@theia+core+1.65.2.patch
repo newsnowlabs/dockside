@@ -1,0 +1,17 @@
+diff --git a/node_modules/@theia/core/lib/browser/window/window-title-service.js b/node_modules/@theia/core/lib/browser/window/window-title-service.js
+index 2b3e793..0a2e4fb 100644
+--- a/node_modules/@theia/core/lib/browser/window/window-title-service.js
++++ b/node_modules/@theia/core/lib/browser/window/window-title-service.js
+@@ -38,7 +38,11 @@ exports.InitialWindowTitleParts = {
+     appName: frontend_application_config_provider_1.FrontendApplicationConfigProvider.get().applicationName,
+     remoteName: undefined,
+     dirty: undefined,
+-    developmentHost: undefined
++    // Obtain this value from the in-memory frontend config
++    // (technically, package.json's theia.frontend.config.devtainerName, which is set
++    // not in our package.json file, but dynamically during app load by our patched
++    // frontend-generator.js)
++    developmentHost: frontend_application_config_provider_1.FrontendApplicationConfigProvider.get().devtainerName || '[devtainer]'
+ };
+ let WindowTitleService = class WindowTitleService {
+     constructor() {
