@@ -1,8 +1,9 @@
 #!/opt/dockside/system/latest/bin/sh -l
 
 # Expects:
-# - IDE_PATH
-# - LOG_PATH
+# - IIDE_PATH: path to IDE folder e.g. /opt/dockside/ide/openvscode/latest/
+# - IDE_PATH:  path to system folder e.g. /opt/dockside/system/latest
+# - LOG_PATH:  path to log folder
 # 
 
 log() {
@@ -25,7 +26,7 @@ eval "$@"
 # Set needed environment variables
 export PATH="$PATH:$IDE_PATH/bin"
 
-log "Launching IDE from IIDE_PATH='$IIDE_PATH' using: ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token ..."
+log "Launching IDE with IIDE_PATH='$IIDE_PATH' and IDE_PATH='$IDE_PATH' using: ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token ..."
 
 # Create system settings
 SETTINGS_DIR="$HOME/.openvscode-server/data/Machine"
