@@ -1,14 +1,17 @@
 # syntax=docker/dockerfile:1.3-labs
 
-ARG NODE_VERSION=20
-ARG ALPINE_VERSION=3.19
-ARG DEBIAN_VERSION=bookworm-slim
+ARG THEIA_ALPINE_VERSION=3.19
+ARG THEIA_NODE_VERSION=20
+ARG OPENVSCODE_DEBIAN_VERSION=bookworm-slim
+ARG SYSTEM_ALPINE_VERSION=3.19
+ARG DOCKSIDE_NODE_VERSION=20
+ARG DOCKSIDE_DEBIAN_VERSION=bookworm-slim
 
 ################################################################################
 # SET UP 'BASE' BUILD ENVIRONMENT
 #
 # (/tmp/dockside will be used by other build stages)
-FROM alpine:${ALPINE_VERSION} AS base
+FROM alpine:${SYSTEM_ALPINE_VERSION} AS base
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
@@ -90,7 +93,7 @@ EOF
 ################################################################################
 # BUILD THEIA IDE
 #
-FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS theia-build
+FROM node:${THEIA_NODE_VERSION}-alpine${THEIA_ALPINE_VERSION} AS theia-build
 
 RUN apk add --no-cache bash
 
@@ -215,7 +218,7 @@ RUN cd $DS_PATH/bin && \
 # BUILD OPENVSCODE IDE BINARY BUNDLE
 #
 # Patch all binaries and dynamic libraries for full portability.
-FROM debian:$DEBIAN_VERSION AS openvscode-ide
+FROM debian:$OPENVSCODE_DEBIAN_VERSION AS openvscode-ide
 
 ARG OPT_PATH
 
@@ -264,7 +267,7 @@ RUN apk update && \
 ################################################################################
 # MAIN DOCKSIDE BUILD
 #
-FROM node:20-$DEBIAN_VERSION AS dockside-1
+FROM node:$DOCKSIDE_NODE_VERSION-$DOCKSIDE_DEBIAN_VERSION AS dockside-1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
