@@ -33,12 +33,12 @@ ENV BASH_ENV=/tmp/dockside/bash-env
 # under https://github.com/erebe/wstunnel/blob/master/LICENSE.
 RUN <<EOF
 if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
-    THEIA_VERSION="1.56.0"
+    THEIA_VERSION="1.65.2"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"
     OPENVSCODE_VERSION="1.103.1"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-x64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
-    THEIA_VERSION="1.56.0"
+    THEIA_VERSION="1.65.2"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"
     OPENVSCODE_VERSION="1.103.1"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-arm64.tar.gz"
@@ -95,7 +95,7 @@ EOF
 #
 FROM node:${THEIA_NODE_VERSION}-alpine${THEIA_ALPINE_VERSION} AS theia-build-env
 
-RUN apk add --no-cache bash
+RUN apk add --no-cache bash git
 
 COPY --from=base /tmp/dockside /tmp/dockside
 ENV BASH_ENV=/tmp/dockside/bash-env
@@ -111,6 +111,8 @@ RUN mkdir -p $THEIA_BUILD_PATH && \
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
 ENV PUPPETEER_SKIP_DOWNLOAD=1
+ENV NODE_OPTIONS="--max-old-space-size=8192"
+
 FROM theia-build-env AS theia-build
 
 # Build Theia
@@ -120,7 +122,7 @@ RUN cd $THEIA_BUILD_PATH && \
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
 # Matches $THEIA_BUILD_PATH
-ENTRYPOINT ["/tmp/dockside/theia-exec", "node", "./src-gen/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
+ENTRYPOINT ["/tmp/dockside/theia-exec", "node", "./lib/backend/main.js", "./", "--hostname", "0.0.0.0", "--port", "3131"]
 
 ################################################################################
 # CLEAN THEIA IDE
@@ -175,10 +177,30 @@ RUN export \
     cd $THEIA_PATH/.. && \
     ln -sf theia-$THEIA_VERSION latest
 
+# Download 'built-in' VSIX plugins
+ARG VSIX_PLUGINS="vscode.git-1.95.3 vscode.git-base-1.95.3 vscode.css-1.95.3 vscode.docker-1.95.3 vscode.html-1.95.3 vscode.ini-1.95.3 vscode.javascript-1.95.3 vscode.json-1.95.3 vscode.merge-conflict-1.95.3 vscode.perl-1.95.3 vscode.scss-1.95.3 vscode.shellscript-1.95.3 vscode.yaml-1.95.3"
+RUN <<_EOE_
+apk add --no-cache curl libarchive-tools
+mkdir -p $THEIA_PATH/theia/plugins
+for plugin in $VSIX_PLUGINS; do
+    publisher="${plugin%%.*}"
+    namever="${plugin#*.}"
+    version="${namever##*-}"
+    name="${namever%-${version}}"
+
+    url="https://open-vsx.org/api/${publisher}/${name}/${version}/file/${publisher}.${name}-${version}.vsix"
+    dest="$THEIA_PATH/theia/plugins/$plugin"
+    mkdir -p "$dest"
+
+    echo "Downloading $plugin from $url to $dest ..." >&2
+    curl --fail --silent --location --retry 3 --max-time 20 "$url" | bsdtar -xf - -C "$dest"
+done
+_EOE_
+
 # Default diagnostics entrypoint for this stage (uses relocatable node and Theia, loses BASH_ENV build environment)
 ENV BASH_ENV=""
 WORKDIR $OPT_PATH/ide/theia/latest/theia
-ENTRYPOINT ["../bin/node", "./src-gen/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
+ENTRYPOINT ["../bin/node", "./lib/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
 
 ################################################################################
 # BUILD DOCKSIDE 'SYSTEM' BINARY BUNDLE
