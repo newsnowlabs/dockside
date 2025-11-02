@@ -35,18 +35,18 @@ RUN <<EOF
 if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
     THEIA_VERSION="1.56.0"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"
-    OPENVSCODE_VERSION="1.96.4"
+    OPENVSCODE_VERSION="1.103.1"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-x64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
     THEIA_VERSION="1.56.0"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"
-    OPENVSCODE_VERSION="1.96.4"
+    OPENVSCODE_VERSION="1.103.1"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-arm64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then
     THEIA_VERSION="1.35.0"
     THEIA_BUILD_EXTRA_PACKAGES="ripgrep"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7"
-    OPENVSCODE_VERSION="1.96.4"
+    OPENVSCODE_VERSION="1.103.1"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-armhf.tar.gz"
     OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="libatomic1"
 else
