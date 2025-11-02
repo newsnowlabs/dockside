@@ -93,7 +93,7 @@ EOF
 ################################################################################
 # BUILD THEIA IDE
 #
-FROM node:${THEIA_NODE_VERSION}-alpine${THEIA_ALPINE_VERSION} AS theia-build
+FROM node:${THEIA_NODE_VERSION}-alpine${THEIA_ALPINE_VERSION} AS theia-build-env
 
 RUN apk add --no-cache bash
 
@@ -109,12 +109,12 @@ ADD ./ide/theia /tmp/build/ide/theia
 RUN mkdir -p $THEIA_BUILD_PATH && \
     cp -a /tmp/build/ide/theia/$THEIA_VERSION/build/* $THEIA_BUILD_PATH
 
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
+ENV PUPPETEER_SKIP_DOWNLOAD=1
+FROM theia-build-env AS theia-build
+
 # Build Theia
-RUN export \
-        PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 \
-        PUPPETEER_SKIP_DOWNLOAD=1 \
-    && \
-    cd $THEIA_BUILD_PATH && \
+RUN cd $THEIA_BUILD_PATH && \
     yarn config set network-timeout 600000 -g && yarn
 
 # Default diagnostics entrypoint for this stage
