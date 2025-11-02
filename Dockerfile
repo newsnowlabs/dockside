@@ -427,18 +427,3 @@ VOLUME $OPT_PATH/host
 # LAUNCH
 #
 ENTRYPOINT ["/entrypoint.sh"]
-
-FROM scratch AS dockside-prod
-ARG OPT_PATH
-
-COPY --from=dockside / /
-
-# -----------------------------------------------
-# Cause the creation of a volume at /opt/dockside
-#
-VOLUME $OPT_PATH
-
-# ------------------------------------------------------------
-# Create a separate volume for host-specific data to be shared
-# read-only with devtainers
-VOLUME $OPT_PATH/host
