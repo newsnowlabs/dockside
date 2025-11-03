@@ -884,16 +884,22 @@ sub updateContainerReservation {
    # Apply any network changes
    $reservation->update_network();
 
-   # Check if the IDE has changed
-   if ($origReservation->meta('IDE') ne $reservation->meta('IDE')) {
-       # Execute a command to update the running IDE
-       $reservation->exec('update_ide');
-   }
+   # Only if the reservation is running
+   if($reservation->is_running) {
+      
+      # Check if the IDE has changed
+      if ($origReservation->meta('IDE') ne $reservation->meta('IDE')) {
+         # Execute a command to update the running IDE
+         # (Enable once the restart_ide logic is resilient)
+         #
+         # $reservation->exec('restart_ide');
+      }
 
-   # Update SSH authorized keys if there are changes in developers or access fields
-   if( $origReservation->meta('developers') ne $reservation->meta('developers') ||
-      $origReservation->meta('access')->{'ssh'} ne $reservation->meta('access')->{'ssh'} ) {
-      $reservation->exec('update_ssh_authorized_keys');
+      # Update SSH authorized keys if there are changes in developers or access fields
+      if( $origReservation->meta('developers') ne $reservation->meta('developers') ||
+         $origReservation->meta('access')->{'ssh'} ne $reservation->meta('access')->{'ssh'} ) {
+         $reservation->exec('update_ssh_authorized_keys');
+      }
    }
 
    # Return a sanitized clone of the reservation object for client-side use
