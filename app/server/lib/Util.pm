@@ -163,7 +163,7 @@ sub run_system {
 
    my $exitCode = system(@cmd);
 
-   die Exception->new( 'dbg' => sprintf( "Error running '%s': message '%s', exit code %d", $cmd, $!, $? >> 8 )) if( $? == -1 ) || ( $? >> 8 ) != 0;
+   die Exception->new( 'dbg' => sprintf( "Error running '%s': gave '%s' and exit code %d", $cmd, $!, $? >> 8 )) if( $? == -1 ) || ( $? >> 8 ) != 0;
    die Exception->new( 'dbg' => sprintf( "Error running '%s': died with signal %d, %s coredump", ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without' )) if( $? & 127 );
 
    return $? >> 8;

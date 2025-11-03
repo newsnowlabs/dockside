@@ -13,7 +13,7 @@ use JSON;
 use URI::Escape;
 use Try::Tiny;
 use File::Path;
-use Util qw(flog wlog run run_pty);
+use Util qw(flog wlog run run_pty YYYYMMDDHHMMSS);
 use Data qw($CONFIG $VERSION);
 use Profile;
 use Reservation;
@@ -485,13 +485,15 @@ sub _handler {
    catch {
       my ($msg, $dbg, $time) = ref($_) eq 'Exception' ? ($_->msg(), $_->dbg(), $_->time()) : ($_, $_, time);
 
-      flog("Reporting exception at '$time': msg='$msg'; dbg='$dbg'; content type='$type'");
+      my $Time = YYYYMMDDHHMMSS($time);
+
+      flog("Reporting exception at '$Time': msg='$msg'; dbg='$dbg'; content type='$type'");
 
       if($type eq 'text') {
-         return text($r, 401, "$msg at $time");
+         return text($r, 401, "$msg - $dbg (at $Time)");
       }
       else {
-         return json($r, 401, { 'status' => '401', 'msg' => "$msg at $time", 'time' => $time });
+         return json($r, 401, { 'status' => '401', 'msg' => "$msg - $dbg (at $Time)", 'time' => $time });
       }
    };
 
