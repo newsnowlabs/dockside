@@ -91,8 +91,16 @@ sub profileObject {
    return $_[0]->{'profileObject'};
 }
 
+# Returns:
+# -1: Created (but not yet ever Started or Exited)
+#  0: Exited (i.e. stopped)
+#  1: Started (i.e. running)
 sub status {
    return $_[0]->{'status'};
+}
+
+sub is_running {
+   return $_[0]->status == 1;
 }
 
 # With no arguments: return owner data structure.
@@ -1096,31 +1104,31 @@ sub exec {
    my $reservationId = $reservation->id();
    my $containerId = $reservation->containerId();
 
-   if ($command eq 'update_ide') {
-      # Logic to update the running IDE
-      # This could involve stopping the current IDE process and starting the new one
-      flog("exec: updating selected IDE for reservationId=$reservationId, containerId=$containerId");
-
-      # Example command to restart the IDE
-      my @Command = $reservation->ide_command();
-      run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root', $containerId, @Command);
-
-      # Assume (for now) update was successful and update data.runningIDE to match meta.IDE
-      $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
-
-      return 1;
-   }
-
    # Existing logic for other commands
    my @Command = $reservation->ide_command();
    if(!@Command) {
-      flog("exec: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");
+      flog("exec: unable to run command for reservationId=$reservationId, containerId=$containerId: no command");
       return undef;
    }
 
    if($command) {
       # Replace final element of command array (the default command) with new command.
       $Command[-1] = $command;
+   }
+
+   if ($command eq 'restart_ide') {
+      # Logic to update the running IDE
+      # This could involve stopping the current IDE process and starting the new one
+
+      flog("exec: restarting IDE for reservationId=$reservationId, containerId=$containerId");
+      run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', $reservation->unixuser(), $containerId, @Command);
+
+      # Assuming (for now) update was successful ...
+      # Update data.runningIDE to match meta.IDE.
+      flog("exec: updating selected IDE for reservationId=$reservationId, containerId=$containerId");
+      $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+
+      return 1;
    }
 
    my $owner = $reservation->owner('username');
@@ -1209,7 +1217,7 @@ sub exec {
    );
 
    # Update data.runningIDE to match meta.IDE.
-   $reservation->data('runningIDE', $reservation->meta('IDE'))->data('xyzzy','12345')->store();
+   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
 
    return 1;
 }

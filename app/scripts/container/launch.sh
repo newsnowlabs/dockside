@@ -423,6 +423,16 @@ run_nonroot() {
    fi
 }
 
+restart_ide() {
+   # TODO: Kill existing IDE...
+
+   if [ "$IDE" = "openvscode/latest" ]; then
+      launch_openvscode
+   else
+      launch_theia
+   fi
+}
+
 launch_ide() {
    create_user
    create_git_config
