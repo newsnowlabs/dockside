@@ -10,12 +10,12 @@ use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 # -------------------------
 
 my $PLACEHOLDERS = {
-   'unixUser' => 'unixuser',
-   'ideUser' => 'unixuser',
+   'unixuser' => 'unixuser',
+   'ideuser' => 'unixuser',
    'user' => 'owner',
    'container' => 'container',
    'metadata' => 'metadata_server',
-   'gitURL' => 'gitURL'
+   'giturl' => 'gitURL'
 };
 
 sub _placeholders {
@@ -24,7 +24,7 @@ sub _placeholders {
    local $_ = shift;
 
    s/\{([^\}\.]+)(?:\.([^\}]+))?\}/do {
-      my $sub = $PLACEHOLDERS->{$1};
+      my $sub = $PLACEHOLDERS->{lc($1)};
       $sub ? $self->$sub($2) : die Exception->new( 'msg' => "Unknown placeholder '$&' in '$_'" );
    }/egs;
 
