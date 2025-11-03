@@ -174,7 +174,7 @@ sub data {
                      [a-zA-Z]{2,}  # Top-level domain
                      /
                      .+            # Non-empty path
-                     \.git$!x ||
+                     (?:\.git)?$!x ||
          $value =~ qr!^[a-zA-Z][\w-]*@ # Username
                      (?:
                         [a-zA-Z0-9]
@@ -183,7 +183,7 @@ sub data {
                      [a-zA-Z]{2,}  # Top-level domain
                      :
                      .+            # Non-empty path
-                     \.git$!x
+                     (?:\.git)?$!x
          ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid gitURL '$value'" );
       }
