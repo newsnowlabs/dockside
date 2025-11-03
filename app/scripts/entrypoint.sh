@@ -303,7 +303,7 @@ _EOE_
   #.     for logrotate to run, these files must be root-owned.
   if [ -d "$APP_DIR/app/scripts/runscripts/$s/data" ]; then
     cp -a $APP_DIR/app/scripts/runscripts/$s/data/* /etc/service/$s/data/
-    chown -R root.root /etc/service/$s/data/
+    chown -R root:root /etc/service/$s/data/
   fi
 done
 
@@ -319,7 +319,7 @@ fi
 
 # Create log directory
 log "Creating /var/log/$APP log directory ..."
-mkdir -p /var/log/$APP && chown -R $USER.$USER /var/log/$APP
+mkdir -p /var/log/$APP && chown -R $USER:$USER /var/log/$APP
 
 log "Testing if shared IDE volume '$OPT_PATH' is writeable ..."
 if (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then
@@ -547,7 +547,7 @@ log "Fixing ownership for data/db, data/cache, data/certs, data/config ..."
 chown -R $USER $DATA_DIR
 
 log "Copying from $APP_DIR/build/development/dot-theia/ to ~/.vscode/* (if needed) ..."
-[ -d "$APP_HOME/.vscode" ] || mkdir -p $APP_HOME/.vscode && chown -R $USER.$USER $APP_HOME/.vscode
+[ -d "$APP_HOME/.vscode" ] || mkdir -p $APP_HOME/.vscode && chown -R $USER:$USER $APP_HOME/.vscode
 for file in $APP_DIR/build/development/dot-theia/*
 do
    [ -f $APP_HOME/.vscode/$(basename "$file") ] || cp -a $file $APP_HOME/.vscode/
