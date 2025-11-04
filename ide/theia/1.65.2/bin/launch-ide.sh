@@ -26,7 +26,7 @@ eval "$@"
 log "Launching IDE with IIDE_PATH='$IIDE_PATH' and IDE_PATH='$IDE_PATH' ..."
 
 log "Backing up and overriding PATH=$PATH ..."
-export _PATH="$PATH"
+export _PATH="$PATH:$IDE_PATH/bin"
 export PATH="$PATH:$IDE_PATH/bin"
 export GIT_EXEC_PATH="$IDE_PATH/bin"
 
@@ -49,6 +49,6 @@ unset IDE_PATH IIDE_PATH IDE LOG_PATH
 cd $THEIA_PATH/theia || exit 1
 
 log "- environment variables:"
-env | sed -r 's/^/    /' >&2
+env | sort | sed -r 's/^/    /' >&2
 
 exec $THEIA_PATH/bin/node $THEIA_PATH/theia/lib/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 --plugins=local-dir:$THEIA_PATH/theia/plugins,local-dir:$HOME/theia-plugins

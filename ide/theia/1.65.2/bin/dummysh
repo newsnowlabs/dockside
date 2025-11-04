@@ -10,13 +10,31 @@ SHELL=$(getent passwd "${USER:-root}" | cut -d: -f7)
 [ -n "$_PATH" ] && PATH="$_PATH" && unset _PATH
 
 # Delete other env vars set only to override default paths
-unset XDG_CACHE_HOME XDG_CONFIG_HOME npm_config_cache THEIA_WEBVIEW_EXTERNAL_ENDPOINT THEIA_MINI_BROWSER_HOST_PATTERN VSCODE_NLS_CONFIG LOCAL_GIT_DIRECTORY THEIA_APP_PROJECT_PATH
+unset \
+      npm_config_cache \
+      XDG_CACHE_HOME XDG_CONFIG_HOME \
+      LOCAL_GIT_DIRECTORY \
+      VSCODE_API_VERSION \
+      VSCODE_NLS_CONFIG \
+      THEIA_WEBVIEW_EXTERNAL_ENDPOINT THEIA_MINI_BROWSER_HOST_PATTERN \
+      THEIA_APP_PROJECT_PATH
 
 # Make shell env clean
 unset SHLVL OLDPWD
 
 [ -n "$_HOME" ] && HOME="$_HOME" && unset _HOME
 
-cd "$HOME"
+# Filter out `-l` and `--login`, then exec the shell with the remaining args.
 
-exec $SHELL -l "$@"
+keep=''
+for arg do
+    [ "$arg" = -l ] && continue
+    [ "$arg" = --login ] && continue
+    keep="$keep '$(printf "%s" "$arg" | sed "s/'/'\\\\''/g")'"
+done
+
+# Rebuild "$@" from the safely single-quoted list, then exec.
+# Each arg is single-quoted, so eval here is safe.
+eval "set --$keep"
+
+exec "${SHELL:-/bin/sh}" "$@"
