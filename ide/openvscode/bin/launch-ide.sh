@@ -25,6 +25,7 @@ eval "$@"
 
 # Set needed environment variables
 export PATH="$PATH:$IDE_PATH/bin"
+export GIT_EXEC_PATH="$IDE_PATH/bin"
 
 log "Launching IDE with IIDE_PATH='$IIDE_PATH' and IDE_PATH='$IDE_PATH' using: ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token ..."
 
@@ -39,6 +40,6 @@ cd $IIDE_PATH/openvscode
 unset IDE_PATH IDE IIDE_PATH LOG_PATH
 
 log "- environment variables:"
-env | sed -r 's/^/    /' >&2
+env | sort | sed -r 's/^/    /' >&2
 
 exec ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token
