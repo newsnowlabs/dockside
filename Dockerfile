@@ -220,7 +220,7 @@ ADD build/development/make-bundelf-bundle.sh /tmp
 RUN cat /tmp/dockside/bash-env
 
 RUN export \
-        BUNDELF_BINARIES="busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan" \
+        BUNDELF_BINARIES="bash busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan" \
         BUNDELF_CODE_PATH="$DS_PATH" \
         BUNDELF_LIBPATH_TYPE="relative" \
         BUNDELF_MERGE_BINDIRS="1" && \
