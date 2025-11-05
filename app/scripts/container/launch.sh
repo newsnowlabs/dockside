@@ -262,14 +262,17 @@ find_files_having() {
    find "$HOME" -type d -name "node_modules" -o -name ".*" -prune -o -type f -exec head -n 1 {} \; 2>/dev/null | $IDE_PATH/bin/busybox grep -qE '^#!.*('$grep')'
 }
 
-# Populate ~/.vscode/extensions.json
-# TODO: Should not alter the file if it already exists, unless:
-# - DEVCONTAINER_VSCODE_EXTENSIONS set to a list of extensions
-# - DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS is set to a list of extensions
-# - DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT set to "1"
+# Populate ~/.vscode/extensions.json:
+# - Only alter an existing file when extensions are explicit providedly or auto-detect is explicitly requested.
+# - Always autodetect when no existing file found.
+# Inputs:
+# - DEVCONTAINER_VSCODE_EXTENSIONS: JSON e.g. { "extensions": [ "ms-python.python", "ms-toolsai.jupyter" ] }
+# - DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS: JSON (same object)
+# - DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT: 0 (false) or 1 (true)
 populate_vscode_extensions() {
    local DIR="$HOME/.vscode"
    local FILE="$DIR/extensions.json"
+   local NEW_FILE=0
 
    log "Creating $DIR ..."
    mkdir -p "$DIR"
@@ -290,46 +293,110 @@ populate_vscode_extensions() {
    "unwantedRecommendations": []
 }
 _EOE_
+      NEW_FILE=1
    fi
 
+   local EXT_SET=0
    if [ -n "$DEVCONTAINER_VSCODE_EXTENSIONS" ] && [ "$DEVCONTAINER_VSCODE_EXTENSIONS" != "null" ]; then
-      log "Populating '$FILE' with '$DEVCONTAINER_VSCODE_EXTENSIONS'"
-      echo "$DEVCONTAINER_VSCODE_EXTENSIONS" | jq -re '{recommendations: .extensions}' >$FILE
+      EXT_SET=1
    fi
 
+   local UNWANTED_SET=0
    if [ -n "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" ] && [ "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" != "null" ]; then
-      log "Populating '$FILE' with unwanted extensions '$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS'"
-      echo "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" | jq -re '{unwantedRecommendations: .extensions}' >$FILE
+      UNWANTED_SET=1
    fi
 
-   if [ "$DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT" != "1" ]; then
-      log "Skipping auto-detection of extensions, since DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT='$DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT'"
+   local AUTODETECT_ENABLED=0
+   if [ "$NEW_FILE" -eq 1 ]; then
+      if [ "${DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT:-}" != "0" ]; then
+         AUTODETECT_ENABLED=1
+      fi
+   else
+      if [ "${DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT:-}" = "1" ]; then
+         AUTODETECT_ENABLED=1
+      fi
+   fi
+
+   local SHOULD_MODIFY=0
+   if [ "$NEW_FILE" -eq 1 ] || [ "$EXT_SET" -eq 1 ] || [ "$UNWANTED_SET" -eq 1 ] || [ "$AUTODETECT_ENABLED" -eq 1 ]; then
+      SHOULD_MODIFY=1
+   fi
+
+   if [ "$SHOULD_MODIFY" -ne 1 ]; then
+      log "Leaving '$FILE' unchanged."
       return
    fi
 
-   log "Auto-detecting extensions for '$FILE' ..."
-   local EXTS=""
-   find_files_of_type -name '*.sh' || find_files_having 'bash|sh' && EXTS="$EXTS vscode.shellscript"
-   find_files_of_type -name '*.pl' -o -name '*.pm' || find_files_having 'perl' && EXTS="$EXTS vscode.perl"
-   find_files_of_type -name '*.py' || find_files_having 'python' && EXTS="$EXTS vscode.python"
-   find_files_of_type -name '*.css' && EXTS="$EXTS vscode.css"
-   find_files_of_type -name '*.js' && EXTS="$EXTS vscode.javascript"
-   find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
-   find_files_of_type -name '*.htm*' && EXTS="$EXTS vscode.html"
-   find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
-   find_files_of_type -name '*.md'  && EXTS="$EXTS vscode.markdown"
-   find_files_of_type -regex '.*\.ya*ml' && EXTS="$EXTS vscode.yaml"
-   find_files_of_type -name 'Dockerfile' && EXTS="$EXTS vscode.docker"
-   find_files_of_type -name '*.rb'  && EXTS="$EXTS vscode.ruby"
-   find_files_of_type -name '*.java'  && EXTS="$EXTS vscode.java"
-   find_files_of_type -name '*.php*'  && EXTS="$EXTS vscode.php"
-   find_files_of_type -name '*.ts'  && EXTS="$EXTS vscode.typescript"
-   find_files_of_type -name '*.go'  && EXTS="$EXTS vscode.go"
-      
-   if [ -n "$EXTS" ]; then
-      log "Populating $FILE with (in JSON): $EXTS"
+   local WORKFILE
+   WORKFILE=$(mktemp)
+   if ! grep -v '//.*$' "$FILE" >"$WORKFILE"; then
+      : >"$WORKFILE"
+   fi
 
-      grep -v '//.*$' "$FILE" | jq --argjson new_items "$(echo "$EXTS" | jq -R 'split(" ") | map(select(. != ""))')" '.recommendations += $new_items | .recommendations |= unique' >$FILE.new && mv $FILE.new $FILE
+   if [ ! -s "$WORKFILE" ]; then
+      echo '{"recommendations":[],"unwantedRecommendations":[]}' >"$WORKFILE"
+   fi
+
+   local UPDATED=0
+
+   if [ "$EXT_SET" -eq 1 ]; then
+      log "Adding recommended extensions from DEVCONTAINER_VSCODE_EXTENSIONS"
+      local USER_RECS
+      USER_RECS=$(echo "$DEVCONTAINER_VSCODE_EXTENSIONS" | jq -ce '.extensions // []') || USER_RECS='[]'
+      if jq --argjson user_recs "$USER_RECS" '.recommendations = ((.recommendations // []) + $user_recs | unique)' "$WORKFILE" >"$WORKFILE.new"; then
+         mv "$WORKFILE.new" "$WORKFILE"
+         UPDATED=1
+      fi
+   fi
+
+   if [ "$UNWANTED_SET" -eq 1 ]; then
+      log "Adding unwanted extensions from DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS"
+      local USER_UNWANTED
+      USER_UNWANTED=$(echo "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" | jq -ce '.extensions // []') || USER_UNWANTED='[]'
+      if jq --argjson user_unwanted "$USER_UNWANTED" '.unwantedRecommendations = ((.unwantedRecommendations // []) + $user_unwanted | unique)' "$WORKFILE" >"$WORKFILE.new"; then
+         mv "$WORKFILE.new" "$WORKFILE"
+         UPDATED=1
+      fi
+   fi
+
+   if [ "$AUTODETECT_ENABLED" -eq 1 ]; then
+      log "Auto-detecting extensions for '$FILE' ..."
+   else
+      log "Skipping auto-detection of extensions, since DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT='$DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT'"
+   fi
+
+   local EXTS=""
+   if [ "$AUTODETECT_ENABLED" -eq 1 ]; then
+      find_files_of_type -name '*.sh' || find_files_having 'bash|sh' && EXTS="$EXTS vscode.shellscript"
+      find_files_of_type -name '*.pl' -o -name '*.pm' || find_files_having 'perl' && EXTS="$EXTS vscode.perl"
+      find_files_of_type -name '*.py' || find_files_having 'python' && EXTS="$EXTS vscode.python"
+      find_files_of_type -name '*.css' && EXTS="$EXTS vscode.css"
+      find_files_of_type -name '*.js' && EXTS="$EXTS vscode.javascript"
+      find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
+      find_files_of_type -name '*.htm*' && EXTS="$EXTS vscode.html"
+      find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
+      find_files_of_type -name '*.md'  && EXTS="$EXTS vscode.markdown"
+      find_files_of_type -regex '.*\.ya*ml' && EXTS="$EXTS vscode.yaml"
+      find_files_of_type -name 'Dockerfile' && EXTS="$EXTS vscode.docker"
+      find_files_of_type -name '*.rb'  && EXTS="$EXTS vscode.ruby"
+      find_files_of_type -name '*.java'  && EXTS="$EXTS vscode.java"
+      find_files_of_type -name '*.php*'  && EXTS="$EXTS vscode.php"
+      find_files_of_type -name '*.ts'  && EXTS="$EXTS vscode.typescript"
+      find_files_of_type -name '*.go'  && EXTS="$EXTS vscode.go"
+   fi
+
+   if [ "$AUTODETECT_ENABLED" -eq 1 ] && [ -n "$EXTS" ]; then
+      log "Populating $FILE with (in JSON): $EXTS"
+      if jq --argjson new_items "$(echo "$EXTS" | jq -R 'split(" ") | map(select(. != ""))')" '.recommendations = ((.recommendations // []) + $new_items | unique)' "$WORKFILE" >"$WORKFILE.new"; then
+         mv "$WORKFILE.new" "$WORKFILE"
+         UPDATED=1
+      fi
+   fi
+
+   if [ "$UPDATED" -eq 1 ]; then
+      mv "$WORKFILE" "$FILE"
+   else
+      rm -f "$WORKFILE"
    fi
 }
 
@@ -425,7 +492,7 @@ run_nonroot() {
 
 restart_ide() {
    # TODO: Kill existing IDE...
-
+   
    if [ "$IDE" = "openvscode/latest" ]; then
       launch_openvscode
    else
