@@ -180,30 +180,80 @@ RUN export \
     cd $THEIA_PATH/.. && \
     ln -sf theia-$THEIA_VERSION latest
 
-# Download 'built-in' VSIX plugins
-ARG VSIX_PLUGINS="vscode.git-1.95.3 vscode.git-base-1.95.3 vscode.css-1.95.3 vscode.docker-1.95.3 vscode.html-1.95.3 vscode.ini-1.95.3 vscode.javascript-1.95.3 vscode.json-1.95.3 vscode.merge-conflict-1.95.3 vscode.perl-1.95.3 vscode.scss-1.95.3 vscode.shellscript-1.95.3 vscode.yaml-1.95.3"
-RUN <<_EOE_
-apk add --no-cache curl libarchive-tools
-mkdir -p $THEIA_PATH/theia/plugins
-for plugin in $VSIX_PLUGINS; do
-    publisher="${plugin%%.*}"
-    namever="${plugin#*.}"
-    version="${namever##*-}"
-    name="${namever%-${version}}"
-
-    url="https://open-vsx.org/api/${publisher}/${name}/${version}/file/${publisher}.${name}-${version}.vsix"
-    dest="$THEIA_PATH/theia/plugins/$plugin"
-    mkdir -p "$dest"
-
-    echo "Downloading $plugin from $url to $dest ..." >&2
-    curl --fail --silent --location --retry 3 --max-time 20 "$url" | bsdtar -xf - -C "$dest"
-done
-_EOE_
-
 # Default diagnostics entrypoint for this stage (uses relocatable node and Theia, loses BASH_ENV build environment)
-ENV BASH_ENV=""
 WORKDIR $OPT_PATH/ide/theia/latest/theia
 ENTRYPOINT ["../bin/node", "./lib/backend/main.js", "/root", "--hostname", "0.0.0.0", "--port", "3131"]
+
+################################################################################
+# INSTALL BUILT-IN THEIA IDE VSIX PLUGINS
+#
+FROM theia-ide AS theia-ide-plugins
+
+# Download 'built-in' VSIX plugins
+# Formats:
+# - <publisher>.<name>       : download metadata to determine latest version URL, then download plugin
+# - <publisher>.<name>-<ver> : download plugin directly from implied URL (faster and fully cacheable)
+
+# All small plugins
+ARG VSIX_PLUGINS="vscode.bat@1.95.3 vscode.clojure@1.95.3 vscode.coffeescript@1.95.3 vscode.configuration-editing@1.95.3 vscode.cpp@1.95.3 vscode.csharp@1.95.3 vscode.css@1.95.3 vscode.dart@1.95.3 vscode.debug-auto-launch@1.95.3 vscode.debug-server-ready@1.95.3 vscode.diff@1.95.3 vscode.docker@1.95.3 vscode.emmet@1.95.3 vscode.extension-editing@1.95.3 vscode.fsharp@1.95.3 vscode.git@1.95.3 vscode.git-base@1.95.3 vscode.github@1.95.3 vscode.github-authentication@1.95.3 vscode.go@1.95.3 vscode.groovy@1.95.3 vscode.grunt@1.95.3 vscode.gulp@1.95.3 vscode.handlebars@1.95.3 vscode.hlsl@1.95.3 vscode.html@1.95.3 vscode.ini@1.95.3 vscode.ipynb@1.95.3 vscode.jake@1.95.3 vscode.java@1.95.3 vscode.javascript@1.95.3 vscode.json@1.95.3 vscode.julia@1.95.3 vscode.latex@1.95.3 vscode.less@1.95.3 vscode.log@1.95.3 vscode.lua@1.95.3 vscode.make@1.95.3 vscode.markdown@1.95.3 vscode.markdown-math@1.95.3 vscode.media-preview@1.95.3 vscode.merge-conflict@1.95.3 vscode.builtin-notebook-renderers@1.95.3 vscode.npm@1.95.3 vscode.objective-c@1.95.3 vscode.perl@1.95.3 vscode.php@1.95.3 vscode.powershell@1.95.3 vscode.python@1.95.3 vscode.pug@1.95.3 vscode.r@1.95.3 vscode.razor@1.95.3 vscode.references-view@1.95.3 vscode.restructuredtext@1.95.3 vscode.ruby@1.95.3 vscode.rust@1.95.3 vscode.scss@1.95.3 vscode.search-result@1.95.3 vscode.shaderlab@1.95.3 vscode.shellscript@1.95.3 vscode.simple-browser@1.95.3 vscode.sql@1.95.3 vscode.swift@1.95.3 vscode.theme-abyss@1.95.3 vscode.theme-defaults@1.95.3 vscode.theme-kimbie-dark@1.95.3 vscode.theme-monokai@1.95.3 vscode.theme-monokai-dimmed@1.95.3 vscode.theme-quietlight@1.95.3 vscode.theme-red@1.95.3 vscode.vscode-theme-seti@1.95.3 vscode.theme-solarized-dark@1.95.3 vscode.theme-solarized-light@1.95.3 vscode.theme-tomorrow-night-blue@1.95.3 vscode.tunnel-forwarding@1.95.3 vscode.typescript@1.95.3 vscode.vb@1.95.3 vscode.xml@1.95.3 vscode.yaml@1.95.3 ms-vscode.js-debug-companion ms-vscode.js-debug github.vscode-pull-request-github"
+
+# Large plugins: enable if needed
+# ARG VSIX_PLUGINS_LARGE="vscode.css-language-features@1.95.3 vscode.html-language-features@1.95.3 vscode.json-language-features@1.95.3 vscode.markdown-language-features@1.95.3 vscode.php-language-features@1.95.3 vscode.typescript-language-features@1.95.3"
+
+# Cache mount holds downloaded .vsix files across builds
+RUN apk add --no-cache curl libarchive-tools jq && \
+    mkdir -p "$THEIA_PATH/theia/plugins"
+
+RUN --mount=type=cache,id=openvsx,target=/cache/openvsx,sharing=locked <<_EOE_
+set -euo pipefail
+
+for id in ${VSIX_PLUGINS:-} ${VSIX_PLUGINS_LARGE:-}
+do
+    pub="${id%%.*}"        # publisher (split at first '.')
+    rest="${id#*.}"        # "name" or "name-<version>"
+    name="$rest"
+    ver=""
+
+    # If there is an '@' followed by a digit, treat that as the start of <version>.
+    # This copes with names containing hyphens and versions like 1.2.3 or 1.2.3-beta.1
+    # Parse name, ver; generate url.
+    case "$rest" in
+      *@[0-9]*)
+        base="${rest%@[0-9]*}"     # shortest suffix '@[0-9]*' removed → leaves the name
+        ver="${rest#${base}@}"     # everything after that '@' is the version
+        name="$base"
+        url="https://open-vsx.org/api/${pub}/${name}/${ver}/file/${pub}.${name}-${ver}.vsix"
+        printf 'Parsed %s as pub=%s name=%s ver=%s url=%s ...\n' "$id" "$pub" "$name" "$ver" "$url" >&2
+        ;;
+    esac
+
+    # If no ver parsed, obtain ver and url from metadata.
+    if [ -z "$ver" ]; then
+      echo "Downloading $id metadata from https://open-vsx.org/api/$pub/$name ..." >&2
+      meta="$(curl -fsSL "https://open-vsx.org/api/$pub/$name")" # or /api/$pub/$name/latest
+      url="$(printf '%s' "$meta" | jq -r '.files.download')"     # direct VSIX URL
+      ver="$(printf '%s' "$meta" | jq -r '.version')"            # latest version string
+      printf 'Retrieved %s as pub=%s name=%s ver=%s url=%s ...\n' "$id" "$pub" "$name" "$ver" "$url" >&2
+    fi
+
+    # Look for the cached vsix file ...
+    vsix="/cache/openvsx/$pub/$name/$ver.vsix"
+    if [ ! -s "$vsix" ]; then
+      mkdir -p "$(dirname "$vsix")"
+      echo "Downloading $id from $url to $vsix ..." >&2
+      curl --fail --silent --show-error --location --retry 3 --max-time 20 "$url" -o "$vsix.tmp"
+      # Only save tmp copy if download successful
+      mv "$vsix.tmp" "$vsix"
+    else
+      echo "Using cached $id from $url @ $vsix ..." >&2
+    fi
+
+    dest="$THEIA_PATH/theia/plugins/$pub.$name-$ver"
+    mkdir -p "$dest"
+    echo "Untarring $id @ $vsix to $dest ..." >&2
+    bsdtar -xf "$vsix" -C "$dest"
+done
+_EOE_
 
 ################################################################################
 # BUILD DOCKSIDE 'SYSTEM' BINARY BUNDLE
@@ -383,7 +433,7 @@ ARG HOME=/home/dockside
 #
 COPY --from=base /tmp/dockside /tmp/dockside
 COPY --from=system $DS_PATH $DS_PATH/
-COPY --from=theia-ide $THEIA_PATH $THEIA_PATH/
+COPY --from=theia-ide-plugins $THEIA_PATH $THEIA_PATH/
 COPY --from=openvscode-ide $VSCODE_PATH $VSCODE_PATH/
 
 # ---------------------------------------------
