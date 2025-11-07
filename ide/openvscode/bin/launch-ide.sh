@@ -42,4 +42,4 @@ unset IDE_PATH IDE IIDE_PATH LOG_PATH
 log "- environment variables:"
 env | sort | sed -r 's/^/    /' >&2
 
-exec ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token
+exec ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token --telemetry-level off
