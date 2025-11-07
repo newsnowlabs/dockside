@@ -116,8 +116,11 @@ ENV NODE_OPTIONS="--max-old-space-size=8192"
 FROM theia-build-env AS theia-build
 
 # Build Theia
-RUN cd $THEIA_BUILD_PATH && \
-    yarn config set network-timeout 600000 -g && yarn
+ENV YARN_CACHE_FOLDER=/root/.cache/yarn
+RUN --mount=type=cache,id=yarn-cache,target=/root/.cache,sharing=locked \
+    cd $THEIA_BUILD_PATH && \
+    yarn config set network-timeout 600000 -g && \
+    yarn --frozen-lockfile
 
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
