@@ -37,7 +37,7 @@ map $status $status_text {
   407 'Proxy Authentication Required';
   408 'Request Timeout';
   409 'Conflict';
-  410 'Gone';
+  410 'Devtainer Stopped';
   411 'Length Required';
   412 'Precondition Failed';
   413 'Payload Too Large';
@@ -58,7 +58,7 @@ map $status $status_text {
   451 'Unavailable For Legal Reasons';
   500 'Internal Server Error';
   501 'Not Implemented';
-  502 'Container Service Unavailable (Bad Gateway)';
+  502 'Devtainer Running ... Awaiting Requested Service';
   503 'Service Unavailable';
   504 'Gateway Timeout';
   505 'HTTP Version Not Supported';
