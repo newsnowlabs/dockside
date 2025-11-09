@@ -34,11 +34,13 @@ ENV BASH_ENV=/tmp/dockside/bash-env
 RUN <<EOF
 if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
     THEIA_VERSION="1.65.2"
+    THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"
     OPENVSCODE_VERSION="1.103.1"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-x64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
     THEIA_VERSION="1.65.2"
+    THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"
     OPENVSCODE_VERSION="1.103.1"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-arm64.tar.gz"
@@ -62,6 +64,7 @@ export TARGETPLATFORM="$TARGETPLATFORM"
 export WSTUNNEL_BINARY="$WSTUNNEL_BINARY"
 
 export THEIA_VERSION="$THEIA_VERSION"
+export THEIA_VERSION_DIR="$THEIA_VERSION_DIR"
 export THEIA_PATH="$OPT_PATH/ide/theia/theia-$THEIA_VERSION"
 export THEIA_BUILD_PATH="/theia"
 export THEIA_BUILD_EXTRA_PACKAGES="$THEIA_BUILD_EXTRA_PACKAGES"
@@ -104,19 +107,24 @@ SHELL ["/bin/bash", "-c"]
 RUN apk update && \
     apk add --no-cache make gcc g++ python3 libsecret-dev
 
+# Add build folders for all Theia versions, as $THEIA_VERSION isn't known to this Dockerfile, only to RUN bash scripts
 ADD ./ide/theia /tmp/build/ide/theia
 
-RUN mkdir -p $THEIA_BUILD_PATH && \
-    cp -a /tmp/build/ide/theia/$THEIA_VERSION/build/* $THEIA_BUILD_PATH
+RUN <<EOF
+mkdir -p $THEIA_BUILD_PATH
+cp -a /tmp/build/ide/theia/$THEIA_VERSION_DIR/build/* $THEIA_BUILD_PATH
+# If needed, renaming patch files to include versions, as expected by patch-package
+cd $THEIA_BUILD_PATH/patches && for p in *.patch; do [[ "$p" =~ $THEIA_VERSION ]] || mv "$p" "$(echo "$p" | sed -r "s/\.patch$/+$THEIA_VERSION.patch/")";  done
+EOF
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
 ENV PUPPETEER_SKIP_DOWNLOAD=1
 ENV NODE_OPTIONS="--max-old-space-size=8192"
+ENV YARN_CACHE_FOLDER=/root/.cache/yarn
 
 FROM theia-build-env AS theia-build
 
 # Build Theia
-ENV YARN_CACHE_FOLDER=/root/.cache/yarn
 RUN --mount=type=cache,id=yarn-cache,target=/root/.cache,sharing=locked \
     cd $THEIA_BUILD_PATH && \
     yarn config set network-timeout 600000 -g && \
@@ -176,7 +184,7 @@ RUN export \
         BUNDELF_MERGE_BINDIRS="1" && \
     /tmp/make-bundelf-bundle.sh --bundle && \
     cd $THEIA_PATH/bin && \
-    cp -a /tmp/build/ide/theia/$THEIA_VERSION/bin/* $THEIA_PATH/bin && \
+    cp -a /tmp/build/ide/theia/$THEIA_VERSION_DIR/bin/* $THEIA_PATH/bin && \
     cd $THEIA_PATH/.. && \
     ln -sf theia-$THEIA_VERSION latest
 
