@@ -154,7 +154,7 @@ sub data {
       }
    }
    elsif($key eq 'network') {
-      if( $value !~ /^([a-zA-Z][a-zA-Z0-9\-]+)?$/ ) {
+      if( $value !~ /^([a-zA-Z][a-zA-Z0-9\-\_\.]+)?$/ ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid network '$value'" );
       }
    }
