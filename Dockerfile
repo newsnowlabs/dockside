@@ -130,6 +130,11 @@ RUN --mount=type=cache,id=yarn-cache,target=/root/.cache,sharing=locked \
     yarn config set network-timeout 600000 -g && \
     yarn --frozen-lockfile
 
+# favicon.ico created using Imagemagick with:
+# convert favicon.png -define icon:auto-resize=256,64,48,32,16 -flatten -colors 256 -background transparent -channel RGB -negate favicon.ico
+RUN if [ "$THEIA_VERSION" = "1.35.0" ]; then DST="lib/"; else DST="lib/frontend/"; fi && \
+    cp -a /tmp/build/ide/theia/$THEIA_VERSION_DIR/build/images/favicon.ico $THEIA_BUILD_PATH/$DST
+
 # Default diagnostics entrypoint for this stage
 # (and the next, which inherits it)
 # Matches $THEIA_BUILD_PATH
@@ -152,7 +157,7 @@ RUN cd $THEIA_BUILD_PATH && \
     yarn cache clean && \
     find lib -name '*.js.map' -delete && \
     find lib -name '*.js.map.gz' -delete && \
-    rm -rf patches && \
+    rm -rf patches images && \
     rm -rf node_modules/puppeteer/.local-chromium
 
 ################################################################################
@@ -465,7 +470,6 @@ RUN . /tmp/dockside/bash-env && \
     mkdir -p $OPT_PATH/bin $OPT_PATH/host && \
     cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
     ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
-    if [ "$THEIA_VERSION" = "1.35.0" ]; then cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/; else cp -a $HOME/$APP/app/server/assets/ico/favicon.ico $THEIA_PATH/theia/lib/frontend/; fi && \
     ln -sf $HOME/$APP/app/scripts/entrypoint.sh /entrypoint.sh && \
     ln -sf $HOME/$APP/app/server/bin/password-wrapper /usr/local/bin/password && \
     ln -sf $HOME/$APP/app/server/bin/upgrade /usr/local/bin/upgrade && \
