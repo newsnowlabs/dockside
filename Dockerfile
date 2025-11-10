@@ -33,13 +33,13 @@ ENV BASH_ENV=/tmp/dockside/bash-env
 # under https://github.com/erebe/wstunnel/blob/master/LICENSE.
 RUN <<EOF
 if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
-    THEIA_VERSION="1.65.2"
+    THEIA_VERSION="1.66.1"
     THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"
     OPENVSCODE_VERSION="1.103.1"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-x64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
-    THEIA_VERSION="1.65.2"
+    THEIA_VERSION="1.66.1"
     THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"
     OPENVSCODE_VERSION="1.103.1"
