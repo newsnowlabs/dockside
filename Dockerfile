@@ -418,6 +418,7 @@ COPY --chown=$USER:$USER dehydrated $HOME/$APP/dehydrated/
 COPY --chown=$USER:$USER app/client $HOME/$APP/app/client/
 WORKDIR $HOME/$APP/app/client
 RUN npm install && npm run build && npm cache clean --force
+RUN rm -rf $HOME/.npm
 
 # --------------
 # MKDOCS INSTALL
