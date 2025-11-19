@@ -1,25 +1,25 @@
 package Reservation;
 
-use strict;
+use v5.36;
 
 use JSON;
 use Expect;
 use Try::Tiny;
 use Tie::File;
-use Storable;
+use Storable qw(dclone);
 use Reservation::Mutate qw(update load_clean_map);
 use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
 use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri);
-use Data qw($CONFIG $HOSTNAME);
+use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
 ################################################################################
 # CURRENT VERSION
 # ---------------
 
-sub CURRENT_VERSION {
+sub CURRENT_VERSION () {
    return 2;
 }
 
@@ -27,9 +27,7 @@ sub CURRENT_VERSION {
 # VERSION UPGRADES
 # ----------------
 
-sub versionUpgrade {
-   my $self = shift;
-
+sub versionUpgrade ($self) {
    if($self->version < 2) {
       my @names = map { $_->{'name'} } @{$self->profileObject->routers};
       my @oldValues = split(/,/, $self->{'meta'}{'access'});
@@ -59,67 +57,56 @@ our $BY_CONTAINERID;
 # SIMPLE ACCESSORS
 # ----------------
 
-sub version {
-   return $_[0]->{'version'};
+sub version ($self) {
+   return $self->{'version'};
 }
 
-sub id {
-   return $_[0]->{'id'};
+sub id ($self) {
+   return $self->{'id'};
 }
 
-sub name {
-   return $_[0]->{'name'};
+sub name ($self) {
+   return $self->{'name'};
 }
 
-sub docker {
-   return $_[0]->{'docker'};
+sub docker ($self) {
+   return $self->{'docker'};
 }
 
-sub containerId {
-   my $self = shift;
+sub containerId ($self, @value) {
+   return $self->{'containerId'} unless @value;
 
-   if(@_ == 0) {
-      return $self->{'containerId'};
-   }
-
-   $self->{'containerId'} = $_[0];
+   $self->{'containerId'} = $value[0];
 
    return $self;
 }
 
-sub profileObject {
-   return $_[0]->{'profileObject'};
+sub profileObject ($self) {
+   return $self->{'profileObject'};
 }
 
 # Returns:
 # -1: Created (but not yet ever Started or Exited)
 #  0: Exited (i.e. stopped)
 #  1: Started (i.e. running)
-sub status {
-   return $_[0]->{'status'};
+sub status ($self) {
+   return $self->{'status'};
 }
 
-sub is_running {
-   return $_[0]->status == 1;
+sub is_running ($self) {
+   return $self->status == 1;
 }
 
 # With no arguments: return owner data structure.
 # With one argument: return value of named property within owner data structure.
-sub owner {
-   my $self = shift;
-   my $prop = shift;
-
+sub owner ($self, $prop = undef) {
    return $prop ? $self->{'owner'}{$prop} : $self->{'owner'};
 }
 
-sub profile {
-   my $self = shift;
+sub profile ($self, @args) {
+   return $self->{'profile'} unless @args;
 
-   if(@_ == 0) {
-      return $self->{'profile'};
-   }
-
-   my $name = shift;
+   my $name = $args[0];
    unless( $name =~ /^[a-zA-Z0-9][a-zA-Z0-9\-\_]+$/ && Profile->load($name) ) {
       die Exception->new( 'msg' => "Failed to set Reservation profile to unknown or invalid profile '$name'" );
    }
@@ -130,16 +117,10 @@ sub profile {
    $self->{'profileObject'} = Profile->load($name);
 }
 
-sub data {
-   my $self = shift;
+sub data ($self, $key, @rest) {
+   return $self->{'data'}{$key} unless @rest;
 
-   my $key = shift;
-
-   if(@_ == 0) {
-      return $self->{'data'}{$key};
-   }
-
-   my $value = shift;
+   my $value = $rest[0];
    if($key eq 'image') {
       # FIXME:
       # <optional> <domainname> <optional> :<port> '/'
@@ -194,16 +175,12 @@ sub data {
    return $self;
 }
 
-sub meta {
-   my $self = shift;
-
-   my $key = shift;
-
-   if(@_ == 0) {
+sub meta ($self, $key, @rest) {
+   if(!@rest) {
       return $self->{'meta'}{$key};
    }
 
-   my $value = shift;
+   my $value = $rest[0];
    if( $key eq 'owner' ) {
       if( $value =~ /^[a-z0-9]*$/ ) {
          # FIXME: check that username(s) provided are valid
@@ -272,9 +249,7 @@ sub meta {
 # VALIDATORS
 # ----------
 
-sub validate {
-   my $self = shift;
-
+sub validate ($self) {
    if($self->{'name'} ne '') {
       # Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter
       unless( $self->{'name'} =~ /^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/ ) {
@@ -290,18 +265,17 @@ sub validate {
    $self->{'data'}{'FQDN'} ||= "$self->{'name'}$self->{'data'}{'parentFQDN'}";
 
    # Assign default id.
-   $self->{'id'} = sprintf( "%x", int(rand(0xffffffffffffffff)) ^ $$ );
+   {
+      no warnings 'portable';
+      $self->{'id'} = sprintf( "%x", int(rand(0xffffffffffffffff)) ^ $$ );
+   }
 }
 
 ################################################################################
 # CONSTRUCTORS
 # ------------
 
-sub new {
-   my $class = shift;
-   my $data = shift;
-   my $validated = shift;
-
+sub new ($class, $data, $validated = 0) {
    # Decode JSON if needed.
    if(!ref($data)) {
       $data = decode_json($data);
@@ -386,9 +360,7 @@ sub new {
 # This class method expects to be called whenever either the containers cache file,
 # or reservations db file, is updated.
 
-sub update_container_info {
-   my $class = shift;
-
+sub update_container_info ($class) {
    my $containers = Containers->containers;
 
    $BY_IP = {};
@@ -449,9 +421,8 @@ sub update_container_info {
    return $class;
 }
 
-sub load {
-   my $class = shift;
-   my $opts = shift;
+sub load ($class, $opts = undef) {
+   return $RESERVATIONS unless $opts;
 
    if( exists($opts->{'id'} ) ) {
       if( $BY_ID->{ $opts->{'id'} } ) {
@@ -481,7 +452,6 @@ sub load {
       }
       return [];
    }
-
    return $RESERVATIONS;
 }
 
@@ -492,9 +462,7 @@ sub load {
 # Updates the dockerLaunchLogs property of the Reservation,
 # to container the tail of the launch log file written by Reservation::launch.
 #
-sub load_launch_logs {
-   my $self = shift;
-
+sub load_launch_logs ($self) {
    my $id = $self->id();
 
    # LAST N LINES WITH Tie::File
@@ -526,10 +494,7 @@ sub load_launch_logs {
 # Returns:
 # - array of (undef, <stdout>, <stderr>)
 #
-sub load_container_logs {
-   my $self = shift;
-   my $opts = shift;
-
+sub load_container_logs ($self, $opts) {
    my $containerId = $self->containerId();
 
    my $path = sprintf("/containers/%s/logs?stderr=%s&stdout=%s",
@@ -583,13 +548,9 @@ sub load_container_logs {
 # Returns:
 # - A clientReservation data structure
 
-sub cloneWithConstraints {
-   my $self = shift;
-   my $constraints = shift;
-   my $reservationPermissions = shift;
-
+sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
    # Clone reservation object and embedded profile object
-   my $clone = Storable::dclone($self);
+   my $clone = dclone($self);
 
    if($clone->profileObject) {
       $clone->profileObject->applyConstraints($constraints);
@@ -638,13 +599,10 @@ sub cloneWithConstraints {
    return $clone;
 }
 
-sub sanitise {
-   my $self = shift;
-
+sub sanitise ($self, $properties, $array = []) {
    # Start with HASH of properties
-   my $properties = shift;
-
-   my $array = shift;
+   $properties //= {};
+   $array //= [];
    
    # Augment with additional properties
    foreach my $property (@$array) {
@@ -670,9 +628,7 @@ sub sanitise {
 # MAPFILE ENTRY GENERATION
 #
 
-sub mapfile_routers {
-   my $self = shift;
-
+sub mapfile_routers ($self) {
    # <http|https>/<prefixes>/<domains>=<http|https>:<port>
    # e.g. https/*/*=http:8080
 
@@ -719,9 +675,7 @@ sub mapfile_routers {
 }
 
 # This method generates a data structure consumed by lookup_container_uri() below.
-sub routers {
-   my $self = shift;
-
+sub routers ($self) {
    my $routers = $self->mapfile_routers;
 
    my $lookup;
@@ -752,13 +706,7 @@ sub routers {
    return $lookup;
 }
 
-sub lookup_container_uri {
-   my $self = shift;
-   my $host = shift;
-   my $actualPrefix = shift;
-   my $actualDomain = shift;
-   my $protocol = shift;
-
+sub lookup_container_uri ($self, $host, $actualPrefix, $actualDomain, $protocol) {
    my $prefix = $actualPrefix;
    my $domain = $actualDomain;
 
@@ -868,11 +816,7 @@ sub lookup_container_uri {
 #
 
 # Query 'viewers' or 'developers' $key for presence of username $user
-sub meta_has_user {
-   my $self = shift;
-   my $key = shift;
-   my $user = shift;
-
+sub meta_has_user ($self, $key, $user) {
    # Empty $user would still match the regex, so check for this case.
    return 0 unless defined($user);
 
@@ -883,11 +827,7 @@ sub meta_has_user {
 # RESERVATION CONTROL METHODS
 #
 
-sub action {
-   my $self = shift;
-   my $action = shift;
-   my $args = shift;
-
+sub action ($self, $action, $args = {}) {
    my $command;
    if($action eq 'start') {
       $command = 'start';
@@ -913,9 +853,7 @@ sub action {
    return run("$CONFIG->{'docker'}{'bin'} $command $containerId");
 }
 
-sub update_network {
-   my $self = shift;
-   
+sub update_network ($self) {
    my $network = $self->data('network');
    my $containerId = $self->{'containerId'};
 
@@ -933,9 +871,7 @@ sub update_network {
    }
 }
 
-sub store {
-   my $self = shift;
-   
+sub store ($self) {
    $self->update( {
       'id' => $self->id(),
       'name' => $self->name(),
@@ -951,9 +887,7 @@ sub store {
    return $self;
 }
 
-sub getGitDevContainer {
-   my $self = shift;
-
+sub getGitDevContainer ($self) {
    my $uri = $self->data('gitURL');
    flog("getGitDevContainer: uri=$uri");
 
@@ -983,9 +917,7 @@ sub getGitDevContainer {
    return undef;
 }
 
-sub launch {
-   my $self = shift;
-
+sub launch ($self) {
    my @cmdline = 
    try {
       return ($self->cmdline());
@@ -1097,10 +1029,7 @@ sub launch {
    };
 }
 
-sub exec {
-   my $reservation = shift;
-   my $command = shift;
-
+sub exec ($reservation, $command = undef) {
    my $reservationId = $reservation->id();
    my $containerId = $reservation->containerId();
 
@@ -1116,7 +1045,7 @@ sub exec {
       $Command[-1] = $command;
    }
 
-   if ($command eq 'restart_ide') {
+   if (defined $command && $command eq 'restart_ide') {
       # Logic to update the running IDE
       # This could involve stopping the current IDE process and starting the new one
 

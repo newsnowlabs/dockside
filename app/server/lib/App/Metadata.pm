@@ -1,6 +1,6 @@
 package App::Metadata;
 
-use strict;
+use v5.36;
 
 BEGIN {
    eval {
@@ -13,23 +13,18 @@ use Try::Tiny;
 use JSON;
 use Util qw(flog);
 
-sub success {
-   my $r = shift;
-
+sub success ($r, $body = '') {
    $r->status(200);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->header_out( 'Metadata-Flavor', 'Google' );
    $r->header_out( 'Server', 'Metadata Server for VM' );
-   $r->header_out( 'Content-Length', length($_[0]) );
+   $r->header_out( 'Content-Length', length($body) );
    $r->send_http_header("application/text");
-   $r->print($_[0]);
+   $r->print($body);
    return nginx::OK;
 }
 
-sub failure {
-   my $r = shift;
-   my $code = shift;
-
+sub failure ($r, $code = 404) {
    $r->status($code || 404);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->header_out( 'Metadata-Flavor', 'Google' );
@@ -55,9 +50,7 @@ sub failure {
 # /computeMetadata/v1/instance/id
 # /computeMetadata/v1/instance/network-interfaces/0/ip
 
-sub handle {
-   my $r = shift;
-
+sub handle ($r) {
    # FIXME: 
    # Although Proxy will have checked, consider double-checking that:
    # - Host header doesn't match an expected profile e.g. matches an IP address; or

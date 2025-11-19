@@ -1,6 +1,6 @@
 package App;
 
-use strict;
+use v5.36;
 
 BEGIN {
    eval {
@@ -33,33 +33,25 @@ Data::load();
 
 ####################################################################################################
 
-sub get_asset {
-   my $filename = shift;
-
-   return undef if /\.\./;
-   open( my $FH, '<', "$CONFIG->{'assetsPath'}/$filename" ) || return undef;
-
+sub get_asset ($filename) {
+   return '' if !defined($filename) || $filename =~ /\.\./;
+   open( my $FH, '<', "$CONFIG->{'assetsPath'}/$filename" ) || return '';
    local $/;
    my $contents = <$FH>;
    close $FH;
    return $contents;
 }
 
-sub get_client_asset {
-   my $filename = shift;
-
-   return undef if /\.\./;
-   open( my $FH, '<', "$CONFIG->{'clientDistPath'}/$filename" ) || return undef;
-
+sub get_client_asset ($filename) {
+   return '' if !defined($filename) || $filename =~ /\.\./;
+   open( my $FH, '<', "$CONFIG->{'clientDistPath'}/$filename" ) || return '';
    local $/;
    my $contents = <$FH>;
    close $FH;
    return $contents;
 }
 
-sub get_header {
-   my $title = shift;
-
+sub get_header ($title = undef) {
    return get_asset('header.html') . 
       "   <title>" . ($title // 'Dockside - A dev and staging environment in one - From NewsNow Labs') . "</title>\n" .
       get_asset('gtm.html');
@@ -67,10 +59,7 @@ sub get_header {
 
 ####################################################################################################
 
-sub log_status {
-   my $sub = shift;
-   my $json = shift;
-
+sub log_status ($sub, $json) {
    flog("$sub: " . $json->{'msg'});
 
    return $json;
@@ -81,9 +70,7 @@ sub log_status {
 # Router logic: the main application entry point.
 #
 
-sub split_args {
-   my $queryString = shift;
-
+sub split_args ($queryString) {
    # Split querystring-style arguments, and unescape them
    my %hash = map { uri_unescape($_) } split( /[=&]/, $queryString );
 
@@ -91,11 +78,7 @@ sub split_args {
    return { map { $_ // '' } %hash };
 }
 
-sub json {
-   my $r = shift;
-   my $code = shift;
-   my $data = shift;
-
+sub json ($r, $code, $data) {
    $r->status($code);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->send_http_header("application/json");
@@ -105,12 +88,7 @@ sub json {
    return nginx::OK;
 }
 
-sub redirect {
-   my $r = shift;
-   my $code = shift;
-   my $location = shift;
-   my $headers = shift;
-
+sub redirect ($r, $code, $location, $headers = []) {
    $r->status($code);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->header_out( 'Location',      $location );
@@ -125,11 +103,7 @@ sub redirect {
    return nginx::OK;
 }
 
-sub html {
-   my $r = shift;
-   my $code = shift;
-   my $data = shift;
-
+sub html ($r, $code, $data) {
    $r->status($code);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->send_http_header("text/html");
@@ -139,11 +113,7 @@ sub html {
    return nginx::OK;
 }
 
-sub text {
-   my $r = shift;
-   my $code = shift;
-   my $data = shift;
-
+sub text ($r, $code, $data) {
    $r->status($code);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->send_http_header("text/plain");
@@ -153,12 +123,7 @@ sub text {
    return nginx::OK;
 }
 
-sub send_branded_page {
-   my $r = shift; # nginx request object
-   my $code = shift;
-   my $class = shift;
-   my $html = shift;
-
+sub send_branded_page ($r, $code, $class, $html) { # nginx request object
    $r->status($code);
    $r->send_http_header("text/html");
    $r->print( get_header() );
@@ -169,9 +134,7 @@ sub send_branded_page {
    return nginx::OK;
 }
 
-sub send_login_page {
-   my $r = shift; # nginx request object
-
+sub send_login_page ($r) { # nginx request object
    return send_branded_page($r, 200, 'signin', <<'_EOE_'
    <form method="POST" accept-charset="UTF-8">
       <label for="inputUser" class="sr-only">Username</label>
@@ -184,10 +147,7 @@ _EOE_
    );
 }
 
-sub handle_login_form {
-   my $r = shift; # nginx request object
-   my $parentFQDN = shift; # copy of $parentFQDN
-
+sub handle_login_form ($r, $parentFQDN) { # nginx request object # copy of $parentFQDN
    # Extract credentials from body.
    # Unescape keys and values, for consistency and simplicity.
    my %credentials = map { uri_unescape($_) } split(/[&=]/, $r->request_body);
@@ -226,10 +186,7 @@ sub handle_login_form {
    # Fallthrough: try return code will be returned here.
 }
 
-sub _handler {
-   my $r = shift; # nginx request object
-   my $protocol = shift; # protocol = 'http' | 'https'
-
+sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'https'
    # Create temporary path needed for cache and log files.
    if( ! -d $CONFIG->{'tmpPath'} ) {
       mkpath( [ $CONFIG->{'tmpPath'} ], 0, 0755 );
@@ -500,10 +457,7 @@ sub _handler {
    return nginx::OK;
 }
 
-sub handler {
-   my $r = shift;
-   my $protocol = shift;
-
+sub handler ($r, $protocol) {
    flog({ 'service' => 'dockside-handler' });
 
    my $R = try {
@@ -521,15 +475,11 @@ sub handler {
    return $R;
 }
 
-sub handlerHTTP {
-   my $r = shift; # nginx request object
-
+sub handlerHTTP ($r) { # nginx request object
    return handler($r, 'http');
 }
 
-sub handlerHTTPS {
-   my $r = shift; # nginx request object
-
+sub handlerHTTPS ($r) { # nginx request object
    return handler($r, 'https');
 }
 

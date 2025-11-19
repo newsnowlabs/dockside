@@ -9,10 +9,10 @@
 
 package Profile;
 
-use strict;
+use v5.36;
 
 use JSON;
-use Storable;
+use Storable qw(dclone);
 use Data qw($CONFIG);
 use Util qw(flog TO_JSON);
 
@@ -20,7 +20,7 @@ use Util qw(flog TO_JSON);
 # CURRENT VERSION
 # ---------------
 
-sub CURRENT_VERSION {
+sub CURRENT_VERSION () {
    return 4;
 }
 
@@ -28,9 +28,7 @@ sub CURRENT_VERSION {
 # VERSION UPGRADES
 # ----------------
 
-sub versionUpgrade {
-   my $self = shift;
-
+sub versionUpgrade ($self) {
    if($self->version == 0) {
       if(my $routers = delete $self->{'proxy'}) {
          $self->{'routers'} = $routers;
@@ -81,15 +79,16 @@ sub versionUpgrade {
    }
 }
 
-sub applyDefaults {
-   my $self = shift;
-
+sub applyDefaults ($self) {
    if(my $routers = $self->{'routers'}) {
       for(my $i = 0; $i < @$routers; $i++) {
          $routers->[$i]{'name'} //= $routers->[$i]{'prefixes'}[0] // "router-$i";
 
          # Define default auth options, if none specified in the profile
          $routers->[$i]{'auth'} //= [ 'owner', 'developer' ];
+
+         # Default type
+         $routers->[$i]{'type'} //= '';
       }
    }
 }
@@ -100,50 +99,41 @@ sub applyDefaults {
 
 our $PROFILES;
 
-sub Configure {
-   $PROFILES = $_[0];
+sub Configure ($profiles) {
+   $PROFILES = $profiles;
 }
 
 ################################################################################
 # SIMPLE ACCESSORS
 # ----------------
 
-sub errors {
-   my $self = shift;
-
-   push( @{ $self->{'errors'} }, [@_] );
+sub errors ($self, @error) {
+   push( @{ $self->{'errors'} }, [@error] );
 
    return undef;
 }
 
-sub name {
-   return $_[0]->{'name'};
+sub name ($self) {
+   return $self->{'name'};
 }
 
-sub version {
-   return $_[0]->{'version'};
+sub version ($self) {
+   return $self->{'version'};
 }
 
 ################################################################################
 # CONSTRUCTORS AND CLASS METHODS
 # ------------------------------
 
-sub names {
+sub names ($class) {
    return keys %$PROFILES;
 }
 
-sub load {
-   my $class = shift;
-   my $profile = shift;
-
+sub load ($class, $profile) {
    return $PROFILES->{$profile};
 }
 
-sub new {
-   my $class = shift;
-   my $data  = shift;
-   my $validated = shift;
-
+sub new ($class, $data, $validated = 0) {
    # Decode JSON if needed.
    if(!ref($data)) {
       $data = decode_json($data);
@@ -199,9 +189,7 @@ sub new {
 # VALIDATORS
 # ----------
 
-sub validate {
-   my $self = shift;
-
+sub validate ($self) {
    # Parse/validate data keys one by one, recursively decending with each.
 
    return undef unless $self->{'active'};
@@ -209,7 +197,7 @@ sub validate {
    # A list of allowed properties: a trailing '!' indicates the property is mandatory.
    $self->do_validate(
       '',
-      Storable::dclone($self),
+      dclone($self),
       qw(
          name=s!
          version=s!
@@ -239,9 +227,7 @@ sub validate {
    return $self;
 }
 
-sub _parse_props {
-   my $propcodes = shift;
-
+sub _parse_props ($propcodes) {
    my $propsLookup;
 
    foreach my $propNcode ( @$propcodes ) {
@@ -250,7 +236,7 @@ sub _parse_props {
       my %codesLookup;
 
       # Split code string into an array of 1-char strings
-      my @codes = split( //, $codestring );
+      my @codes = split( //, $codestring // '' );
 
       # Covert the code array into a hash lookup
       @codesLookup{@codes} = (1) x scalar(@codes);
@@ -263,12 +249,7 @@ sub _parse_props {
 
 # Validate an Object (not an Array)
 # @props is array of expected properties: '!' denotes a mandatory field
-sub do_validate {
-   my $self  = shift;
-   my $type  = shift;
-   my $data  = shift;
-   my @propcodes = @_;
-
+sub do_validate ($self, $type, $data, @propcodes) {
    my $props = _parse_props(\@propcodes);
    my @propList = sort { lc($a) cmp lc($b) } keys %$props;
    my $propsString = join( ', ', @propList );
@@ -343,32 +324,20 @@ sub do_validate {
 
 }
 
-sub validate_profile_IDEs {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_IDEs ($self, $type, $data) {
    unless( ref($data) eq 'ARRAY' ) {
       return $self->errors( $type, "must be an Array" );
    }
 }
 
-sub validate_profile_mounts_tmpfs_dst {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_mounts_tmpfs_dst ($self, $type, $data) {
    my $dstRE = '^/';
 
    $self->errors( $type, "must specify a <dst>" ) unless $data;
    $self->errors( $type, "must specify a <dst> matching /$dstRE/" ) unless $data =~ /$dstRE/;
 }
 
-sub validate_profile_mounts_tmpfs {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_mounts_tmpfs ($self, $type, $data) {
    unless( ref($data) eq 'ARRAY' ) {
       return $self->errors( $type, "must be an Array" );
    }
@@ -380,11 +349,7 @@ sub validate_profile_mounts_tmpfs {
    }
 }
 
-sub validate_profile_mounts_bind {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_mounts_bind ($self, $type, $data) {
    unless( ref($data) eq 'ARRAY' ) {
       return $self->errors( $type, "must be an Array" );
    }
@@ -396,11 +361,7 @@ sub validate_profile_mounts_bind {
    }
 }
 
-sub validate_profile_mounts_volume {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_mounts_volume ($self, $type, $data) {
    unless( ref($data) eq 'ARRAY' ) {
       return $self->errors( $type, "must be an Array" );
    }
@@ -412,19 +373,11 @@ sub validate_profile_mounts_volume {
    }
 }
 
-sub validate_profile_mounts {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_mounts ($self, $type, $data) {
    $self->do_validate( $type, $data, qw( tmpfs bind volume ) );
 }
 
-sub validate_profile_routers {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_routers ($self, $type, $data) {
    unless( ref($data) eq 'ARRAY' ) {
       return $self->errors( $type, "must be an Array" );
    }
@@ -434,11 +387,7 @@ sub validate_profile_routers {
    }
 }
 
-sub validate_profile_unixusers {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_unixusers ($self, $type, $data) {
    unless( ref($data) eq 'ARRAY' && @$data >= 1 ) {
       return $self->errors( $type, "must be an Array with at least one username string" );
    }
@@ -459,11 +408,7 @@ sub validate_profile_unixusers {
    }
 }
 
-sub validate_profile_security {
-   my $self = shift;
-   my $type = shift;
-   my $data = shift;
-
+sub validate_profile_security ($self, $type, $data) {
    $self->do_validate( $type, $data, qw( apparmor seccomp no-new-privileges labels ) );
 
    if($data->{'labels'}) {
@@ -484,46 +429,42 @@ sub validate_profile_security {
 # DATA ACCESSORS
 # --------------
 
-sub runtimes {
-   return $_[0]->{'runtimes'} // [];
+sub runtimes ($self) {
+   return $self->{'runtimes'} // [];
 }
 
-sub networks {
-   return $_[0]->{'networks'} // [];
+sub networks ($self) {
+   return $self->{'networks'} // [];
 }
 
-sub images {
-   return $_[0]->{'images'} // [];
+sub images ($self) {
+   return $self->{'images'} // [];
 }
 
-sub gitURLs {
-   return $_[0]->{'gitURLs'} // [];
+sub gitURLs ($self) {
+   return $self->{'gitURLs'} // [];
 }
 
-sub IDEs {
-   return $_[0]->{'IDEs'} // [];
+sub IDEs ($self) {
+   return $self->{'IDEs'} // [];
 }
 
-sub unixusers {
-   return $_[0]->{'unixusers'} // [];
+sub unixusers ($self) {
+   return $self->{'unixusers'} // [];
 }
 
-sub routers {
-   return $_[0]->{'routers'} // [];
+sub routers ($self) {
+   return $self->{'routers'} // [];
 }
 
-sub ssh {
-   return $_[0]->{'ssh'};
+sub ssh ($self) {
+   return $self->{'ssh'};
 }
 
 # Test if Profile property $type contains (or encompasses) value $value.
 # Returns 0 if not, non-0 if so.
 
-sub has {
-   my $self = shift;
-   my $type = shift;
-   my $value = shift;
-
+sub has ($self, $type, $value = '') {
    my $array;
 
    if($type eq 'image') {
@@ -608,9 +549,7 @@ sub has {
    return scalar(grep { $_ eq $value } @$array);
 }
 
-sub spare_port {
-   my $self = shift;
-
+sub spare_port ($self) {
    my $ports = $self->ports_hash();
 
    for( my $port = 1024; $port < 32768; $port++ ) {
@@ -620,11 +559,11 @@ sub spare_port {
    return undef;
 }
 
-sub ports_hash {
+sub ports_hash ($self) {
    my %ports;
 
    # Compile a unique list of private exposed ports for the profile.
-   foreach my $router (@{ $_[0]->routers } ) {
+   foreach my $router (@{ $self->routers } ) {
       foreach my $protocol (qw( http https )) {
          $ports{ $router->{$protocol}{'port'} }++ if exists $router->{$protocol}{'port'};
       }
@@ -633,8 +572,8 @@ sub ports_hash {
    return \%ports;
 }
 
-sub ports {
-   my $ports = $_[0]->ports_hash();
+sub ports ($self) {
+   my $ports = $self->ports_hash();
 
    return keys %$ports;
 }
@@ -643,43 +582,33 @@ sub ports {
 # DEFAULTS DATA ACCESSORS
 # -----------------------
 
-sub default_runtime {
-   my $self = shift;
-
+sub default_runtime ($self) {
    die "No default runtime available\n" unless @{$self->{'runtimes'}};
 
    return $self->{'runtimes'}[0];
 }
 
-sub default_network {
-   my $self = shift;
-
+sub default_network ($self) {
    die "No default network found\n" unless @{$self->{'networks'}};
 
    return $self->{'networks'}[0];
 }
 
-sub default_unixuser {
-   my $self = shift;
-
+sub default_unixuser ($self) {
    die "No default unixuser found\n" unless
       $self->{'unixusers'} && @{$self->{'unixusers'}};
 
    return $self->{'unixusers'}[0];
 }
 
-sub default_image {
-   my $self = shift;
-
+sub default_image ($self) {
    my @nonWildcardImages = grep { !/\*/ } @{$self->{'images'}};
    return $nonWildcardImages[0] if @nonWildcardImages;
 
    die "No default image found\n";
 }
 
-sub default_gitURL {
-   my $self = shift;
-
+sub default_gitURL ($self) {
    my @nonWildcardGitURLs = grep { !/\*/ } @{$self->{'GitURLs'}};
    return $nonWildcardGitURLs[0] if @nonWildcardGitURLs;
 
@@ -687,18 +616,14 @@ sub default_gitURL {
    return '';
 }
 
-sub default_IDE {
-   my $self = shift;
-
+sub default_IDE ($self) {
    return $self->{'IDEs'}[0] if @{$self->{'IDEs'}};
 
    # Default IDE is '' if none is specified
    return '';
 }
 
-sub default_command {
-   my $self = shift;
-
+sub default_command ($self) {
    if(ref($self->{'command'}) eq 'ARRAY') {
       return @{$self->{'command'}};
    }
@@ -710,29 +635,21 @@ sub default_command {
    return ();
 }
 
-sub entrypoint {
-   my $self = shift;
-
+sub entrypoint ($self) {
    return ref($self->{'entrypoint'}) eq 'ARRAY' ? join(' ', @{$self->{'entrypoint'}}) : $self->{'entrypoint'};
 }
 
-sub should_mount_ide {
-   my $self = shift;
-
+sub should_mount_ide ($self) {
    return 1 unless exists($self->{'mountIDE'}) && $self->{'mountIDE'} == 0;
 
    return 0;
 }
 
-sub run_docker_init {
-   my $self = shift;
-
+sub run_docker_init ($self) {
    return (exists($self->{'runDockerInit'}) && $self->{'runDockerInit'} == 0) ? 0 : 1;
 }
 
-sub has_lxcfs_enabled {
-   my $self = shift;
-
+sub has_lxcfs_enabled ($self) {
    # Disabled unless lxcfs.mountpoints[] specified in config.json.
    return 0 unless $CONFIG->{'lxcfs'} && ref($CONFIG->{'lxcfs'}{'mountpoints'}) eq 'ARRAY'
       && $CONFIG->{'lxcfs'}{'available'} == 1;
@@ -760,19 +677,13 @@ sub has_lxcfs_enabled {
 # Outputs:
 # - A cloned Profile object, with unauthorised resources removed, augmented with 'imageConstraints'.
 
-sub cloneWithConstraints {
-   my $self = shift;
-   my $constraints = shift;
-
-   my $clone = Storable::dclone($self);
+sub cloneWithConstraints ($self, $constraints) {
+   my $clone = dclone($self);
 
    return $clone->applyConstraints($constraints);
 }
 
-sub applyConstraints {
-   my $self = shift;
-   my $constraints = shift;
-
+sub applyConstraints ($self, $constraints) {
    foreach my $resourceType (qw( runtimes networks auth images IDEs )) {
 
       # This constraint is defined in User->updateDerivedResourceConstraints.
@@ -801,9 +712,7 @@ sub applyConstraints {
    return $self;
 }
 
-sub sanitise {
-   my $self = shift;
-
+sub sanitise ($self) {
    foreach my $key (qw( active mounts runDockerInit metadata command entrypoint )) {
       delete $self->{$key};
    }
@@ -815,9 +724,7 @@ sub sanitise {
 # ERRORS
 # -----------------------
 
-sub errorsArray {
-   my $self = shift;
-
+sub errorsArray ($self) {
    return map { $_ = ($_->[0] ? "in '$_->[0]', " : '') . $_->[1] } @{ $self->{'errors'} };
 }
 
