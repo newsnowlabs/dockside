@@ -415,7 +415,7 @@ populate_vscode_settings() {
       echo '{}' >$FILE
    fi
 
-   local EXCLUDES='**/.vscode **/.openvscode-server **/.theia **/.cache **/.ssh **/.git'
+   local EXCLUDES='**/.vscode **/.vscode-server **/.openvscode-server **/.theia **/.cache **/.ssh **/.git'
    if [ -n "$EXCLUDES" ]; then
       log "Populating '$FILE' with 'files.exclude' exclusions (in JSON): $EXCLUDES"
 
