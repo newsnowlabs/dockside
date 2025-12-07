@@ -9,7 +9,7 @@ APP_DIR=$APP_HOME/$APP
 OPT_SSL_ZONES=()
 OPT_PATH="/opt/dockside"
 
-IDE_PATH="$(ls -d $OPT_PATH/ide/*/* | tail -n 1)"
+IDE_PATH="$OPT_PATH/system/latest"
 
 . $APP_DIR/app/scripts/includes/log_do
 
