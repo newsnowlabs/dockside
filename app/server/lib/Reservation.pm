@@ -836,21 +836,22 @@ sub lookup_container_uri {
          # When addressing a devtainer running on an inner dockerd instance, we assume all of its networks are accessible from the Dockside container.
       # }
       
-      # Loop through the addressed container's networks.
-      foreach my $network (sort { $a cmp $b } keys %{ $self->{'inspect'}{'Networks'}}) {
+      # Sort the container's networks by descending order of GwPriority (and, if needed, its name)
+      # where the network is in one that's common to both devtainer and the Dockside host container.
+      my $Networks = $self->{'inspect'}{'Networks'};
+      my @candidateNetworks =
+         sort { $Networks->{$b}{'GwPriority'} <=> $Networks->{$a}{'GwPriority'} || $a cmp $b }
+         grep { !$hostNetworks || $hostNetworks->{$_} }
+         keys %$Networks;
 
-         # Skip if we don't share $network with the addressed container;
-         # but, if we didn't identify any host/hostNetworks, we'll use the first.
-         next if $hostNetworks && !$hostNetworks->{$network};
-
-         # We found a $network we share; use this IP.
+      if(@candidateNetworks) {
+         # We found a $network we share; use the IP of the container from the network
+         # with the highest gateway priority.
          $uri = sprintf("%s://%s:%d",
             $self->{'routersLookup'}{$protocol}{$prefix}{$domain}[0],
-            $self->{'inspect'}{'Networks'}{$network}{'IPAddress'},
+            $self->{'inspect'}{'Networks'}{ $candidateNetworks[0] }{'IPAddress'},
             $exposedPort
          );
-
-         last;
       }
    }
 
