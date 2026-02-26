@@ -7,7 +7,7 @@ our @EXPORT_OK = ( qw(
    flog wlog
    get_config
    trim is_true
-   call_socket_api
+   call_socket_api call_socket_json_api
    get_uri
    run run_system clean_pty run_pty
    YYYYMMDDHHMMSS TO_JSON
@@ -86,6 +86,31 @@ sub trim {
 
 sub is_true {
    return $_[0] =~ /^(1|true)$/s;
+}
+
+sub call_socket_json_api {
+   my $socket = shift;
+   my $path = shift;
+
+   my $result = call_socket_api->($socket, $path);
+
+   unless($result) {
+      die Exception->new( 'dbg' => "Unable to execute Docker API call $path" );
+   }
+
+   unless($result->is_success) {
+      die Exception->new( 'dbg' => "Docker API call '$path' failed, error: " . trim($result->message) );
+   }
+
+   my $object;
+   try {
+      $object = from_json($result->body);
+   }
+   catch {
+      die Exception->new( 'dbg' => "Docker API call '$path' failed to decode from JSON: " . trim($result->body) );
+   };
+
+   return $object;
 }
 
 sub call_socket_api {
