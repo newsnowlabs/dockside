@@ -621,7 +621,13 @@ sub set {
    if( $property eq 'gitURL') {
 
       if( $value eq '' ) {
-         # Select default for this profile (and, where required, user).
+
+         # If no gitURLs in this profile, treat as optional
+         if( scalar(@{$profileObject->gitURLs}) == 0 ) {
+            return 1;
+         }
+
+         # Otherwise, select the default for this profile (and, where required, user).
          $value = $profileObject->default_gitURL;
       }
 
