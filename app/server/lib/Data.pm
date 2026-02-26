@@ -3,12 +3,12 @@ package Data;
 use strict;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION);
+our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO);
 
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
-use Util qw(flog cacheReadWrite get_config);
+use Util qw(flog cacheReadWrite get_config call_socket_json_api);
 
 my $CONFIG_PATH = '/data/config';
 
@@ -17,6 +17,7 @@ my $CONFIG_PATH = '/data/config';
 our $HOSTNAME = get_config('/etc/service/nginx/data/ctr-id');
 our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
 our $VERSION = get_config('/etc/service/nginx/data/version');
+our $HOSTINFO = { 'docker' => undef, 'IDEs' => undef }; # Host info cache: populated later
 
 sub parse_json {
    local $_ = shift;
@@ -76,11 +77,14 @@ my $CONFIG_FILES = {
          # Assign defaults
          $CONFIG->{'docker'}{'socket'} //= '/var/run/docker.sock';
          $CONFIG->{'docker'}{'sizes'} //= 0;
+
          $CONFIG->{'ide'}{'path'} //= '/opt/dockside';
+         $CONFIG->{'ide'}{'subPath'} //= 'ide';
+         $CONFIG->{'ide'}{'fullPath'} //= "$CONFIG->{'ide'}{'path'}/$CONFIG->{'ide'}{'subPath'}";
+
          $CONFIG->{'ssh'}{'path'} //= "$CONFIG->{'ide'}{'path'}/host";
          $CONFIG->{'ssh'}{'port'} //= 2222;
          $CONFIG->{'ssh'}{'default'} //= 1;
-         $CONFIG->{'ide'}{'IDEs'} //= ['theia/latest', 'openvscode/latest'];
       },
       'parse' => \&parse_json
    },
@@ -143,6 +147,21 @@ my $CONFIG_FILES = {
          Containers::Configure($_[0]);
          Reservation->update_container_info();
       }
+   },
+   'hostInfo' => {
+      'const' => sub {
+         return if $HOSTINFO && $HOSTINFO->{'docker'} && $HOSTINFO->{'IDEs'};
+
+         # Populate docker host info, comprising Runtimes and DefaultRuntimes etc
+         $HOSTINFO->{'docker'} = call_socket_json_api($CONFIG->{'docker'}{'socket'}, '/info');
+
+         # Available IDEs on the host system
+         if( -d "$CONFIG->{'ide'}{'fullPath'}" ) {
+            my $globPath = "$CONFIG->{'ide'}{'fullPath'}/*/*";
+            my @hostIDEs = map { s!^.*/([^/]+/[^/]+)$!$1!; $_; } <"$globPath">; # Strip off all but final <ideType>/<version>
+            $HOSTINFO->{'IDEs'} = \@hostIDEs;
+         }
+      }
    }
 };
 
@@ -165,6 +184,17 @@ sub load {
 
    # FIXME: Throttle checking config files to 1/5s
    foreach my $p ( @configFiles ) {
+
+      if( !$CONFIG_FILES->{$p} ) {
+         flog( "get_updated_config: error parsing '$p': no such config file defined" );
+         next;
+      }
+
+      if( $CONFIG_FILES->{$p}{'const'} ) {
+         # Constant value - just call the sub and store the result
+         $CONFIG->{$p} = &{ $CONFIG_FILES->{$p}{'const'} }();
+         next;
+      }
 
       my $isGlob = ($p =~ m!\*!);
 
