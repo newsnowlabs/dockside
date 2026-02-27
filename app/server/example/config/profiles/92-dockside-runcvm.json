@@ -30,8 +30,8 @@
    ],
 
    "runtimes": [ "runcvm" ],
-   "networks": [ "bridge" ],
-   "images": [ "newsnowlabs/dockside:latest" ],
+   "networks": [ "*" ],
+   "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:prerelease", "newsnowlabs/dockside:test" ],
 
    "unixusers": [ "dockside" ],
 
@@ -42,11 +42,11 @@
       // Use this to identify paths in your containers that will contain ephemeral data that will be lost
       // when the container is stopped, and which will not be duplicated in a clone operation.
       "tmpfs": [
-         { "dst": "/home/dockside/.vscode", "tmpfs-size": "100M" },
+         { "dst": "/home/dockside/.vscode", "tmpfs-size": "150M" },
          { "dst": "/home/dockside/.ssh", "tmpfs-size": "1M" },
    
          // These are good for most Linux distributions
-         { "dst": "/tmp", "tmpfs-size": "128M" },
+         { "dst": "/tmp", "tmpfs-size": "512M" },
          { "dst": "/var/tmp", "tmpfs-size": "128M" },
          { "dst": "/run", "tmpfs-size": "64M" }
       ],

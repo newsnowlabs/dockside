@@ -11,7 +11,7 @@
          "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
       }
    ],
-   "networks": [ "bridge" ],
+   "networks": [ "*" ],
    "images": [ "newsnowlabs/dockside-io" ],
    "unixusers": ["dockside"],
    "mounts": {
@@ -21,7 +21,7 @@
       "bind": [],
       "volume": []
    },
-   "runtimes": [ "runc" ],
+   "runtimes": [ "*" ],
    "lxcfs": true,
    "dockerArgs": ["--memory=2G", "--pids-limit=4000", "--cpus=1"],
    "command": [

@@ -29,8 +29,9 @@
       }
    ],
 
-   "networks": [ "bridge" ],
-   "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:test" ],
+   "networks": [ "*" ],
+   "runtimes": [ "*" ],
+   "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:prerelease", "newsnowlabs/dockside:test" ],
 
    "unixusers": [ "dockside" ],
 
