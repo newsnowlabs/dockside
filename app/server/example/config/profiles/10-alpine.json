@@ -11,7 +11,7 @@
          "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
       }
    ],
-   "networks": [ "bridge" ],
+   "networks": [ "*" ],
    "images": [ "alpine:latest" ],
    "unixusers": ["dockside"],
    "mounts": {
