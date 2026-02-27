@@ -149,7 +149,8 @@ sub data {
       }
    }
    elsif($key eq 'runtime') {
-      if( $value !~ /^([a-zA-Z][a-zA-Z0-9\-]+)?$/ ) {
+      # Allow runtimes of form: runc, sysbox-runc, and io.containerd.runc.v2
+      if( $value !~ /^([a-zA-Z][a-zA-Z0-9\-]*(?:\.[a-zA-Z0-9\-]+)*)?$/ ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid runtime '$value'" );
       }
    }
