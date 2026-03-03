@@ -291,7 +291,8 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    }
 
    # User is signed in.
-   flog("App: route=$route; User=" . $User->username);
+   # Enable for verbose request logging:
+   # flog("App: route=$route; User=" . $User->username);
 
    if( $route eq '/' || $route =~ m!^/container/! ) {
       ###############################

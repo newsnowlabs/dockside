@@ -415,7 +415,7 @@ populate_vscode_settings() {
       echo '{}' >$FILE
    fi
 
-   local EXCLUDES='**/.vscode **/.openvscode-server **/.theia **/.cache **/.ssh **/.git'
+   local EXCLUDES='**/.vscode **/.vscode-server **/.openvscode-server **/.theia **/.cache **/.ssh **/.git'
    if [ -n "$EXCLUDES" ]; then
       log "Populating '$FILE' with 'files.exclude' exclusions (in JSON): $EXCLUDES"
 
@@ -482,22 +482,25 @@ run_nonroot() {
    populate_ssh_agent_keys
    populate_known_hosts
    (create_git_repo; populate_vscode_extensions; populate_vscode_settings;) &
-
-   if [ "$IDE" = "openvscode/latest" ]; then
-      launch_openvscode
-   else
-      launch_theia
-   fi
+   restart_ide
 }
 
 restart_ide() {
    # TODO: Kill existing IDE...
-   
-   if [ "$IDE" = "openvscode/latest" ]; then
-      launch_openvscode
-   else
-      launch_theia
-   fi
+
+   # Match IDE strings of form openvscode/<version> or <theia>/<version>
+   # where <version> is a specific version string or the string 'latest'
+   case "$IDE" in
+      openvscode/*)
+         launch_openvscode
+         ;;
+      theia/*)
+         launch_theia
+         ;;
+      *)
+         launch_theia
+         ;;
+   esac
 }
 
 launch_ide() {

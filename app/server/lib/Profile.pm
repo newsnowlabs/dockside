@@ -13,7 +13,7 @@ use v5.36;
 
 use JSON;
 use Storable qw(dclone);
-use Data qw($CONFIG);
+use Data qw($CONFIG $HOSTNAME $HOSTINFO);
 use Util qw(flog TO_JSON);
 
 ################################################################################
@@ -40,57 +40,86 @@ sub versionUpgrade ($self) {
       if(my $unixusers = delete $self->{'users'}) {
          $self->{'unixusers'} = $unixusers;
       }
-
-      if(my $routers = $self->{'routers'}) {
-         for(my $i = 0; $i < @$routers; $i++) {
-            $routers->[$i]{'name'} //= $routers->[$i]{'prefixes'}[0] // "router-$i";
-            if($routers->[$i]{'auth'}) {
-               if(ref($routers->[$i]{'auth'}) ne 'ARRAY') {
-                  # Set permissible array of auth modes to just the predefined default.
-                  $routers->[$i]{'auth'} = ($routers->[$i]{'type'} =~ /^(ide|ssh)$/) ? [ 'owner', 'developer' ] : [ 'user', 'developer', 'public', 'viewer', 'owner' ];
-               }
-               # else allow current setting.
-            }
-            else {
-               # Define default auth options, if none specified in the profile
-               $routers->[$i]{'auth'} = [ 'owner', 'developer' ];
-            }
-         }
-      }
-
       $self->{'version'}++;
    }
 
    if($self->version == 2) {
-      $self->{'runtimes'} = ['runc'] unless defined($self->{'runtimes'}) && (ref($self->{'runtimes'}) eq 'ARRAY') && @{$self->{'runtimes'}} > 0;
-      $self->{'unixusers'} = ['dockside'] unless defined($self->{'unixusers'}) && (ref($self->{'unixusers'}) eq 'ARRAY') && @{$self->{'unixusers'}} > 0;
-
-      # If unspecified in profile, set to value of config.json default, or true.
-      $self->{'ssh'} //= $CONFIG->{'ssh'}{'default'} // 1;
-
       $self->{'version'}++;
    }
 
    if($self->version == 3) {
-      $self->{'IDEs'} = $CONFIG->{'ide'}{'IDEs'} unless defined($self->{'IDEs'});
       $self->{'entrypoint'} = [ $self->{'entrypoint'} ] if $self->{'entrypoint'} && !ref($self->{'entrypoint'});
-
       $self->{'version'}++;
    }
 }
 
-sub applyDefaults ($self) {
+sub applyDefaultsAndFilters ($self) {
+
+   my $applyFilters = sub ($type, $items, $sorttype = 'default') {
+
+      my %matched;
+      foreach my $item (@$items) {
+         next unless $self->has($type, $item);
+         $matched{$item}++;
+      }
+
+      my @matched = keys %matched;
+
+      if($sorttype eq 'tag/version') {
+         # Simple <tag>/<version> sort function:
+         # - prioritises <tag>/latest, sorting <tag> alphanumerically
+         # - sorts remaining <tag>/<version> first by <tag>, then by <version> alphanumerically
+         return [
+            sort {
+               my ($abase, $arest) = $a =~ m{^([^/]+)(?:/(.*))?$};
+               my ($bbase, $brest) = $b =~ m{^([^/]+)(?:/(.*))?$};
+
+               ((($brest // '') eq 'latest') <=> (($arest // '') eq 'latest'))
+               ||
+               $abase cmp $bbase
+               ||
+               ($arest // '') cmp ($brest // '')
+            } keys %matched
+         ]
+      }
+
+      return [sort { $a cmp $b } keys %matched];
+   };
+
+   # Routers
    if(my $routers = $self->{'routers'}) {
       for(my $i = 0; $i < @$routers; $i++) {
          $routers->[$i]{'name'} //= $routers->[$i]{'prefixes'}[0] // "router-$i";
 
-         # Define default auth options, if none specified in the profile
-         $routers->[$i]{'auth'} //= [ 'owner', 'developer' ];
+         # Define default auth options, if none specified in the profile, to
+         # permissible array of auth modes, according to router type.
+         $routers->[$i]{'auth'} //= ($routers->[$i]{'type'} =~ /^(ide|ssh)$/) ?
+            [ 'owner', 'developer' ] : [ 'user', 'developer', 'public', 'viewer', 'owner' ];
 
          # Default type
          $routers->[$i]{'type'} //= '';
       }
    }
+
+   # Network
+   my @hostNetworks = sort { $a cmp $b } keys %{Containers->containers->{$HOSTNAME}{'inspect'}{'Networks'}};
+   $self->{'networks'} = ["*"] unless defined($self->{'networks'});
+   $self->{'networks'} = $applyFilters->('network', \@hostNetworks);
+
+   # IDE
+   $self->{'IDEs'} = ["*"] unless defined($self->{'IDEs'});
+   $self->{'IDEs'} = $applyFilters->('IDE', $HOSTINFO->{'IDEs'}, 'tag/version');
+
+   # Runtimes
+   $self->{'runtimes'} = ["*"] unless defined($self->{'runtimes'});
+   $self->{'runtimes'} = $applyFilters->('runtime', [keys %{$HOSTINFO->{'docker'}{'Runtimes'}}]);
+
+   # unixusers
+   $self->{'unixusers'} = ['dockside'] unless defined($self->{'unixusers'});
+
+   # SSH
+   # If unspecified in profile, set to value of config.json default, or true.
+   $self->{'ssh'} //= $CONFIG->{'ssh'}{'default'} // 1;
 }
 
 ################################################################################
@@ -142,11 +171,22 @@ sub new ($class, $data, $validated = 0) {
    my $self = bless { %$data }, ( ref($class) || $class );
 
    $self->versionUpgrade();
-   $self->applyDefaults();
 
-   return $self if $validated;
+   # Return early if already validated.
+   if( $validated ) {
+      return $self;
+   }
 
-   $self->validate();
+   # Return early if not valid.
+   # An 'errors' property will have been added to $self.
+   if( !$self->validate ) {
+      return $self;
+   }
+
+   # Apply defaults only after validation, as this process assumes a valid data structure.
+   # TODO: Are any defaults or filters needed even for validated records?
+   # TODO: Should defaults and filters be separated?
+   $self->applyDefaultsAndFilters();
 
    # Add the IDE router, if none specified
    if( ! grep { $_->{'type'} eq 'ide' } @{$self->{'routers'}} ) {
@@ -224,7 +264,7 @@ sub validate ($self) {
       )
    );
 
-   return $self;
+   return $self->{'errors'} ? 0 : 1;
 }
 
 sub _parse_props ($propcodes) {
@@ -469,66 +509,14 @@ sub has ($self, $type, $value = '') {
 
    if($type eq 'image') {
       $array = $self->images;
-
-      # If $value does not match at least one Profile image or image pattern, reject it.
-      return 0 unless scalar(
-         grep { $value =~ /^${_}$/ }
-         map {
-            my $imageRegex = quotemeta($_);
-            $imageRegex =~ s/\\\*/\.\*/g;
-            $imageRegex;
-         } @$array
-      );
-
-      # my $imageConstraints = $self->{'imageConstraints'};
-      #
-      # # Order user's image resource constraints by specificity
-      # # i.e. (number of non-wildcard characters), descending.
-      # my @orderedImageConstraints =
-      #    sort {
-      #       my $A = $a; $A =~ s/\*+//g;
-      #       my $B = $b; $B =~ s/\*+//g;
-      #       length($B) <=> length($A);
-      #    } keys %$imageConstraints;
-      #
-      # # If $value matches a user's $imageConstraint, allow/deny according to the constraint.
-      # foreach my $imageConstraint (@orderedImageConstraints) {
-      #    my $imageConstraintRegex = quotemeta($imageConstraint);
-      #    $imageConstraintRegex =~ s/(\\\*)+/\.\*/g;
-      #    if( $value =~ /^${imageConstraintRegex}$/ ) {
-      #
-      #       # We matched this constraint; but did it map to true or false?
-      #       # If true, we allow the image.
-      #       # If false, we don't.
-      #       return $imageConstraints->{$imageConstraint};
-      #    }
-      # }
-      # return 0;
-
-      return 1;
    }
    elsif($type eq 'gitURL') {
-
       $array = $self->gitURLs;
-
-      if( @$array == 0 ) {
-         return 1 if $value eq '';
-         return 0;
+   
+      # Optional prop: allowed to be '' only if no profile value(s)
+      if( @$array == 0 && $value eq '' ) {
+         return 1;
       }
-
-      return 0 if $value eq '';
-
-      # If $value does not match at least one Profile gitURL or gitURL pattern, reject it.
-      return 0 unless scalar(
-         grep { $value =~ /^${_}$/ }
-         map {
-            my $gitURLRegex = quotemeta($_);
-            $gitURLRegex =~ s/\\\*/\.\*/g;
-            $gitURLRegex;
-         } @$array
-      );
-
-      return 1;
    }
    elsif($type eq 'runtime') {
       $array = $self->runtimes;
@@ -546,6 +534,26 @@ sub has ($self, $type, $value = '') {
       $array = [ map { $_->{'type'} } @{$self->routers} ];
    }
 
+   # Props allowing wildcard matching
+   if($type =~ /^(image|gitURL|runtime|network|IDE)$/) {
+      if( @$array == 0 || $value eq '' ) {
+         return 0;
+      }
+
+      # If $value does not match at least one Profile element pattern, reject it.
+      return 0 unless scalar(
+         grep { $value =~ /^${_}$/ }
+         map {
+            my $regex = quotemeta($_);
+            $regex =~ s/\\\*/\.\*/g;
+            $regex;
+         } @$array
+      );
+
+      return 1;
+   }
+
+   # Properties allowing only exact matching
    return scalar(grep { $_ eq $value } @$array);
 }
 
