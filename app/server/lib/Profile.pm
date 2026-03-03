@@ -61,11 +61,32 @@ sub applyDefaultsAndFilters {
    my $applyFilters = sub {
       my $type = shift;
       my $items = shift;
+      my $sorttype = shift;
 
       my %matched;
       foreach my $item (@$items) {
          next unless $self->has($type, $item);
          $matched{$item}++;
+      }
+
+      my @matched = keys %matched;
+
+      if($sorttype eq 'tag/version') {
+         # Simple <tag>/<version> sort function:
+         # - prioritises <tag>/latest, sorting <tag> alphanumerically
+         # - sorts remaining <tag>/<version> first by <tag>, then by <version> alphanumerically
+         return [
+            sort {
+               my ($abase, $arest) = $a =~ m{^([^/]+)(?:/(.*))?$};
+               my ($bbase, $brest) = $b =~ m{^([^/]+)(?:/(.*))?$};
+
+               ((($brest // '') eq 'latest') <=> (($arest // '') eq 'latest'))
+               ||
+               $abase cmp $bbase
+               ||
+               ($arest // '') cmp ($brest // '')
+            } keys %matched
+         ]
       }
 
       return [sort { $a cmp $b } keys %matched];
@@ -84,14 +105,13 @@ sub applyDefaultsAndFilters {
    }
 
    # Network
-   my @hostNetworks = sort { $a cmp $b } grep { $_ ne 'dockside' } keys %{Containers->containers->{$HOSTNAME}{'inspect'}{'Networks'}};
+   my @hostNetworks = sort { $a cmp $b } keys %{Containers->containers->{$HOSTNAME}{'inspect'}{'Networks'}};
    $self->{'networks'} = ["*"] unless defined($self->{'networks'});
    $self->{'networks'} = $applyFilters->('network', \@hostNetworks);
-   flog("Profile::applyDefaultsAndFilters: networks=" . join(',', @{$self->{'networks'}}));
 
    # IDE
    $self->{'IDEs'} = ["*"] unless defined($self->{'IDEs'});
-   $self->{'IDEs'} = $applyFilters->('IDE', $HOSTINFO->{'IDEs'});
+   $self->{'IDEs'} = $applyFilters->('IDE', $HOSTINFO->{'IDEs'}, 'tag/version');
 
    # Runtimes
    $self->{'runtimes'} = ["*"] unless defined($self->{'runtimes'});
