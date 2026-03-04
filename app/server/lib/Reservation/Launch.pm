@@ -1,7 +1,7 @@
 # Part of the Reservation:: package, split out for convenience.
 package Reservation;
 
-use strict;
+use v5.36;
 
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
@@ -18,10 +18,8 @@ my $PLACEHOLDERS = {
    'giturl' => 'gitURL'
 };
 
-sub _placeholders {
-   my $self = shift;
-   
-   local $_ = shift;
+sub _placeholders ($self, $value) {
+   local $_ = $value;
 
    s/\{([^\}\.]+)(?:\.([^\}]+))?\}/do {
       my $sub = $PLACEHOLDERS->{lc($1)};
@@ -35,9 +33,7 @@ sub _placeholders {
 # DOCKER COMMAND LINE GENERATION
 #
 
-sub cmdline_security {
-   my $self = shift;
-
+sub cmdline_security ($self) {
    my $security = $self->profileObject->{'security'};
 
    my @opts;
@@ -68,9 +64,7 @@ sub cmdline_security {
    return @opts;
 }
 
-sub cmdline_ports {
-   my $self = shift;
-
+sub cmdline_ports ($self) {
    # We only need to publish ports to the host in gatewayMode.
    return () unless $CONFIG->{'gatewayMode'};
    
@@ -81,9 +75,7 @@ sub cmdline_ports {
    return ();
 }
 
-sub cmdline_runtime {
-   my $self = shift;
-   
+sub cmdline_runtime ($self) {
    my $runtime = $self->data('runtime');
 
    return sprintf("--runtime=%s", $runtime) if $runtime;
@@ -91,9 +83,7 @@ sub cmdline_runtime {
    return ();
 }
 
-sub cmdline_network {
-   my $self = shift;
-   
+sub cmdline_network ($self) {
    my $network = $self->data('network');
 
    return sprintf("--network=%s", $network) if $network;
@@ -101,9 +91,7 @@ sub cmdline_network {
    return ();
 }
 
-sub cmdline_docker_args {
-   my $self = shift;
-   
+sub cmdline_docker_args ($self) {
    return (ref($self->profileObject->{'dockerArgs'}) eq 'ARRAY') ?
       @{$self->profileObject->{'dockerArgs'}} : ();
 }
@@ -114,9 +102,7 @@ sub cmdline_docker_args {
 # If any of the options 'tmpfs-uid', 'tmpfs-gid', 'tmpfs-noexec', 'tmpfs-nosuid' or 'tmpfs-nodev'
 # are specified, the mount is generated using the --tmpfs option.
 # Otherwise, it is generated using the --mount option.
-sub cmdline_mounts_tmpfs {
-   my $self = shift;
-   
+sub cmdline_mounts_tmpfs ($self) {
    return map {
          ($_->{'tmpfs-uid'} || $_->{'tmpfs-gid'} || $_->{'tmpfs-noexec'} || $_->{'tmpfs-nosuid'} || $_->{'tmpfs-nodev'}) ?
          (
@@ -146,9 +132,7 @@ sub cmdline_mounts_tmpfs {
 
 # This function generates mount options for bind mounts.
 # The source of a bind mount must always be specified.
-sub cmdline_mounts_bind {
-   my $self = shift;
-   
+sub cmdline_mounts_bind ($self) {
    return map {
       join(',',
          "--mount=type=bind",
@@ -163,9 +147,7 @@ sub cmdline_mounts_bind {
 # This function generates mount options for named volumes.
 # The source of a volume mount may be omitted, in which case Docker
 # will create a new named volume with the specified destination path.
-sub cmdline_mounts_volume {
-   my $self = shift;
-   
+sub cmdline_mounts_volume ($self) {
    return map {
       join(',',
          "--mount=type=volume",
@@ -177,9 +159,7 @@ sub cmdline_mounts_volume {
    } @{ $self->profileObject->{'mounts'}{'volume'} };
 }
 
-sub cmdline_mounts_lxcfs {
-   my $self = shift;
-
+sub cmdline_mounts_lxcfs ($self) {
    # Disabled unless lxcfs.mountpoints[] specified in config.json.
    return () unless $self->profileObject->has_lxcfs_enabled;
 
@@ -204,9 +184,7 @@ sub cmdline_mounts_lxcfs {
    } @{$CONFIG->{'lxcfs'}{'mountpoints'}};
 }
 
-sub cmdline_mounts {
-   my $self = shift;
-   
+sub cmdline_mounts ($self) {
    return (
       $self->cmdline_mounts_tmpfs(),
       $self->cmdline_mounts_bind(),
@@ -215,27 +193,19 @@ sub cmdline_mounts {
    );
 }
 
-sub cmdline_image {
-   my $self = shift;
-   
+sub cmdline_image ($self) {
    return $self->data('image');
 }
 
-sub cmdline_name {
-   my $self = shift;
-   
+sub cmdline_name ($self) {
    return ('--name', $self->name);
 }
 
-sub cmdline_hostname {
-   my $self = shift;
-   
+sub cmdline_hostname ($self) {
    return ('--hostname', $self->name);
 }
 
-sub cmdline_ide_mount {
-   my $self = shift;
-
+sub cmdline_ide_mount ($self) {
    die Exception->new( 'msg' => "Failed to locate IDE and/or host data volumes because expected Dockside container hostname is undefined" )
       unless $HOSTNAME || $INNER_DOCKERD;
 
@@ -275,15 +245,11 @@ sub cmdline_ide_mount {
    return @mounts;
 }
 
-sub cmdline_init {
-   my $self = shift;
-   
+sub cmdline_init ($self) {
    return $self->profileObject->run_docker_init ? ('--init') : ();
 }
 
-sub cmdline_command {
-   my $self = shift;
-   
+sub cmdline_command ($self) {
    my @command;
    
    if(ref($self->data('command')) eq 'ARRAY') {
@@ -296,9 +262,7 @@ sub cmdline_command {
    return map { $self->_placeholders($_) } @command;
 }
 
-sub cmdline_entrypoint {
-   my $self = shift;
-
+sub cmdline_entrypoint ($self) {
    my $entrypoint;
    if($self->data('entrypoint')) {
       $entrypoint = $self->data('entrypoint');
@@ -313,9 +277,7 @@ sub cmdline_entrypoint {
    return ('--entrypoint', $entrypoint);
 }
 
-sub cmdline {
-   my $self = shift;
-
+sub cmdline ($self) {
    # networks
    # image
    # mounts
@@ -338,32 +300,25 @@ sub cmdline {
    );
 }
 
-sub ide_command {
-   my $self = shift;
-
+sub ide_command ($self) {
    my @command = @{$self->{'ide'}{'command'} // []};
 
    return map { $self->_placeholders($_) } @command;
 }
 
 
-sub ide_command_env {
-   my $self = shift;
-
+sub ide_command_env ($self) {
    my $env = $self->{'ide'}{'env'} // {};
 
    return map { "--env=$_=" . $self->_placeholders($env->{$_}) } keys %$env;
 }
 
-sub unixuser {
-   my $self = shift;
-
+sub unixuser ($self, $null = undef) {
    return $self->data('unixuser');
 }
 
-sub container {
-   my $self = shift;
-   my $prop = shift;
+sub container ($self, $prop = undef) {
+   return '' unless defined $prop;
 
    my $dataProp = {
       'fqdn' => 'FQDN',
@@ -373,9 +328,7 @@ sub container {
    return $dataProp ? $self->data($dataProp) : '';
 }
 
-sub gitURL {
-   my $self = shift;
-
+sub gitURL ($self) {
    return $self->data('gitURL');
 }
 
@@ -409,9 +362,7 @@ sub gitURL {
 
 # N.B. We assume here for now that the default network is called 'bridge'.
 
-sub metadata_server {
-   my $self = shift;
-   my $prop = shift;
+sub metadata_server ($self, $prop = undef) {
 
    my $containers = Containers->containers;
 
@@ -430,11 +381,11 @@ sub metadata_server {
 
    my $host = ($containerNetwork eq 'bridge') ? $hostNetworks->{'bridge'}{'IPAddress'} : $name;
 
-   if( $prop eq 'uri' ) {
+   if( defined $prop && $prop eq 'uri' ) {
       return "http://$host/computeMetadata/v1/";
    }
 
-   if( $prop eq 'startupScriptUri' ) {
+   if( defined $prop && $prop eq 'startupScriptUri' ) {
       return "http://$host/computeMetadata/v1/instance/attributes/startup-script";
    }
 

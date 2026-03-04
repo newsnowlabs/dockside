@@ -1,11 +1,11 @@
 package User;
 
-use strict;
+use v5.36;
 
 use JSON;
 use Try::Tiny;
 use URI::Escape;
-use Storable;
+use Storable qw(dclone);
 use Data qw($CONFIG);
 use Util qw(flog wlog TO_JSON generate_auth_cookie_values);
 use Reservation;
@@ -14,7 +14,7 @@ use Reservation;
 # CURRENT VERSION
 # ---------------
 
-sub CURRENT_VERSION {
+sub CURRENT_VERSION () {
    return 1;
 }
 
@@ -22,9 +22,7 @@ sub CURRENT_VERSION {
 # VERSION UPGRADES
 # ----------------
 
-sub versionUpgrade {
-   my $self = shift;
-
+sub versionUpgrade ($self) {
    if($self->version == 0) {
       $self->{'_resources'}{'IDEs'} //= ['*'];
       $self->{'version'}++;
@@ -57,15 +55,15 @@ our $USER_PASSWD;
 our $ROLES;
 our $USERS;
 
-sub ConfigurePasswd {
-   $USER_PASSWD = $_[0];
+sub ConfigurePasswd ($passwd) {
+   $USER_PASSWD = $passwd;
 }
 
 # Optionally, update the $USERS package global of User object.
 # Then update the derived permissions for each User object.
-sub ConfigureUsers {
-   if($_[0]) {
-      $USERS = $_[0];
+sub ConfigureUsers ($users = undef) {
+   if($users) {
+      $USERS = $users;
    }
 
    foreach my $user (values %$USERS) {
@@ -74,8 +72,8 @@ sub ConfigureUsers {
    }
 }
 
-sub ConfigureRoles {
-   $ROLES = $_[0];
+sub ConfigureRoles ($roles) {
+   $ROLES = $roles;
 }
 
 ################################################################################
@@ -85,14 +83,11 @@ sub ConfigureRoles {
 # To retrieve preloaded User object: User->load($username)
 # To merge clone of preloaded User object into existing User object: $User->load($username)
 
-sub load {
-   my $self = shift;
-   my $username = shift;
-
+sub load ($self, $username) {
    return undef unless $USERS->{$username};
 
    if(ref($self)) {
-      my $user = Storable::dclone($USERS->{$username});
+      my $user = dclone($USERS->{$username});
 
       %$self = %$user;
    }
@@ -100,7 +95,7 @@ sub load {
    return $USERS->{$username};
 }
 
-sub viewers {
+sub viewers ($class = undef) {
    return [ map { { 'name' => $USERS->{$_}{'name'} // $_, 'username' => $_, 'role' => $USERS->{$_}{'role'} } } sort keys %$USERS ];
 }
 
@@ -115,10 +110,7 @@ sub viewers {
 # N.B. We NO LONGER check that the user has a password defined in the passwd file,
 # to allow for API to return list of users to an admin, including those without passwords.
 
-sub new {
-   my $class = shift;
-   my $data = shift;
-
+sub new ($class, $data = undef) {
    my $self;
 
    # Decode JSON if needed.
@@ -131,7 +123,7 @@ sub new {
       return undef unless $data->{'username'};
 
       $self = bless { 
-         %$data{ qw(username id name email role ssh) },
+         %$data{ qw(username id name email role ssh version) },
          '_permissions' => $data->{'permissions'} // {},
          '_resources' => $data->{'resources'} // {},
       }, ( ref($class) || $class );
@@ -152,10 +144,7 @@ sub new {
 #
 
 # Returns: array of cookies (https, http) suitable for authenticating user.
-sub generate_auth_cookies {
-   my $self = shift;
-   my $host = shift;
-
+sub generate_auth_cookies ($self, $host) {
    return generate_auth_cookie_values( $CONFIG->{'uidCookie'}{'name'}, $CONFIG->{'uidCookie'}{'salt'}, $host, $self->signable() );
 }
 
@@ -163,70 +152,57 @@ sub generate_auth_cookies {
 # ACCESSORS
 # ---------
 
-sub version {
-   return $_[0]->{'version'};
+sub version ($self) {
+   return $self->{'version'} // 0;
 }
 
-sub username {
-   return $_[0]->{'username'};
+sub username ($self) {
+   return $self->{'username'};
 }
 
-sub role {
-   return $_[0]->{'role'};
+sub role ($self) {
+   return $self->{'role'};
 }
 
 # This sub must match that of same name in UserTagsInput.vue
-sub role_as_meta {
-   return $_[0]->role() ? ('role:' . $_[0]->role()) : undef;
+sub role_as_meta ($self) {
+   return $self->role() ? ('role:' . $self->role()) : undef;
 }
 
 # FIXME: Rename to derivedPermissions
-sub permissions {
-   return $_[0]->{'derivedPermissions'};
+sub permissions ($self) {
+   return $self->{'derivedPermissions'};
 }
 
-sub derivedResourceConstraints {
-   return $_[0]->{'derivedResourceConstraints'};
+sub derivedResourceConstraints ($self) {
+   return $self->{'derivedResourceConstraints'};
 }
 
-sub signable {
-   return { 'name' => $_[0]->username() };
+sub signable ($self) {
+   return { 'name' => $self->username() };
 }
 
-sub details {
-   my $self = shift;
-
+sub details ($self) {
    return { %$self{'username', 'id', 'name', 'email'} };
 }
 
-sub details_full {
-   my $self = shift;
-
+sub details_full ($self) {
    return { %$self{'username', 'id', 'name', 'email', 'ssh'} };
 }
 
-sub password {
-   my $self = shift;
-
+sub password ($self) {
    return $USER_PASSWD->{$self->username};
 }
 
-sub passwordDefined {
-   my $self = shift;
-
+sub passwordDefined ($self) {
    return defined($USER_PASSWD->{$self->username});
 }
 
-sub authorized_keys {
-   my $self = shift;
-
+sub authorized_keys ($self) {
    return $self->{'ssh'}{'authorized_keys'} // [];
 }
 
-sub keypairs {
-   my $self = shift;
-   my $prefix = shift;
-
+sub keypairs ($self, $prefix) {
    return $self->{'ssh'}{'keypairs'}{$prefix};
 }
 
@@ -234,15 +210,12 @@ sub keypairs {
 # MUTATORS
 # --------
 
-sub authstate {
-   my $self = shift;
-   my $auth = shift;
-
-   if(@_ == 0) {
+sub authstate ($self, $auth, @rest) {
+   if(!@rest) {
       return $self->{'_authstate'}{$auth};
    }
 
-   if(my $value = shift) {
+   if(my $value = $rest[0]) {
       $self->{'_authstate'}{$auth} = $value;
    }
 
@@ -253,9 +226,7 @@ sub authstate {
 # CONSTRUCTOR HELPERS
 #
 
-sub updateDerivedPermissions {
-   my $self = shift;
-
+sub updateDerivedPermissions ($self) {
    my $user = $self->username;
 
    # Assume a null role, if no role specified.
@@ -284,7 +255,7 @@ sub updateDerivedPermissions {
    foreach my $permission (@GENERAL_PERMISSIONS, @CONTAINER_PERMISSIONS) {
 
       # If explicitly set to 0 or false, permission is denied.
-      if($permissions{$permission} eq '0') {
+      if(defined($permissions{$permission}) && $permissions{$permission} eq '0') {
          $permissions{$permission} = 0;
          next;
       }
@@ -316,9 +287,7 @@ sub updateDerivedPermissions {
 # - the special key '//' (not yet implemented) represents a regex which, if the named resources matches, indicates
 #   whether the named resource is allowed/denied.
 #
-sub updateDerivedResourceConstraints {
-   my $self = shift;
-
+sub updateDerivedResourceConstraints ($self) {
    my @constraintLists;
 
    if( my $role = $ROLES->{ $self->{'role'} } ) {
@@ -368,10 +337,7 @@ sub updateDerivedResourceConstraints {
 # Permissions logic
 #
 
-sub has_permission {
-   my $self = shift;
-   my $permission = shift;    # permission name
-
+sub has_permission ($self, $permission) {    # permission name
    return $self->{'derivedPermissions'}{$permission};
 }
 
@@ -380,11 +346,7 @@ sub has_permission {
 # - the type of action (view, develop or keepPrivate); and
 # - the User's specific permissions and their relationship to the specified container
 #   i.e. named owner, named developer, or named viewer.
-sub can_on {
-   my $self = shift;
-   my $container  = shift;    # Reservation object
-   my $action = shift;    # 'view' | 'develop' | 'keepPrivate'
-
+sub can_on ($self, $container, $action) {    # Reservation object; 'view' | 'develop' | 'keepPrivate'
    my $username = $self->username();
    my $role = $self->role_as_meta;
 
@@ -425,11 +387,7 @@ sub can_on {
    return 0;
 }
 
-sub can_use_resource {
-   my $self = shift;
-   my $resourceType = shift;
-   my $resource = shift;
-
+sub can_use_resource ($self, $resourceType, $resource) {
    my $resources = $self->derivedResourceConstraints;
 
    return $resources->{$resourceType} &&
@@ -441,9 +399,7 @@ sub can_use_resource {
 # Query resources accessible to the user
 #
 
-sub profiles {
-   my $self = shift;
-
+sub profiles ($self) {
    my %userProfiles = map {
       $self->can_use_resource('profiles', $_) ?
          ($_ => Profile->load($_)->cloneWithConstraints($self->derivedResourceConstraints)->sanitise) :
@@ -456,10 +412,7 @@ sub profiles {
 # Returns data structure indicating user's relationship to a reservation:
 # - auth: authorisation modes the user satisfies on the reservation
 # - actions: actions the user is permitted to perform on the reservation/container
-sub reservationPermissions {
-   my $self = shift;
-   my $reservation = shift;
-
+sub reservationPermissions ($self, $reservation) {
    my $permittedAuth = $self->username ? {
       'owner' => ( $reservation->meta('owner') eq $self->username ) ? 1 : 0,
       'developer' => $self->can_on( $reservation, 'develop' ),
@@ -467,10 +420,12 @@ sub reservationPermissions {
       'user' => 1
    } : {};
 
-   $permittedAuth->{'containerCookie'} = (
-      $reservation->{'meta'}{'secret'} ne '' &&
-      $self->{'_authstate'}{'containerCookie'} =~ /\Q$reservation->{'meta'}{'secret'}\E/
-      ) ? 1 : 0;
+   # containerCookie functionality incomplete:
+   #
+   # $permittedAuth->{'containerCookie'} = (
+   #    $reservation->{'meta'}{'secret'} ne '' &&
+   #    $self->{'_authstate'}{'containerCookie'} =~ /\Q$reservation->{'meta'}{'secret'}\E/
+   #    ) ? 1 : 0;
 
    # public
    $permittedAuth->{'public'} = 1;
@@ -487,10 +442,7 @@ sub reservationPermissions {
 # This data structure is a sanitised Reservation object,
 # augmented with data indicating the user's relationship to the reservation,
 # and with properties, that the user does not need to see, removed.
-sub createClientReservation {
-   my $self = shift;
-   my $reservation = shift;
-
+sub createClientReservation ($self, $reservation = undef) {
    # Create a dummy reservation, for the client UI.
    $reservation //= Reservation->new( {
       'id' => 'new',
@@ -515,10 +467,7 @@ sub createClientReservation {
 # - external: create a sanitised clone of the reservation objects (and referenced Profile objects),
 #             suitable for sending to the user, with unneeded properties deleted
 
-sub reservations {
-   my $self = shift;
-   my $opts = shift;
-
+sub reservations ($self, $opts = {}) {
    # FIXME: if $opts->{'id'}, pass this into Reservation->load for efficiency.
    my $reservations = Reservation->load( {} );
 
@@ -533,7 +482,7 @@ sub reservations {
       next if $opts->{'name'} && ($opts->{'name'} ne $reservation->{'name'});
 
       # Skip all reservations without an active container, if required.
-      next if $opts->{'status'} eq 'hasRunnableContainer' && $reservation->{'status'} < 0;
+      next if $opts->{'status'} && $opts->{'status'} eq 'hasRunnableContainer' && $reservation->{'status'} < 0;
 
       # Skip containers the user isn't allowed to view.
       next unless $self->can_on( $reservation, 'view' );
@@ -573,9 +522,8 @@ sub reservations {
    return $viewable;
 }
 
-sub reservation {
-   my $self = shift;
-   my $opts = (ref($_[0]) eq 'HASH') ? $_[0] : { 'id' => $_[0] }; shift;
+sub reservation ($self, $arg = undef) {
+   my $opts = (ref($arg) eq 'HASH') ? $arg : { 'id' => $arg };
 
    my $reservations = $self->reservations( $opts );
 
@@ -598,12 +546,7 @@ sub reservation {
 # Private method.
 # Returns truthy if user is authorised to set $property to $value
 # Returns falsey if not.
-sub set {
-   my $self = shift;
-   my $reservation = shift;
-   my $property = shift;
-   my $value = shift;
-
+sub set ($self, $reservation, $property, $value = '') {
    if( $property eq 'profile') {
 
       # Not permitted
@@ -861,10 +804,7 @@ sub set {
 
 # Updates the metadata stored within a Reservation object
 # Named in camelCase for consistency with current REST API call.
-sub updateContainerReservation {
-   my $self = shift;
-   my $args = shift;
-
+sub updateContainerReservation ($self, $args) {
    # Retrieve the reservation object using the provided reservation ID
    my $reservation = $self->reservation( $args->{'id'} );
 
@@ -874,7 +814,7 @@ sub updateContainerReservation {
    }
 
    # Create a deep clone of the original reservation for comparison
-   my $origReservation = Storable::dclone($reservation);
+   my $origReservation = dclone($reservation);
 
    # Update metadata fields if they are defined in the arguments
    foreach my $m (qw( access viewers developers private network description IDE )) {
@@ -914,12 +854,7 @@ sub updateContainerReservation {
 
 # Stops, starts or removed a container.
 # Named in camelCase for consistency with current REST API call.
-sub controlContainer {
-   my $self = shift;
-   my $cmd = shift;
-   my $id = shift;
-   my $args = shift;
-
+sub controlContainer ($self, $cmd, $id, $args = {}) {
    if( $id !~ m!^([0-9a-f]+)$! || $cmd !~ m!^(stop|start|remove|getLogs)$! ) {
       die Exception->new( 'msg' => "command '$cmd' with invalid argument '$id' failed" );
    }
@@ -941,10 +876,7 @@ sub controlContainer {
 
 # Creates a Reservation object, stores it, and attempts to launch a container for that Reservation.
 # Named in camelCase for consistency with current REST API call.
-sub createContainerReservation {
-   my $self = shift;
-   my $args = shift;
-
+sub createContainerReservation ($self, $args) {
    # Launch new container.
    if( !$self->has_permission( 'createContainerReservation' ) ) {
       die Exception->new( 'msg' => "You need the 'createContainerReservation' permission to launch a devtainer" );
