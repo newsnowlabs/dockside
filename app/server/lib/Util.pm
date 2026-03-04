@@ -1,6 +1,6 @@
 package Util;
 
-use strict;
+use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = ( qw(
@@ -31,9 +31,7 @@ use Crypt::Rijndael;
 
 my $FLOG;
 
-sub flog {
-   my $m = shift;
-
+sub flog ($m) {
    if(ref($m) eq 'HASH') {
       $FLOG->{'service'} = $m->{'service'};
       $FLOG->{'file'} = $m->{'file'};
@@ -51,9 +49,7 @@ sub flog {
    };
 }
 
-sub wlog {
-   my $m = shift;
-
+sub wlog ($m) {
    # 2020/01/10 16:29:17.123456
    my @time = gettimeofday();
    my @tm = gmtime($time[0]);
@@ -62,8 +58,8 @@ sub wlog {
    print STDERR $dt . " [dockside] " . $m . "\n";
 }
 
-sub get_config {
-   local $_ = shift;
+sub get_config ($path) {
+   local $_ = $path;
 
    return undef if /\.\./;
    open( F, '<', "$_" ) || return undef;
@@ -78,19 +74,17 @@ sub get_config {
    return $_;
 }
 
-sub trim {
-   local $_ = shift;
+sub trim ($value) {
+   local $_ = $value;
    s/(^\s+|\s$)//g;
    return $_;
 }
 
-sub is_true {
-   return $_[0] =~ /^(1|true)$/s;
+sub is_true ($value) {
+   return $value =~ /^(1|true)$/s;
 }
 
-sub call_socket_json_api {
-   my $socket = shift;
-   my $path = shift;
+sub call_socket_json_api ($socket, $path) {
 
    my $result = call_socket_api->($socket, $path);
 
@@ -113,10 +107,7 @@ sub call_socket_json_api {
    return $object;
 }
 
-sub call_socket_api {
-   my $socket = shift;
-   my $path = shift;
-
+sub call_socket_api ($socket, $path) {
    my $ua = Mojo::UserAgent->new();
 
    my $socketPath = $socket . $path;
@@ -135,9 +126,7 @@ sub call_socket_api {
    return $result;
 }
 
-sub get_uri {
-   my $uri = shift;
-
+sub get_uri ($uri) {
    my $ua = Mojo::UserAgent->new();
 
    flog("get_uri: $uri");
@@ -153,10 +142,7 @@ sub get_uri {
    return $result;
 }
 
-sub run {
-   my $cmd    = shift;
-   my $unsafe = shift;
-
+sub run ($cmd, $unsafe = undef) {
    # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
@@ -174,9 +160,7 @@ sub run {
    return $in;
 }
 
-sub run_system {
-   my @cmd    = @_;
-
+sub run_system (@cmd) {
    # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
@@ -194,8 +178,8 @@ sub run_system {
    return $? >> 8;
 }
 
-sub clean_pty {
-   local $_ = $_[0];
+sub clean_pty ($text) {
+   local $_ = $text;
 
    # https://unix.stackexchange.com/questions/14684/removing-control-chars-including-console-codes-colours-from-script-output
    if(s/ \e[ #%()*+\-.\/]. |
@@ -225,21 +209,19 @@ sub clean_pty {
    return $_;
 }
 
-sub run_pty {
-   my $cmd     = shift;
-   my $logfile = shift;
-
+sub run_pty ($cmd, $logfile) {
    open( my $fh, ">", $logfile ) || die Exception->new( 'dbg' => "Cannot open logfile '$logfile': $!", 'msg' => 'Cannot create container launch log file' );
    $fh->autoflush(1);
    my $ContainerID;
    my @input;
 
    my $logger = sub {
-      print $_[0];
+      my ($chunk) = @_;
+      print $chunk;
 
-      push(@input, $_[0]);
+      push(@input, $chunk);
 
-      local $_ = clean_pty($_[0]);
+      local $_ = clean_pty($chunk);
 
       return unless defined($_);
 
@@ -271,23 +253,18 @@ sub run_pty {
    return $exp->exitstatus();
 }
 
-sub YYYYMMDDHHMMSS {
-   my $time = shift;
+sub YYYYMMDDHHMMSS ($time) {
    return strftime("%Y-%m-%d %H:%M:%S", gmtime($time));
 }
 
-sub TO_JSON { return { %{ shift() } }; }
+sub TO_JSON ($hashref) { return { %{$hashref} }; }
 
 # Atomically read or update $file:
 #
 # If $sub given, get exclusive lock on $file, slurp $file, overwrite with return value of &$sub(<file contents>, @args).
 # If no $sub given, get shared lock on $file, slurp $file and return.
 #
-sub cacheReadWrite {
-   my $file = shift;
-   my $sub = shift;
-   my @args = @_;
-
+sub cacheReadWrite ($file, $sub = undef, @args) {
    flog("cacheReadWrite: file=$file; sub=" . ($sub ? 'Yes' : 'No'));
 
    # Or use "+<" here?
@@ -307,7 +284,7 @@ sub cacheReadWrite {
    flog("cacheReadWrite: file=$file; sub=Yes; #5");
 
    return try {
-      my $newData = &$sub($oldData, @args);
+      my $newData = $sub->($oldData, @args);
 
       if(defined($newData) && $newData ne $oldData) {            
          flog("cacheReadWrite: file=$file; sub=Yes; #7; Updating=Yes");
@@ -333,11 +310,7 @@ sub cacheReadWrite {
    };
 }
 
-sub cacheEvery {
-   my $file = shift;
-   my $cacheTime = shift;
-   my $sub = shift;
-
+sub cacheEvery ($file, $cacheTime, $sub = undef, @args) {
    my $FILEPATH = $file;
 
    my $lastModified = (stat($FILEPATH))[9];
@@ -346,44 +319,39 @@ sub cacheEvery {
       $sub ? 'Yes' : 'No',
       $lastModified, time - $lastModified));
 
-   if($sub && !defined($lastModified) || (defined($lastModified) && (time - $lastModified) >= $cacheTime)) {
-      return cacheReadWrite($FILEPATH, $sub, @_);
+   if($sub && (!defined($lastModified) || (defined($lastModified) && (time - $lastModified) >= $cacheTime))) {
+      return cacheReadWrite($FILEPATH, $sub, @args);
    }
 
    return cacheReadWrite($FILEPATH);
 }
 
-# Recusively copy across all values that are different from deep hashref $_[0] to $_[1]
-sub cloneHash {
-   while( my($k, $v) = each %{$_[0]}) {
-      if( defined($_[0]->{$k}) ) {
-         if( ref($_[0]->{$k}) eq 'HASH' && ref($_[1]->{$k}) eq 'HASH') {
-            cloneHash($_[0]->{$k}, $_[1]->{$k});
+# Recursively copy across differing values from source hashref to destination hashref
+sub cloneHash ($from, $to) {
+   while( my($k, $v) = each %{$from}) {
+      if( defined($from->{$k}) ) {
+         if( ref($from->{$k}) eq 'HASH' && ref($to->{$k}) eq 'HASH') {
+            cloneHash($from->{$k}, $to->{$k});
             next;
          }
 
          if( 
-            (!exists($_[1]->{$k}) && exists($_[0]->{$k})) ||
-            ($_[1]->{$k} ne $_[0]->{$k})
+            (!exists($to->{$k}) && exists($from->{$k})) ||
+            ($to->{$k} ne $from->{$k})
             ) {
-            $_[1]->{$k} = $_[0]->{$k};
+            $to->{$k} = $from->{$k};
          }
       }
    }
 }
 
-sub get_cookie {
-   my $cookie = shift;
-   my $name = shift;
-
+sub get_cookie ($cookie, $name) {
    my ($value) = $cookie =~ /(?:^|;\s+)\Q$name\E=(.*?)(?:;|$)/;
 
    return uri_unescape($value);
 }
 
-sub encrypt_password {
-   my $p = shift;
-   my $salt = shift;
+sub encrypt_password ($p, $salt = undef) {
 
    my @letters = ( 'A' .. 'Z', 'a' .. 'z', '0' .. '9', '/', '.' );
 
@@ -399,11 +367,8 @@ sub encrypt_password {
    return crypt( $p, $salt );
 }
 
-sub hashref_sign {
-   my $salt = shift;
-   my %l = @_;
-
-   my $str = $salt . join( '|', map { "$_=$l{$_}" } sort { $a cmp $b } %l );
+sub hashref_sign ($salt, %l) {
+   my $str = $salt . join( '|', map { "$_=$l{$_}" } sort { $a cmp $b } keys %l );
 
    # Stop wide characters breaking the algorithm
    utf8::encode($str);
@@ -416,25 +381,16 @@ sub hashref_sign {
    return sha256_hex($str);
 }
 
-sub hashref_signed {
-   my $salt = shift;
-   my $protocol = shift;
-   my $data = shift;
-
+sub hashref_signed ($salt, $protocol, $data) {
    return hashref_sign( 
       ($protocol eq 'http' ? "${salt}_http" : $salt),
       %$data
    );
 }
 
-sub pad32 { return $_[0] . ' ' x (32 - (length($_[0]) % 32)); }
+sub pad32 ($text) { return $text . ' ' x (32 - (length($text) % 32)); }
 
-sub generate_auth_cookie_values {
-   my $name = shift;
-   my $salt = shift;
-   my $host  = shift;
-   my $data = shift;
-
+sub generate_auth_cookie_values ($name, $salt, $host, $data) {
    # Extract cookie domain from provided Host header, which we now assume MUST begin with either:
    # www. [root container]
    # www-[^\.]+ [sub-container]
@@ -476,11 +432,7 @@ sub generate_auth_cookie_values {
 
 # Returns the auth cookie hash, if the auth cookie is validly signed.
 # N.B. This DOESN'T check the user is authorised.
-sub validate_auth_cookie {
-   my $options = shift; # cookie: <value>; protocol: <http|https>
-   my $name = shift;
-   my $salt = shift;
-
+sub validate_auth_cookie ($options, $name, $salt) { # cookie: <value>; protocol: <http|https>
    return undef unless $options->{'cookie'};
 
    my $v = get_cookie($options->{'cookie'}, ($options->{'protocol'} eq 'https') ? $name : "${name}_http");
@@ -514,8 +466,8 @@ sub validate_auth_cookie {
    return $l;
 }
 
-sub unique {
-   my %k = map { $_ => 1 } grep { defined($_) && $_ ne '' } @_;
+sub unique (@values) {
+   my %k = map { $_ => 1 } grep { defined($_) && $_ ne '' } @values;
    return keys %k;
 }
 

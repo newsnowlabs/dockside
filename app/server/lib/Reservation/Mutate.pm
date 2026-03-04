@@ -1,7 +1,7 @@
 # Sub-package providing utility function to Reservation::.
 package Reservation::Mutate;
 
-use strict;
+use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = qw(update load_clean_map);
@@ -26,15 +26,11 @@ use JSON;
 #
 # TODO:
 # - Cache the last modified time on $HID_PATH. If it hasn't changed, then don't bother reparsing the file unless $update is provided.
-sub mutate {
-   my $mutateFn = shift;
-
+sub mutate ($mutateFn = undef) {
    return cacheReadWrite(
       $CONFIG->{'reservationsPath'}, 
       $mutateFn ? (
-         sub {
-            my $oldData = shift;
-            my $mutateFn = shift;
+         sub ($oldData, $mutateFn) {
 
             my $by_id = {};
             my $by_name = {};
@@ -44,7 +40,7 @@ sub mutate {
                $by_id->{ $e->{'id'} }     = $e;
             }
 
-            if( $mutateFn && &$mutateFn($by_id, $by_name) ) {
+            if( $mutateFn && $mutateFn->($by_id, $by_name) ) {
                return join('', map { JSON::XS->new->utf8->convert_blessed->encode($_) . "\n"; } values %$by_id);
             }
             else {
@@ -62,19 +58,14 @@ sub mutate {
 #
 # Atomically update the reservation database for $self:
 # $e provides a hashref of properties to update.
-sub update {
-   my $self = shift;
-   my $e = shift;
-
+sub update ($self, $e) {
    return mutate(
-      sub {
-         my $by_id = shift;
-         my $by_name = shift;
+      sub ($by_id, $by_name) {
 
          my $id = $self->id;
 
-         # Don't allow storage of a reservation reservation db entry, with a host name already in use
-         # by another reservation reservation db entry.
+         # Don't allow storage of a reservation db entry, with a host name already in use
+         # by another reservation db entry.
          if(
                defined($e->{'name'}) && 
                defined($by_name->{$e->{'name'}}) &&
@@ -83,14 +74,17 @@ sub update {
                die Exception->new( 'dbg' => "Cannot save/update reservation id $id with hostname '$e->{'name'}', because this hostname it is already in use by reservation id $by_name->{$e->{'name'}}{'id'}", 'msg' => "Error updating reservation: hostname '$e->{'name'}' already in use" );
          }
 
+         # Assign empty hash, if needed.
+         $by_id->{$id} //= {};
+
          # Remove BY_HOST index entry for old 'name' key on this id, in case 'name' key value has changed.
-         # delete $by_name->{ $by_id->{$id}{'name'} };
+         delete $by_name->{ $by_id->{$id}{'name'} };
 
          # Copy across all values that are different.
          cloneHash($e, $by_id->{$id});
 
          # Assign the new object back to the BY_HOST index.
-         $by_name->{ $e->{'name'} } = $by_id->{$id};
+         $by_name->{ $by_id->{$id}{'name'} } = $by_id->{$id};
 
          return 1;
       }
@@ -101,9 +95,7 @@ sub update {
 #
 # Takes as input, a full complement of container IDs for active (running or stopped) containers.
 # Loops through the reservation db contents, deleting any entries that do not tally with active containers.
-sub load_clean_map {
-   my $self = shift;
-   my @containerIds = @_;
+sub load_clean_map ($class, @containerIds) {
 
    my %containerIds;
 
@@ -114,9 +106,7 @@ sub load_clean_map {
    my $expireTime = YYYYMMDDHHMMSS(time - 30);
 
    return mutate(
-      sub {
-         my $by_id = shift;
-         my $by_name = shift;
+      sub ($by_id, $by_name) {
 
          my $Updates = 0;
 

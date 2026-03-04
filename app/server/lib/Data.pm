@@ -1,6 +1,6 @@
 package Data;
 
-use strict;
+use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO);
@@ -19,8 +19,8 @@ our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
 our $VERSION = get_config('/etc/service/nginx/data/version');
 our $HOSTINFO = { 'docker' => undef, 'IDEs' => undef }; # Host info cache: populated later
 
-sub parse_json {
-   local $_ = shift;
+sub parse_json ($json) {
+   local $_ = $json;
 
    # Remove lines beginning //
    s!^\s*//.*$!!gm;
@@ -38,9 +38,7 @@ our $CONFIG;
 # Supports individual files or all files in a given directory (in which case the 'process' sub can expect an array of data)
 my $CONFIG_FILES = {
    'users.json' => {
-      'process' => sub {
-         my $c = shift;
-
+      'process' => sub ($c) {
          my $USERS;
          foreach my $username ( keys %$c ) {
             $c->{$username}{'username'} = $username;
@@ -56,9 +54,7 @@ my $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'roles.json' => {
-      'process' => sub {
-         my $ROLES = shift;
-
+      'process' => sub ($ROLES) {
          if($ROLES) {
             # Set up convenience shortcut
             User::ConfigureRoles($ROLES);
@@ -68,9 +64,7 @@ my $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'config.json' => {
-      'process' => sub {
-         my $c = shift;
-
+      'process' => sub ($c) {
          # Set up convenience shortcut
          $CONFIG = $c;
 
@@ -89,13 +83,11 @@ my $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'passwd' => {
-      'process' => sub {
-         my $c = shift;
-
+      'process' => sub ($c) {
          # Set up convenience shortcut
          User::ConfigurePasswd($c);
       },
-      'parse' => sub {
+      'parse' => sub ($raw) {
          return {
             map {
                s/^\s*|\s*$//;    # Trim whitespace
@@ -103,14 +95,12 @@ my $CONFIG_FILES = {
               }
               grep {
                $_ !~ '^(:?#.*)?$'                  # Trim empty lines and comments
-              } split( "\n", $_[0] )
+              } split( "\n", $raw )
          };
       }
    },
    'profiles/*.json' => {
-      'process' => sub {
-         my $c = shift;
-
+      'process' => sub ($c) {
          my %PROFILES;
          my %PROFILE_ERRORS;
          foreach my $profile ( keys %$c ) {
@@ -132,19 +122,19 @@ my $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'reservations.json' => {
-      'path' => sub { return $CONFIG->{'reservationsPath'}; },
+      'path' => sub () { return $CONFIG->{'reservationsPath'}; },
       'load' => \&cacheReadWrite,
       'parse' => \&Reservation::Load::load,
-      'process' => sub {
+      'process' => sub ($data) {
          Reservation->update_container_info();
       }
    },
    'containers.json' => {
-      'path' => sub { return $CONFIG->{'containersPath'}; },
+      'path' => sub () { return $CONFIG->{'containersPath'}; },
       'load' => \&cacheReadWrite,
-      'parse' => sub { return decode_json($_[0]); },
-      'process' => sub {
-         Containers::Configure($_[0]);
+      'parse' => sub ($json_text) { return decode_json($json_text); },
+      'process' => sub ($data) {
+         Containers::Configure($data);
          Reservation->update_container_info();
       }
    },
@@ -174,8 +164,7 @@ my $CONFIG_FILES = {
 # parse the contents (using custom 'parse' function),
 # and finally process the contents (using the custom 'process' function).
 
-sub load {
-   my @configFiles = @_; # Optional: list of config files to check for changes and load.
+sub load (@configFiles) { # Optional: list of config files to check for changes and load.
 
    if(!@configFiles) {
       # Ensure we load config.json first; other modules might depend upon it.
@@ -199,7 +188,7 @@ sub load {
       my $isGlob = ($p =~ m!\*!);
 
       # Prepare a list of files to hopefully read in
-      my $path = $CONFIG_FILES->{$p}{'path'} ? &{ $CONFIG_FILES->{$p}{'path'} } : "$CONFIG_PATH/$p";
+      my $path = $CONFIG_FILES->{$p}{'path'} ? $CONFIG_FILES->{$p}{'path'}->() : "$CONFIG_PATH/$p";
 
       my @candidateFiles;
       if ( $isGlob ) {
@@ -219,19 +208,22 @@ sub load {
       }
 
       # Work out the most recent last-modified time for all files in the current list
-      my $lastModified;
+      my $lastModified = 0;
       foreach my $file (@files) {
          my $lm = (stat($file))[9];
          $lastModified = $lm if $lm > $lastModified;
       }
 
       # Skip further processing if files haven't been modified since the last time we processed them
+      $CONFIG_FILES->{$p}{'lastModified'} //= 0;
       next if $lastModified == $CONFIG_FILES->{$p}{'lastModified'};
 
-      flog( "get_updated_config: $p, previously modified at " . ($CONFIG_FILES->{$p}{'lastModified'} // 0) . ", now modified at $lastModified");
+      flog( "get_updated_config: $p, previously modified at $CONFIG_FILES->{$p}{'lastModified'}, now modified at $lastModified");
 
       # Get data from files
       my $data;
+      my $single_key;
+      my $file_count = @files;
       try {
          foreach my $file (@files) {
             my ($filename) = $file =~ m!([^/\.]+)(?:\.[^\./]+)?$!;
@@ -239,9 +231,10 @@ sub load {
             try {
                flog( "get_updated_config: loading '$file'");
                $data->{$filename} = 
-                  &{ $CONFIG_FILES->{$p}{'parse'} }( 
-                     &{ $CONFIG_FILES->{$p}{'load'} || \&get_config }($file)
+                  $CONFIG_FILES->{$p}{'parse'}->(
+                     ($CONFIG_FILES->{$p}{'load'} || \&get_config)->($file)
                   );
+               $single_key = $filename if !$isGlob && $file_count == 1;
             }
             catch {
                chomp;
@@ -249,14 +242,20 @@ sub load {
             };
          }
 
-         $data = ($isGlob ? $data : (scalar(@files) == 1 ? $data->{[keys %$data]->[0]} : undef));
+         if (!$isGlob) {
+            if ($file_count == 1 && $data && defined $single_key && exists $data->{$single_key}) {
+               $data = $data->{$single_key};
+            } else {
+               $data = undef;
+            }
+         }
 
          # As we're inside an eval, if parsing fails an exception will be thrown and we won't update the lastModified time.
          $CONFIG_FILES->{$p}{'lastModified'} = $lastModified;
 
          # Run post-parse compilation step (when required).
          if( $CONFIG_FILES->{$p}{'process'} ) {
-            &{ $CONFIG_FILES->{$p}{'process'} }( $data );
+            $CONFIG_FILES->{$p}{'process'}->($data);
          }
 
          return 1;
