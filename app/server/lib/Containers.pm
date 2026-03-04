@@ -1,6 +1,6 @@
 package Containers;
 
-use strict;
+use v5.36;
 
 use JSON;
 
@@ -8,7 +8,7 @@ use JSON;
 # CURRENT VERSION
 # ---------------
 
-sub CURRENT_VERSION {
+sub CURRENT_VERSION () {
    return 1;
 }
 
@@ -18,8 +18,7 @@ sub CURRENT_VERSION {
 
 our $CONTAINERS;
 
-sub Configure {
-   my $data = shift;
+sub Configure ($data) {
 
    # Decode JSON if needed.
    if(!ref($data)) {
@@ -39,7 +38,7 @@ sub Configure {
 # CLASS METHODS
 #
 
-sub containers {
+sub containers ($class = undef) {
    return $CONTAINERS;
 }
 

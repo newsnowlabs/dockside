@@ -1,13 +1,11 @@
 # Sub-package providing utility function to Reservation::.
 package Reservation::Load;
 
-use strict;
+use v5.36;
 
 use JSON;
 
-sub load {
-   my $reservations_json_lines = shift;
-
+sub load ($reservations_json_lines) {
    $Reservation::RESERVATIONS = [];
    $Reservation::BY_NAME = {};
    $Reservation::BY_ID = {};
