@@ -1,1 +1,81 @@
-perl -MYAML::XS -MJSON -0777 -wnl -e 's!^\s*//.*$!!gm; print Dump(from_json($_, {'relaxed'=>1}))' "$@"
+#!/usr/bin/perl
+
+# Convert JSON (with optional C++-style `//` comments) to YAML.
+#
+# Reads a single JSON file from stdin or a filename argument. Handles relaxed
+# JSON (as parsed by JSON::PP with relaxed=>1, e.g. trailing commas).
+#
+# Comment handling:
+#   - Full-line `//` comments (with optional leading whitespace) are stripped.
+#   - Trailing `//` comments after JSON content are also stripped.
+#   - To avoid false positives on URLs, `://` sequences are not treated as
+#     comment markers (via a negative lookbehind on `:`).
+#   - Trailing comments attached to a JSON key are captured and reattached to
+#     the corresponding key in the YAML output as `#` comments.
+#
+# Output:
+#   - Booleans are rendered as `true`/`false` (via $YAML::XS::Boolean).
+#   - Top-level keys are reordered to match the canonical Profile.pm field
+#     order; any unrecognised keys appear after the known keys.
+
+use v5.36;
+
+use YAML::XS;
+use JSON;
+
+$YAML::XS::Boolean = "JSON::PP";
+
+local $/;
+
+$_ = <>;
+
+# Capture trailing comments keyed by JSON key name
+my %comments;
+# Leave some `"`` escaped as `\"`` to preserve syntax highlighting
+while (m{^\s*"([^\"]+)"\s*:.*?(?<!:)//\s*(.+?)\s*$}gm) {
+    $comments{$1} = $2;
+}
+
+s|^\s*//.*$||gm;
+s|\s*(?<!:)//.*$||gm;
+
+my $yaml = Dump(from_json($_, {relaxed=>1}));
+
+# Reorder top-level keys to match Profile.pm validation order
+my @key_order = qw(
+    name version description active mountIDE
+    routers runtimes networks images unixusers
+    imagePathsFilter mounts runDockerInit dockerArgs command ssh security IDEs
+);
+
+my ($header) = $yaml =~ /^(---\n)/;
+my $body = substr($yaml, length($header));
+
+my @blocks;
+for my $block (split /(?=^[a-zA-Z_])/m, $body) {
+    next unless $block =~ /^([a-zA-Z_]\w*):/;
+    push @blocks, [$1, $block];
+}
+
+my %block_map = map { $_->[0] => $_->[1] } @blocks;
+my %seen;
+my @ordered;
+
+for my $key (@key_order) {
+    if (exists $block_map{$key}) {
+        push @ordered, $block_map{$key};
+        $seen{$key} = 1;
+    }
+}
+for my $block (@blocks) {
+    push @ordered, $block->[1] unless $seen{$block->[0]};
+}
+
+$yaml = $header . join('', @ordered);
+
+# Reattach comments to matching YAML keys
+$yaml =~ s|^(\s*(\S+):(?:\s.*)?)$|
+    (my $key = $2) =~ s/^'(.*)'$/$1/;  # strip YAML quoting if present
+    exists $comments{$key} ? "$1 # $comments{$key}" : $1|gme;
+
+print $yaml;
