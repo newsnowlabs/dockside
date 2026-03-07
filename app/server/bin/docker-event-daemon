@@ -2,11 +2,42 @@
 
 # docker-event-daemon
 #
-# Monitors for docker container and network events:
-# - when it receives them, debounces;
-# - safely updates the containers.json file to reflect changes in container state;
-# - periodically calculates container sizes and interpolates the last-looked-up size figure into the current container state;
-# - inspects containers to update port bindings.
+# A daemon that keeps Dockside's container state file (containers.json) in sync with the live
+# Docker engine, bridging Docker's runtime state to Dockside's own data layer so the application
+# always has an up-to-date view of running containers.
+#
+# Event loop (eventHandler):
+# - Spawns `docker events --format "{{ json . }}"` as a subprocess.
+# - Uses IO::Async to process each event line as JSON in a non-blocking loop.
+# - Runs a 0.5s periodic timer alongside the event stream.
+#
+# Debounced updates (timer tick):
+# Three tiers of update frequency:
+# 1. With sizes    - every ~55s, but only when no events have arrived for 5+ seconds (slow, so deferred).
+# 2. After events  - within 1s of a relevant event (fast refresh).
+# 3. Heartbeat     - every 15s regardless (keeps state fresh even when idle).
+#
+# Event handling (onEvent):
+# Listens for specific Docker event types:
+# - network connect/disconnect     -> triggers a container update.
+# - container stop/create/destroy  -> triggers a container update.
+# - container start                -> triggers onContainerStart, which also launches the IDE
+#                                     process inside the container via $reservation->exec().
+#
+# Container state update (_update / update):
+# - Calls the Docker API (/containers/json) via a Unix socket.
+# - Rebuilds the container map: short ID, name, status, image, ports, volume mounts
+#   (including the IDE volume path and host-data volume path).
+# - Preserves the last-known Size value when not requesting a fresh size calculation (avoiding slow calls).
+# - Writes results to containers.json via cacheReadWrite.
+# - Triggers Reservation->load_clean_map to assign expiry times to reservations
+#   whose containers have disappeared.
+#
+# Lifecycle:
+# - Runs in an outer while(1) loop: if eventHandler crashes or the docker events stream closes,
+#   it restarts automatically after 1 second.
+# - Handles SIGTERM/SIGINT/SIGQUIT cleanly: sets a flag, stops the IO loop, terminates the
+#   docker events subprocess (SIGTERM then SIGKILL if needed), and exits.
 
 use v5.36;
 
