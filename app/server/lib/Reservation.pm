@@ -1121,6 +1121,10 @@ sub exec ($reservation, $command = undef) {
       );
    }
 
+   my @envOptions = map {
+      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($reservation->data('options') // {})->{$_}
+   } keys %{ $reservation->data('options') // {} };
+
    my @envIDE = (
       "--env=IDE=" . $reservation->meta('IDE')
    );
@@ -1140,6 +1144,7 @@ sub exec ($reservation, $command = undef) {
       "--env=OWNER_DETAILS=$user_details",
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
       @envGit,
+      @envOptions,
       @envSSH,
       @envDevContainer,
       @envIDE,

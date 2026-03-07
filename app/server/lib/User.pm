@@ -799,6 +799,50 @@ sub set ($self, $reservation, $property, $value = '') {
       return $reservation->meta($property, $value);
    }
 
+   elsif( $property eq 'options' ) {
+      my $profileOptions = $profileObject->options;
+
+      # No options defined in this profile: ignore any submitted value.
+      return 1 unless @$profileOptions;
+
+      # Decode JSON string if needed.
+      my $decoded;
+      if( ref($value) eq 'HASH' ) {
+         $decoded = $value;
+      }
+      else {
+         try {
+            $decoded = decode_json($value);
+         }
+         catch {
+            return 0;
+         };
+      }
+
+      return 0 unless ref($decoded) eq 'HASH';
+
+      # Build lookup of allowed option names.
+      my %allowed = map { $_->{'name'} => $_ } @$profileOptions;
+
+      # Reject any option keys not defined in the profile.
+      for my $key ( keys %$decoded ) {
+         return 0 unless exists $allowed{$key};
+
+         # For select-type options, reject values not in the allowed list.
+         my $opt = $allowed{$key};
+         if( ($opt->{'type'} // 'text') eq 'select' ) {
+            return 0 unless grep { $_ eq $decoded->{$key} } @{$opt->{'values'} // []};
+         }
+      }
+
+      # Fill in defaults for any options not supplied by the user.
+      for my $opt ( @$profileOptions ) {
+         $decoded->{ $opt->{'name'} } //= $opt->{'default'} // '';
+      }
+
+      return $reservation->data('options', $decoded);
+   }
+
    return 1;
 }
 

@@ -168,6 +168,37 @@ create_git_repo() {
    fi
 }
 
+checkout_git_branch_or_pr() {
+   local BRANCH="${DOCKSIDE_OPTION_BRANCH:-}"
+   local PR="${DOCKSIDE_OPTION_PR:-}"
+
+   [ -n "$BRANCH" ] || [ -n "$PR" ] || return
+
+   local REPO_DIRS
+
+   if [ -n "$GIT_URL" ]; then
+      # Use the freshly-cloned repo as the primary target.
+      local CLONE_DIR
+      CLONE_DIR=$(basename "${GIT_URL%.git}")
+      REPO_DIRS="$HOME/$CLONE_DIR"
+   else
+      # Scan $HOME for any pre-existing git repos (covers pre-populated images).
+      REPO_DIRS=$(find "$HOME" -maxdepth 3 -name ".git" -type d -exec dirname {} \; 2>/dev/null | sort -u)
+   fi
+
+   for repo in $REPO_DIRS; do
+      [ -d "$repo/.git" ] || continue
+      if [ -n "$PR" ]; then
+         log "Checking out PR $PR in $repo"
+         (cd "$repo" && gh pr checkout "$PR") || log "WARN: gh pr checkout $PR failed in $repo"
+      elif [ -n "$BRANCH" ]; then
+         log "Checking out branch $BRANCH in $repo"
+         (cd "$repo" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || \
+            log "WARN: git checkout $BRANCH failed in $repo"
+      fi
+   done
+}
+
 spawn_ssh_agent() {
    log "Checking for ssh-agent ..."
    if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
@@ -481,7 +512,7 @@ run_nonroot() {
    spawn_ssh_agent
    populate_ssh_agent_keys
    populate_known_hosts
-   (create_git_repo; populate_vscode_extensions; populate_vscode_settings;) &
+   (create_git_repo; checkout_git_branch_or_pr; populate_vscode_extensions; populate_vscode_settings;) &
    restart_ide
 }
 
