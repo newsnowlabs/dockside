@@ -44,7 +44,7 @@ sub flog ($m) {
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
 
    open( LOG, ">>", $FLOG->{'file'} || "/var/log/dockside/dockside.log" ) && do {
-      printf LOG "%05d: %s [%s] %s\n", $$, $dt, $FLOG->{'service'}, $m;
+      printf LOG "%05d: %s [%s] %s\n", $$, $dt, $FLOG->{'service'} // 'dockside', $m;
       close LOG;
    };
 }
