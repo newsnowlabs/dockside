@@ -6,6 +6,7 @@ use Exporter qw(import);
 our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO);
 
 use JSON;
+use YAML::XS ();
 use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
 use Util qw(flog cacheReadWrite get_config call_socket_json_api);
@@ -29,6 +30,11 @@ sub parse_json ($json) {
    s!//[^"]*$!!gm;
 
    return from_json( $_, { 'relaxed' => 1 } );
+}
+
+sub parse_yaml ($yaml) {
+   local $YAML::XS::Boolean = 'JSON::PP';
+   return YAML::XS::Load($yaml);
 }
 
 ####################################################################################################
@@ -99,7 +105,7 @@ my $CONFIG_FILES = {
          };
       }
    },
-   'profiles/*.json' => {
+   'profiles/*.{json,yaml,yml}' => {
       'process' => sub ($c) {
          my %PROFILES;
          my %PROFILE_ERRORS;
@@ -119,7 +125,9 @@ my $CONFIG_FILES = {
          # Set up convenience shortcut
          Profile::Configure(\%PROFILES);
       },
-      'parse' => \&parse_json
+      'get_parse' => sub ($file) {
+         return ($file =~ /\.ya?ml$/i) ? \&parse_yaml : \&parse_json;
+      }
    },
    'reservations.json' => {
       'path' => sub () { return $CONFIG->{'reservationsPath'}; },
@@ -230,10 +238,12 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
 
             try {
                flog( "get_updated_config: loading '$file'");
-               $data->{$filename} = 
-                  $CONFIG_FILES->{$p}{'parse'}->(
-                     ($CONFIG_FILES->{$p}{'load'} || \&get_config)->($file)
-                  );
+               my $parse = exists $CONFIG_FILES->{$p}{'get_parse'}
+                  ? $CONFIG_FILES->{$p}{'get_parse'}->($file)
+                  : $CONFIG_FILES->{$p}{'parse'};
+               $data->{$filename} = $parse->(
+                  ($CONFIG_FILES->{$p}{'load'} || \&get_config)->($file)
+               );
                $single_key = $filename if !$isGlob && $file_count == 1;
             }
             catch {
