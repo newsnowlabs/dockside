@@ -175,7 +175,7 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
    foreach my $p ( @configFiles ) {
 
       if( !$CONFIG_FILES->{$p} ) {
-         flog( "get_updated_config: error parsing '$p': no such config file defined" );
+         flog( "Data::load: error parsing '$p': no such config file defined" );
          next;
       }
 
@@ -203,7 +203,7 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
          if ( -r $candidateFile ) {
             push @files, $candidateFile;
          } else {
-            flog( "get_updated_config: error parsing '$candidateFile': file can't be read" );
+            flog( "Data::load: error parsing '$candidateFile': file can't be read" );
          }
       }
 
@@ -218,7 +218,7 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
       $CONFIG_FILES->{$p}{'lastModified'} //= 0;
       next if $lastModified == $CONFIG_FILES->{$p}{'lastModified'};
 
-      flog( "get_updated_config: $p, previously modified at $CONFIG_FILES->{$p}{'lastModified'}, now modified at $lastModified");
+      flog( "Data::load: $p, previously modified at $CONFIG_FILES->{$p}{'lastModified'}, now modified at $lastModified");
 
       # Get data from files
       my $data;
@@ -229,7 +229,7 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
             my ($filename) = $file =~ m!([^/\.]+)(?:\.[^\./]+)?$!;
 
             try {
-               flog( "get_updated_config: loading '$file'");
+               flog( "Data::load: loading '$file'");
                $data->{$filename} = 
                   $CONFIG_FILES->{$p}{'parse'}->(
                      ($CONFIG_FILES->{$p}{'load'} || \&get_config)->($file)
@@ -238,7 +238,7 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
             }
             catch {
                chomp;
-               flog("get_updated_config: error parsing '$file': '$_'");
+               flog("Data::load: error parsing '$file': '$_'");
             };
          }
 
@@ -262,7 +262,7 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
       }
       catch {
          chomp;
-         flog("get_updated_config: error parsing '$p': '$_'");
+         flog("Data::load: error parsing '$p': '$_'");
       };
    }
 }
