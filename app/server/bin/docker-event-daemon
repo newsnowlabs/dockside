@@ -89,8 +89,8 @@ $SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = sub {
 # Exception if unable to retrieve the container list from the Docker API
 # or if the API response is not successful.
 
-# Inputs
 sub _update ($oldJSON, $opts) {
+   # $CONFIG->{'docker'}{'sizes'} can disable size tracking entirely, not just defer it.
    my $path = '/containers/json?all=true' . (($CONFIG->{'docker'}{'sizes'} && $opts->{'updateSizes'}) ? '&size=true' : '');
 
    flog("update: requesting container list" . ($opts->{'updateSizes'} ? ' with sizes' : ' without sizes'));
@@ -124,7 +124,9 @@ sub _update ($oldJSON, $opts) {
    my $newContainers;
    foreach my $c (@$newContainersFromAPI) {
 
-      my $ID = substr($c->{'Id'}, 0, 12);
+      my $ID = substr($c->{'Id'}, 0, 12); # Truncate to Docker's standard short ID length.
+
+      # For each mount point of interest, produce ['volume', $name] or ['bind', $source].
       my ($ideVolume) = map { $_->{'Type'} eq 'volume' ? ['volume', $_->{'Name'}] : ['bind', $_->{'Source'}] } grep { $_->{'Destination'} eq $idePath } @{$c->{'Mounts'}};
       my ($hostDataVolume) = map { $_->{'Type'} eq 'volume' ? ['volume', $_->{'Name'}] : ['bind', $_->{'Source'}] } grep { $_->{'Destination'} eq $hostDataPath } @{$c->{'Mounts'}};
 
@@ -134,7 +136,7 @@ sub _update ($oldJSON, $opts) {
          'CreatedAt' => $c->{'Created'}, # Was string; now unixtime
          'Status' => $c->{'Status'}, # String
          'Image' => $c->{'Image'}, # String
-         'ImageId' => substr( substr($c->{'ImageID'}, 7), 0, 12),
+         'ImageId' => substr( substr($c->{'ImageID'}, 7), 0, 12), # Strip 'sha256:' prefix (7 chars), then truncate to short ID.
          'Size' => $c->{'SizeRw'},
          'Networks' => join(',', sort keys %{$c->{'NetworkSettings'}{'Networks'}})
       };
@@ -181,6 +183,8 @@ sub _update ($oldJSON, $opts) {
 # or if the API response is not successful.
 sub update ($opts = {}) {
 
+   # cacheReadWrite handles the atomic read-modify-write cycle: it reads the existing
+   # file, passes its content as $oldJSON to _update, then writes the returned JSON back.
    my $containersJSON = cacheReadWrite(
       $CONFIG->{'containersPath'},
       \&_update,
@@ -199,6 +203,9 @@ sub update ($opts = {}) {
    };
 }
 
+# Called when a container start event is received. Updates container state, reloads all
+# data files (config, users, reservations, containers), then launches the IDE process
+# inside the container if it belongs to a Dockside-managed reservation.
 sub onContainerStart ($id, $eventCount) {
 
    # This container's details might not yet have been loaded. Do this now.
@@ -215,7 +222,7 @@ sub onContainerStart ($id, $eventCount) {
       return undef;
    }
 
-   my $reservation = $reservations->[0];
+   my $reservation = $reservations->[0]; # Safe: filtered by containerId, so at most one match.
    my $reservationId = $reservation->id;
    my $containerId = $reservation->containerId;
 
@@ -233,6 +240,9 @@ sub onContainerStart ($id, $eventCount) {
    return 1;
 }
 
+# Classifies a raw Docker event and dispatches to the appropriate handler.
+# Returns 1 if the event is relevant (accumulated into $relevantEvents to trigger a fast
+# container-state refresh), or 0 if it is not of interest and can be ignored.
 sub onEvent ($event, $eventCount) {
 
    my $id = $event->{'Actor'}{'ID'};
@@ -246,11 +256,11 @@ sub onEvent ($event, $eventCount) {
    );
 
    if( $type eq 'network' && $action =~ /^(connect|disconnect)$/ ) {
-      return 1;
+      return 1; # Network topology changed; container port/network data may be stale.
    }
 
    if( $type eq 'container' && $action =~ /^(stop|create|destroy)$/ ) {
-      return 1;
+      return 1; # Container lifecycle change; state refresh needed.
    }
 
    if( $type eq 'container' && $action =~ /^(start)$/ ) {
@@ -258,23 +268,26 @@ sub onEvent ($event, $eventCount) {
       return 1;
    }
 
-   return 0;
+   return 0; # Unrecognised event type/action; no update needed.
 }
 
+# Runs the main event loop: spawns 'docker events', wires up the async line reader and
+# periodic timer, then blocks until the stream closes, an exception occurs, or a signal fires.
+# On exit, cleans up the IO loop and terminates the subprocess gracefully.
 sub eventHandler {
    flog("eventHandler: Starting...");
 
    my $IOHandle = IO::Handle->new();
 
    my $pid = open2(
-      $IOHandle, undef,
+      $IOHandle, undef, # undef: no stdin needed for 'docker events'.
       $CONFIG->{'docker'}{'bin'}, 'events', '--format', "{{ json . }}"
    ) || die Exception->new( 'msg' => "Unable to launch 'docker events'");
 
    flog("eventHandler: Launched 'docker event' subprocess with PID $pid");
 
    $IOHandle->autoflush(1);
-   $IOHandle->blocking(0);
+   $IOHandle->blocking(0); # Non-blocking I/O required for IO::Async multiplexing.
 
    my $eventCount = 0;
    my $lastSizesUpdateTime = 0;
@@ -287,8 +300,6 @@ sub eventHandler {
    my $timeout = IO::Async::Timer::Periodic->new(
       interval => 0.5,
       on_tick => sub {
-         
-         # # 
          try {
             # Updating with sizes can be slow, so only do this if:
             # - it's been more than 5s since the last event; and
@@ -360,9 +371,10 @@ sub eventHandler {
    }
    catch {
       flog("eventHandler: caught exception: " . (ref($_) ? $_->dbg : $_));
-      sleep 1 unless $SIGNAL_RECEIVED;
+      sleep 1 unless $SIGNAL_RECEIVED; # Rate-limit crash loops; skip if we're shutting down.
    };
 
+   # Reset to no-op so a late SIGTERM arriving after loop exit doesn't call stop on a dead loop.
    $STOP_EVENT_LOOP = sub {};
    flog("eventHandler: Ending...");
    close $IOHandle;
@@ -392,6 +404,7 @@ if( ! -d $CONFIG->{'tmpPath'} ) {
    mkpath( [ $CONFIG->{'tmpPath'} ], 0, 0755 );
 }
 
+# Restart eventHandler if the 'docker events' stream closes unexpectedly (e.g. Docker restart).
 while(1) {
    eventHandler();
 
