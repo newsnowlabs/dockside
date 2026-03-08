@@ -574,8 +574,8 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
          {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description IDE ) ],
-            'profileObject' => [ qw( name routers networks runtimes IDEs ) ],
-            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL runningIDE ) ],
+            'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL runningIDE options ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId) ]
