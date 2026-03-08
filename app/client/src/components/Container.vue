@@ -112,21 +112,22 @@
                               </select>
                            </td>
                         </tr>
-                        <tr v-for="opt in options" :key="'option-' + opt.name"
-                            v-if="container.permissions.auth.developer && isSelected">
-                           <th>{{ opt.label }}</th>
-                           <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
-                           <td v-else-if="opt.type === 'select'">
-                              <select class="form-control" v-model="form.options[opt.name]">
-                                 <option v-for="v in opt.values" :key="v">{{ v }}</option>
-                              </select>
-                           </td>
-                           <td v-else>
-                              <input type="text" class="form-control"
-                                     v-model="form.options[opt.name]"
-                                     :placeholder="opt.placeholder || ''">
-                           </td>
-                        </tr>
+                        <template v-if="container.permissions.auth.developer && isSelected">
+                           <tr v-for="opt in options" :key="'option-' + opt.name">
+                              <th>{{ opt.label }}</th>
+                              <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
+                              <td v-else-if="opt.type === 'select'">
+                                 <select class="form-control" v-model="form.options[opt.name]">
+                                    <option v-for="v in opt.values" :key="v">{{ v }}</option>
+                                 </select>
+                              </td>
+                              <td v-else>
+                                 <input type="text" class="form-control"
+                                        v-model="form.options[opt.name]"
+                                        :placeholder="opt.placeholder || ''">
+                              </td>
+                           </tr>
+                        </template>
                         <tr v-for="(router, index) in routers" v-bind:key="index" v-bind:class="{'list-item':true}">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
