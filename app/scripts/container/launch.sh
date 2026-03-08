@@ -188,7 +188,7 @@ checkout_git_branch_or_pr() {
 
    if [ -n "$PR" ]; then
       log "Checking out PR $PR in $REPO"
-      (cd "$REPO" && gh pr checkout "$PR") || log "WARN: gh pr checkout $PR failed in $REPO"
+      (cd "$REPO" && SSL_CERT_FILE="$IDE_PATH/certs/ca-certificates.crt" $IDE_PATH/bin/gh pr checkout "$PR") || log "WARN: gh pr checkout $PR failed in $REPO"
    else
       log "Checking out branch $BRANCH in $REPO"
       (cd "$REPO" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || \
