@@ -71,7 +71,7 @@ install_dehydrated() {
 }
 
 init_dehydrated() {
-  log "- Configuring SSL for domains: ${SSL_ZONES[@]}"
+  log "- Configuring SSL for domains: ${SSL_ZONES[*]}"
 
   local DOMAIN
   local WILDCARD_DOMAINS=()
@@ -161,6 +161,7 @@ _EOE_
 
 log "Initialising Dockside ..." >&2
 
+# shellcheck disable=SC2145
 log "Parsing command line arguments: ${@@Q}"
 while true
 do

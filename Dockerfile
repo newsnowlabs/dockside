@@ -488,6 +488,7 @@ RUN apt-get update && \
     apt-get -y --no-install-recommends --no-install-suggests install \
         libfile-find-rule-perl libperl-languageserver-perl \
         git tig perltidy \
+        shellcheck \
         procps vim less curl locales && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
