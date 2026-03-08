@@ -375,9 +375,7 @@
                developers: edit ? this.container.meta.developers : '',
                description: edit ? this.container.meta.description : '',
                IDE: edit ? this.container.meta.IDE : '',
-               options: edit ? (this.container.data.options || {}) : Object.fromEntries(
-                  (this.profile && this.profile.options ? this.profile.options : []).map(o => [o.name, o.default || ''])
-               )
+               options: edit ? (this.container.data.options || {}) : {}
             };
 
             console.log('initialiseForm:', this.form);

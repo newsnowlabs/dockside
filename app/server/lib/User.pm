@@ -941,7 +941,7 @@ sub createContainerReservation ($self, $args) {
       }
    );
 
-   foreach my $m (qw( profile image runtime network unixuser access viewers developers private description gitURL IDE )) {
+   foreach my $m (qw( profile image runtime network unixuser access viewers developers private description gitURL IDE options )) {
       $self->set($reservation, $m, $args->{$m}) || 
          die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
    }
