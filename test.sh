@@ -96,12 +96,12 @@ check_perl() {
     app/server/lib/Util.pm
   )
 
-  # Note: json-to-yaml is a shell one-liner (not a Perl source file), so excluded here.
   # Note: upgrade and password-wrapper are bash scripts, also excluded.
   local scripts=(
     app/server/bin/docker-event-daemon
     app/server/bin/mkpasswd
     app/server/bin/password
+    app/server/bin/json-to-yaml
   )
 
   for f in "${modules[@]}" "${scripts[@]}"; do
