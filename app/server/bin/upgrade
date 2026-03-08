@@ -6,7 +6,7 @@ log() {
 
 usage() {
    log "Usage: upgrade [--image <image>] [--pull]"
-   exit -1
+   exit 1
 }
 
 IMAGE="newsnowlabs/dockside:latest"
@@ -25,7 +25,7 @@ DOCKSIDE_VOLUME=$(docker inspect $DOCKSIDE_HOSTNAME --format '{{ range .Mounts }
 
 if [ -z "$DOCKSIDE_VOLUME" ]; then
   log "ERROR: Unable to locate Dockside volume for Dockside container $DOCKSIDE_HOSTNAME, aborting!" 
-  exit -2
+  exit 2
 fi
 
 log "Located Dockside volume '$DOCKSIDE_VOLUME' for Dockside container $DOCKSIDE_HOSTNAME"
