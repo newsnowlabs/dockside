@@ -174,29 +174,26 @@ checkout_git_branch_or_pr() {
 
    [ -n "$BRANCH" ] || [ -n "$PR" ] || return
 
-   local REPO_DIRS
+   # Only act on the repo that was just cloned via GIT_URL.
+   # For pre-populated images (no GIT_URL), branch/PR checkout is the
+   # responsibility of the profile command, which can use {option.branch}
+   # and {option.pr} placeholders or read the DOCKSIDE_OPTION_* env vars.
+   [ -n "$GIT_URL" ] || return
 
-   if [ -n "$GIT_URL" ]; then
-      # Use the freshly-cloned repo as the primary target.
-      local CLONE_DIR
-      CLONE_DIR=$(basename "${GIT_URL%.git}")
-      REPO_DIRS="$HOME/$CLONE_DIR"
+   local CLONE_DIR
+   CLONE_DIR=$(basename "${GIT_URL%.git}")
+   local REPO="$HOME/$CLONE_DIR"
+
+   [ -d "$REPO/.git" ] || return
+
+   if [ -n "$PR" ]; then
+      log "Checking out PR $PR in $REPO"
+      (cd "$REPO" && gh pr checkout "$PR") || log "WARN: gh pr checkout $PR failed in $REPO"
    else
-      # Scan $HOME for any pre-existing git repos (covers pre-populated images).
-      REPO_DIRS=$(find "$HOME" -maxdepth 3 -name ".git" -type d -exec dirname {} \; 2>/dev/null | sort -u)
+      log "Checking out branch $BRANCH in $REPO"
+      (cd "$REPO" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || \
+         log "WARN: git checkout $BRANCH failed in $REPO"
    fi
-
-   for repo in $REPO_DIRS; do
-      [ -d "$repo/.git" ] || continue
-      if [ -n "$PR" ]; then
-         log "Checking out PR $PR in $repo"
-         (cd "$repo" && gh pr checkout "$PR") || log "WARN: gh pr checkout $PR failed in $repo"
-      elif [ -n "$BRANCH" ]; then
-         log "Checking out branch $BRANCH in $repo"
-         (cd "$repo" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || \
-            log "WARN: git checkout $BRANCH failed in $repo"
-      fi
-   done
 }
 
 spawn_ssh_agent() {
