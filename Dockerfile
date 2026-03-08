@@ -387,6 +387,8 @@ RUN apt-get update && \
         bind9 dnsutils \
         docker-ce docker-ce-cli docker-buildx-plugin containerd.io gcc- \
         perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
+        libyaml-libyaml-perl \
+        libio-async-perl \
         python3-venv \
         acl \
         s6 \
@@ -486,6 +488,7 @@ RUN apt-get update && \
     apt-get -y --no-install-recommends --no-install-suggests install \
         libfile-find-rule-perl libperl-languageserver-perl \
         git tig perltidy \
+        shellcheck \
         procps vim less curl locales && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
