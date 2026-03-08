@@ -525,6 +525,7 @@ launch_openvscode() {
 }
 
 run_nonroot() {
+   log "User account launch started ..."
    spawn_ssh_agent
    populate_ssh_agent_keys
    populate_known_hosts
@@ -538,6 +539,7 @@ run_nonroot() {
       log "Repo setup subproc finished";
    ) &
    restart_ide
+   log "User account launch finished."
 }
 
 restart_ide() {
@@ -559,11 +561,13 @@ restart_ide() {
 }
 
 launch_ide() {
+   log "Launch started ..."
    create_user
    create_git_config
    update_ssh_authorized_keys
    launch_sshd
    launch_nonroot
+   log "Launch finished."
 }
 
 init() {
