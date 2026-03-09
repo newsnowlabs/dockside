@@ -463,7 +463,6 @@
 
             putContainer(this.form)
                .then(data => {
-                  console.log(data);
                   // Reservation succeeded.
                   console.log('createContainerReservation', data);
                   // Add reservation to containers list.
