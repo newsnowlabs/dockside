@@ -15,7 +15,8 @@ my $PLACEHOLDERS = {
    'user' => 'owner',
    'container' => 'container',
    'metadata' => 'metadata_server',
-   'giturl' => 'gitURL'
+   'giturl' => 'gitURL',
+   'option' => 'option_value',
 };
 
 sub _placeholders ($self, $value) {
@@ -330,6 +331,11 @@ sub container ($self, $prop = undef) {
 
 sub gitURL ($self) {
    return $self->data('gitURL');
+}
+
+sub option_value ($self, $name = undef) {
+   return '' unless defined $name;
+   return ($self->data('options') // {})->{$name} // '';
 }
 
 # If the dockside container and launched container share the default 

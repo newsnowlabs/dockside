@@ -168,6 +168,34 @@ create_git_repo() {
    fi
 }
 
+checkout_git_branch_or_pr() {
+   local BRANCH="${DOCKSIDE_OPTION_BRANCH:-}"
+   local PR="${DOCKSIDE_OPTION_PR:-}"
+
+   [ -n "$BRANCH" ] || [ -n "$PR" ] || return
+
+   # Only act on the repo that was just cloned via GIT_URL.
+   # For pre-populated images (no GIT_URL), branch/PR checkout is the
+   # responsibility of the profile command, which can use {option.branch}
+   # and {option.pr} placeholders or read the DOCKSIDE_OPTION_* env vars.
+   [ -n "$GIT_URL" ] || return
+
+   local CLONE_DIR
+   CLONE_DIR=$(basename "${GIT_URL%.git}")
+   local REPO="$HOME/$CLONE_DIR"
+
+   [ -d "$REPO/.git" ] || return
+
+   if [ -n "$PR" ]; then
+      log "Checking out PR $PR in $REPO"
+      (cd "$REPO" && gh pr checkout "$PR") || log "WARN: gh pr checkout $PR failed in $REPO"
+   else
+      log "Checking out branch $BRANCH in $REPO"
+      (cd "$REPO" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || \
+         log "WARN: git checkout $BRANCH failed in $REPO"
+   fi
+}
+
 spawn_ssh_agent() {
    log "Checking for ssh-agent ..."
    if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
@@ -481,7 +509,7 @@ run_nonroot() {
    spawn_ssh_agent
    populate_ssh_agent_keys
    populate_known_hosts
-   (create_git_repo; populate_vscode_extensions; populate_vscode_settings;) &
+   (create_git_repo; checkout_git_branch_or_pr; populate_vscode_extensions; populate_vscode_settings;) &
    restart_ide
 }
 
