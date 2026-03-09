@@ -574,8 +574,8 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
          {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description IDE ) ],
-            'profileObject' => [ qw( name routers networks runtimes IDEs ) ],
-            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL runningIDE ) ],
+            'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL runningIDE options ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId) ]
@@ -1121,6 +1121,10 @@ sub exec ($reservation, $command = undef) {
       );
    }
 
+   my @envOptions = map {
+      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($reservation->data('options') // {})->{$_}
+   } keys %{ $reservation->data('options') // {} };
+
    my @envIDE = (
       "--env=IDE=" . $reservation->meta('IDE')
    );
@@ -1140,6 +1144,7 @@ sub exec ($reservation, $command = undef) {
       "--env=OWNER_DETAILS=$user_details",
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
       @envGit,
+      @envOptions,
       @envSSH,
       @envDevContainer,
       @envIDE,

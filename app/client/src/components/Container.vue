@@ -112,6 +112,22 @@
                               </select>
                            </td>
                         </tr>
+                        <template v-if="container.permissions.auth.developer && isSelected">
+                           <tr v-for="opt in options" :key="'option-' + opt.name">
+                              <th>{{ opt.label }}</th>
+                              <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
+                              <td v-else-if="opt.type === 'select'">
+                                 <select class="form-control" v-model="form.options[opt.name]">
+                                    <option v-for="v in opt.values" :key="v">{{ v }}</option>
+                                 </select>
+                              </td>
+                              <td v-else>
+                                 <input type="text" class="form-control"
+                                        v-model="form.options[opt.name]"
+                                        :placeholder="opt.placeholder || ''">
+                              </td>
+                           </tr>
+                        </template>
                         <tr v-for="(router, index) in routers" v-bind:key="index" v-bind:class="{'list-item':true}">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
@@ -308,6 +324,9 @@
          routers() {
             return (this.profile && this.profile.routers) ? this.profile.routers : [];
          },
+         options() {
+            return (this.profile && this.profile.options) ? this.profile.options : [];
+         },
          hasProfiles() {
             return this.profileNames.length;
          },
@@ -355,7 +374,8 @@
                viewers: edit ? this.container.meta.viewers : '',
                developers: edit ? this.container.meta.developers : '',
                description: edit ? this.container.meta.description : '',
-               IDE: edit ? this.container.meta.IDE : ''
+               IDE: edit ? this.container.meta.IDE : '',
+               options: edit ? (this.container.data.options || {}) : {}
             };
 
             console.log('initialiseForm:', this.form);
@@ -517,6 +537,9 @@
                   p.routers.map(
                         r => [r.name ? r.name : r.prefixes[0], r.auth ? r.auth[0] : 'developer']
                   )
+               );
+               f.options = Object.fromEntries(
+                  (p.options || []).map(o => [o.name, o.default || ''])
                );
 
                // Patch the image into the image autocomplete component.

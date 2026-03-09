@@ -1,0 +1,50 @@
+{
+   "version": 4,
+   "name": "Git Repo (Branch/PR)",
+   "active": false,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "*" ],
+   "images": [
+      "ubuntu:latest",
+      "debian:latest",
+      "alpine:latest"
+   ],
+   "gitURLs": ["*"],
+   "unixusers": ["dockside"],
+   "options": [
+      {
+         "name": "branch",
+         "label": "Branch",
+         "type": "text",
+         "default": "",
+         "placeholder": "e.g. main, feature/my-feature (leave blank for default)"
+      },
+      {
+         "name": "pr",
+         "label": "Pull Request #",
+         "type": "text",
+         "default": "",
+         "placeholder": "e.g. 42 (overrides branch if set)"
+      }
+   ],
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
+      "bind": [],
+      "volume": []
+   },
+   "lxcfs": true,
+   "dockerArgs": ["--memory=1G", "--pids-limit=4000"],
+   "command": [
+      "/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity"
+   ]
+}
