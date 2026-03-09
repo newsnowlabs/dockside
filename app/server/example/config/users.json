@@ -27,7 +27,11 @@
                "public": ""
             }
          }
-      }
+      },
+      // Optional: GitHub Personal Access Token passed as GH_TOKEN to all containers
+      // launched by this user, enabling 'gh pr checkout' and other gh CLI operations.
+      // Requires 'repo' scope for private repos; 'public_repo' scope for public repos.
+      "gh_token": ""
    }
    // Example
    // "johnsmith": {
@@ -50,6 +54,7 @@
    //    },
    //    "ssh": {
    //       "authorized_keys": []
-   //    }
+   //    },
+   //    // "gh_token": "ghp_xxxxxxxxxxxxxxxxxxxx"
    // }
 }
