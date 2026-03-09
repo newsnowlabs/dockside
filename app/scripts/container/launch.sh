@@ -71,7 +71,7 @@ create_user() {
    # A generalised solution to docker issue, whereby tmpfs mountpoint ownership and mode
    # is incorrectly set following container stop/start: find tmpfs inside $HOME and
    # fixup ownership and permissions.
-   for p in $(busybox cat /proc/mounts | busybox grep "^tmpfs $HOME[/ ]" | busybox awk '{print $2}')
+   for p in $(busybox cat /proc/mounts | busybox grep "^tmpfs ${HOME}[/ ]" | busybox awk '{print $2}')
    do
       if [ -d "$p" ]; then
          log "Restoring correct ownership and permissions for tmpfs: $p"
@@ -535,9 +535,9 @@ init() {
    exec 2>>$LOG
 
    if [ -z "$DEBUG" ]; then
-      log "Executing '$@' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH:"
+      log "Executing '$*' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH:"
    else
-      log "Executing '$@' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH and environment:"
+      log "Executing '$*' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH and environment:"
       busybox env | busybox sed 's/^/=> /'}
    fi
 }
