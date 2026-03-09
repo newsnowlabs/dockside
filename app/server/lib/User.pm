@@ -122,8 +122,8 @@ sub new ($class, $data = undef) {
       # Require a username
       return undef unless $data->{'username'};
 
-      $self = bless { 
-         %$data{ qw(username id name email role ssh version) },
+      $self = bless {
+         %$data{ qw(username id name email role ssh version gh_token) },
          '_permissions' => $data->{'permissions'} // {},
          '_resources' => $data->{'resources'} // {},
       }, ( ref($class) || $class );
@@ -204,6 +204,10 @@ sub authorized_keys ($self) {
 
 sub keypairs ($self, $prefix) {
    return $self->{'ssh'}{'keypairs'}{$prefix};
+}
+
+sub gh_token ($self) {
+   return $self->{'gh_token'} // '';
 }
 
 ################################################################################
