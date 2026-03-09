@@ -261,6 +261,7 @@ sub validate ($self) {
          security=%
          gitURLs=@
          IDEs=@
+         options=@
       )
    );
 
@@ -367,6 +368,41 @@ sub do_validate ($self, $type, $data, @propcodes) {
 sub validate_profile_IDEs ($self, $type, $data) {
    unless( ref($data) eq 'ARRAY' ) {
       return $self->errors( $type, "must be an Array" );
+   }
+}
+
+sub validate_profile_options ($self, $type, $data) {
+   unless( ref($data) eq 'ARRAY' ) {
+      return $self->errors( $type, "must be an Array" );
+   }
+
+   for( my $i = 0; $i < @$data; $i++ ) {
+      $self->do_validate( "$type\[$i\]", $data->[$i],
+         qw( name=s! label=s! type=s default=s placeholder=s values=@ )
+      );
+
+      my $opt = $data->[$i];
+
+      if( ref($opt) ne 'HASH' ) {
+         next;
+      }
+
+      # Validate 'name': must be alphanumeric + underscore only
+      if( defined($opt->{'name'}) && $opt->{'name'} !~ /^[a-zA-Z_][a-zA-Z0-9_]*$/ ) {
+         $self->errors( "$type\[$i\].name", "must consist only of letters, digits, and underscores, and begin with a letter or underscore" );
+      }
+
+      # Validate 'type': must be 'text' or 'select' if specified
+      if( defined($opt->{'type'}) && $opt->{'type'} !~ /^(text|select)$/ ) {
+         $self->errors( "$type\[$i\].type", "must be 'text' or 'select'" );
+      }
+
+      # If type is 'select', 'values' must be a non-empty array
+      if( defined($opt->{'type'}) && $opt->{'type'} eq 'select' ) {
+         unless( ref($opt->{'values'}) eq 'ARRAY' && @{$opt->{'values'}} ) {
+            $self->errors( "$type\[$i\].values", "must be a non-empty Array when type is 'select'" );
+         }
+      }
    }
 }
 
@@ -495,6 +531,10 @@ sub unixusers ($self) {
 
 sub routers ($self) {
    return $self->{'routers'} // [];
+}
+
+sub options ($self) {
+   return $self->{'options'} // [];
 }
 
 sub ssh ($self) {
@@ -629,6 +669,10 @@ sub default_IDE ($self) {
 
    # Default IDE is '' if none is specified
    return '';
+}
+
+sub default_options ($self) {
+   return { map { $_->{'name'} => ($_->{'default'} // '') } @{$self->options} };
 }
 
 sub default_command ($self) {
