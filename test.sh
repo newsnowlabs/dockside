@@ -197,6 +197,7 @@ check_shellcheck() {
     app/scripts/runscripts/logrotate/run
     app/server/bin/upgrade
     app/server/bin/password-wrapper
+    app/scripts/container/launch.sh
   )
 
   local failed=0
