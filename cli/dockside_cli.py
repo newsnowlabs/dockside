@@ -61,8 +61,9 @@ def _resolve_config_dir():
     return os.path.join(os.path.expanduser('~'), '.config', 'dockside')
 
 
-CONFIG_DIR  = _resolve_config_dir()
-CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
+CONFIG_DIR   = _resolve_config_dir()
+CONFIG_FILE  = os.path.join(CONFIG_DIR, 'config.json')
+COOKIES_DIR  = os.path.join(CONFIG_DIR, 'cookies')
 
 # ── Status labels ─────────────────────────────────────────────────────────────
 
@@ -149,10 +150,13 @@ def die(msg, code=1):
 # ── Safe file I/O ─────────────────────────────────────────────────────────────
 
 def _ensure_config_dir():
-    """Create CONFIG_DIR safely; refuse to proceed if it's a symlink."""
+    """Create CONFIG_DIR and COOKIES_DIR safely; refuse to proceed if either is a symlink."""
     if os.path.islink(CONFIG_DIR):
         die(f"Config directory {CONFIG_DIR!r} is a symlink – refusing to use it")
     os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    if os.path.islink(COOKIES_DIR):
+        die(f"Cookies directory {COOKIES_DIR!r} is a symlink – refusing to use it")
+    os.makedirs(COOKIES_DIR, mode=0o700, exist_ok=True)
 
 
 def _safe_write(path, content_str, mode=0o600):
@@ -217,15 +221,55 @@ def _safe_nick(s):
     return slug or 'server'
 
 
+def _validate_cookie_filename(name):
+    """
+    Validate and normalise a user-supplied cookie filename.
+
+    Accepts a bare name (e.g. 'prod') or a name with .txt suffix.
+    Rejects anything with path separators, null bytes, '..' components,
+    or names that are longer than 128 characters before adding .txt.
+    Returns the normalised '<name>.txt' string.
+    """
+    if not name:
+        raise ValueError("Cookie filename must not be empty")
+    if '\x00' in name:
+        raise ValueError("Cookie filename must not contain null bytes")
+    # Strip a single trailing '.txt' so we can normalise uniformly
+    base = name[:-4] if name.lower().endswith('.txt') else name
+    if not base:
+        raise ValueError("Cookie filename must not be empty")
+    if len(base) > 128:
+        raise ValueError("Cookie filename is too long (max 128 characters before .txt)")
+    # Reject any path traversal or directory components
+    if os.sep in base or (os.altsep and os.altsep in base) or '/' in base or '\\' in base:
+        raise ValueError("Cookie filename must not contain path separators")
+    if base == '..' or base.startswith('../') or base.startswith('..\\'):
+        raise ValueError("Cookie filename must not contain path traversal")
+    # Only allow safe characters (letters, digits, hyphens, underscores, dots)
+    if not re.match(r'^[a-zA-Z0-9._-]+$', base):
+        raise ValueError("Cookie filename may only contain letters, digits, hyphens, underscores, and dots")
+    return base + '.txt'
+
+
 def _cookie_file_for(server_entry):
     """Derive the cookie file path for a server entry."""
+    # Honour an explicit override stored in the server config entry
+    override = (server_entry.get('cookie_file') or '').strip()
+    if override:
+        try:
+            filename = _validate_cookie_filename(override)
+        except ValueError:
+            filename = None
+        if filename:
+            return os.path.join(COOKIES_DIR, filename)
+    # Fall back to deriving a slug from nickname or URL netloc
     nick = (server_entry.get('nickname') or '').strip()
     if nick:
         slug = _safe_nick(nick)
     else:
         parsed = urllib.parse.urlparse(server_entry.get('url', ''))
         slug = _safe_nick(parsed.netloc or 'server')
-    return os.path.join(CONFIG_DIR, f'cookies-{slug}.txt')
+    return os.path.join(COOKIES_DIR, f'{slug}.txt')
 
 
 def _migrate_old_config(cfg):
@@ -955,8 +999,17 @@ def cmd_login(args):
 
     extra_cookies = _parse_extra_cookies(getattr(args, 'cookie', None) or [])
 
-    # Determine the cookie file path using a provisional entry (nickname may be set)
-    provisional_entry = {'url': server, 'nickname': nickname}
+    # Validate --cookie-file override (if supplied)
+    cookie_file_override = (getattr(args, 'cookie_file', None) or '').strip() or None
+    if cookie_file_override:
+        try:
+            cookie_file_override = _validate_cookie_filename(cookie_file_override)
+        except ValueError as e:
+            die(f'Invalid --cookie-file: {e}')
+
+    # Determine the cookie file path using a provisional entry (nickname/override may be set)
+    provisional_entry = {'url': server, 'nickname': nickname,
+                         'cookie_file': cookie_file_override}
     cookie_file = _cookie_file_for(provisional_entry)
 
     try:
@@ -970,7 +1023,8 @@ def cmd_login(args):
     _ensure_config_dir()
     _save_cookie_jar(opener._jar, cookie_file)
 
-    _upsert_server(cfg, server, nickname=nickname or None)
+    _upsert_server(cfg, server, nickname=nickname or None,
+                   cookie_file=cookie_file_override)
     cfg['current'] = nickname if nickname else server
     out_fmt = getattr(args, 'output', None)
     if out_fmt:
@@ -1429,6 +1483,11 @@ def build_parser():
                     help='Inject an extra cookie (repeatable). '
                          'Required by some Dockside servers that use a global cookie '
                          '(e.g. --cookie globalCookie=secret).')
+    sp.add_argument('--cookie-file', metavar='NAME',
+                    help='Override the cookie filename (e.g. prod or prod.txt). '
+                         'Stored in config.json so subsequent commands reuse the same file. '
+                         'Useful when an inner Dockside server must share cookies with an '
+                         'outer server (specify the outer server\'s cookie filename here).')
     sp.add_argument('--output', '-o', choices=['text', 'json', 'yaml'], default=None,
                     help='Default output format to store in config for this server')
     sp.add_argument('--no-verify', action='store_true',
