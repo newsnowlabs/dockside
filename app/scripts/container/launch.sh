@@ -168,6 +168,26 @@ create_git_repo() {
    fi
 }
 
+gh_authenticate() {
+   if [ -f "$HOME/.config/gh/hosts.yml" ]; then
+      log "Authenticated to Github already; skipping setup"
+   fi
+
+   if [ -z "$GH_TOKEN" ]; then
+      log "Github authentication skipped, as no GH_TOKEN for this user"
+      return
+   fi
+
+   # Avoid this issue:
+   # The value of the GH_TOKEN environment variable is being used for authentication.
+   # To have GitHub CLI store credentials instead, first clear the value from the environment.
+   local TOKEN="$GH_TOKEN"
+   unset GH_TOKEN
+
+   log "Authenticating to Github with token '${TOKEN:0:16}' ..."
+   $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") || log "WARN: gh auth login failed"
+}
+
 checkout_git_branch_or_pr() {
    local BRANCH="${DOCKSIDE_OPTION_BRANCH:-}"
    local PR="${DOCKSIDE_OPTION_PR:-}"
@@ -188,11 +208,10 @@ checkout_git_branch_or_pr() {
 
    if [ -n "$PR" ]; then
       log "Checking out PR $PR in $REPO"
-      (cd "$REPO" && SSL_CERT_FILE="$IDE_PATH/certs/ca-certificates.crt" $IDE_PATH/bin/gh pr checkout "$PR") || log "WARN: gh pr checkout $PR failed in $REPO"
+      (cd "$REPO" && $IDE_PATH/bin/gh pr checkout "$PR") || log "WARN: gh pr checkout '$PR' failed in repo '$REPO'"
    else
       log "Checking out branch $BRANCH in $REPO"
-      (cd "$REPO" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || \
-         log "WARN: git checkout $BRANCH failed in $REPO"
+      (cd "$REPO" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || log "WARN: git checkout '$BRANCH' failed in repo '$REPO'"
    fi
 }
 
@@ -513,6 +532,7 @@ run_nonroot() {
    (
       log "Repo setup subproc started ..."
       create_git_repo
+      gh_authenticate
       checkout_git_branch_or_pr
       populate_vscode_extensions;
       populate_vscode_settings

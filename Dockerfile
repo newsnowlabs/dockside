@@ -302,6 +302,13 @@ RUN cd $DS_PATH/bin && \
     cp -a /etc/ssl/certs $DS_PATH/ && \
     curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel
 
+# Create a wrapper for `gh` that sets SSL_CERT_FILE as needed
+# so providing fully working terminal access to gh
+RUN cd $DS_PATH/bin && \
+    mv gh gh.orig && \
+    echo -e "#!$DS_PATH/bin/sh\nexport SSL_CERT_FILE=$DS_PATH/certs/ca-certificates.crt\nexec gh.orig \"\$@\"\n" >gh && \
+    chmod 755 gh
+
 ################################################################################
 # BUILD OPENVSCODE IDE BINARY BUNDLE
 #
