@@ -1125,6 +1125,11 @@ sub exec ($reservation, $command = undef) {
       "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($reservation->data('options') // {})->{$_}
    } keys %{ $reservation->data('options') // {} };
 
+   my @envGhToken;
+   if( my $token = $user->gh_token() ) {
+      @envGhToken = ( "--env=GH_TOKEN=$token" );
+   }
+
    my @envIDE = (
       "--env=IDE=" . $reservation->meta('IDE')
    );
@@ -1145,6 +1150,7 @@ sub exec ($reservation, $command = undef) {
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
       @envGit,
       @envOptions,
+      @envGhToken,
       @envSSH,
       @envDevContainer,
       @envIDE,
