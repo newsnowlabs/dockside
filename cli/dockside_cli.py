@@ -321,7 +321,9 @@ def _encode_params(**kwargs):
             params[k] = json.dumps(v, separators=(',', ':'))
         else:
             params[k] = str(v)
-    return urllib.parse.urlencode(params)
+    # Use quote() not quote_plus() so spaces become %20, not +.
+    # Perl's uri_unescape() only decodes %XX sequences, not + signs.
+    return urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
 
 
 def api_create(opener, server, fields):
@@ -374,7 +376,15 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
     while time.monotonic() < deadline:
         containers = fetch_containers(opener, server)
         if target == 'gone':
-            if not any(c.get('id') == res_id for c in containers):
+            c = next((c for c in containers if c.get('id') == res_id), None)
+            if c is None:
+                # Reservation was fully deleted from the data store.
+                if not quiet:
+                    print()
+                return True
+            if c.get('status', 0) <= -2 and not c.get('containerId'):
+                # Docker container removed; reservation persists in prelaunch
+                # state (status -2, no containerId).  That's "gone enough".
                 if not quiet:
                     print()
                 return True
