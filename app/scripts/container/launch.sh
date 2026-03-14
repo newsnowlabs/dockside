@@ -264,7 +264,7 @@ populate_known_hosts() {
 }
 
 populate_ssh_agent_keys() {
-   local SAVEKEYS="1"
+   local SAVEKEYS="0"
    local DEFAULT_KEY_PATH="$HOME/.ssh/dockside"
    local KEY_PATH="$DEFAULT_KEY_PATH"
 
