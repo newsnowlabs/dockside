@@ -17,6 +17,8 @@
       "vscode.shellscript",
       "wayou.vscode-todo-highlight",
       "octref.vetur",
-      "mhutchie.git-graph"
+      "mhutchie.git-graph",
+      "openai.chatgpt",
+      "Anthropic.claude-code"
    ]
 }
