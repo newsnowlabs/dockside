@@ -188,6 +188,7 @@ check_shellcheck() {
 
   # Note: json-to-yaml is a Perl one-liner with no shebang, so excluded from shellcheck.
   local scripts=(
+    test.sh
     app/scripts/entrypoint.sh
     app/scripts/runscripts/nginx/run
     app/scripts/runscripts/dockerd/run
