@@ -16,7 +16,7 @@ To install Sysbox on your host, please see the [Sysbox User Guide](https://githu
 
 Following Sysbox installation, configuring Dockside to use Sysbox should be as easy as modifying your devtainer profiles by:
 
-1. Adding `sysbox-runc` to the `runtimes` section
+1. Adding `sysbox-runc` to the `runtimes` section (or using `["*"]` to autodetect all available runtimes, which will include `sysbox-runc` once installed)
 2. [Optionally] Adding an anonymous volume mounted at `/var/lib/docker` to the `mounts` section
 
 ## Self-contained Docker-in-Dockside

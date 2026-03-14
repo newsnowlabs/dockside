@@ -39,6 +39,8 @@ The IDE is selected at launch time from those available on the host. The active 
 
 To use `git` functionality within the IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the IDE UI or terminal, you will first need to have provisioned your devtainer with the required SSH keys. See [SSH: Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support).
 
+The bundled `gh` (GitHub CLI) is available in all devtainer terminals. When a `gh_token` is configured for your user in `users.json`, `gh` authenticates automatically, enabling commands such as `gh pr checkout` without any additional login steps.
+
 ## Using the Dockside CLI
 
 The `dockside` CLI is a zero-dependency Python 3.6+ command-line tool that provides the same functionality as the web UI, making it suitable for scripting, automation, and CI/CD pipelines.

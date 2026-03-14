@@ -58,7 +58,7 @@ The currently-supported root properties within a profile are:
 | active | must be set to `true` or the profile will be ignored | mandatory | `false` | `true` |
 | [routers](#profile-routers) | [array] preconfigured services | optional | `[]` | `[{"name": "dockside", "prefixes": [ "www" ], "domains": [ "*" ], "auth": [ "developer", "owner", "viewer", "user", "public" ], "https": { "protocol": "https", "port": 443 } }]`
 | networks | allowed docker networks; use `["*"]` to auto-detect networks connected to the Dockside container at runtime | mandatory | N/A | `["bridge"]` or `["*"]`
-| runtimes | allowed docker runtimes; use `["*"]` to auto-detect runtimes available on the host's Docker daemon at runtime | optional | `["*"]` | `["runc", "sysbox-runc", "runcvm"]` or `["*"]`
+| runtimes | allowed docker runtimes; use `["*"]` to auto-detect runtimes available on the host's Docker daemon at runtime | optional | `["*"]` | `["runc", "sysbox-runc", "io.containerd.runc.v2", "runcvm"]` or `["*"]`
 | images | allowed docker images (a wildcard may be used to allow the user to specify an arbitrary element of the image string) | mandatory | N/A | `["alpine:latest","i386/alpine:latest"]` |
 | unixusers | array of the unix user account for which to run the IDE | optional | `["dockside"]` | `["john","jim"]`
 | mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{ "tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}], "bind": [{"src": "/source/path", "dst": "/dest/path", "readonly": true}] }`
@@ -73,6 +73,24 @@ The currently-supported root properties within a profile are:
 | entrypoint | [array] command with which to override image entrypoint | optional | `[]` | `["/my-entrypoint.sh"]` |
 | mountIDE | disable mounting the Dockside IDE volume (strictly for use with images, such as the Dockside image, that embed their own IDE volume) | optional | `false` | `true` |
 | ssh | whether to enable ssh access | optional | as specified in `config.json` | `true` |
+
+#### Autodetection of networks, runtimes and IDEs
+
+Profiles using `["*"]` for `networks`, `runtimes`, or `IDEs` will present only those values actually available on the host at launch time:
+
+- **Networks** are discovered by inspecting the Docker networks currently connected to the Dockside container.
+- **Runtimes** are discovered by querying the host's Docker daemon.
+- **IDEs** are discovered by scanning the `/opt/dockside/ide/` directory for installed IDE versions (e.g. `theia/latest`, `openvscode/latest`).
+
+This means profiles using `["*"]` require no updates when new runtimes, networks, or IDEs become available.
+
+#### Network name format
+
+Docker network names may contain letters, digits, hyphens, underscores (`_`), and dots (`.`).
+
+#### Git URL format
+
+Values in `gitURLs`, and the `gitURL` field supplied at launch, may optionally end with `.git` (e.g. `https://github.com/org/repo.git` is equivalent to `https://github.com/org/repo`).
 
 ### Profile routers
 

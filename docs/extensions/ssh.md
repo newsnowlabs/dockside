@@ -27,19 +27,19 @@ These instructions will guide them through installing the [wstunnel](https://git
 
 - Since `~/.ssh/authorized_keys` can be overwritten by Dockside, SSH support is not compatible with any profiles that mount over this file (or over `~/.ssh` if the mounted filesystem contains an `authorized_keys` file) and you should take care to disable SSH in such profiles. If you make changes manually to this file on a devtainer that has SSH enabled, your changes may be lost.
 
-- Currently, Theia IDE functions that internally require an SSH client (like `Git: Push` / `Git: Pull` / the embedded Terminal) are not configured to use keys forwarded by an active `ssh -A` session. So while you can `git push` / `git pull` within an SSH terminal using forwarded keys, the IDE cannot access these keys. This limitation may be addressed in a future release. For now, read on for how to configure the Theia IDE to use keys added to a local `ssh-agent`.
+- Currently, IDE functions that internally require an SSH client (like `Git: Push` / `Git: Pull` / the embedded Terminal) are not configured to use keys forwarded by an active `ssh -A` session. So while you can `git push` / `git pull` within an SSH terminal using forwarded keys, the IDE cannot access these keys. This limitation may be addressed in a future release. For now, read on for how to configure the IDE to use keys added to a local `ssh-agent`.
 
 ## Local SSH agent support
 
-To use `git` functionality of the Theia IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the Theia IDE UI or terminal, you will first need to have provisioned your devtainer with the required SSH keys.
+To use `git` functionality of the IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the IDE UI or terminal, you will first need to have provisioned your devtainer with the required SSH keys.
 
-When a devtainer is launched, if `ssh-agent` can be found in the launched image, then Dockside will launch `ssh-agent` in the context of the Theia IDE. This will allow IDE functions requiring SSH (like `Git: Push` and `Git: Pull`) as well as command-line tools run from within the IDE terminal (like `git` and `ssh`) to function as expected.
+When a devtainer is launched, if `ssh-agent` can be found in the launched image, then Dockside will launch `ssh-agent` in the context of the IDE. This will allow IDE functions requiring SSH (like `Git: Push` and `Git: Pull`) as well as command-line tools run from within the IDE terminal (like `git` and `ssh`) to function as expected.
 
 On launch of a devtainer, you must load your SSH keys into the running agent, by running `ssh-add <path-to-key>` within a terminal, before any such IDE functions or command-line tools may be used. You only need to do this once after launching, or after stopping and starting, a devtainer.
 
 ### Adding SSH keys to devtainer workspace
 
-SSH public and private key files may be dragged-and-dropped into the Theia IDE file explorer, or uploaded by right-clicking on a folder and selecting `Upload`.
+SSH public and private key files may be dragged-and-dropped into the IDE file explorer, or uploaded by right-clicking on a folder and selecting `Upload`.
 
 However, to automatically provision key files into newly-launched devtainers, configure your profiles to mount a docker volume (or bind-mount a host directory) containing your users' encrypted key files. e.g.
 

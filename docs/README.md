@@ -57,6 +57,7 @@ Advanced features:
 - Firewall or redirect outgoing devtainer traffic using custom Docker networks.
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications.
 - Command-line interface (`dockside` CLI) for scripting, automation, and CI/CD integration.
+- Autodetection of available runtimes, networks and IDEs from the host environment.
 
 ## Video walkthrough
 
@@ -220,7 +221,7 @@ See [Securing profiles and devtainers](securing.md)
 - [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox runtime
 - [Backups](extensions/backups.md) -- strategies for backing up devtainers
 - [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows seamless one-click SSH access to devtainers from the command line and accessing devtainers using VS Code
-- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality of the Theia IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the Theia IDE UI or terminal
+- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality of the IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the IDE UI or terminal
 
 ## Case-study: Dockside in production at NewsNow
 
@@ -278,7 +279,7 @@ The Dockside multiarch build is built thanks to [Depot](https://depot.dev) and w
 ## Licence and legals
 
 This project (known as "Dockside"), comprising the files in this Git repository,
-is copyright 2017-2024 NewsNow Publishing Limited and contributors.
+is copyright 2017-2026 NewsNow Publishing Limited and contributors.
 
 Dockside is an open-source project licensed under the Apache License, Version 2.0 (the "License");
 you may not use Dockside or its constituent files except in compliance with the License.
