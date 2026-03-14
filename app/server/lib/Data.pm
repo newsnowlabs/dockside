@@ -36,7 +36,8 @@ sub parse_json ($json) {
 our $CONFIG;
 
 # Supports individual files or all files in a given directory (in which case the 'process' sub can expect an array of data)
-my $CONFIG_FILES = {
+my $CONFIG_FILES;
+$CONFIG_FILES = {
    'users.json' => {
       'process' => sub ($c) {
          my $USERS;
