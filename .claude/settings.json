@@ -1,4 +1,12 @@
 {
+    "trustedDirectories": [
+    "/home/dockside/dockside"
+  ],
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": false,
+    "enableWeakerNestedSandbox": true
+  },
   "hooks": {
     "SessionStart": [
       {
