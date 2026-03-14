@@ -18,13 +18,14 @@ By provisioning a devtainer for every fork and branch, Dockside allows collabora
 Core features:
 
 - Instantly launch and clone an almost infinite multiplicity of disposable devtainers - one for each task, bug, feature or design iteration.
-- Powerful VS Code-compatible IDE.
+- Powerful VS Code-compatible IDE — choose between [Theia](https://theia-ide.org/) and [OpenVSCode](https://github.com/gitpod-io/openvscode-server).
 - HTTPS automatically provisioned for every devtainer.
 - SSH server and access automatically provisioned for every devtainer.
 - User authentication and access control to running devtainers and their web services.
 - Fine-grained user and role-based access control to devtainer functionality and underlying system resources.
 - Launch devtainers from stock Docker images, or from your own.
 - Root access within devtainers, so developers can upgrade their devtainers and install operating system packages when and how they need.
+- Bundled GitHub CLI (`gh`) with per-user token support for seamless `gh pr checkout` and other GitHub operations.
 
 Benefits for developers:
 
@@ -55,6 +56,8 @@ Advanced features:
 - Support for launching KVM VMs on amd64 hardware using [RunCVM](https://github.com/newsnowlabs/runcvm)
 - Firewall or redirect outgoing devtainer traffic using custom Docker networks.
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications.
+- Command-line interface (`dockside` CLI) for scripting, automation, and CI/CD integration.
+- Autodetection of available runtimes, networks and IDEs from the host environment.
 
 ## Video walkthrough
 
@@ -194,6 +197,10 @@ Assuming you have provisioned <my-domain> correctly, Dockside will use LetsEncry
 
 Refer to [Usage](usage.md) for how to use the Dockside UI and IDE.
 
+## CLI
+
+The `dockside` CLI is a zero-dependency Python 3.6+ command-line interface for managing devtainers programmatically, suitable for scripting and CI/CD pipelines. See the [Dockside CLI README](../cli/README.md) for full documentation.
+
 ## Setup
 
 See [Configuring and administering Dockside](setup.md)
@@ -214,7 +221,7 @@ See [Securing profiles and devtainers](securing.md)
 - [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox runtime
 - [Backups](extensions/backups.md) -- strategies for backing up devtainers
 - [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows seamless one-click SSH access to devtainers from the command line and accessing devtainers using VS Code
-- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality of the Theia IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the Theia IDE UI or terminal
+- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality of the IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the IDE UI or terminal
 
 ## Case-study: Dockside in production at NewsNow
 
@@ -272,7 +279,7 @@ The Dockside multiarch build is built thanks to [Depot](https://depot.dev) and w
 ## Licence and legals
 
 This project (known as "Dockside"), comprising the files in this Git repository,
-is copyright 2017-2021 NewsNow Publishing Limited and contributors.
+is copyright 2017-2026 NewsNow Publishing Limited and contributors.
 
 Dockside is an open-source project licensed under the Apache License, Version 2.0 (the "License");
 you may not use Dockside or its constituent files except in compliance with the License.
