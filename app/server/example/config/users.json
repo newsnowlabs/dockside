@@ -12,17 +12,17 @@
          // Disable any by-default-enabled admin permissions by specifying them with value 0 here.
       },
       "resources": {
-         "networks": [ "*" ],
          "profiles": [ "*" ],
-         "auth": [ "*" ],
-         "images": [ "*" ],
+         "networks": [ "*" ],
          "runtimes": [ "*" ],
-         "IDEs": [ "*" ]
+         "IDEs": [ "*" ],
+         "images": [ "*" ],
+         "auth": [ "*" ]
       },
       "ssh": {
          "authorized_keys": [],
          "keypairs": {
-            "example": {
+            "*": {
                "private": "",
                "public": ""
             }
