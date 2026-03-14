@@ -16,7 +16,6 @@ The roadmap for Dockside currently remains highly flexible. We have a list of ca
 
 ### Application Client
 
-- Add devtainer-level menu to select version of Theia IDE (from those available) to launch for the devtainer
 - Add UI for managing users, passwords, ssh keys (including deploying keys to devtainers)
 - Add UI for managing profiles
 - Add UI for monitoring/managing host memory/disk space/images
@@ -37,7 +36,6 @@ The roadmap for Dockside currently remains highly flexible. We have a list of ca
 ### IDE customisation and support
 
 - Build in `ssh-agent` for use with images where none is provided
-- Support for other IDEs e.g. VS Code, Cloud9, Jupyter
 - Add config and profile options to enable/disable in-devtainer user creation, sudo configuration, and ssh-agent auto-launch
 
 ### Launch customisation
@@ -47,8 +45,6 @@ The roadmap for Dockside currently remains highly flexible. We have a list of ca
 - Support for launching a devtainer from an image built from a Dockerfile
 - Support for launching a devtainer directly from a git repo using `.devcontainer.json`
 - Support for launching a devtainer directly from a literal Dockerfile or Dockerfile URL
-- Integrated SSH key management and agent, allowing devtainers to git pull/git checkout specified branches when they launch
-- Custom hooks/variables to allow devtainer launch URLs to be crafted that pull/checkout/build specific branches of a repo (depends on integrated SSH agent)
 - Hooks that execute custom commands within a devtainer when a devtainer is first launched, started, stopped, renamed, or periodically
 
 ### Other

@@ -57,11 +57,14 @@ The currently-supported root properties within a profile are:
 | description | currently for informational use only, may be displayed within UI at later date | optional | `""` | `"Dockside devtainer with built-in IDE"`
 | active | must be set to `true` or the profile will be ignored | mandatory | `false` | `true` |
 | [routers](#profile-routers) | [array] preconfigured services | optional | `[]` | `[{"name": "dockside", "prefixes": [ "www" ], "domains": [ "*" ], "auth": [ "developer", "owner", "viewer", "user", "public" ], "https": { "protocol": "https", "port": 443 } }]`
-| networks | allowed docker networks | mandatory | N/A | `["bridge"]`
-| runtimes | allowed docker runtimes | optional | `["runc"]` | `["runc", "sysbox-runc", "runcvm"]`
+| networks | allowed docker networks; use `["*"]` to auto-detect networks connected to the Dockside container at runtime | mandatory | N/A | `["bridge"]` or `["*"]`
+| runtimes | allowed docker runtimes; use `["*"]` to auto-detect runtimes available on the host's Docker daemon at runtime | optional | `["*"]` | `["runc", "sysbox-runc", "runcvm"]` or `["*"]`
 | images | allowed docker images (a wildcard may be used to allow the user to specify an arbitrary element of the image string) | mandatory | N/A | `["alpine:latest","i386/alpine:latest"]` |
 | unixusers | array of the unix user account for which to run the IDE | optional | `["dockside"]` | `["john","jim"]`
 | mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{ "tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}], "bind": [{"src": "/source/path", "dst": "/dest/path", "readonly": true}] }`
+| gitURLs | allowed git repository URLs that may be cloned on launch; use `["*"]` to allow any URL | optional | `[]` | `["https://github.com/myorg/*"]` or `["*"]`
+| IDEs | allowed IDE installations for the devtainer; use `["*"]` to allow all IDEs available on the host | optional | `["*"]` | `["theia/latest", "openvscode/latest"]`
+| options | dynamic user-input fields displayed in the launch form; each entry has `name`, `label`, `type`, `default`, and `placeholder` sub-fields; values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables | optional | `[]` | `[{"name": "branch", "label": "Branch", "type": "text", "default": "", "placeholder": "e.g. main"}]`
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
 | lxcfs | whether to mount [lxcfs](extensions/lxcfs.md) | optional | as specified in `config.json` | `true` |
@@ -105,12 +108,14 @@ A user record specifies:
 - `email`: user's email address, used today to configure `.gitconfig` for the user and potentially in future for automated emails (string)
 - `name`: user's display name, used today to configure `.gitconfig` for the user (string)
 - `role`: user's role, as configured in `roles.json` (string)
+- `gh_token`: an optional GitHub Personal Access Token (string); when set, the token is passed as the `GH_TOKEN` environment variable into every container launched by or shared with the user, enabling the bundled `gh` CLI to authenticate automatically (e.g. for `gh pr checkout`)
 - `permissions`: specific [permissions](#permissions) that should be enabled or disabled, in customisation of those conferred from the user's role (object)
 - `resources`: host and Dockside [resources](#resources) to which the user should or should not have access, of the following types:
     - `profiles`: profiles the user is permitted to deploy (object or array)
     - `networks`: Docker networks the user's devtainers are permitted to join, subject also to the profile (object or array)
     - `images`: Docker images the user is permitted to launch, subject also to the profile (object or array)
     - `runtimes`: Docker runtimes the user is permitted to use using, subject also to the profile (object or array)
+    - `IDEs`: IDE installations the user is permitted to select (e.g. `["theia/latest"]`, `["*"]`); defaults to `["*"]` (all available IDEs) for all users (object or array)
     - `auth`: the auth/access levels the user is permitted to specify for a devtainer's router, subject also to the devtainer's profile (object or array)
 - `ssh`:
     - `authorized_keys`: an array of standard ssh authorized keys strings that will be automatically written to devtainers' `~/.ssh/authorized_keys` files for devtainers owned by, or shared with, the user (as 'developer')
@@ -151,6 +156,7 @@ Available resource names are:
 - `networks`: choose from available Docker networks
 - `images`: choose from available Docker images
 - `runtimes`: choose from available Docker runtimes
+- `IDEs`: choose from available IDE installations (e.g. `theia/latest`, `openvscode/latest`); existing user records are automatically upgraded to `["*"]` on first load
 - `auth`: choose from the hardcoded [auth/access levels](#router-auth%2Faccess-levels)
 
 #### Resources syntax

@@ -25,7 +25,7 @@ Here are the build options to `build/build.sh`:
 - `--repo <repo>` - build image with name `<repo>` (overriding the default repo, `newsnowlabs/dockside`)
 - `--tag <tag>` - tag resulting image with `<tag>` (overriding the default tag, `latest`)
 - `--stage <stage>` - build to the stage `<stage>` - `<stage>` must be a valid Dockerfile build stage e.g. `theia-build`, `theia-clean`, `theia` and the resulting image will be additionally tagged with `<stage>`
-- `--theia <version>` - build image with Theia version `<version>` - `<version>` must be a valid Theia version and subfolder of `ide/theia`
+- `--theia <version>` - build image with Theia version `<version>` - `<version>` must be a valid Theia version and subfolder of `ide/theia`; the default canonical Theia folder is `ide/theia/latest`
 - `--push` - push resulting image to registry (for buildx and depot builders - requires appropriate permissions for the registry)
 - `--load` - load resulting image to local dockerd (for `buildx` and `depot` builders)
 - `--no-cache`, `--force-rm`, `--progress-plain` - pass the relevant option to the Docker build process
@@ -45,10 +45,10 @@ To build a new image tagged for a custom repo, e.g. `myrepo:test`:
 ./build/build.sh --repo myrepo --tag test
 ```
 
-To build a new image with Theia version `1.25.0` with tag `theia-1.25.0`:
+To build a new image with Theia version `1.66.1` with tag `theia-1.66.1`:
 
 ```
-./build/build.sh --theia 1.25.0 --tag theia-1.25.0
+./build/build.sh --theia 1.66.1 --tag theia-1.66.1
 ```
 
 To build an image to the `theia-build` stage, for testing the Theia
