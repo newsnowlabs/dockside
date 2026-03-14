@@ -404,6 +404,13 @@ if( ! -d $CONFIG->{'tmpPath'} ) {
    mkpath( [ $CONFIG->{'tmpPath'} ], 0, 0755 );
 }
 
+# Write an initial containers.json synchronously before entering the event loop.
+# This ensures the Perl API server (nginx) always finds a current containers.json
+# on its first request, avoiding the startup race where profiles are loaded with
+# an empty network list because containers.json has not yet been written.
+flog("Writing initial container state synchronously...");
+try { update() } catch { flog("Initial update failed (non-fatal): " . (ref($_) ? $_->dbg : $_)) };
+
 # Restart eventHandler if the 'docker events' stream closes unexpectedly (e.g. Docker restart).
 while(1) {
    eventHandler();

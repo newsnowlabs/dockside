@@ -134,7 +134,23 @@ my $CONFIG_FILES = {
       'load' => \&cacheReadWrite,
       'parse' => sub ($json_text) { return decode_json($json_text); },
       'process' => sub ($data) {
+         # Capture network list for the Dockside container before updating $CONTAINERS,
+         # so we can detect changes and invalidate the profile cache if needed.
+         my $oldNetworks = join(',', sort keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} });
+
          Containers::Configure($data);
+
+         # If the Dockside container's network list changed, force profiles to reload on
+         # the next request. Profiles compute their available-networks list at load time
+         # from $CONTAINERS; without this invalidation they would serve stale (or empty)
+         # network lists after containers.json is first written or after a network
+         # connect/disconnect event.
+         my $newNetworks = join(',', sort keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} });
+         if ($oldNetworks ne $newNetworks) {
+            flog("Data::load: containers.json: Dockside container network list changed ('$oldNetworks' -> '$newNetworks'); invalidating profile cache");
+            delete $CONFIG_FILES->{'profiles/*.json'}{'lastModified'};
+         }
+
          Reservation->update_container_info();
       }
    },
