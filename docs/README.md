@@ -4,9 +4,9 @@
 
 # Introduction
 
-Dockside is a tool for provisioning lightweight access-controlled IDEs, staging environments and sandboxes - aka _devtainers_ - on local machine, self-hosted on-premises on bare metal or VM, or in the cloud. It packages multiple browser IDE options, such as OpenVSCode Server and Theia, alongside secure SSH access for terminal workflows or connecting local VS Code via Remote SSH.
+Dockside is a tool for launching access-controlled HTTPS-provisioned dev/staging container sandboxes (aka _devtainers_), on local machine, self-hosted on-prem or in your private cloud. It packages multiple browser IDE options, such as OpenVSCode Server and Theia, alongside SSH access for terminal workflows or [VS Code](https://code.visualstudio.com/docs/remote/ssh) or [JetBrains](https://www.jetbrains.com/remote-development/) development over SSH.
 
-By provisioning a devtainer for every fork and branch, Dockside allows collaborative software and product development teams to take lean and iterative development and testing to a highly parallelised extreme.
+By provisioning a devtainer for every fork and branch, Dockside allows collaborative software and product development teams to streamline and paralellise development, staging and testing in lean and iterative product development workflows.
 
 <h3 align="center">Our sponsors</h3>
 <p align="center">
@@ -17,10 +17,10 @@ By provisioning a devtainer for every fork and branch, Dockside allows collabora
 
 Core features:
 
-- Instantly launch and clone an almost infinite multiplicity of disposable devtainers - one for each task, bug, feature or design iteration.
-- Powerful IDE bundle including OpenVSCode Server and Theia, plus first-class SSH and VS Code-over-SSH access.
-- HTTPS automatically provisioned for every devtainer.
-- SSH server and access automatically provisioned for every devtainer.
+- Instantly launch disposable devtainers: one for each task, bug, feature or design iteration, if you need to.
+- Powerful IDE bundle including [OpenVSCode](https://github.com/gitpod-io/openvscode-server and [Theia](https://theia-ide.org/, plus first-class SSH and support for [VS Code Remote Development using SSH](https://code.visualstudio.com/docs/remote/ssh) or [JetBrains development over SSH](https://www.jetbrains.com/remote-development/).
+- An access-controlled HTTPS reverse proxy automatically provisioned for every devtainer, with separately configurable domain name prefixes for each subservice.
+- SSH server with automated `authorized_keys` provision for every devtainer.
 - User authentication and access control to running devtainers and their web services.
 - Fine-grained user and role-based access control to devtainer functionality and underlying system resources.
 - Launch devtainers from stock Docker images, or from your own.
@@ -52,7 +52,7 @@ Benefits for product managers and senior management:
 
 Advanced features:
 
-- Runtime agnostic: use runC (Docker's default), [sysbox](https://github.com/nestybox/sysbox), [gvisor](https://gvisor.dev/), or others.
+- Runtime agnostic: use runC (Docker's default), [sysbox](https://github.com/nestybox/sysbox), [gvisor](https://gvisor.dev/), [RunCVM](https://github.com/newsnowlabs/runcvm) or others.
 - Apply Docker system resource limits to devtainers, and communicate available system resources to devtainers using [LXCFS](extensions/lxcfs.md).
 - Support for launching [multi-architecture devtainers](extensions/multiarch.md) using [qemu-user-static](https://github.com/multiarch/qemu-user-static).
 - Support for launching KVM VMs on amd64 hardware using [RunCVM](https://github.com/newsnowlabs/runcvm)
@@ -219,8 +219,8 @@ See [Securing profiles and devtainers](securing.md)
 
 - [LXCFS](extensions/lxcfs.md) -- allows processes within devtainers to correctly report their own cpu, memory, and disk available resources and usage
 - [Multi-architecture devtainers](extensions/multiarch.md) -- support for devtainers running non-amd64 processor architectures
-- [Docker-in-Dockside devtainers](extensions/runtimes/sysbox.md#sysbox-docker-in-dockside-devtainers) -- support for running devtainers using the sysbox runtime
-- [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox runtime
+- [Docker-in-Dockside devtainers](extensions/runtimes/sysbox.md#sysbox-docker-in-dockside-devtainers) -- support for running devtainers using the sysbox or RunCVM runtimes
+- [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox or RunCVM runtimes
 - [Backups](extensions/backups.md) -- strategies for backing up devtainers
 - [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows seamless one-click SSH access to devtainers from the command line and accessing devtainers using VS Code
 - [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality across Dockside IDEs (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within their UIs or terminals
