@@ -148,7 +148,7 @@ docker run -it --name dockside \
 **Once Dockside is running:**
 
 4. Open the Dockside UI, click **Launch**, and pick an example profile (e.g. `Alpine` or `Debian`) to launch your first trial devcontainer — this confirms everything is working.
-5. Next, [register your team members and configure profiles](setup.md) to tailor the available devcontainer types for your projects. See [Setup](#setup) below for a guided overview.
+5. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects. See [**Setup**](#setup) below for a guided overview and [**read full details of the config files here**](setup.md).
 
 ### Launch on a public domain with auto-generated SSL
 
@@ -202,7 +202,8 @@ Key workflow points:
 
 - **[Launching a devcontainer](usage.md#launching-a-devtainer)**: choose a profile, select a Docker image, set your network and runtime, optionally specify a git branch or other profile options, then click **Launch**.
 - **[Using the IDE](usage.md#using-the-dockside-ide)**: open Theia or OpenVSCode Server directly in your browser. AI coding tools (Claude Code, Codex, Copilot) run natively inside the IDE. The bundled `gh` CLI authenticates automatically when you have a `gh_token` configured in your user profile.
-- **[SSH access](extensions/ssh.md)**: one-click SSH from the Dockside UI, or SSH in directly from any terminal. Works with VS Code Remote SSH and JetBrains Remote Development out of the box once SSH client setup is complete.
+- **[SSH access](extensions/ssh.md#integrated-ssh-server-support)**: one-click SSH from the Dockside UI, or SSH in directly from any terminal. Works with VS Code Remote SSH and JetBrains Remote Development out of the box once SSH client setup is complete.
+- **[Outbound SSH for git operations](extensions/ssh.md#adding-ssh-keys-to-a-users-profile)**: add a user's keypair to their `users.json` record and Dockside automatically loads it into the integrated `ssh-agent` on every devcontainer launch — enabling `git push` / `git pull` to GitHub, GitLab, or any SSH remote from the IDE or terminal, with no manual `ssh-add` required.
 - **[Sharing and access control](setup.md#router-authaccess-levels)**: share a devcontainer with teammates as developers or viewers, and set per-service access levels (owner-only, team, or public URL).
 
 For the full UI and CLI reference see [Usage](usage.md).

@@ -1,76 +1,80 @@
 # Alternative runtimes
 
-Dockside is runtime-agnostic. By default it uses the standard `runc` runtime supplied by Docker, but it also supports a range of alternative runtimes for specialised use cases. Available runtimes are autodetected from the host's Docker daemon, so adding `["*"]` to the `runtimes` field of a profile is enough to expose all installed runtimes to users.
+Dockside is runtime-agnostic. It can launch devcontainers in a variety of runtimes, and Dockside itself can be launched in a variety of runtimes.
+
+There are two distinct ways an alternative runtime can be used:
+
+- **Launching devcontainers in an alternative runtime** gives each developer's devcontainer the capabilities of that runtime — for example, an isolated Docker daemon via Sysbox, hardware-virtualised kernel isolation via RunCVM, or a sandboxed system-call surface via gVisor.
+- **Launching Dockside itself in an alternative runtime** (Sysbox or RunCVM) goes further: Dockside runs inside an isolated container with its own `dockerd`, entirely independent of the host's Docker daemon, its image store, and its container storage.
+
+Both modes are supported by Sysbox and RunCVM; gVisor is supported as a devcontainer runtime only.
+
+Available runtimes are autodetected from the host's Docker daemon. Adding `["*"]` to the `runtimes` field of a profile exposes all installed runtimes to users at launch time, with no profile changes needed when new runtimes are added.
 
 ## Sysbox
 
 [Sysbox](https://github.com/nestybox/sysbox) is an open-source, next-generation OCI runtime that empowers rootless containers to run workloads such as Systemd, Docker, and Kubernetes — just like VMs — without requiring privileged containers.
 
-Dockside supports Sysbox in two different configurations.
+To install Sysbox on your host, see the [Sysbox User Guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install.md).
 
-### Sysbox 'Docker-in-Dockside' devtainers
+### Running devcontainers with Sysbox
 
-It may be useful for developers to be able to run Docker within their devtainers.
+Running devcontainers under Sysbox allows each developer to have a fully isolated Docker installation within their devcontainer — able to run Systemd, Docker, Kubernetes and other workloads that require a fuller kernel environment.
 
-Within a closely-knit development team it may be considered acceptable to provide access to the host's `/var/run/docker.sock` within developers' devtainers.
+Within a closely-knit development team it may be considered acceptable to provide access to the host's `/var/run/docker.sock` within developers' devtainers. For the more general case, Sysbox provides isolated Docker-in-devcontainer without that risk.
 
-For the more general case, we recommend using Dockside with [Sysbox](https://github.com/nestybox/sysbox), an _open-source, next-generation "runc" that empowers rootless containers to run workloads such as Systemd, Docker, Kubernetes, just like VMs_.
+Configuring Dockside to use Sysbox for devcontainers is as simple as modifying your profiles:
 
-To install Sysbox on your host, please see the [Sysbox User Guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install.md).
+1. Add `sysbox-runc` to the `runtimes` section (or use `["*"]` to autodetect all available runtimes, which will include `sysbox-runc` once installed).
+2. Optionally add an anonymous volume mounted at `/var/lib/docker` to the `mounts` section to give each devcontainer its own persistent Docker storage.
 
-Following Sysbox installation, configuring Dockside to use Sysbox should be as easy as modifying your devtainer profiles by:
+### Running Dockside itself with Sysbox
 
-1. Adding `sysbox-runc` to the `runtimes` section (or using `["*"]` to autodetect all available runtimes, which will include `sysbox-runc` once installed)
-2. [Optionally] Adding an anonymous volume mounted at `/var/lib/docker` to the `mounts` section
+As an alternative to using Sysbox only for devcontainers, Dockside may itself be launched within the Sysbox runtime (and without bind-mounting `/var/run/docker.sock` from the host). In this configuration Dockside runs its own `dockerd` entirely independently of the host.
 
-### Self-contained Docker-in-Dockside
+When Dockside detects it is not running under the `runc` runtime, or when launched with `--run-dockerd`, it will start its own `dockerd` inside the Dockside container. Devcontainers launched thereafter are managed by that dedicated daemon and have no relationship to the host's Docker daemon.
 
-As an alternative to using [Sysbox](https://github.com/nestybox/sysbox) as the runtime for launching devtainers (described above), Dockside may instead itself be
-launched within the Sysbox runtime and without bind-mounting `/var/run/docker.sock` from the host.
+The trade-offs between the two Sysbox configurations are:
 
-When Dockside detects it is not launched within the `runc` runtime, or when Dockside is launched with `--run-dockerd`, Dockside
-will attempt to launch its own `dockerd` within the Dockside container.
-
-Thereafter, when Dockside launches a devtainer using the standard `runc` runtime, it will be launched within the Docker context of the
-'parent' Dockside Sysbox container and will have no relationship or access to the Docker daemon running on the host.
-
-The benefits of this use of Sysbox are different to Docker-in-Dockside devtainers:
-
-| Docker-in-Dockside devtainers | Self-contained Docker-in-Dockside |
-| - | - |
-| Launch Dockside using `runc` | Launch Dockside using `sysbox` |
-| Host's `/var/run/docker.sock` must be bind-mounted | Host's `/var/run/docker.sock` must not be bind-mounted |
-| Dockside uses host's Docker daemon | Dockside benefits from increased isolation from host, and launches and uses its own dedicated Docker daemon, running independently of the host's Docker daemon (and its image and container storage) |
-| Devtainers may be launched using `runc` or `sysbox` | Devtainers must be launched using `runc` |
-| Devtainers launched using `runc` and bind-mounting `/var/run/docker.sock` share and use the host's Docker daemon (and its image and container storage) | Devtainers bind-mounting `/var/run/docker.sock` share and use Dockside's own dedicated Docker daemon (and its image and container storage), running independently of the host's Docker daemon (and its image and container storage) |
-| Devtainers launched using `sysbox` benefit from increased isolation from host and may each run their own Docker daemon independently of each other and of the host (each with their own image and container storage), providing developers with their own independent Docker installation | Devtainers may not be launched using `sysbox` |
-| **Use when**: you want to give developers fully-isolated devtainers, optionally with their own fully-independent Docker installation | **Use when:** you want to keep Dockside and its devtainers entirely isolated from your host, and do not need devtainers to run Docker or do not mind shared access to the Dockside Docker daemon |
+| | Devcontainers run under Sysbox | Dockside itself runs under Sysbox |
+| - | - | - |
+| **Launch Dockside using** | `runc` | `sysbox` |
+| **Host `/var/run/docker.sock`** | Must be bind-mounted | Must not be bind-mounted |
+| **Dockside's Docker daemon** | Host's daemon | Dockside's own dedicated daemon |
+| **Devtainer runtimes available** | `runc` or `sysbox` | `runc` only |
+| **Devtainers with `/var/run/docker.sock`** | Share the host daemon | Share Dockside's dedicated daemon |
+| **Sysbox devcontainers** | Each gets its own isolated Docker daemon | Not supported |
+| **Use when** | You want developers to have fully-isolated devcontainers, optionally each with their own independent Docker installation | You want to keep Dockside and all its devcontainers entirely isolated from your host |
 
 ## RunCVM
 
 [RunCVM](https://github.com/newsnowlabs/runcvm) is a Dockside-developed OCI runtime shim that runs Docker containers as lightweight KVM virtual machines, while preserving the standard `docker run` / `docker exec` workflow.
 
-**Key use cases:**
+**Requirements:** RunCVM requires an amd64 host with KVM support (`/dev/kvm` available). To install RunCVM, see the [RunCVM README](https://github.com/newsnowlabs/runcvm).
 
-- **Full kernel isolation**: each devcontainer runs its own Linux kernel, making it completely isolated from the host kernel and from other devcontainers.
-- **KVM workloads on amd64**: run workloads that require `/dev/kvm`, Systemd as PID 1, kernel modules, or low-level networking inside a devcontainer.
-- **Stronger security boundary**: hardware virtualisation provides a stronger security boundary than namespace/cgroup-based isolation.
+Once installed, add `runcvm` to the `runtimes` section of your Dockside profiles (or use `["*"]` to autodetect).
 
-**Requirements:** RunCVM requires an amd64 host with KVM support (`/dev/kvm` available).
+### Running devcontainers with RunCVM
 
-To install RunCVM, see the [RunCVM README](https://github.com/newsnowlabs/runcvm). Once installed, add `runcvm` to the `runtimes` section of your Dockside profiles (or use `["*"]` to autodetect).
+Each devcontainer launched under RunCVM runs as a KVM virtual machine with its own Linux kernel. Key use cases:
+
+- **Full kernel isolation**: each devcontainer is completely isolated from the host kernel and from other devcontainers — a much stronger boundary than namespace/cgroup isolation.
+- **KVM workloads**: run workloads that require `/dev/kvm`, Systemd as PID 1, kernel modules, or low-level networking.
+- **Stronger security for AI agents**: hardware virtualisation limits the blast radius of a compromised or runaway AI coding session.
+
+### Running Dockside itself with RunCVM
+
+Just as with Sysbox, Dockside can itself be launched as a RunCVM devcontainer. This gives Dockside a fully isolated environment: Dockside runs its own `dockerd` (via `--run-dockerd`) inside a KVM VM, with no access to the host's Docker daemon. See the example [`92-dockside-runcvm.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/92-dockside-runcvm.json) profile for a working configuration.
 
 ## gVisor
 
 [gVisor](https://gvisor.dev/) is a Google-developed application kernel written in Go that intercepts and handles system calls in user space, providing a sandboxed environment with a reduced host kernel attack surface.
 
+**Requirements:** gVisor (`runsc`) must be installed on the host. See the [gVisor installation guide](https://gvisor.dev/docs/user_guide/install/). Once installed, `runsc` will be autodetected when using `["*"]` in a profile's `runtimes` field.
+
 **Key use cases:**
 
-- **Sandboxed devcontainers**: run untrusted or externally-sourced code in a devcontainer with gVisor's `runsc` runtime to limit exposure to kernel vulnerabilities.
-- **AI agent isolation**: pair with Dockside's per-network firewall rules to constrain both system-call surface and network reachability for AI coding agent sessions.
+- **Sandboxed devcontainers**: run untrusted or externally-sourced code with gVisor's `runsc` runtime to limit exposure to host kernel vulnerabilities.
+- **AI agent isolation**: pair with Dockside's per-network outbound firewall rules to constrain both the system-call surface and network reachability of AI coding agent sessions.
 
-**Requirements:** gVisor (`runsc`) must be installed on the host. See the [gVisor installation guide](https://gvisor.dev/docs/user_guide/install/).
-
-Once installed, the `runsc` runtime will be autodetected by Dockside when using `["*"]` in a profile's `runtimes` field, or you can add it explicitly.
-
-> **Note:** gVisor does not support all Linux system calls; some workloads that depend on uncommon kernel interfaces may not function correctly under `runsc`. Test your devcontainer images under gVisor before rolling out to your team.
+> **Note:** gVisor does not support all Linux system calls. Some workloads that depend on uncommon kernel interfaces may not function correctly under `runsc`. Test your devcontainer images under gVisor before rolling out to your team.

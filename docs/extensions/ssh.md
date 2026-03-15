@@ -39,26 +39,55 @@ On launch of a devtainer, Dockside will load any SSH keys specified in the user'
 
 ### Adding SSH keys to a user's profile
 
-See 
+Dockside supports two distinct SSH key needs, configured separately in each user's record in `users.json`:
 
-### Adding SSH keys to a devtainer workspace
+**1. Inbound SSH access (`authorized_keys`) — who can SSH into a devcontainer**
 
-SSH public and private key files may be dragged-and-dropped into the IDE file explorer, or uploaded by right-clicking on a folder and selecting `Upload`.
+Add the user's SSH public key(s) to their `users.json` record under `ssh.authorized_keys`:
 
-However, to automatically provision key files into newly-launched devtainers, configure your profiles to mount a docker volume (or bind-mount a host directory) containing your users' encrypted key files. e.g.
-
-```
-   "volume": [
-      // Use this to share encrypted ssh keys from the owner's named volume with their devtainers.
-      // N.B. Don't overwrite /home/{ideUser}/.ssh if integrated SSH server support is enabled!
-      { "src": "myprofile-sshkeys-{user.username}", "dst": "/home/{ideUser}/.ssh/keys" }
-   ]
+```json
+"ssh": {
+  "authorized_keys": ["ssh-ed25519 AAAA... alice@example.com"]
+}
 ```
 
-(For an example of how this may be done, please see the [`dockside.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/dockside.json) profile.)
+Whenever a devcontainer is started, or its developer list is changed, Dockside writes the public keys of all authorised developers into the devcontainer's `~/.ssh/authorized_keys` — automatically, with no manual step needed.
+
+> **Profile requirement:** For Dockside to write `authorized_keys`, the devcontainer's `~/.ssh` directory must be writable and must not be a persistent volume containing its own `authorized_keys`. The recommended approach (used in the example `10-alpine.json` profile) is to mount `~/.ssh` as a `tmpfs`:
+> ```json
+> "tmpfs": [
+>   { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+> ]
+> ```
+> This gives Dockside full control of `authorized_keys` on every start. Do not mount a volume or bind-mount over `~/.ssh` (or over `authorized_keys` directly) in profiles where SSH is enabled, or Dockside's automatic key provisioning will not work.
+
+**2. Outbound SSH keypairs (`keypairs`) — authenticating out from a devcontainer to GitHub, GitLab, etc.**
+
+To enable `git push` / `git pull` and other outbound SSH operations from within the IDE or terminal, add the user's keypair to their `users.json` record under `ssh.keypairs`:
+
+```json
+"ssh": {
+  "authorized_keys": ["ssh-ed25519 AAAA... alice@example.com"],
+  "keypairs": {
+    "*": {
+      "public":  "ssh-ed25519 AAAA... alice@example.com",
+      "private": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n"
+    }
+  }
+}
+```
+
+On devcontainer launch, Dockside automatically loads the keypair into the integrated `ssh-agent`. The key is then available to the IDE (for `Git: Push` / `Git: Pull`), to VS Code extensions, and to any command run in the IDE terminal — without any manual `ssh-add` step.
+
+> **Security note:** The private key stored in `users.json` will be accessible to any admin who can read the config files. Use an SSH key dedicated to Dockside / your development workflow, separate from any personal or production keys. Consider using an encrypted key and relying on `ssh-add` rather than storing it in `users.json` if your threat model requires it.
+
+### Adding SSH keys to a devtainer workspace manually
+
+Manual key provisioning is still possible — SSH public and private key files may be dragged-and-dropped into the IDE file explorer, or uploaded by right-clicking on a folder and selecting `Upload`. Any loaded key can be added to the running agent with `ssh-add <path-to-key>`.
+
+For most teams, configuring `ssh.keypairs` in `users.json` (described above) is simpler and more reliable, since keys are provisioned automatically into every new devcontainer without any manual step.
 
 > N.B.
-> 
-> 1. Although this approach means that users of a profile will have access to each others public and private key files, it will not confer access to a user's key _as long as_ the private key file is encrypted.
-> 2. It is __not recommended__ to share unencrypted SSH keys files between users in this fashion.
-> 3. If you share access to a devtainer IDE, you share access to any unencrypted keys/key files within the container. We recommend __only using encrypted key files__, running `ssh-add` to decrypt them as needed, and running `ssh-add -D` to delete stored unencrypted identities, or `ssh-add -x` to lock the agent, before sharing the IDE with untrusted users.
+>
+> 1. If you share access to a devtainer IDE, you share access to any unencrypted keys within the container. We recommend __only using encrypted key files__, running `ssh-add` to decrypt them as needed, and running `ssh-add -D` to delete stored unencrypted identities, or `ssh-add -x` to lock the agent, before sharing the IDE with untrusted users.
+> 2. It is __not recommended__ to share unencrypted SSH key files between users via shared volume mounts.
