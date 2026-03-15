@@ -24,8 +24,10 @@ log "Evaling arguments $@ ..."
 eval "$@"
 
 # Set needed environment variables
-export PATH="$PATH:$IDE_PATH/bin"
+export PATH="$PATH:$IDE_PATH/bin:$IIDE_PATH/openvscode/bin/remote-cli"
 export GIT_EXEC_PATH="$IDE_PATH/bin"
+export GIT_EDITOR="$IIDE_PATH/openvscode/bin/remote-cli/openvscode-server --wait --reuse-window"
+export EDITOR="$GIT_EDITOR"
 
 log "Launching IDE with IIDE_PATH='$IIDE_PATH' and IDE_PATH='$IDE_PATH' using: ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token ..."
 

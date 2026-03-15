@@ -341,7 +341,8 @@ RUN export \
     /tmp/make-bundelf-bundle.sh --bundle && \
     cd $BUNDELF_CODE_PATH/.. && \
     ln -s $OPENVSCODE_VERSION latest && \
-    cp -a /tmp/bin $OPENVSCODE_VERSION/
+    cp -a /tmp/bin $OPENVSCODE_VERSION/ && \
+    cd latest/openvscode/bin/remote-cli && ln -s openvscode-server code
 
 # Default diagnostics entrypoint for this stage (uses relocatable node and openvscode, loses BASH_ENV build environment)
 ENV BASH_ENV=""
