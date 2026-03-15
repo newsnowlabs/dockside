@@ -322,22 +322,40 @@ fi
 log "Creating /var/log/$APP log directory ..."
 mkdir -p /var/log/$APP && chown -R $USER:$USER /var/log/$APP
 
-log "Rsyncing $OPT_PATH.img/ to $OPT_PATH/ ..."
+log "Populating $OPT_PATH from $OPT_PATH.img/ ..."
 if [ -d "$OPT_PATH.img" ] && [ -d "$OPT_PATH" ]; then
-  # ide/: add new versions but preserve old ones (existing devtainers may still be using them)
-  mkdir -p "$OPT_PATH/ide"
-  rsync --archive "$OPT_PATH.img/ide/" "$OPT_PATH/ide/"
 
-  # Everything else (bin/, system/, etc.): clean sync, removing files not in the new image.
-  # Exclude ide/ (handled above without --delete) and host/ (separate named volume).
-  rsync --archive --delete \
-    --exclude=ide \
-    --exclude=host \
-    "$OPT_PATH.img/" "$OPT_PATH/"
+  # IDE version dirs: copy new ones only, preserving existing (running devtainers may still use them)
+  for src in "$OPT_PATH.img/ide"/*/*; do
+    dst="$OPT_PATH/ide/$(basename "$(dirname "$src")")/$(basename "$src")"
+    if [ -e "$dst" ]; then
+      log "- [EXISTS] ${src#$OPT_PATH.img/}"
+    else
+      log "- [INSTALL] ${src#$OPT_PATH.img/}"
+      mkdir -p "$(dirname "$dst")"
+      cp -a "$src" "$(dirname "$dst")/"
+    fi
+  done
 
-  log "- Rsync complete."
+  # system/ version dirs: same pattern
+  for src in "$OPT_PATH.img/system"/[!l]*/; do
+    dst="$OPT_PATH/system/$(basename "$src")"
+    if [ ! -e "$dst" ]; then
+      log "- [INSTALL] system/$(basename "$src")"
+      mkdir -p "$OPT_PATH/system"
+      cp -a "$src" "$OPT_PATH/system/"
+    fi
+  done
+
+  # Always update latest symlinks and bin/ (small, safe to overwrite)
+  mkdir -p "$OPT_PATH/bin" "$OPT_PATH/system"
+  cp -a "$OPT_PATH.img/bin/." "$OPT_PATH/bin/"
+  cp -a "$OPT_PATH.img/system/latest" "$OPT_PATH/system/"
+  cp -a "$OPT_PATH.img/launch.sh" "$OPT_PATH/"
+
+  log "- Done."
 else
-  log "- Skipping rsync: $OPT_PATH.img not found (development/legacy mode)."
+  log "- Skipping: $OPT_PATH.img not found (development/legacy mode)."
 fi
 
 log "Testing if shared IDE volume '$OPT_PATH' is writeable ..."

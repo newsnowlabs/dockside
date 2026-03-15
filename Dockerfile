@@ -391,8 +391,7 @@ RUN apt-get update && \
     apt-get -y --no-install-recommends --no-install-suggests install \
         apt-transport-https ca-certificates \
         curl \
-        gnupg2 \
-        rsync && \
+        gnupg2 && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - && \
     echo "deb https://download.docker.com/linux/debian $(cat /etc/os-release | grep VERSION_CODENAME | cut -d '=' -f2) stable" >/etc/apt/sources.list.d/docker.list && \
     apt-get update && \
