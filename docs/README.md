@@ -2,11 +2,20 @@
     <img alt="//Dockside" src="https://user-images.githubusercontent.com/354555/145203965-b573f43b-757a-4471-a39c-d2e53b1acb41.png" width="75%"/>
 </p>
 
+<p align="center">
+  <a href="https://github.com/newsnowlabs/dockside"><img alt="GitHub stars" src="https://img.shields.io/github/stars/newsnowlabs/dockside?style=flat-square&logo=github"></a>
+  <a href="https://hub.docker.com/r/newsnowlabs/dockside"><img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/newsnowlabs/dockside?style=flat-square&logo=docker"></a>
+  <a href="https://github.com/newsnowlabs/dockside/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/licence-Apache%202.0-blue?style=flat-square"></a>
+  <img alt="AI-ready" src="https://img.shields.io/badge/AI--ready-Claude%20%7C%20Codex%20%7C%20Copilot-8A2BE2?style=flat-square">
+</p>
+
 # Introduction
 
 Dockside is a self-hosted platform for teams who want a devcontainer for every branch — isolated, browser-accessible, HTTPS-secured, and ready in seconds, on your own infrastructure.
 
 Each devcontainer (or _devtainer_, as we call them) is automatically provisioned with a browser IDE, SSH access, and a dedicated HTTPS reverse proxy with per-service subdomains. No per-project configuration required. Spin one up per branch, per task, per developer — or per AI agent session.
+
+> **Note on terminology:** Dockside's _devtainers_ are development containers in the general sense. They predate and differ from the [VS Code devcontainer spec](https://containers.dev/) (`.devcontainer/devcontainer.json`), though they serve the same core purpose: a reproducible, isolated environment for each piece of work.
 
 **Running AI coding tools?** Dockside devcontainers are natural sandboxes for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://openai.com/codex), GitHub Copilot and similar. The Claude and Codex CLIs — and their VS Code extensions — run natively inside Dockside's integrated IDEs. Each AI session is isolated in its own container. And coming soon: built-in network firewall management to define exactly what AI agents can reach, reproducing purpose-built AI devcontainer security without elevated capabilities or weakened isolation.
 
@@ -23,6 +32,22 @@ AI coding tools work best when they have their own isolated environment to opera
 - **Per-session isolation**: each AI coding session gets its own devcontainer. Unintended side-effects — runaway processes, unexpected file changes, dependency conflicts — stay within that container's blast radius and don't touch your host or other devcontainers.
 - **Network firewall management** _(coming soon)_: configurable outbound firewall rules per devcontainer, letting you define exactly what AI agents can and cannot reach on the network. Reproduces the security model of purpose-built AI sandboxes in a customisable, self-hosted way — without requiring elevated container capabilities or weakening isolation.
 
+## Why Dockside?
+
+| | Dockside | GitHub Codespaces | Gitpod | Coder |
+|---|---|---|---|---|
+| **Self-hosted / private cloud** | ✅ | ❌ | Partial | ✅ |
+| **No per-seat cloud fees** | ✅ | ❌ | ❌ | ✅ |
+| **Your data stays on your infra** | ✅ | ❌ | ❌ | ✅ |
+| **Full root in containers** | ✅ | ❌ | ❌ | Partial |
+| **AI CLI tools run natively in IDE** | ✅ | Partial | Partial | Partial |
+| **Per-container network firewall for AI** | ✅ soon | ❌ | ❌ | ❌ |
+| **Browser IDE + SSH + JetBrains** | ✅ | ✅ | ✅ | ✅ |
+| **Works on your laptop** | ✅ | ❌ | ❌ | ❌ |
+| **Open source** | ✅ Apache 2.0 | ❌ | Partial | ✅ AGPL |
+
+Dockside's sweet spot: teams that want **Codespaces-style devcontainers without the cloud lock-in**, and teams that want to run AI coding agents **safely and privately** on their own infrastructure.
+
 ## Features
 
 Core features:
@@ -37,8 +62,6 @@ Core features:
 - Launch devcontainers from stock Docker images, or from your own.
 - Root access within devcontainers, so developers can upgrade their environment and install operating system packages when and how they need.
 - Bundled GitHub CLI (`gh`) with per-user token support for seamless `gh pr checkout` and other GitHub operations.
-
-Dockside supports working directly in browser IDEs, connecting local VS Code via SSH, or using plain SSH terminals, so teams can adopt the workflow that best fits each task.
 
 Benefits for developers:
 
@@ -78,6 +101,8 @@ Advanced features:
 <p align="center">
 <a title="Click to view video in HD on YouTube" href="https://www.youtube.com/embed/buAefREyngQ" target="_blank"><img src="https://user-images.githubusercontent.com/354555/135777679-67fd1424-f01f-4072-ac3e-ed910c8711af.gif" alt="Dockside Walkthrough Video" width="70%"></a>
 </p>
+
+> _Recorded in 2021 — the core workflow remains the same, though the UI has evolved since then._
 
 ## Host requirements
 
@@ -238,9 +263,9 @@ See [Securing profiles and devtainers](securing.md)
 - [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows seamless one-click SSH access to devtainers from the command line and accessing devtainers using VS Code
 - [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality across Dockside IDEs (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within their UIs or terminals
 
-## Case-study: Dockside in production at NewsNow
+## Case study: Dockside in production at NewsNow
 
-Read the [case study of how Dockside is used in production](case-studies/NewsNow.md) for all aspects of web application and back-end development and staging (including acceptance testing) of the websites [https://www.newsnow.co.uk/](https://www.newsnow.co.uk/) and [https://www.newsnow.com/](https://www.newsnow.com/).
+Dockside was built at [NewsNow](https://www.newsnow.co.uk/about/) and has been the daily development platform for the entire NewsNow engineering team for years. Read [how it's used in production](case-studies/NewsNow.md) across all aspects of web application and back-end development, staging, and acceptance testing for [newsnow.co.uk](https://www.newsnow.co.uk/) and [newsnow.com](https://www.newsnow.com/) — a real-world, high-traffic platform built and maintained entirely inside Dockside devcontainers.
 
 ## Roadmap
 
