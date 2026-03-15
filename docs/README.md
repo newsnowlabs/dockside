@@ -4,27 +4,38 @@
 
 # Introduction
 
-Dockside is a tool for launching access-controlled HTTPS-provisioned dev/staging container sandboxes (aka _devtainers_), on local machine, self-hosted on-prem or in your private cloud. It packages multiple browser IDE options, such as OpenVSCode Server and Theia, alongside SSH access for terminal workflows or [VS Code](https://code.visualstudio.com/docs/remote/ssh) or [JetBrains](https://www.jetbrains.com/remote-development/) development over SSH.
+Dockside is a self-hosted platform for teams who want a devcontainer for every branch — isolated, browser-accessible, HTTPS-secured, and ready in seconds, on your own infrastructure.
 
-By provisioning a devtainer for every fork and branch, Dockside allows collaborative software and product development teams to streamline and paralellise development, staging and testing in lean and iterative product development workflows.
+Each devcontainer (or _devtainer_, as we call them) is automatically provisioned with a browser IDE, SSH access, and a dedicated HTTPS reverse proxy with per-service subdomains. No per-project configuration required. Spin one up per branch, per task, per developer — or per AI agent session.
+
+**Running AI coding tools?** Dockside devcontainers are natural sandboxes for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://openai.com/codex), GitHub Copilot and similar. The Claude and Codex CLIs — and their VS Code extensions — run natively inside Dockside's integrated IDEs. Each AI session is isolated in its own container. And coming soon: built-in network firewall management to define exactly what AI agents can reach, reproducing purpose-built AI devcontainer security without elevated capabilities or weakened isolation.
 
 <h3 align="center">Our sponsors</h3>
 <p align="center">
 <a title="NewsNow is hiring: work on Dockside and other existing projects" href="https://www.newsnow.co.uk/careers/?utm_source=GitHub&utm_medium=cpc&utm_campaign=2021-10-21-Developer-Roles&utm_content=SponsoredHiringAd" target="_blank"><img alt="Dockside sponsor NewsNow is hiring" src="https://user-images.githubusercontent.com/354555/144637598-5cc14a58-6918-4170-8b47-bbd26cb84062.png"></a>
 </p>
 
+## AI-assisted development
+
+AI coding tools work best when they have their own isolated environment to operate in — somewhere they can install dependencies, run tests, edit files, and make mistakes, without affecting anything else. Dockside devcontainers are a natural fit.
+
+- **Claude Code and OpenAI Codex CLIs** run natively inside Dockside's integrated IDEs (OpenVSCode Server and Theia), as do their VS Code extensions. Point an AI agent at a fresh devcontainer, let it work, then review the result — all contained.
+- **Per-session isolation**: each AI coding session gets its own devcontainer. Unintended side-effects — runaway processes, unexpected file changes, dependency conflicts — stay within that container's blast radius and don't touch your host or other devcontainers.
+- **Network firewall management** _(coming soon)_: configurable outbound firewall rules per devcontainer, letting you define exactly what AI agents can and cannot reach on the network. Reproduces the security model of purpose-built AI sandboxes in a customisable, self-hosted way — without requiring elevated container capabilities or weakening isolation.
+
 ## Features
 
 Core features:
 
-- Instantly launch disposable devtainers: one for each task, bug, feature or design iteration, if you need to.
-- Powerful IDE bundle including [OpenVSCode](https://github.com/gitpod-io/openvscode-server and [Theia](https://theia-ide.org/, plus first-class SSH and support for [VS Code Remote Development using SSH](https://code.visualstudio.com/docs/remote/ssh) or [JetBrains development over SSH](https://www.jetbrains.com/remote-development/).
-- An access-controlled HTTPS reverse proxy automatically provisioned for every devtainer, with separately configurable domain name prefixes for each subservice.
-- SSH server with automated `authorized_keys` provision for every devtainer.
-- User authentication and access control to running devtainers and their web services.
-- Fine-grained user and role-based access control to devtainer functionality and underlying system resources.
-- Launch devtainers from stock Docker images, or from your own.
-- Root access within devtainers, so developers can upgrade their devtainers and install operating system packages when and how they need.
+- Instantly launch disposable devcontainers: one per task, bug, feature, design iteration, or AI agent session.
+- Powerful IDE bundle including [OpenVSCode Server](https://github.com/gitpod-io/openvscode-server) and [Theia](https://theia-ide.org/), plus first-class SSH and support for [VS Code Remote Development using SSH](https://code.visualstudio.com/docs/remote/ssh) or [JetBrains development over SSH](https://www.jetbrains.com/remote-development/).
+- AI-ready devcontainers: Claude Code, OpenAI Codex, GitHub Copilot and other AI tools and CLIs run natively inside every devcontainer's integrated IDE. Isolate each AI agent session in its own container for safe, auditable agentic development.
+- An access-controlled HTTPS reverse proxy automatically provisioned for every devcontainer, with separately configurable domain name prefixes for each subservice.
+- SSH server with automated `authorized_keys` provision for every devcontainer.
+- User authentication and access control to running devcontainers and their web services.
+- Fine-grained user and role-based access control to devcontainer functionality and underlying system resources.
+- Launch devcontainers from stock Docker images, or from your own.
+- Root access within devcontainers, so developers can upgrade their environment and install operating system packages when and how they need.
 - Bundled GitHub CLI (`gh`) with per-user token support for seamless `gh pr checkout` and other GitHub operations.
 
 Dockside supports working directly in browser IDEs, connecting local VS Code via SSH, or using plain SSH terminals, so teams can adopt the workflow that best fits each task.
@@ -32,15 +43,16 @@ Dockside supports working directly in browser IDEs, connecting local VS Code via
 Benefits for developers:
 
 - Code in a clone of your production environment, avoiding troublesome deploy-time errors and bugfixing.
-- Switch between and hand over tasks instantly. No more laborious branch switching, or committing code before it’s ready. ‘git stash’ will be a thing of the past.
+- Switch between and hand over tasks instantly. No more laborious branch switching, or committing code before it’s ready. `git stash` will be a thing of the past.
 - Work from anywhere. All you need is a browser.
-- Unifying on an IDE within a team can deliver great productivity benefits for collaborative teams through improved knowledge-share, better choices and configuration of plugins and other tooling.
+- Run AI coding agents — Claude Code, Codex, GitHub Copilot — safely inside isolated devcontainers. Each agent session is self-contained, and coming-soon firewall controls let you define exactly what AI tools can reach on the network.
+- Unifying on an IDE within a team can deliver great productivity benefits through improved knowledge-share and better choices of plugins and tooling.
 - SSH access facilitates use of any terminal editor or command line tool and seamless [VS Code remote development](https://code.visualstudio.com/docs/remote/ssh) via the [Remote SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) extension.
 - Develop against production databases (or production database clones) when necessary.
 
 Benefits for code reviewers:
 
-- Access your colleagues’ devtainers directly for code review.
+- Access your colleagues’ devcontainers directly for code review.
 - No more staring at code wondering what it does, or time-consuming setup, when their code is already running.
 - Annotate their code directly with your comments as to points they should address.
 - To save time, when you know best, apply and test your own fixes directly to their code.
@@ -48,7 +60,7 @@ Benefits for code reviewers:
 Benefits for product managers and senior management:
 
 - High visibility of product development progress. Access always-on application revisions and works-in-progress, wherever you are in the world.
-- Devs can be sometimes be fussy about their choice of IDE, but unifying on an IDE can deliver productivity benefits for collaborative teams through improved knowledge-share and tooling.
+- Every feature branch can have its own running environment — share a link with stakeholders to review work in progress without waiting for a dedicated staging deployment.
 
 Advanced features:
 
@@ -56,7 +68,7 @@ Advanced features:
 - Apply Docker system resource limits to devtainers, and communicate available system resources to devtainers using [LXCFS](extensions/lxcfs.md).
 - Support for launching [multi-architecture devtainers](extensions/multiarch.md) using [qemu-user-static](https://github.com/multiarch/qemu-user-static).
 - Support for launching KVM VMs on amd64 hardware using [RunCVM](https://github.com/newsnowlabs/runcvm)
-- Firewall or redirect outgoing devtainer traffic using custom Docker networks.
+- Firewall or redirect outgoing devcontainer traffic using custom Docker networks — useful for isolating AI agent network access or mirroring production network topologies.
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications.
 - Command-line interface (`dockside` CLI) for scripting, automation, and CI/CD integration.
 - Autodetection of available runtimes, networks and IDEs from the host environment.
@@ -89,7 +101,7 @@ Dockside requires a host with a minimum of 1GB memory.
 
 ### Quick Start — Launch locally
 
-The fastest way to get started with Dockside is to run it on your local machine. This is ideal for solo developers and teams working on multiple web projects simultaneously — spin up a devtainer per branch, per project, or per experiment, all accessible from your browser.
+The fastest way to get started with Dockside is to run it on your local machine. This is ideal for solo developers and teams working on multiple web projects simultaneously — spin up a devcontainer per branch, per project, per experiment, or per AI agent session, all accessible from your browser.
 
 1. Launch Dockside using its built-in SSL certificate:
 ```sh
@@ -232,9 +244,14 @@ Read the [case study of how Dockside is used in production](case-studies/NewsNow
 
 ## Roadmap
 
-Where are we taking Dockside? As Dockside today satisfactorily serves the needs of the NewsNow development team, its roadmap currently remains highly flexible. We have a list of features we think could be great to add, but we now want to hear from you what you would most value to see added to Dockside.
+Near-term priorities include:
 
-For our current ideas/plans, see our [draft roadmap](roadmap.md).
+- **Network firewall management**: per-devcontainer configurable outbound firewall rules, enabling safe AI agent sandboxing without elevated container capabilities — reproducing the security model of purpose-built AI devcontainer setups in a customisable, self-hosted way.
+- **Terraform launch support**: first-class infrastructure-as-code deployment for teams managing Dockside at scale.
+
+Beyond that, the roadmap is shaped by what our users most need. We'd love to hear from you — tell us what would be most valuable to add next.
+
+For the full picture, see our [draft roadmap](roadmap.md).
 
 ## Developing
 
