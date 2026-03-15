@@ -44,8 +44,8 @@
                "--tag", "test"
          ],
          "options": {
-            "env": { "PATH": "/home/newsnow/.depot/bin:/usr/local/bin:/usr/bin:/bin" },
-            "cwd": "/home/newsnow/dockside"
+            "env": { "PATH": "/home/dockside/.depot/bin:/usr/local/bin:/usr/bin:/bin" },
+            "cwd": "/home/dockside/dockside"
          },
          "group": "build",
          "problemMatcher": []
@@ -61,8 +61,8 @@
                "${input:push}"
          ],
          "options": {
-            "env": { "PATH": "/home/newsnow/.depot/bin:/usr/local/bin:/usr/bin:/bin" },
-            "cwd": "/home/newsnow/dockside"
+            "env": { "PATH": "/home/dockside/.depot/bin:/usr/local/bin:/usr/bin:/bin" },
+            "cwd": "/home/dockside/dockside"
          },
          "group": "build",
          "problemMatcher": []

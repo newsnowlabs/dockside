@@ -1,14 +1,14 @@
 package Data;
 
-use strict;
+use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION);
+our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO);
 
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
-use Util qw(flog cacheReadWrite get_config);
+use Util qw(flog cacheReadWrite get_config call_socket_json_api);
 
 my $CONFIG_PATH = '/data/config';
 
@@ -17,9 +17,10 @@ my $CONFIG_PATH = '/data/config';
 our $HOSTNAME = get_config('/etc/service/nginx/data/ctr-id');
 our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
 our $VERSION = get_config('/etc/service/nginx/data/version');
+our $HOSTINFO = { 'docker' => undef, 'IDEs' => undef }; # Host info cache: populated later
 
-sub parse_json {
-   local $_ = shift;
+sub parse_json ($json) {
+   local $_ = $json;
 
    # Remove lines beginning //
    s!^\s*//.*$!!gm;
@@ -35,11 +36,10 @@ sub parse_json {
 our $CONFIG;
 
 # Supports individual files or all files in a given directory (in which case the 'process' sub can expect an array of data)
-my $CONFIG_FILES = {
+my $CONFIG_FILES;
+$CONFIG_FILES = {
    'users.json' => {
-      'process' => sub {
-         my $c = shift;
-
+      'process' => sub ($c) {
          my $USERS;
          foreach my $username ( keys %$c ) {
             $c->{$username}{'username'} = $username;
@@ -55,9 +55,7 @@ my $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'roles.json' => {
-      'process' => sub {
-         my $ROLES = shift;
-
+      'process' => sub ($ROLES) {
          if($ROLES) {
             # Set up convenience shortcut
             User::ConfigureRoles($ROLES);
@@ -67,16 +65,18 @@ my $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'config.json' => {
-      'process' => sub {
-         my $c = shift;
-
+      'process' => sub ($c) {
          # Set up convenience shortcut
          $CONFIG = $c;
 
          # Assign defaults
          $CONFIG->{'docker'}{'socket'} //= '/var/run/docker.sock';
          $CONFIG->{'docker'}{'sizes'} //= 0;
+
          $CONFIG->{'ide'}{'path'} //= '/opt/dockside';
+         $CONFIG->{'ide'}{'subPath'} //= 'ide';
+         $CONFIG->{'ide'}{'fullPath'} //= "$CONFIG->{'ide'}{'path'}/$CONFIG->{'ide'}{'subPath'}";
+
          $CONFIG->{'ssh'}{'path'} //= "$CONFIG->{'ide'}{'path'}/host";
          $CONFIG->{'ssh'}{'port'} //= 2222;
          $CONFIG->{'ssh'}{'default'} //= 1;
@@ -84,13 +84,11 @@ my $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'passwd' => {
-      'process' => sub {
-         my $c = shift;
-
+      'process' => sub ($c) {
          # Set up convenience shortcut
          User::ConfigurePasswd($c);
       },
-      'parse' => sub {
+      'parse' => sub ($raw) {
          return {
             map {
                s/^\s*|\s*$//;    # Trim whitespace
@@ -98,14 +96,12 @@ my $CONFIG_FILES = {
               }
               grep {
                $_ !~ '^(:?#.*)?$'                  # Trim empty lines and comments
-              } split( "\n", $_[0] )
+              } split( "\n", $raw )
          };
       }
    },
    'profiles/*.json' => {
-      'process' => sub {
-         my $c = shift;
-
+      'process' => sub ($c) {
          my %PROFILES;
          my %PROFILE_ERRORS;
          foreach my $profile ( keys %$c ) {
@@ -127,20 +123,51 @@ my $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'reservations.json' => {
-      'path' => sub { return $CONFIG->{'reservationsPath'}; },
+      'path' => sub () { return $CONFIG->{'reservationsPath'}; },
       'load' => \&cacheReadWrite,
       'parse' => \&Reservation::Load::load,
-      'process' => sub {
+      'process' => sub ($data) {
          Reservation->update_container_info();
       }
    },
    'containers.json' => {
-      'path' => sub { return $CONFIG->{'containersPath'}; },
+      'path' => sub () { return $CONFIG->{'containersPath'}; },
       'load' => \&cacheReadWrite,
-      'parse' => sub { return decode_json($_[0]); },
-      'process' => sub {
-         Containers::Configure($_[0]);
+      'parse' => sub ($json_text) { return decode_json($json_text); },
+      'process' => sub ($data) {
+         # Capture network list for the Dockside container before updating $CONTAINERS,
+         # so we can detect changes and invalidate the profile cache if needed.
+         my $oldNetworks = join(',', sort keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} });
+
+         Containers::Configure($data);
+
+         # If the Dockside container's network list changed, force profiles to reload on
+         # the next request. Profiles compute their available-networks list at load time
+         # from $CONTAINERS; without this invalidation they would serve stale (or empty)
+         # network lists after containers.json is first written or after a network
+         # connect/disconnect event.
+         my $newNetworks = join(',', sort keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} });
+         if ($oldNetworks ne $newNetworks) {
+            flog("Data::load: containers.json: Dockside container network list changed ('$oldNetworks' -> '$newNetworks'); invalidating profile cache");
+            delete $CONFIG_FILES->{'profiles/*.json'}{'lastModified'};
+         }
+
          Reservation->update_container_info();
+      }
+   },
+   'hostInfo' => {
+      'const' => sub {
+         return if $HOSTINFO && $HOSTINFO->{'docker'} && $HOSTINFO->{'IDEs'};
+
+         # Populate docker host info, comprising Runtimes and DefaultRuntimes etc
+         $HOSTINFO->{'docker'} = call_socket_json_api($CONFIG->{'docker'}{'socket'}, '/info');
+
+         # Available IDEs on the host system
+         if( -d "$CONFIG->{'ide'}{'fullPath'}" ) {
+            my $globPath = "$CONFIG->{'ide'}{'fullPath'}/*/*";
+            my @hostIDEs = map { s!^.*/([^/]+/[^/]+)$!$1!; $_; } <"$globPath">; # Strip off all but final <ideType>/<version>
+            $HOSTINFO->{'IDEs'} = \@hostIDEs;
+         }
       }
    }
 };
@@ -154,8 +181,7 @@ my $CONFIG_FILES = {
 # parse the contents (using custom 'parse' function),
 # and finally process the contents (using the custom 'process' function).
 
-sub load {
-   my @configFiles = @_; # Optional: list of config files to check for changes and load.
+sub load (@configFiles) { # Optional: list of config files to check for changes and load.
 
    if(!@configFiles) {
       # Ensure we load config.json first; other modules might depend upon it.
@@ -165,10 +191,21 @@ sub load {
    # FIXME: Throttle checking config files to 1/5s
    foreach my $p ( @configFiles ) {
 
+      if( !$CONFIG_FILES->{$p} ) {
+         flog( "Data::load: error parsing '$p': no such config file defined" );
+         next;
+      }
+
+      if( $CONFIG_FILES->{$p}{'const'} ) {
+         # Constant value - just call the sub and store the result
+         $CONFIG->{$p} = &{ $CONFIG_FILES->{$p}{'const'} }();
+         next;
+      }
+
       my $isGlob = ($p =~ m!\*!);
 
       # Prepare a list of files to hopefully read in
-      my $path = $CONFIG_FILES->{$p}{'path'} ? &{ $CONFIG_FILES->{$p}{'path'} } : "$CONFIG_PATH/$p";
+      my $path = $CONFIG_FILES->{$p}{'path'} ? $CONFIG_FILES->{$p}{'path'}->() : "$CONFIG_PATH/$p";
 
       my @candidateFiles;
       if ( $isGlob ) {
@@ -183,56 +220,66 @@ sub load {
          if ( -r $candidateFile ) {
             push @files, $candidateFile;
          } else {
-            flog( "get_updated_config: error parsing '$candidateFile': file can't be read" );
+            flog( "Data::load: error parsing '$candidateFile': file can't be read" );
          }
       }
 
       # Work out the most recent last-modified time for all files in the current list
-      my $lastModified;
+      my $lastModified = 0;
       foreach my $file (@files) {
          my $lm = (stat($file))[9];
          $lastModified = $lm if $lm > $lastModified;
       }
 
       # Skip further processing if files haven't been modified since the last time we processed them
+      $CONFIG_FILES->{$p}{'lastModified'} //= 0;
       next if $lastModified == $CONFIG_FILES->{$p}{'lastModified'};
 
-      flog( "get_updated_config: $p, previously modified at " . ($CONFIG_FILES->{$p}{'lastModified'} // 0) . ", now modified at $lastModified");
+      flog( "Data::load: $p, previously modified at $CONFIG_FILES->{$p}{'lastModified'}, now modified at $lastModified");
 
       # Get data from files
       my $data;
+      my $single_key;
+      my $file_count = @files;
       try {
          foreach my $file (@files) {
             my ($filename) = $file =~ m!([^/\.]+)(?:\.[^\./]+)?$!;
 
             try {
-               flog( "get_updated_config: loading '$file'");
+               flog( "Data::load: loading '$file'");
                $data->{$filename} = 
-                  &{ $CONFIG_FILES->{$p}{'parse'} }( 
-                     &{ $CONFIG_FILES->{$p}{'load'} || \&get_config }($file)
+                  $CONFIG_FILES->{$p}{'parse'}->(
+                     ($CONFIG_FILES->{$p}{'load'} || \&get_config)->($file)
                   );
+               $single_key = $filename if !$isGlob && $file_count == 1;
             }
             catch {
                chomp;
-               flog("get_updated_config: error parsing '$file': '$_'");
+               flog("Data::load: error parsing '$file': '$_'");
             };
          }
 
-         $data = ($isGlob ? $data : (scalar(@files) == 1 ? $data->{[keys %$data]->[0]} : undef));
+         if (!$isGlob) {
+            if ($file_count == 1 && $data && defined $single_key && exists $data->{$single_key}) {
+               $data = $data->{$single_key};
+            } else {
+               $data = undef;
+            }
+         }
 
          # As we're inside an eval, if parsing fails an exception will be thrown and we won't update the lastModified time.
          $CONFIG_FILES->{$p}{'lastModified'} = $lastModified;
 
          # Run post-parse compilation step (when required).
          if( $CONFIG_FILES->{$p}{'process'} ) {
-            &{ $CONFIG_FILES->{$p}{'process'} }( $data );
+            $CONFIG_FILES->{$p}{'process'}->($data);
          }
 
          return 1;
       }
       catch {
          chomp;
-         flog("get_updated_config: error parsing '$p': '$_'");
+         flog("Data::load: error parsing '$p': '$_'");
       };
    }
 }

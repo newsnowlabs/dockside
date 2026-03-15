@@ -1,6 +1,6 @@
 {
-   "version": 2,
-   "name": "Git Repo",
+   "version": 4,
+   "name": "Git Repo (Branch/PR)",
    "active": true,
    "routers": [
       {
@@ -11,7 +11,7 @@
          "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
       }
    ],
-   "networks": [ "bridge" ],
+   "networks": [ "*" ],
    "images": [
       "ubuntu:latest",
       "debian:latest",
@@ -19,6 +19,22 @@
    ],
    "gitURLs": ["*"],
    "unixusers": ["dockside"],
+   "options": [
+      {
+         "name": "branch",
+         "label": "Branch",
+         "type": "text",
+         "default": "",
+         "placeholder": "e.g. main, feature/my-feature (leave blank for default)"
+      },
+      {
+         "name": "pr",
+         "label": "Pull Request #",
+         "type": "text",
+         "default": "",
+         "placeholder": "e.g. 42 (overrides branch if set)"
+      }
+   ],
    "mounts": {
       "tmpfs": [
          { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }

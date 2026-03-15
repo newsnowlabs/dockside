@@ -43,23 +43,31 @@
                               </select>
                            </td>
                         </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
-                           <th>Git URL</th>
-                           <td v-if="!isPrelaunchMode">{{ container.data.gitURL }}</td>
+                        <tr v-if="container.permissions.auth.developer && isSelected">
+                           <th>Runtime</th>
+                           <td v-if="!isPrelaunchMode">{{ container.data ? container.data.runtime : '' }}</td>
                            <td v-else>
-                              <autocomplete
-                                 auto-select
-                                 class="autocomplete-class"
-                                 placeholder="Choose a gitURL"
-                                 aria-label="Choose a gitURL"
-                                 ref="gitURLAutocompleteInput"
-                                 :search="gitURLAutocompleteSearch"
-                                 @submit="gitURLAutocompleteSubmit"
-                                 @blur="gitURLAutocompleteSubmit"
-                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
-                                 :default-value="gitURLs[0]"
-                                 :readonly="!hasWildcardGitURLs"
-                              ></autocomplete>
+                              <select class="form-control" v-model="form.runtime" :disabled="runtimes.length <= 1">
+                                 <option v-for="runtime in runtimes" v-bind:key="runtime">{{ runtime }}</option>
+                              </select>
+                           </td>
+                        </tr>
+                        <tr v-if="container.permissions.auth.developer && isSelected">
+                           <th>Network</th>
+                           <td v-if="!isEditMode && !isPrelaunchMode">{{ container.docker ? container.docker.Networks : '' }}</td>
+                           <td v-else>
+                              <select class="form-control" v-model="form.network" :disabled="networks.length <= 1">
+                                 <option v-for="network in networks" v-bind:key="network">{{ network }}</option>
+                              </select>
+                           </td>
+                        </tr>
+                        <tr v-if="container.permissions.auth.developer && isSelected">
+                           <th>IDE</th>
+                           <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.IDE }}</td>
+                           <td v-else>
+                              <select class="form-control" v-model="form.IDE" :disabled="IDEs.length <= 1">
+                                 <option v-for="IDE in IDEs" v-bind:key="IDE">{{ IDE }}</option>
+                              </select>
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
@@ -85,29 +93,46 @@
                               ></autocomplete>
                            </td>
                         </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected">
-                           <th>Runtime</th>
-                           <td v-if="!isPrelaunchMode">{{ container.data ? container.data.runtime : '' }}</td>
+                        <tr v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
+                           <th>Git URL</th>
+                           <td v-if="!isPrelaunchMode">{{ container.data.gitURL }}</td>
                            <td v-else>
-                              <select class="form-control" v-model="form.runtime" :disabled="runtimes.length <= 1">
-                                 <option v-for="runtime in runtimes" v-bind:key="runtime">{{ runtime }}</option>
-                              </select>
+                              <autocomplete
+                                 auto-select
+                                 class="autocomplete-class"
+                                 placeholder="Choose a gitURL"
+                                 aria-label="Choose a gitURL"
+                                 ref="gitURLAutocompleteInput"
+                                 :search="gitURLAutocompleteSearch"
+                                 @submit="gitURLAutocompleteSubmit"
+                                 @blur="gitURLAutocompleteSubmit"
+                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
+                                 :default-value="gitURLs[0]"
+                                 :readonly="!hasWildcardGitURLs"
+                              ></autocomplete>
                            </td>
                         </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected">
-                           <th>Network</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode">{{ container.docker ? container.docker.Networks : '' }}</td>
-                           <td v-else>
-                              <select class="form-control" v-model="form.network" :disabled="networks.length <= 1">
-                                 <option v-for="network in networks" v-bind:key="network">{{ network }}</option>
-                              </select>
-                           </td>
-                        </tr>
+                        <template v-if="container.permissions.auth.developer && isSelected">
+                           <tr v-for="opt in options" :key="'option-' + opt.name">
+                              <th>{{ opt.label }}</th>
+                              <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
+                              <td v-else-if="opt.type === 'select'">
+                                 <select class="form-control" v-model="form.options[opt.name]">
+                                    <option v-for="v in opt.values" :key="v">{{ v }}</option>
+                                 </select>
+                              </td>
+                              <td v-else>
+                                 <input type="text" class="form-control"
+                                        v-model="form.options[opt.name]"
+                                        :placeholder="opt.placeholder || ''">
+                              </td>
+                           </tr>
+                        </template>
                         <tr v-for="(router, index) in routers" v-bind:key="index" v-bind:class="{'list-item':true}">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
                               <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
-                              <b-button v-if="router.type != 'passthru' && container.status >= 0" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
                               <b-button v-if="router.type === 'ssh' && container.status >= 0" size="sm" variant="outline-secondary" type="button" v-b-modal="'sshinfo-modal'" v-b-tooltip title="Configure SSH for Dockside">Setup</b-button>
                               ({{ container.meta.access[router.name] }} access)
                            </td>
@@ -136,13 +161,13 @@
                         <tr v-if="container.permissions.actions.setContainerDevelopers && isSelected">
                            <th>Developers</th>
                            <td v-if="!isEditMode && !isPrelaunchMode && container.meta.developers"><UserTagsInput v-model="container.meta.developers" :disabled="true"/></td>
-                           <td v-if="!isEditMode && !isPrelaunchMode && !container.meta.developers"><em>[ Edit to share with developers (by name or role) ]</em></td>
+                           <td v-else-if="!isEditMode && !isPrelaunchMode && !container.meta.developers"><em>[ Edit to share with developers (by name or role) ]</em></td>
                            <td v-else><UserTagsInput v-model="form.developers"/></td>
                         </tr>
                         <tr v-if="container.permissions.actions.setContainerViewers && isSelected">
                            <th>Viewers</th>
                            <td v-if="!isEditMode && !isPrelaunchMode && container.meta.viewers"><UserTagsInput v-model="container.meta.viewers" :disabled="true"/></td>
-                           <td v-if="!isEditMode && !isPrelaunchMode && !container.meta.viewers"><em>[ Edit to share with viewers (by name or role) ]</em></td>
+                           <td v-else-if="!isEditMode && !isPrelaunchMode && !container.meta.viewers"><em>[ Edit to share with viewers (by name or role) ]</em></td>
                            <td v-else><UserTagsInput v-model="form.viewers"/></td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && container.status >= 0 && isSelected">
@@ -290,11 +315,17 @@
          hasWildcardImages() {
            return ((this.profile && this.profile.images) ? this.profile.images.filter(x => x.includes("*")) : []).length > 0;
          },
+         IDEs() {
+            return (this.profile && this.profile.IDEs) ? this.profile.IDEs : [];
+         },
          networks() {
             return (this.profile && this.profile.networks) ? this.profile.networks : [];
          },
          routers() {
             return (this.profile && this.profile.routers) ? this.profile.routers : [];
+         },
+         options() {
+            return (this.profile && this.profile.options) ? this.profile.options : [];
          },
          hasProfiles() {
             return this.profileNames.length;
@@ -342,7 +373,9 @@
                access: edit ? this.container.meta.access : {},
                viewers: edit ? this.container.meta.viewers : '',
                developers: edit ? this.container.meta.developers : '',
-               description: edit ? this.container.meta.description : ''
+               description: edit ? this.container.meta.description : '',
+               IDE: edit ? this.container.meta.IDE : '',
+               options: edit ? (this.container.data.options || {}) : {}
             };
 
             console.log('initialiseForm:', this.form);
@@ -356,12 +389,25 @@
             const containerName = this.container.name;
             const host = window.dockside.host;
             
-            if (router.type !== 'ssh') {
-               return `${protocol}://${prefix}-${containerName}${host}`;
-            } else {
+            if (router.type === 'ssh') {
                const unixuser = this.container.data.unixuser;
                const hostname = host.split(':')[0];
                return `ssh://${unixuser}@${prefix}-${containerName}${hostname}`;
+            } else if (router.type === 'ide') {
+               const IDE = this.container.data.runningIDE || '';
+               const homeDir = this.container.data.homeDir || `/home/${this.container.data.unixuser}`;
+               let path;
+               
+               if (IDE.match(/^openvscode/)) {
+                  path = '/?folder=' + homeDir;
+               }
+               else {
+                  path = '/#' + homeDir;
+               }
+               return `${protocol}://${prefix}-${containerName}${host}${path}`;
+            }
+            else {
+               return `${protocol}://${prefix}-${containerName}${host}`;
             }
          },
          copyUri(router) {
@@ -417,7 +463,6 @@
 
             putContainer(this.form)
                .then(data => {
-                  console.log(data);
                   // Reservation succeeded.
                   console.log('createContainerReservation', data);
                   // Add reservation to containers list.
@@ -486,10 +531,14 @@
                f.gitURL = p.gitURLs && p.gitURLs.length > 0 ? p.gitURLs[0].replace("*","") : '';
                f.runtime = p.runtimes[0];
                f.network = p.networks[0];
+               f.IDE = p.IDEs[0];
                f.access = Object.fromEntries(
                   p.routers.map(
                         r => [r.name ? r.name : r.prefixes[0], r.auth ? r.auth[0] : 'developer']
                   )
+               );
+               f.options = Object.fromEntries(
+                  (p.options || []).map(o => [o.name, o.default || ''])
                );
 
                // Patch the image into the image autocomplete component.

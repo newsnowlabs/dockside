@@ -8,7 +8,7 @@
 
 package Exception;
 
-use strict;
+use v5.36;
 
 use Time::HiRes;
 
@@ -16,20 +16,20 @@ use Time::HiRes;
 # SIMPLE ACCESSORS
 # ----------------
 
-sub code {
-   return $_[0]->{'code'};
+sub code ($self) {
+   return $self->{'code'};
 }
 
-sub msg {
-   return $_[0]->{'msg'} // 'Internal error';
+sub msg ($self) {
+   return $self->{'msg'} // 'Internal error';
 }
 
-sub dbg {
-   return $_[0]->{'dbg'};
+sub dbg ($self) {
+   return $self->{'dbg'};
 }
 
-sub time {
-   return $_[0]->{'time'};
+sub time ($self) {
+   return $self->{'time'};
 }
 
 ################################################################################
@@ -44,13 +44,10 @@ sub time {
 #   'code' => <error-id>                                                        [optional]
 # )
 
-sub new {
-   my $class = shift;
-   my %args = @_;
-
+sub new ($class, %args) {
    # Remove leading and/or trailing whitespace
-   $args{'msg'} =~ s/(^\s+|\s+$)//g;   
-   $args{'dbg'} =~ s/(^\s+|\s+$)//g;
+   $args{'msg'} =~ s/(^\s+|\s+$)//g if defined $args{'msg'};
+   $args{'dbg'} =~ s/(^\s+|\s+$)//g if defined $args{'dbg'};
 
    my $self = bless {
       'code' => $args{'code'},

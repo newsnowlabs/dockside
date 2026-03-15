@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Thin launcher script for direct invocation (no pip install required)."""
+import sys
+import os
+
+# Ensure the cli/ directory is on the path so dockside_cli.py can be imported.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from dockside_cli import main
+main()

@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-use strict;
+use v5.36;
 
 my $MIN_WORD_LENGTH = 4;
 my $MAX_WORD_LENGTH = 6;
@@ -12,9 +12,7 @@ my $TITLECASE_RATIO = .8;
 my @Words;
 
 # Delete a character from a word, but sometimes not
-sub delete_char {
-   my $s = shift;
-
+sub delete_char ($s) {
    if( rand() > $DELETE_RATIO ) { return $s; }
    my $pos = rand( length($s) );
    return substr( $s, 0, $pos ) . substr( $s, $pos + 1 );
@@ -29,9 +27,7 @@ sub number {
 }
 
 # Titlecase a word, but sometimes not
-sub titlecase {
-   my $s = shift;
-
+sub titlecase ($s) {
    my $first = substr($s, 0, 1);
    if( rand() > $TITLECASE_RATIO && $first ne 'l' ) { return $s; }
    if($first eq 'o' || $first eq 'i') { return $s; }

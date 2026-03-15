@@ -7,7 +7,7 @@ BEGIN {
    };
 }
 
-use strict;
+use v5.36;
 
 use Try::Tiny;
 use Reservation;
@@ -16,12 +16,10 @@ use Data qw($CONFIG $HOSTNAME);
 use Request;
 
 # Given a domain, extract the unique code identifying the host publicly.
-sub domain_to_host {
-   my $r = $_[0];
-
+sub domain_to_host ($r) {
    my $host = $r->header_in("Host");
 
-   wlog("domain_to_host: host=$host");
+   # wlog("domain_to_host: host=$host");
 
    # Identify the container to which to proxy.
    # In order to support nested dockside containers,
@@ -57,14 +55,14 @@ sub domain_to_host {
       my ($service, $topHost) = pop(@elements) =~ /^((?:.*-(?:wv|mb|webview|minibrowser)-)?[^-]+)(?:-(.*))?$/;
       push(@elements, $topHost ? $topHost : (), $service);
 
-      my $nestCount = split(/-/, $r->header_in('X-Nest-Level'));
+      my $nestCount = split(/-/, $r->header_in('X-Nest-Level') // '');
 
       return undef unless $nestCount < @elements;
 
       my $element = $elements[$nestCount];
       my $prefix = join('--', reverse @elements[($nestCount+1)..(@elements-1)]);
 
-      wlog("domain_to_host: Host header='$host'; nestCount=$nestCount; container host='$element'; prefix='$prefix'; domain='$domain'");
+      # wlog("domain_to_host: Host header='$host'; nestCount=$nestCount; container host='$element'; prefix='$prefix'; domain='$domain'");
 
       return ($element, $prefix, $domain, $nestCount);
    }
@@ -72,10 +70,7 @@ sub domain_to_host {
    return undef;
 }
 
-sub get_server_port {
-   my $r = shift;
-   my $protocol = shift;
-
+sub get_server_port ($r, $protocol) {
    # Reload config, containers and reservations as needed.
    Data::load();
 
@@ -89,14 +84,14 @@ sub get_server_port {
    # If there's no X-Forwarded-For header, this container is not receiving a proxied request from another dockside container,
    # but a direct request.
    if(!$r->header_in("X-Forwarded-For")) {
-      if($r->header_in('Metadata-Flavor') eq 'Google') {
+      if(($r->header_in('Metadata-Flavor') // '') eq 'Google') {
          return '_UI_';
       }
    }
 
    # Lookup container
    my ($host, $prefix, $domain, $nestCount) = domain_to_host($r);
-   wlog( "get_server_port($protocol): IP=" . $r->remote_addr . "; URI=" . $r->uri . "; Host=" . $r->header_in("Host") . "; XFF=[" . $r->header_in('X-Forwarded-For') . "]; nestCount=$nestCount => host=$host; prefix=$prefix; domain=$domain");
+   # wlog( "get_server_port($protocol): IP=" . $r->remote_addr . "; URI=" . $r->uri . "; Host=" . $r->header_in("Host") . "; XFF=[" . $r->header_in('X-Forwarded-For') . "]; nestCount=$nestCount => host=$host; prefix=$prefix; domain=$domain");
 
    # We handle the following cases:
    # - it’s a UI request;
@@ -107,7 +102,7 @@ sub get_server_port {
    # - reservation found, container ID found, container running, success!
 
    if( $host eq 'www' && $prefix eq '' ) {
-      wlog( "get_server_port($protocol): host='www' and prefix=''; proxying to UI" );
+      # wlog( "get_server_port($protocol): host='www' and prefix=''; proxying to UI" );
       return '_UI_';
    }
 
@@ -135,7 +130,7 @@ sub get_server_port {
    # so that NGINX will display a branded error page only to authenticated users.
    my $errorCode = $User->username ? 410 : 400;
 
-   wlog( "get_server_port($protocol): Host=" . $r->header_in("Host") . "; host=$host; prefix=$prefix; domain=$domain => reservation.name=$reservation->{'name'}; containerId=$reservation->{'containerId'}; uri:$props->{'uri'}; auth=$props->{'auth'}; access=$authStateString" );
+   wlog( "get_server_port($protocol): Host=" . ($r->header_in("Host") // '[EMPTY]') . "; host=$host; prefix=$prefix; domain=$domain => reservation.name=$reservation->{'name'}; containerId=$reservation->{'containerId'}; uri:$props->{'uri'}; auth=$props->{'auth'}; access=$authStateString" );
 
    unless( $reservation->{'containerId'} ) {
       wlog( "get_server_port($protocol): container not yet launched for reservation $reservation->{'id'}" );
@@ -200,25 +195,19 @@ sub get_server_port {
 # --------------
 
 # Given a local base port number, convert to a host:port pair for http.
-sub http_server_port {
-   my $r = shift;
-
+sub http_server_port ($r) {
    return get_server_port($r, 'http');
 }
 
 # Given a local base port number, convert to a host:port pair for https or the ide
-sub https_server_port {
-   my $r = shift;
-
+sub https_server_port ($r) {
    return get_server_port($r, 'https');
 }
 
 # Remove the configured uidCookie(s) from the cookie header.
 # We'll use this to set the cookie header on the request proxied to
 # the subcontainer.
-sub upstream_cookie {
-   my $r = shift;
-
+sub upstream_cookie ($r) {
    my $cookie = $r->header_in('Cookie');
 
    $cookie =~ s/\b\Q$CONFIG->{'uidCookie'}{'name'}\E(?:_http)?=[^ ;]+(;\s*)?//sg;

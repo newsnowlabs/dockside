@@ -1,0 +1,18 @@
+diff --git a/node_modules/@theia/plugin-ext/lib/main/browser/webview/webview-environment.js b/node_modules/@theia/plugin-ext/lib/main/browser/webview/webview-environment.js
+index 7c58dce..3aa490b 100644
+--- a/node_modules/@theia/plugin-ext/lib/main/browser/webview/webview-environment.js
++++ b/node_modules/@theia/plugin-ext/lib/main/browser/webview/webview-environment.js
+@@ -68,7 +68,12 @@ let WebviewEnvironment = class WebviewEnvironment {
+         return (await this.externalEndpointUrl()).resolve('theia-resource/{{scheme}}//{{authority}}/{{path}}').toString(true);
+     }
+     async cspSource() {
+-        return (await this.externalEndpointUrl()).withPath('').withQuery('').withFragment('').toString(true).replace('{{uuid}}', '*');
++        // In Dockside, webviews deployed by VSX extensions are launched on variant subdomains
++        // of the devtainer's IDE FQDN, as specified by the values of
++        // THEIA_WEBVIEW_EXTERNAL_ENDPOINT and THEIA_MINI_BROWSER_HOST_PATTERN in launch-ide.sh.
++        // The value of cspSource() must be adjusted accordingly.
++        // See: https://github.com/eclipse-theia/theia/issues/8857
++        return (await this.externalEndpointUrl()).withPath('').withQuery('').withFragment('').toString(true).replace('{{uuid}}\.', '*.');
+     }
+     async getHostPattern() {
+         return environment_1.environment.electron.is()

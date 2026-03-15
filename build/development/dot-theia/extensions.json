@@ -3,6 +3,7 @@
    // for the documentation about the extensions.json format
    "recommendations": [
       "richterger.perl",
+      "ms-azuretools.vscode-docker",
       "vscode.css",
       "vscode.docker",
       "dbaeumer.vscode-eslint",
@@ -16,6 +17,8 @@
       "vscode.shellscript",
       "wayou.vscode-todo-highlight",
       "octref.vetur",
-      "mhutchie.git-graph"
+      "mhutchie.git-graph",
+      "openai.chatgpt",
+      "Anthropic.claude-code"
    ]
 }

@@ -24,7 +24,7 @@
       }
    ],
 
-   "networks": [ "bridge" ],
+   "networks": [ "*" ],
    "images": [ 
 	   "newsnowlabs/dockside:theia-build"
    ],
@@ -41,8 +41,8 @@
 
          // {ideUser} will be substituted at launch-time with the user that
          // the IDE will be launched as (as per the "users" option above).
-         { "dst": "/home/newsnow/.vscode", "tmpfs-size": "150M" },
-         { "dst": "/home/newsnow/.ssh", "tmpfs-size": "1M" },
+         { "dst": "/home/dockside/.vscode", "tmpfs-size": "150M" },
+         { "dst": "/home/dockside/.ssh", "tmpfs-size": "1M" },
 
          // These are good for most Linux distributions
          { "dst": "/var/tmp", "tmpfs-size": "128M" },

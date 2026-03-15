@@ -1,6 +1,6 @@
 package Request;
 
-use strict;
+use v5.36;
 
 use JSON;
 use Try::Tiny;
@@ -18,11 +18,7 @@ use User;
 # - 'NOTFOUND'; OR
 # - 'INVALID'
 
-sub authenticate_by_credentials {
-   my $class = shift; # User class
-   my $username = shift;
-   my $password = shift;
-
+sub authenticate_by_credentials ($class, $username, $password) {
    my $user = User->new();
    
    # Check that $user is also named in the users.json file
@@ -49,10 +45,7 @@ sub authenticate_by_credentials {
 # Returns:
 # - a User object containing authentication state, if authentication cookie(s) can be validated
 
-sub authenticate {
-   my $class = shift; # User class
-   my $options = shift; # cookie: <value>; protocol: <http|https>
-
+sub authenticate ($class, $options) {
    my $cookie = $options->{'cookie'};
 
    my $user = User->new();

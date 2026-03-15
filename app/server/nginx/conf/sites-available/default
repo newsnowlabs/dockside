@@ -11,7 +11,7 @@
 # See:
 # - http://nginx.org/en/docs/http/ngx_http_perl_module.html
 
-perl_modules /home/newsnow/dockside/app/server/lib;
+perl_modules /home/dockside/dockside/app/server/lib;
 perl_require Proxy.pm;
 perl_require App.pm;
 
@@ -37,7 +37,7 @@ map $status $status_text {
   407 'Proxy Authentication Required';
   408 'Request Timeout';
   409 'Conflict';
-  410 'Gone';
+  410 'Devtainer Stopped';
   411 'Length Required';
   412 'Precondition Failed';
   413 'Payload Too Large';
@@ -58,7 +58,7 @@ map $status $status_text {
   451 'Unavailable For Legal Reasons';
   500 'Internal Server Error';
   501 'Not Implemented';
-  502 'Container Service Unavailable (Bad Gateway)';
+  502 'Devtainer Running ... Awaiting Requested Service';
   503 'Service Unavailable';
   504 'Gateway Timeout';
   505 'HTTP Version Not Supported';
@@ -107,6 +107,8 @@ server {
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto http;
     proxy_set_header X-Nest-Level 1-$http_x_nest_level;
     proxy_set_header Cookie $upstream_cookie;
     proxy_http_version 1.1;
@@ -141,7 +143,7 @@ server {
      internal;
      auth_basic off;
      add_header Cache-Control "no-store" always;
-     root /home/newsnow/dockside/app/server/nginx/html;
+     root /home/dockside/dockside/app/server/nginx/html;
   }
 
   location / {
@@ -152,7 +154,7 @@ server {
     perl App::handlerHTTPS;
 
     # This will only be served statically, if the above handler returns nginx::DECLINED.
-    root /home/newsnow/dockside/app/server/nginx/html;
+    root /home/dockside/dockside/app/server/nginx/html;
 
     if ($upstream_https = '400') {
       # Container not found.
@@ -174,14 +176,20 @@ server {
       access_log /var/log/nginx/access.log proxy_https;
     }
     
+    # Enable SNI
+    proxy_ssl_server_name on;
+    proxy_ssl_name $host;
+
     proxy_pass_header Authorization;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Nest-Level 1-$http_x_nest_level;
     proxy_set_header Cookie $upstream_cookie;
     proxy_http_version 1.1;
-    
+
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $connection_upgrade;
     

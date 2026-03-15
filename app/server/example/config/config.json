@@ -3,7 +3,7 @@
         "salt": "",
         "name": "_dsuid"
     },
-    "assetsPath": "/home/newsnow/dockside/app/server/assets",
+    "assetsPath": "/home/dockside/dockside/app/server/assets",
     "reservationsPath": "/data/db/reservations.json",
     "containersPath": "/data/cache/containers.json",
     "tmpPath": "/tmp/dockside",
@@ -22,6 +22,7 @@
     },
     "ide": {
         "path": "/opt/dockside",
+        "subPath": "ide",
         "env": {
             "IDE_USER": "{ideUser}"
          },
@@ -30,12 +31,12 @@
             "launch_ide"
         ]
     },
-    "clientDistPath": "/home/newsnow/dockside/app/client/dist",
+    "clientDistPath": "/home/dockside/dockside/app/client/dist",
     "docker": {
         "bin": "/usr/bin/docker",
         "socket": "/var/run/docker.sock",
         "PATH": "/usr/bin:/bin",
-        "HOME": "/home/newsnow",
+        "HOME": "/home/dockside",
         "security": {
             "apparmor": "unspecified",
             "seccomp": "unspecified"

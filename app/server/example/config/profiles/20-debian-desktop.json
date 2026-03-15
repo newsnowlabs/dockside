@@ -12,7 +12,7 @@
          "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
       }
    ],
-   "networks": [ "bridge" ],
+   "networks": [ "*" ],
    "images": [ "newsnowlabs/dockside-debian-desktop:latest" ],
    "unixusers": ["dockside"],
    "mounts": {

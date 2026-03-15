@@ -1,25 +1,25 @@
 package Reservation;
 
-use strict;
+use v5.36;
 
 use JSON;
 use Expect;
 use Try::Tiny;
 use Tie::File;
-use Storable;
+use Storable qw(dclone);
 use Reservation::Mutate qw(update load_clean_map);
 use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
 use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri);
-use Data qw($CONFIG $HOSTNAME);
+use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
 ################################################################################
 # CURRENT VERSION
 # ---------------
 
-sub CURRENT_VERSION {
+sub CURRENT_VERSION () {
    return 2;
 }
 
@@ -27,9 +27,7 @@ sub CURRENT_VERSION {
 # VERSION UPGRADES
 # ----------------
 
-sub versionUpgrade {
-   my $self = shift;
-
+sub versionUpgrade ($self) {
    if($self->version < 2) {
       my @names = map { $_->{'name'} } @{$self->profileObject->routers};
       my @oldValues = split(/,/, $self->{'meta'}{'access'});
@@ -59,59 +57,56 @@ our $BY_CONTAINERID;
 # SIMPLE ACCESSORS
 # ----------------
 
-sub version {
-   return $_[0]->{'version'};
+sub version ($self) {
+   return $self->{'version'};
 }
 
-sub id {
-   return $_[0]->{'id'};
+sub id ($self) {
+   return $self->{'id'};
 }
 
-sub name {
-   return $_[0]->{'name'};
+sub name ($self) {
+   return $self->{'name'};
 }
 
-sub docker {
-   return $_[0]->{'docker'};
+sub docker ($self) {
+   return $self->{'docker'};
 }
 
-sub containerId {
-   my $self = shift;
+sub containerId ($self, @value) {
+   return $self->{'containerId'} unless @value;
 
-   if(@_ == 0) {
-      return $self->{'containerId'};
-   }
-
-   $self->{'containerId'} = $_[0];
+   $self->{'containerId'} = $value[0];
 
    return $self;
 }
 
-sub profileObject {
-   return $_[0]->{'profileObject'};
+sub profileObject ($self) {
+   return $self->{'profileObject'};
 }
 
-sub status {
-   return $_[0]->{'status'};
+# Returns:
+# -1: Created (but not yet ever Started or Exited)
+#  0: Exited (i.e. stopped)
+#  1: Started (i.e. running)
+sub status ($self) {
+   return $self->{'status'};
+}
+
+sub is_running ($self) {
+   return $self->status == 1;
 }
 
 # With no arguments: return owner data structure.
 # With one argument: return value of named property within owner data structure.
-sub owner {
-   my $self = shift;
-   my $prop = shift;
-
+sub owner ($self, $prop = undef) {
    return $prop ? $self->{'owner'}{$prop} : $self->{'owner'};
 }
 
-sub profile {
-   my $self = shift;
+sub profile ($self, @args) {
+   return $self->{'profile'} unless @args;
 
-   if(@_ == 0) {
-      return $self->{'profile'};
-   }
-
-   my $name = shift;
+   my $name = $args[0];
    unless( $name =~ /^[a-zA-Z0-9][a-zA-Z0-9\-\_]+$/ && Profile->load($name) ) {
       die Exception->new( 'msg' => "Failed to set Reservation profile to unknown or invalid profile '$name'" );
    }
@@ -122,16 +117,10 @@ sub profile {
    $self->{'profileObject'} = Profile->load($name);
 }
 
-sub data {
-   my $self = shift;
+sub data ($self, $key, @rest) {
+   return $self->{'data'}{$key} unless @rest;
 
-   my $key = shift;
-
-   if(@_ == 0) {
-      return $self->{'data'}{$key};
-   }
-
-   my $value = shift;
+   my $value = $rest[0];
    if($key eq 'image') {
       # FIXME:
       # <optional> <domainname> <optional> :<port> '/'
@@ -141,12 +130,13 @@ sub data {
       }
    }
    elsif($key eq 'runtime') {
-      if( $value !~ /^([a-zA-Z][a-zA-Z0-9\-]+)?$/ ) {
+      # Allow runtimes of form: runc, sysbox-runc, and io.containerd.runc.v2
+      if( $value !~ /^([a-zA-Z][a-zA-Z0-9\-]*(?:\.[a-zA-Z0-9\-]+)*)?$/ ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid runtime '$value'" );
       }
    }
    elsif($key eq 'network') {
-      if( $value !~ /^([a-zA-Z][a-zA-Z0-9\-]+)?$/ ) {
+      if( $value !~ /^([a-zA-Z][a-zA-Z0-9\-\_\.]+)?$/ ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid network '$value'" );
       }
    }
@@ -166,7 +156,7 @@ sub data {
                      [a-zA-Z]{2,}  # Top-level domain
                      /
                      .+            # Non-empty path
-                     \.git$!x ||
+                     (?:\.git)?$!x ||
          $value =~ qr!^[a-zA-Z][\w-]*@ # Username
                      (?:
                         [a-zA-Z0-9]
@@ -175,7 +165,7 @@ sub data {
                      [a-zA-Z]{2,}  # Top-level domain
                      :
                      .+            # Non-empty path
-                     \.git$!x
+                     (?:\.git)?$!x
          ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid gitURL '$value'" );
       }
@@ -186,16 +176,12 @@ sub data {
    return $self;
 }
 
-sub meta {
-   my $self = shift;
-
-   my $key = shift;
-
-   if(@_ == 0) {
+sub meta ($self, $key, @rest) {
+   if(!@rest) {
       return $self->{'meta'}{$key};
    }
 
-   my $value = shift;
+   my $value = $rest[0];
    if( $key eq 'owner' ) {
       if( $value =~ /^[a-z0-9]*$/ ) {
          # FIXME: check that username(s) provided are valid
@@ -247,6 +233,15 @@ sub meta {
    elsif( $key eq 'description' ) {
       $self->{'meta'}{$key} = $value;
    }
+   elsif($key eq 'IDE') {
+      # Allow: theia|openvscode|theia/<version>|openvscode/<version>
+      # where <version> is a valid semver version string or 'latest'.
+      if( $value !~ m!^(?:theia|openvscode)(?:/(?:\d+\.\d+\.\d+|latest))?$! ) {
+         die Exception->new( 'msg' => "Failed to create Reservation with invalid IDE '$value'" );
+      }
+
+      $self->{'meta'}{$key} = $value;
+   }
 
    return $self;
 }
@@ -255,9 +250,7 @@ sub meta {
 # VALIDATORS
 # ----------
 
-sub validate {
-   my $self = shift;
-
+sub validate ($self) {
    if($self->{'name'} ne '') {
       # Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter
       unless( $self->{'name'} =~ /^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/ ) {
@@ -273,18 +266,17 @@ sub validate {
    $self->{'data'}{'FQDN'} ||= "$self->{'name'}$self->{'data'}{'parentFQDN'}";
 
    # Assign default id.
-   $self->{'id'} = sprintf( "%x", int(rand(0xffffffffffffffff)) ^ $$ );
+   {
+      no warnings 'portable';
+      $self->{'id'} = sprintf( "%x", int(rand(0xffffffffffffffff)) ^ $$ );
+   }
 }
 
 ################################################################################
 # CONSTRUCTORS
 # ------------
 
-sub new {
-   my $class = shift;
-   my $data = shift;
-   my $validated = shift;
-
+sub new ($class, $data, $validated = 0) {
    # Decode JSON if needed.
    if(!ref($data)) {
       $data = decode_json($data);
@@ -369,9 +361,7 @@ sub new {
 # This class method expects to be called whenever either the containers cache file,
 # or reservations db file, is updated.
 
-sub update_container_info {
-   my $class = shift;
-
+sub update_container_info ($class) {
    my $containers = Containers->containers;
 
    $BY_IP = {};
@@ -432,9 +422,8 @@ sub update_container_info {
    return $class;
 }
 
-sub load {
-   my $class = shift;
-   my $opts = shift;
+sub load ($class, $opts = undef) {
+   return $RESERVATIONS unless $opts;
 
    if( exists($opts->{'id'} ) ) {
       if( $BY_ID->{ $opts->{'id'} } ) {
@@ -464,7 +453,6 @@ sub load {
       }
       return [];
    }
-
    return $RESERVATIONS;
 }
 
@@ -475,9 +463,7 @@ sub load {
 # Updates the dockerLaunchLogs property of the Reservation,
 # to container the tail of the launch log file written by Reservation::launch.
 #
-sub load_launch_logs {
-   my $self = shift;
-
+sub load_launch_logs ($self) {
    my $id = $self->id();
 
    # LAST N LINES WITH Tie::File
@@ -509,10 +495,7 @@ sub load_launch_logs {
 # Returns:
 # - array of (undef, <stdout>, <stderr>)
 #
-sub load_container_logs {
-   my $self = shift;
-   my $opts = shift;
-
+sub load_container_logs ($self, $opts) {
    my $containerId = $self->containerId();
 
    my $path = sprintf("/containers/%s/logs?stderr=%s&stdout=%s",
@@ -566,13 +549,9 @@ sub load_container_logs {
 # Returns:
 # - A clientReservation data structure
 
-sub cloneWithConstraints {
-   my $self = shift;
-   my $constraints = shift;
-   my $reservationPermissions = shift;
-
+sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
    # Clone reservation object and embedded profile object
-   my $clone = Storable::dclone($self);
+   my $clone = dclone($self);
 
    if($clone->profileObject) {
       $clone->profileObject->applyConstraints($constraints);
@@ -594,9 +573,9 @@ sub cloneWithConstraints {
       $clone->sanitise(
          {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
-            'meta' => [ qw( owner developers viewers private access description ) ],
-            'profileObject' => [ qw(name routers networks runtimes) ],
-            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL ) ],
+            'meta' => [ qw( owner developers viewers private access description IDE ) ],
+            'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL runningIDE options ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId) ]
@@ -621,13 +600,10 @@ sub cloneWithConstraints {
    return $clone;
 }
 
-sub sanitise {
-   my $self = shift;
-
+sub sanitise ($self, $properties, $array = []) {
    # Start with HASH of properties
-   my $properties = shift;
-
-   my $array = shift;
+   $properties //= {};
+   $array //= [];
    
    # Augment with additional properties
    foreach my $property (@$array) {
@@ -649,9 +625,12 @@ sub sanitise {
    return $self;
 }
 
-sub routers {
-   my $self = shift;
+################################################################################
+# ROUTER LOOKUP GENERATION
+#
 
+# This method generates a data structure consumed by lookup_container_uri() below.
+sub routers ($self) {
    my $proxies = $self->profileObject->routers;
    my $auth    = $self->meta('access');
 
@@ -688,13 +667,7 @@ sub routers {
    return $lookup;
 }
 
-sub lookup_container_uri {
-   my $self = shift;
-   my $host = shift;
-   my $actualPrefix = shift;
-   my $actualDomain = shift;
-   my $protocol = shift;
-
+sub lookup_container_uri ($self, $host, $actualPrefix, $actualDomain, $protocol) {
    my $prefix = $actualPrefix;
    my $domain = $actualDomain;
 
@@ -775,21 +748,22 @@ sub lookup_container_uri {
          # When addressing a devtainer running on an inner dockerd instance, we assume all of its networks are accessible from the Dockside container.
       # }
       
-      # Loop through the addressed container's networks.
-      foreach my $network (sort { $a cmp $b } keys %{ $self->{'inspect'}{'Networks'}}) {
+      # Sort the container's networks by descending order of GwPriority (and, if needed, its name)
+      # where the network is in one that's common to both devtainer and the Dockside host container.
+      my $Networks = $self->{'inspect'}{'Networks'};
+      my @candidateNetworks =
+         sort { $Networks->{$b}{'GwPriority'} <=> $Networks->{$a}{'GwPriority'} || $a cmp $b }
+         grep { !$hostNetworks || $hostNetworks->{$_} }
+         keys %$Networks;
 
-         # Skip if we don't share $network with the addressed container;
-         # but, if we didn't identify any host/hostNetworks, we'll use the first.
-         next if $hostNetworks && !$hostNetworks->{$network};
-
-         # We found a $network we share; use this IP.
+      if(@candidateNetworks) {
+         # We found a $network we share; use the IP of the container from the network
+         # with the highest gateway priority.
          $uri = sprintf("%s://%s:%d",
             $private_protocol,
-            $self->{'inspect'}{'Networks'}{$network}{'IPAddress'},
+            $self->{'inspect'}{'Networks'}{ $candidateNetworks[0] }{'IPAddress'},
             $private_port
          );
-
-         last;
       }
    }
 
@@ -805,11 +779,7 @@ sub lookup_container_uri {
 #
 
 # Query 'viewers' or 'developers' $key for presence of username $user
-sub meta_has_user {
-   my $self = shift;
-   my $key = shift;
-   my $user = shift;
-
+sub meta_has_user ($self, $key, $user) {
    # Empty $user would still match the regex, so check for this case.
    return 0 unless defined($user);
 
@@ -820,11 +790,7 @@ sub meta_has_user {
 # RESERVATION CONTROL METHODS
 #
 
-sub action {
-   my $self = shift;
-   my $action = shift;
-   my $args = shift;
-
+sub action ($self, $action, $args = {}) {
    my $command;
    if($action eq 'start') {
       $command = 'start';
@@ -850,9 +816,7 @@ sub action {
    return run("$CONFIG->{'docker'}{'bin'} $command $containerId");
 }
 
-sub update_network {
-   my $self = shift;
-   
+sub update_network ($self) {
    my $network = $self->data('network');
    my $containerId = $self->{'containerId'};
 
@@ -870,9 +834,7 @@ sub update_network {
    }
 }
 
-sub store {
-   my $self = shift;
-   
+sub store ($self) {
    $self->update( {
       'id' => $self->id(),
       'name' => $self->name(),
@@ -888,9 +850,7 @@ sub store {
    return $self;
 }
 
-sub getGitDevContainer {
-   my $self = shift;
-
+sub getGitDevContainer ($self) {
    my $uri = $self->data('gitURL');
    flog("getGitDevContainer: uri=$uri");
 
@@ -920,9 +880,7 @@ sub getGitDevContainer {
    return undef;
 }
 
-sub launch {
-   my $self = shift;
-
+sub launch ($self) {
    my @cmdline = 
    try {
       return ($self->cmdline());
@@ -987,7 +945,7 @@ sub launch {
 
       # Set PATH required for 'docker run' to launch external credential helpers, like gcloud.
       local $ENV{'PATH'} = $CONFIG->{'docker'}{'PATH'};
-      local $ENV{'HOME'} = $CONFIG->{'docker'}{'HOME'} // '/home/newsnow';
+      local $ENV{'HOME'} = $CONFIG->{'docker'}{'HOME'} // '/home/dockside';
 
       # Enable this to simulate slow launches.
       # sleep(30);
@@ -1034,22 +992,35 @@ sub launch {
    };
 }
 
-sub exec {
-   my $reservation = shift;
-   my $command = shift;
-
+sub exec ($reservation, $command = undef) {
    my $reservationId = $reservation->id();
    my $containerId = $reservation->containerId();
 
+   # Existing logic for other commands
    my @Command = $reservation->ide_command();
    if(!@Command) {
-      flog("exec: not launching IDE for reservationId=$reservationId, containerId=$containerId: no command");
+      flog("exec: unable to run command for reservationId=$reservationId, containerId=$containerId: no command");
       return undef;
    }
 
    if($command) {
       # Replace final element of command array (the default command) with new command.
       $Command[-1] = $command;
+   }
+
+   if (defined $command && $command eq 'restart_ide') {
+      # Logic to update the running IDE
+      # This could involve stopping the current IDE process and starting the new one
+
+      flog("exec: restarting IDE for reservationId=$reservationId, containerId=$containerId");
+      run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', $reservation->unixuser(), $containerId, @Command);
+
+      # Assuming (for now) update was successful ...
+      # Update data.runningIDE to match meta.IDE.
+      flog("exec: updating selected IDE for reservationId=$reservationId, containerId=$containerId");
+      $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+
+      return 1;
    }
 
    my $owner = $reservation->owner('username');
@@ -1111,25 +1082,45 @@ sub exec {
       );
    }
 
+   my @envOptions = map {
+      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($reservation->data('options') // {})->{$_}
+   } keys %{ $reservation->data('options') // {} };
+
+   my @envGhToken;
+   if( my $token = $user->gh_token() ) {
+      @envGhToken = ( "--env=GH_TOKEN=$token" );
+   }
+
+   my @envIDE = (
+      "--env=IDE=" . $reservation->meta('IDE')
+   );
+
    my @envDevContainer;
    @envDevContainer = (
-      "--env=DEVCONTAINER_VSCODE=" . encode_json( $reservation->data('vscode') )
+      "--env=DEVCONTAINER_VSCODE_EXTENSIONS=" . encode_json( $reservation->data('vscode') )
    );
 
    # TODO: Configure Profiles to support launching IDE as non-root user
    flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
       join(' ', @Command)
    );
+
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
       @envGit,
+      @envOptions,
+      @envGhToken,
       @envSSH,
       @envDevContainer,
+      @envIDE,
       $containerId,
       @Command
    );
+
+   # Update data.runningIDE to match meta.IDE.
+   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
 
    return 1;
 }

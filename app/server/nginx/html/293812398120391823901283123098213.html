@@ -72,14 +72,15 @@
     <div class="image-container"><div class="image">&nbsp;</div></div>
     <div class="message">
     <!--# if expr="$status = 502" -->
-      Service unavailable 2/2
+      Devtainer Running ... Awaiting Requested Service
     <!--# elif expr="$status = 410" -->
-      Service unavailable 1/2
+      Devtainer Stopped
     <!--# else -->
+      Devtainer Unavailable
     <!--# endif -->
     </div>
     <div class="status">
-      <!--# echo var="status" default="" --> <!--# echo var="status_text" default="Something has gone wrong" -->
+      Code: <!--# echo var="status" default="" --> <!--# echo var="status_text" default="Something has gone wrong" -->
     </div>
   </div>
 </body>

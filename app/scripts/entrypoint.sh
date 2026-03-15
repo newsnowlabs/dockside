@@ -3,13 +3,13 @@
 DATA_DIR=/data
 USER=${USER:-dockside}
 APP=${APP:-dockside}
-APP_HOME=${APP_HOME:-/home/newsnow}
+APP_HOME=${APP_HOME:-/home/dockside}
 APP_DIR=$APP_HOME/$APP
 
 OPT_SSL_ZONES=()
 OPT_PATH="/opt/dockside"
 
-IDE_PATH="$(ls -d $OPT_PATH/ide/*/* | tail -n 1)"
+IDE_PATH="$OPT_PATH/system/latest"
 
 . $APP_DIR/app/scripts/includes/log_do
 
@@ -71,7 +71,7 @@ install_dehydrated() {
 }
 
 init_dehydrated() {
-  log "- Configuring SSL for domains: ${SSL_ZONES[@]}"
+  log "- Configuring SSL for domains: ${SSL_ZONES[*]}"
 
   local DOMAIN
   local WILDCARD_DOMAINS=()
@@ -161,6 +161,7 @@ _EOE_
 
 log "Initialising Dockside ..." >&2
 
+# shellcheck disable=SC2145
 log "Parsing command line arguments: ${@@Q}"
 while true
 do
@@ -286,7 +287,7 @@ do
 DATA_DIR=/data
 USER=${USER:-dockside}
 APP=${APP:-dockside}
-APP_HOME=${APP_HOME:-/home/newsnow}
+APP_HOME=${APP_HOME:-/home/dockside}
 APP_DIR=$APP_HOME/$APP
 CTR_ID=${CTR_ID:0:12}
 INNER_DOCKERD="$OPT_RUN_DOCKERD"
@@ -303,7 +304,7 @@ _EOE_
   #.     for logrotate to run, these files must be root-owned.
   if [ -d "$APP_DIR/app/scripts/runscripts/$s/data" ]; then
     cp -a $APP_DIR/app/scripts/runscripts/$s/data/* /etc/service/$s/data/
-    chown -R root.root /etc/service/$s/data/
+    chown -R root:root /etc/service/$s/data/
   fi
 done
 
@@ -319,7 +320,7 @@ fi
 
 # Create log directory
 log "Creating /var/log/$APP log directory ..."
-mkdir -p /var/log/$APP && chown -R $USER.$USER /var/log/$APP
+mkdir -p /var/log/$APP && chown -R $USER:$USER /var/log/$APP
 
 log "Testing if shared IDE volume '$OPT_PATH' is writeable ..."
 if (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then
@@ -546,9 +547,12 @@ fi
 log "Fixing ownership for data/db, data/cache, data/certs, data/config ..."
 chown -R $USER $DATA_DIR
 
-log "Adding extensions.json ..."
-[ -d "$APP_HOME/.vscode" ] || mkdir -p $APP_HOME/.vscode && chown -R $USER.$USER $APP_HOME/.vscode
-[ -f "$APP_HOME/.vscode/extensions.json" ] || cp -a $APP_DIR/build/development/extensions.json $APP_HOME/.vscode/
+log "Copying from $APP_DIR/build/development/dot-theia/ to ~/.vscode/* (if needed) ..."
+[ -d "$APP_HOME/.vscode" ] || mkdir -p $APP_HOME/.vscode && chown -R $USER:$USER $APP_HOME/.vscode
+for file in $APP_DIR/build/development/dot-theia/*
+do
+   [ -f $APP_HOME/.vscode/$(basename "$file") ] || cp -a $file $APP_HOME/.vscode/
+done
 
 log "Launching s6 service supervisor ..."
 mkdir -p /etc/service/.s6-svscan && cat >/etc/service/.s6-svscan/finish <<_EOE_ && chmod 755 /etc/service/.s6-svscan/finish

@@ -1,4 +1,6 @@
-#!/opt/dockside/theia/bin/sh
+#!/opt/dockside/system/latest/bin/sh
+
+DOCKSIDE_ROOT="/opt/dockside"
 
 log() {
    local PID="$$"
@@ -69,7 +71,7 @@ create_user() {
    # A generalised solution to docker issue, whereby tmpfs mountpoint ownership and mode
    # is incorrectly set following container stop/start: find tmpfs inside $HOME and
    # fixup ownership and permissions.
-   for p in $(busybox cat /proc/mounts | busybox grep "^tmpfs $HOME[/ ]" | busybox awk '{print $2}')
+   for p in $(busybox cat /proc/mounts | busybox grep "^tmpfs ${HOME}[/ ]" | busybox awk '{print $2}')
    do
       if [ -d "$p" ]; then
          log "Restoring correct ownership and permissions for tmpfs: $p"
@@ -166,6 +168,53 @@ create_git_repo() {
    fi
 }
 
+gh_authenticate() {
+   if [ -f "$HOME/.config/gh/hosts.yml" ]; then
+      log "Authenticated to Github already; skipping setup"
+   fi
+
+   if [ -z "$GH_TOKEN" ]; then
+      log "Github authentication skipped, as no GH_TOKEN for this user"
+      return
+   fi
+
+   # Avoid this issue:
+   # The value of the GH_TOKEN environment variable is being used for authentication.
+   # To have GitHub CLI store credentials instead, first clear the value from the environment.
+   local TOKEN="$GH_TOKEN"
+   unset GH_TOKEN
+
+   log "Authenticating to Github with token '${TOKEN:0:16}' ..."
+   $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") || log "WARN: gh auth login failed"
+}
+
+checkout_git_branch_or_pr() {
+   local BRANCH="${DOCKSIDE_OPTION_BRANCH:-}"
+   local PR="${DOCKSIDE_OPTION_PR:-}"
+
+   [ -n "$BRANCH" ] || [ -n "$PR" ] || return
+
+   # Only act on the repo that was just cloned via GIT_URL.
+   # For pre-populated images (no GIT_URL), branch/PR checkout is the
+   # responsibility of the profile command, which can use {option.branch}
+   # and {option.pr} placeholders or read the DOCKSIDE_OPTION_* env vars.
+   [ -n "$GIT_URL" ] || return
+
+   local CLONE_DIR
+   CLONE_DIR=$(basename "${GIT_URL%.git}")
+   local REPO="$HOME/$CLONE_DIR"
+
+   [ -d "$REPO/.git" ] || return
+
+   if [ -n "$PR" ]; then
+      log "Checking out PR $PR in $REPO"
+      (cd "$REPO" && $IDE_PATH/bin/gh pr checkout "$PR") || log "WARN: gh pr checkout '$PR' failed in repo '$REPO'"
+   else
+      log "Checking out branch $BRANCH in $REPO"
+      (cd "$REPO" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || log "WARN: git checkout '$BRANCH' failed in repo '$REPO'"
+   fi
+}
+
 spawn_ssh_agent() {
    log "Checking for ssh-agent ..."
    if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
@@ -180,6 +229,11 @@ spawn_ssh_agent() {
 
 populate_known_hosts() {
 
+   if [ -f "$HOME/.ssh/known_hosts" ]; then
+      log "Leaving existing ~/.ssh/known_hosts"
+      return
+   fi
+
    if [ -n "$SSH_KNOWN_HOSTS_DOMAINS" ]; then
       # Replace any ',' with spaces
       SSH_KNOWN_HOSTS_DOMAINS=$(echo $SSH_KNOWN_HOSTS_DOMAINS | tr ',' ' ')
@@ -191,7 +245,7 @@ populate_known_hosts() {
    local SSH_KNOWN_HOSTS_REPO_DOMAINS=$(
       find $HOME -type d -name .git -exec echo "{}/config" \; | \
          xargs -I '{}' grep url '{}' | \
-         sed -r 's|\s*url\s*=\s*||; /^[^@]+@/!d; s|^[^@]+@([^:]+).*$|\1|' | \
+         sed -r 's|\s*url\s*=\s*||; /^[^@]+@/!d; s|^[^@]+@([^:/]+).*$|\1|' | \
          sort -u
    )
    log "Scan for known-hosts domains found: '$SSH_KNOWN_HOSTS_REPO_DOMAINS'"
@@ -203,17 +257,16 @@ populate_known_hosts() {
    )
 
    if [ -n "$SSH_KNOWN_HOSTS_DOMAINS_ALL" ]; then
-      log "- Running: IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >$HOME/.ssh/known_hosts"
-      $IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >$HOME/.ssh/known_hosts
+      log "- Running: IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >>$HOME/.ssh/known_hosts"
+      $IDE_PATH/bin/ssh-keyscan $SSH_KNOWN_HOSTS_DOMAINS_ALL >>$HOME/.ssh/known_hosts
    fi
 
 }
 
 populate_ssh_agent_keys() {
-   local SAVEKEYS="1"
-   local KEY_PATH="$HOME/.ssh/key"
-
-   log "Populating ssh agent keys to '$KEY_PATH' and ssh-agent ..."
+   local SAVEKEYS="0"
+   local DEFAULT_KEY_PATH="$HOME/.ssh/dockside"
+   local KEY_PATH="$DEFAULT_KEY_PATH"
 
    local KEY_PRIVATE=$(echo "$SSH_AGENT_KEYS" | jq -re '.private')
    local KEY_PUBLIC=$(echo "$SSH_AGENT_KEYS" | jq -re '.public')
@@ -221,15 +274,26 @@ populate_ssh_agent_keys() {
    log "SSH_AGENT_KEYS(PUBLIC)=$KEY_PUBLIC"
    log "SSH_AGENT_KEYS(PRIVATE)=${KEY_PRIVATE:0:36}..."
 
-   [ -f "$KEY_PATH" ] || echo "$KEY_PRIVATE" >$KEY_PATH
-   [ -f "$KEY_PATH.pub" ] || echo "$KEY_PUBLIC" >$KEY_PATH.pub
+   if [ "$KEY_PUBLIC" = "null" ] || [ "$KEY_PRIVATE" = "null" ] || [ -z "$KEY_PUBLIC" ] || [ -z "$KEY_PRIVATE" ]; then
+      log "SSH_AGENT_KEYS is null, so not saving keys to '$KEY_PATH'"
+      return
+   fi
 
+   if [ -f "$KEY_PATH" ] && [ -f "$KEY_PATH.pub" ]; then
+      log "Leaving existing keys unchanged in '$KEY_PATH'; adding using temporary path ..."
+      KEY_PATH="$(busybox mktemp dockside.XXXXXX)"
+   fi
+
+   log "Populating ssh agent keys to '$KEY_PATH' and ssh-agent ..."
+
+   echo "$KEY_PRIVATE" >$KEY_PATH
+   echo "$KEY_PUBLIC" >$KEY_PATH.pub
    chmod 400 $KEY_PATH $KEY_PATH.pub
 
    $IDE_PATH/bin/ssh-add "$KEY_PATH"
    $IDE_PATH/bin/ssh-add -L
 
-   if [ -z "$SAVEKEYS" ]; then
+   if [ "$SAVEKEYS" != "1" ] || [ "$KEY_PATH" != "$DEFAULT_KEY_PATH" ]; then
       log "Deleting keys from '$KEY_PATH'"
       rm -f $KEY_PATH $KEY_PATH.pub
    fi
@@ -245,9 +309,17 @@ find_files_having() {
    find "$HOME" -type d -name "node_modules" -o -name ".*" -prune -o -type f -exec head -n 1 {} \; 2>/dev/null | $IDE_PATH/bin/busybox grep -qE '^#!.*('$grep')'
 }
 
+# Populate ~/.vscode/extensions.json:
+# - Only alter an existing file when extensions are explicit providedly or auto-detect is explicitly requested.
+# - Always autodetect when no existing file found.
+# Inputs:
+# - DEVCONTAINER_VSCODE_EXTENSIONS: JSON e.g. { "extensions": [ "ms-python.python", "ms-toolsai.jupyter" ] }
+# - DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS: JSON (same object)
+# - DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT: 0 (false) or 1 (true)
 populate_vscode_extensions() {
    local DIR="$HOME/.vscode"
    local FILE="$DIR/extensions.json"
+   local NEW_FILE=0
 
    log "Creating $DIR ..."
    mkdir -p "$DIR"
@@ -255,36 +327,146 @@ populate_vscode_extensions() {
    log "Checking for $FILE ..."
 
    if [ -f $FILE ]; then
-      log "Found prexisting $FILE."
-   elif [ -n "$DEVCONTAINER_VSCODE" ] && [ "$DEVCONTAINER_VSCODE" != "null" ]; then
-      log "Populating $FILE with '$DEVCONTAINER_VSCODE'"
-      echo "$DEVCONTAINER_VSCODE" | jq -re '{recommendations: .extensions}' >$FILE
+      log "Prexisting '$FILE' found."
    else
-      echo '{"recommendations": []}' >$FILE
+      log "Prexisting '$FILE' not found, creating new."
+      cat <<'_EOE_' >$FILE
+{
+   // See https://go.microsoft.com/fwlink/?LinkId=827846 to learn about workspace recommendations.
+   // Extension identifier format: ${publisher}.${name}. Example: vscode.csharp
+   // List of extensions which should be recommended for users of this workspace.
+   "recommendations": [],
+   // List of extensions that should not be recommended for users of this workspace.
+   "unwantedRecommendations": []
+}
+_EOE_
+      NEW_FILE=1
+   fi
+
+   local EXT_SET=0
+   if [ -n "$DEVCONTAINER_VSCODE_EXTENSIONS" ] && [ "$DEVCONTAINER_VSCODE_EXTENSIONS" != "null" ]; then
+      EXT_SET=1
+   fi
+
+   local UNWANTED_SET=0
+   if [ -n "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" ] && [ "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" != "null" ]; then
+      UNWANTED_SET=1
+   fi
+
+   local AUTODETECT_ENABLED=0
+   if [ "$NEW_FILE" -eq 1 ]; then
+      if [ "${DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT:-}" != "0" ]; then
+         AUTODETECT_ENABLED=1
+      fi
+   else
+      if [ "${DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT:-}" = "1" ]; then
+         AUTODETECT_ENABLED=1
+      fi
+   fi
+
+   local SHOULD_MODIFY=0
+   if [ "$NEW_FILE" -eq 1 ] || [ "$EXT_SET" -eq 1 ] || [ "$UNWANTED_SET" -eq 1 ] || [ "$AUTODETECT_ENABLED" -eq 1 ]; then
+      SHOULD_MODIFY=1
+   fi
+
+   if [ "$SHOULD_MODIFY" -ne 1 ]; then
+      log "Leaving '$FILE' unchanged."
+      return
+   fi
+
+   local WORKFILE
+   WORKFILE=$(mktemp)
+   if ! grep -v '//.*$' "$FILE" >"$WORKFILE"; then
+      : >"$WORKFILE"
+   fi
+
+   if [ ! -s "$WORKFILE" ]; then
+      echo '{"recommendations":[],"unwantedRecommendations":[]}' >"$WORKFILE"
+   fi
+
+   local UPDATED=0
+
+   if [ "$EXT_SET" -eq 1 ]; then
+      log "Adding recommended extensions from DEVCONTAINER_VSCODE_EXTENSIONS"
+      local USER_RECS
+      USER_RECS=$(echo "$DEVCONTAINER_VSCODE_EXTENSIONS" | jq -ce '.extensions // []') || USER_RECS='[]'
+      if jq --argjson user_recs "$USER_RECS" '.recommendations = ((.recommendations // []) + $user_recs | unique)' "$WORKFILE" >"$WORKFILE.new"; then
+         mv "$WORKFILE.new" "$WORKFILE"
+         UPDATED=1
+      fi
+   fi
+
+   if [ "$UNWANTED_SET" -eq 1 ]; then
+      log "Adding unwanted extensions from DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS"
+      local USER_UNWANTED
+      USER_UNWANTED=$(echo "$DEVCONTAINER_VSCODE_UNWANTED_EXTENSIONS" | jq -ce '.extensions // []') || USER_UNWANTED='[]'
+      if jq --argjson user_unwanted "$USER_UNWANTED" '.unwantedRecommendations = ((.unwantedRecommendations // []) + $user_unwanted | unique)' "$WORKFILE" >"$WORKFILE.new"; then
+         mv "$WORKFILE.new" "$WORKFILE"
+         UPDATED=1
+      fi
+   fi
+
+   if [ "$AUTODETECT_ENABLED" -eq 1 ]; then
+      log "Auto-detecting extensions for '$FILE' ..."
+   else
+      log "Skipping auto-detection of extensions, since DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT='$DEVCONTAINER_VSCODE_EXTENSIONS_AUTODETECT'"
    fi
 
    local EXTS=""
-   find_files_of_type -name '*.sh' || find_files_having 'bash|sh' && EXTS="$EXTS vscode.shellscript"
-   find_files_of_type -name '*.pl' -o -name '*.pm' || find_files_having 'perl' && EXTS="$EXTS vscode.perl"
-   find_files_of_type -name '*.py' || find_files_having 'python' && EXTS="$EXTS vscode.python"
-   find_files_of_type -name '*.css' && EXTS="$EXTS vscode.css"
-   find_files_of_type -name '*.js' && EXTS="$EXTS vscode.javascript"
-   find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
-   find_files_of_type -name '*.htm*' && EXTS="$EXTS vscode.html"
-   find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
-   find_files_of_type -name '*.md'  && EXTS="$EXTS vscode.markdown"
-   find_files_of_type -regex '.*\.ya*ml' && EXTS="$EXTS vscode.yaml"
-   find_files_of_type -name 'Dockerfile' && EXTS="$EXTS vscode.docker"
-   find_files_of_type -name '*.rb'  && EXTS="$EXTS vscode.ruby"
-   find_files_of_type -name '*.java'  && EXTS="$EXTS vscode.java"
-   find_files_of_type -name '*.php*'  && EXTS="$EXTS vscode.php"
-   find_files_of_type -name '*.ts'  && EXTS="$EXTS vscode.typescript"
-   find_files_of_type -name '*.go'  && EXTS="$EXTS vscode.go"
-      
-   if [ -n "$EXTS" ]; then
-      log "Populating $FILE with (in JSON): $EXTS"
+   if [ "$AUTODETECT_ENABLED" -eq 1 ]; then
+      find_files_of_type -name '*.sh' || find_files_having 'bash|sh' && EXTS="$EXTS vscode.shellscript"
+      find_files_of_type -name '*.pl' -o -name '*.pm' || find_files_having 'perl' && EXTS="$EXTS vscode.perl"
+      find_files_of_type -name '*.py' || find_files_having 'python' && EXTS="$EXTS vscode.python"
+      find_files_of_type -name '*.css' && EXTS="$EXTS vscode.css"
+      find_files_of_type -name '*.js' && EXTS="$EXTS vscode.javascript"
+      find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
+      find_files_of_type -name '*.htm*' && EXTS="$EXTS vscode.html"
+      find_files_of_type -name '*.json' && EXTS="$EXTS vscode.json"
+      find_files_of_type -name '*.md'  && EXTS="$EXTS vscode.markdown"
+      find_files_of_type -regex '.*\.ya*ml' && EXTS="$EXTS vscode.yaml"
+      find_files_of_type -name 'Dockerfile' && EXTS="$EXTS vscode.docker"
+      find_files_of_type -name '*.rb'  && EXTS="$EXTS vscode.ruby"
+      find_files_of_type -name '*.java'  && EXTS="$EXTS vscode.java"
+      find_files_of_type -name '*.php*'  && EXTS="$EXTS vscode.php"
+      find_files_of_type -name '*.ts'  && EXTS="$EXTS vscode.typescript"
+      find_files_of_type -name '*.go'  && EXTS="$EXTS vscode.go"
+   fi
 
-      grep -v '//.*$' "$FILE" | jq --argjson new_items "$(echo "$EXTS" | jq -R 'split(" ") | map(select(. != ""))')" '.recommendations += $new_items | .recommendations |= unique' >$FILE.new && mv $FILE.new $FILE
+   if [ "$AUTODETECT_ENABLED" -eq 1 ] && [ -n "$EXTS" ]; then
+      log "Populating $FILE with (in JSON): $EXTS"
+      if jq --argjson new_items "$(echo "$EXTS" | jq -R 'split(" ") | map(select(. != ""))')" '.recommendations = ((.recommendations // []) + $new_items | unique)' "$WORKFILE" >"$WORKFILE.new"; then
+         mv "$WORKFILE.new" "$WORKFILE"
+         UPDATED=1
+      fi
+   fi
+
+   if [ "$UPDATED" -eq 1 ]; then
+      mv "$WORKFILE" "$FILE"
+   else
+      rm -f "$WORKFILE"
+   fi
+}
+
+populate_vscode_settings() {
+   local DIR="$HOME/.vscode"
+   local FILE="$DIR/settings.json"
+
+   log "Creating $DIR ..."
+   mkdir -p "$DIR"
+
+   log "Checking for settings.json file '$FILE' ..."
+   if [ -f $FILE ]; then
+      log "Found prexisting file '$FILE'."
+   else
+      log "Creating empty file '$FILE'."
+      echo '{}' >$FILE
+   fi
+
+   local EXCLUDES='**/.vscode **/.vscode-server **/.openvscode-server **/.theia **/.cache **/.ssh **/.git'
+   if [ -n "$EXCLUDES" ]; then
+      log "Populating '$FILE' with 'files.exclude' exclusions (in JSON): $EXCLUDES"
+
+      jq --argjson new_items "$(echo "$EXCLUDES" | jq -R 'split(" ") | map({(.): true}) | add')"    '."files.exclude" |= . + $new_items' "$FILE" >$FILE.new && mv $FILE.new $FILE
    fi
 }
 
@@ -297,10 +479,12 @@ launch_nonroot() {
    # Exported env vars made available to run_nonroot:
    export DEVCONTAINER_VSCODE
 
-   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" /opt/dockside/launch.sh run_nonroot"
+   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" $DOCKSIDE_ROOT/launch.sh run_nonroot"
 }
 
 launch_theia() {
+   IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/theia/* | tail -n 1)"
+   
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    while true
    do
@@ -310,29 +494,80 @@ launch_theia() {
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
          # su will retain exported env vars and set new ones.
          # So we use 'env -i' to clear all env vars before setting just the ones needed.
-         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh"
+         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
       else
-         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IDE_PATH/bin/launch-ide.sh
+         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
       fi
 
       sleep 1
    done   
 }
 
+launch_openvscode() {
+   IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/openvscode/* | tail -n 1)"
+
+   # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
+   while true
+   do
+
+      log "Launching and supervising the openvscode IDE at $IIDE_PATH"
+
+      if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
+         # su will retain exported env vars and set new ones.
+         # So we use 'env -i' to clear all env vars before setting just the ones needed.
+         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
+      else
+         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
+      fi
+
+      sleep 1
+   done
+}
+
 run_nonroot() {
+   log "User account launch started ..."
    spawn_ssh_agent
    populate_ssh_agent_keys
    populate_known_hosts
-   (create_git_repo; populate_vscode_extensions) &
-   launch_theia
+   (
+      log "Repo setup subproc started ..."
+      create_git_repo
+      gh_authenticate
+      checkout_git_branch_or_pr
+      populate_vscode_extensions;
+      populate_vscode_settings
+      log "Repo setup subproc finished";
+   ) &
+   restart_ide
+   log "User account launch finished."
+}
+
+restart_ide() {
+   # TODO: Kill existing IDE...
+
+   # Match IDE strings of form openvscode/<version> or <theia>/<version>
+   # where <version> is a specific version string or the string 'latest'
+   case "$IDE" in
+      openvscode/*)
+         launch_openvscode
+         ;;
+      theia/*)
+         launch_theia
+         ;;
+      *)
+         launch_theia
+         ;;
+   esac
 }
 
 launch_ide() {
+   log "Launch started ..."
    create_user
    create_git_config
    update_ssh_authorized_keys
    launch_sshd
    launch_nonroot
+   log "Launch finished."
 }
 
 init() {
@@ -341,7 +576,7 @@ init() {
    #
    # N.B. Assume we can find ls and tail in the PATH
    if [ -z "$IDE_PATH" ] || ! [ -d "$IDE_PATH" ]; then
-      IDE_PATH="$(ls -d /opt/dockside/ide/*/* | tail -n 1)"
+      IDE_PATH="$(ls -d $DOCKSIDE_ROOT/system/* | tail -n 1)"
    fi
 
    [ -n "$IDE_USER" ] || IDE_USER="root"
@@ -359,9 +594,9 @@ init() {
    exec 2>>$LOG
 
    if [ -z "$DEBUG" ]; then
-      log "Executing '$@' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH:"
+      log "Executing '$*' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH:"
    else
-      log "Executing '$@' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH and environment:"
+      log "Executing '$*' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH and environment:"
       busybox env | busybox sed 's/^/=> /'}
    fi
 }

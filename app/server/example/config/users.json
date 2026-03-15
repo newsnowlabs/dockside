@@ -5,29 +5,46 @@
    // Administrator
    "admin": {
       "id": 1,
-      "email" : "",
+      "email" : "admin@myexamplecorp.com",
       "role": "admin",
-      "name": "Administrator",
+      "name": "A. Administrator",
       "permissions": {
          // Disable any by-default-enabled admin permissions by specifying them with value 0 here.
+         // "createContainerReservation": 1,
+         // "startContainer": 1,
+         // "stopContainer": 1,
+         // "removeContainer": 1,
+         // "developContainers": 1,
+         // "setContainerViewers": 1,
+         // "setContainerDevelopers": 1,
+         // "getContainerLogs": 1,
+         // "viewAllContainers": 1
       },
       "resources": {
-         "networks": [ "*" ],
-         "profiles": [ "*" ],
-         "auth": [ "*" ],
-         "images": [ "*" ],
-         "runtimes": [ "*" ]
+         "profiles": [ "*" ], // or equivalently { "*": 1 }
+         "networks": [ "*" ], // or equivalently { "*": 1 }
+         "runtimes": [ "*" ], // or equivalently { "*": 1 }
+         "IDEs":     [ "*" ], // or equivalently { "*": 1 }
+         "images":   [ "*" ], // or equivalently { "*": 1 }
+         "auth":     [ "*" ]  // or equivalently { "*": 1 }
       },
       "ssh": {
-         "authorized_keys": [],
+         // SSH public keys allowed to ssh to containers this user owns or is a developer of
+         "authorized_keys": [], // ["ssh-rsa AAAAB... admin@myexamplecorp.com"]
+
+         // SSH keypair(s) added to integrated ssh-agent running in IDE context
          "keypairs": {
-            "example": {
-               "private": "",
-               "public": ""
+            "*": {
+               "private": "", // "-----BEGIN OPENSSH PRIVATE KEY-----\n2afedc...\n-----END OPENSSH PRIVATE KEY-----\n",
+               "public": "" // "ssh-rsa AAAAB... admin@myexamplecorp.com"
             }
          }
-      }
-   },
+      },
+      // Optional: GitHub Personal Access Token passed as GH_TOKEN to all containers
+      // launched by this user, enabling 'gh pr checkout' and other gh CLI operations.
+      // Requires 'repo' scope for private repos; 'public_repo' scope for public repos.
+      "gh_token": "" // "github_pat_11..."
+   }
    // Example
    // "johnsmith": {
    //    "id": 2,
@@ -46,9 +63,11 @@
    //       "profiles": { "admin-only-profile": 0 },
    //       "networks": { "*": 1, "custom-network-we-want-disabled": 0 },
    //       "runtimes": { "sysbox-runc": 0, "gvisor": 1 }
+   //       "IDEs":     [ "openvscode/latest" ]
    //    },
    //    "ssh": {
    //       "authorized_keys": []
-   //    }
+   //    },
+   //    // "gh_token": "ghp_xxxxxxxxxxxxxxxxxxxx"
    // }
 }

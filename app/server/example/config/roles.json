@@ -22,7 +22,7 @@
       },
       "resources": {
          "networks": { "*": 1 }
-      },
+      }
    },
    "productmanager": {
       "permissions": {
