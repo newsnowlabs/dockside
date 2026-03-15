@@ -30,7 +30,7 @@ AI coding tools work best when they have their own isolated environment to opera
 
 - **Claude Code and OpenAI Codex CLIs** run natively inside Dockside's integrated IDEs (OpenVSCode Server and Theia), as do their VS Code extensions. Point an AI agent at a fresh devcontainer, let it work, then review the result — all contained.
 - **Per-session isolation**: each AI coding session gets its own devcontainer. Unintended side-effects — runaway processes, unexpected file changes, dependency conflicts — stay within that container's blast radius and don't touch your host or other devcontainers.
-- **Network firewall management** _(coming soon)_: configurable outbound firewall rules per devcontainer, letting you define exactly what AI agents can and cannot reach on the network. Reproduces the security model of purpose-built AI sandboxes in a customisable, self-hosted way — without requiring elevated container capabilities or weakening isolation.
+- **Network firewall management** _(coming soon)_: configurable outbound firewall rules per Docker custom network, letting you define exactly what AI agents can and cannot reach. Assign a devcontainer to a restricted network and Dockside enforces the rules — without requiring elevated container capabilities or weakening isolation.
 
 ## Why Dockside?
 
@@ -41,7 +41,7 @@ AI coding tools work best when they have their own isolated environment to opera
 | **Your data stays on your infra** | ✅ | ❌ | ❌ | ✅ |
 | **Full root in containers** | ✅ | ❌ | ❌ | Partial |
 | **AI CLI tools run natively in IDE** | ✅ | Partial | Partial | Partial |
-| **Per-container network firewall for AI** | ✅ soon | ❌ | ❌ | ❌ |
+| **Per-network outbound firewall for AI** | ✅ soon | ❌ | ❌ | ❌ |
 | **Browser IDE + SSH + JetBrains** | ✅ | ✅ | ✅ | ✅ |
 | **Works on your laptop** | ✅ | ❌ | ❌ | ❌ |
 | **Open source** | ✅ Apache 2.0 | ❌ | Partial | ✅ AGPL |
@@ -67,7 +67,7 @@ Benefits for developers:
 
 - Code in a clone of your production environment, avoiding troublesome deploy-time errors and bugfixing.
 - Switch between and hand over tasks instantly. No more laborious branch switching, or committing code before it’s ready. `git stash` will be a thing of the past.
-- Work from anywhere. All you need is a browser.
+- Work from anywhere. All you need is a browser. Or connect with VS Code, JetBrains, or any other IDE capable of remote development over SSH. Or SSH in directly and use your favourite terminal editor or toolchain. You choose.
 - Run AI coding agents — Claude Code, Codex, GitHub Copilot — safely inside isolated devcontainers. Each agent session is self-contained, and coming-soon firewall controls let you define exactly what AI tools can reach on the network.
 - Unifying on an IDE within a team can deliver great productivity benefits through improved knowledge-share and better choices of plugins and tooling.
 - SSH access facilitates use of any terminal editor or command line tool and seamless [VS Code remote development](https://code.visualstudio.com/docs/remote/ssh) via the [Remote SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) extension.
@@ -87,10 +87,9 @@ Benefits for product managers and senior management:
 
 Advanced features:
 
-- Runtime agnostic: use runC (Docker's default), [sysbox](https://github.com/nestybox/sysbox), [gvisor](https://gvisor.dev/), [RunCVM](https://github.com/newsnowlabs/runcvm) or others.
+- Runtime agnostic: use runC (Docker's default), [Sysbox](https://github.com/nestybox/sysbox) (for Docker-in-Dockside devtainers), [gVisor](https://gvisor.dev/) (for sandboxed kernel isolation), or [RunCVM](https://github.com/newsnowlabs/runcvm) (for full KVM VMs on amd64); see [Alternative runtimes](extensions/runtimes.md).
 - Apply Docker system resource limits to devtainers, and communicate available system resources to devtainers using [LXCFS](extensions/lxcfs.md).
 - Support for launching [multi-architecture devtainers](extensions/multiarch.md) using [qemu-user-static](https://github.com/multiarch/qemu-user-static).
-- Support for launching KVM VMs on amd64 hardware using [RunCVM](https://github.com/newsnowlabs/runcvm)
 - Firewall or redirect outgoing devcontainer traffic using custom Docker networks — useful for isolating AI agent network access or mirroring production network topologies.
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications.
 - Command-line interface (`dockside` CLI) for scripting, automation, and CI/CD integration.
@@ -146,6 +145,11 @@ docker run -it --name dockside \
 
 > **Note:** The built-in SSL certificate covers `*.local.dockside.dev` which resolves to 127.0.0.1. It is intended for local use only.
 
+**Once Dockside is running:**
+
+4. Open the Dockside UI, click **Launch**, and pick an example profile (e.g. `Alpine` or `Debian`) to launch your first trial devcontainer — this confirms everything is working.
+5. Next, [register your team members and configure profiles](setup.md) to tailor the available devcontainer types for your projects. See [Setup](#setup) below for a guided overview.
+
 ### Launch on a public domain with auto-generated SSL
 
 To share devtainers with your team — or access them from anywhere — deploy Dockside on an internet-connected server with a public domain name and a LetsEncrypt wildcard SSL certificate generated automatically on startup.
@@ -176,89 +180,50 @@ Assuming you have provisioned `<my-domain>` correctly, Dockside will use LetsEnc
 
 ### Advanced Launch Options
 
-#### Launch with self-signed SSL certificate
+For self-signed, self-supplied SSL, Google Cloud Deployment Manager, and Terraform launch configurations, see [Advanced Launch Options](advanced-launch-options.md).
 
-For use on a local machine, on-premises server, VM or cloud instance where you want to use your own domain name but do not yet have a public SSL certificate, launch Dockside with a self-signed certificate. Replace `<my-domain>` with your chosen domain name:
+## Setup
 
-```sh
-mkdir -p ~/.dockside && \
-docker run -it --name dockside \
-  -v ~/.dockside:/data \
-  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -p 443:443 -p 80:80 \
-  --security-opt=apparmor=unconfined \
-  newsnowlabs/dockside --ssl-selfsigned --ssl-zone <my-domain>
-```
+Dockside configuration lives under `~/.dockside/config/` on the host (mounted at `/data/config/` inside the container). Config files are plain JSON (with `//` comments allowed) and are auto-reloaded on change — most settings take effect immediately without restarting Dockside.
 
-Navigate to `https://www.<my-domain>/` (configure your DNS or `/etc/hosts` file as needed). Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
+Getting set up involves three main steps:
 
-You can [detach](https://docs.docker.com/engine/reference/commandline/attach/) from the container by typing `CTRL+P` `CTRL+Q`, or launch with `docker run -d` and retrieve the password with `docker logs dockside`.
+- **[Profiles](setup.md#profiles)**: define the types of devcontainer your team can launch — which Docker images, networks, runtimes, and IDE options are available. Dockside ships several example profiles (`alpine.json`, `debian.json`, `dockside.json`, and others) to get you started. Edit them or add new ones to match your own projects and images.
+- **[Users and Roles](setup.md#users)**: register each team member in `users.json` and `passwd`. Assign a role (`admin` or a custom role from `roles.json`) to control what each user can do and which profiles they can deploy.
+- **[SSH keys](extensions/ssh.md)**: add each user's SSH public key to their `users.json` record so Dockside auto-populates `~/.ssh/authorized_keys` in every devcontainer they own or are shared on. Users then follow the one-click **SSH Setup** instructions in the Dockside UI to configure their `~/.ssh/config` and install the [wstunnel](https://github.com/erebe/wstunnel) helper. After that, SSHing into any devcontainer — and using VS Code Remote SSH or JetBrains Remote Development — works seamlessly with no extra steps.
 
-#### Launch with self-supplied SSL certificate
-
-If you already hold a wildcard SSL certificate for `<my-domain>`, place `fullchain.pem` and `privkey.pem` in `<certsdir>` and launch as follows:
-
-```sh
-mkdir -p ~/.dockside && \
-docker run -d --name dockside \
-  -v ~/.dockside:/data \
-  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
-  -v <certsdir>:/data/certs \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -p 443:443 -p 80:80 \
-  --security-opt=apparmor=unconfined \
-  newsnowlabs/dockside --ssl-selfsupplied
-```
-
-Navigate to `https://www.<my-domain>/`. Run `docker logs dockside` to obtain the auto-generated `admin` password.
-
-> **Note:** To reload updated certificates run `docker exec dockside s6-svc -t /etc/service/nginx`.
-
-#### Google Cloud Deployment Manager _(deprecated)_
-
-> An implementation of the LetsEncrypt launch procedure within [Google Deployment Manager](https://console.cloud.google.com/dm/deployments) is available [here](https://github.com/newsnowlabs/dockside/tree/main/examples/cloud/google-deployment-manager). To use it, you must first configure a managed zone within [Google Cloud DNS](https://console.cloud.google.com/net-services/dns/zones).
->
-> Sign into Cloud Shell, and run:
-> ```sh
-> git clone https://github.com/newsnowlabs/dockside.git
-> cd dockside/examples/cloud/google-deployment-manager/
-> ./launch.sh --managed-zone <managed-zone> --dns-name <managed-zone-fully-qualified-subdomain>
-> ```
-> For example, if your managed zone is called `myzone`, the zone DNS name is `myzone.org`, and your chosen subdomain is `dockside`, run `./launch.sh --managed-zone myzone --dns-name dockside.myzone.org`.
->
-> For full `launch.sh` usage, including options for configuring cloud machine type, machine zone, and disk size, run `./launch.sh --help`.
-
-#### Terraform
-
-> _Terraform launch instructions coming soon._
+For the full configuration reference see [Configuring and administering Dockside](setup.md), including [config.json](setup.md#configjson), [Roles](setup.md#roles), [Profile routers](setup.md#profile-routers) and [Access control](setup.md#access-control-model).
 
 ## Usage
 
-Refer to [Usage](usage.md) for how to use the Dockside UI and IDE.
+The Dockside UI is intentionally simple: click **Launch** to create a new devcontainer from a profile, configure it, and you're running in seconds. The rest of the workflow — opening an IDE, starting an SSH session, sharing a devcontainer with a colleague, setting access modes on its exposed services — is a click or two away.
+
+Key workflow points:
+
+- **[Launching a devcontainer](usage.md#launching-a-devtainer)**: choose a profile, select a Docker image, set your network and runtime, optionally specify a git branch or other profile options, then click **Launch**.
+- **[Using the IDE](usage.md#using-the-dockside-ide)**: open Theia or OpenVSCode Server directly in your browser. AI coding tools (Claude Code, Codex, Copilot) run natively inside the IDE. The bundled `gh` CLI authenticates automatically when you have a `gh_token` configured in your user profile.
+- **[SSH access](extensions/ssh.md)**: one-click SSH from the Dockside UI, or SSH in directly from any terminal. Works with VS Code Remote SSH and JetBrains Remote Development out of the box once SSH client setup is complete.
+- **[Sharing and access control](setup.md#router-authaccess-levels)**: share a devcontainer with teammates as developers or viewers, and set per-service access levels (owner-only, team, or public URL).
+
+For the full UI and CLI reference see [Usage](usage.md).
 
 ## CLI
 
 The `dockside` CLI is a zero-dependency Python 3.6+ command-line interface for managing devtainers programmatically, suitable for scripting and CI/CD pipelines. See the [Dockside CLI README](../cli/README.md) for full documentation.
 
-## Setup
+## Security
 
-See [Configuring and administering Dockside](setup.md)
+See [Securing profiles and devtainers](securing.md)
 
 ## Upgrading
 
 See [Upgrading Dockside](upgrading.md) for strategies for upgrading Dockside, or Dockside components such as the Dockside IDE bundle.
 
-## Security
-
-See [Securing profiles and devtainers](securing.md)
-
 ## Extensions
 
 - [LXCFS](extensions/lxcfs.md) -- allows processes within devtainers to correctly report their own cpu, memory, and disk available resources and usage
 - [Multi-architecture devtainers](extensions/multiarch.md) -- support for devtainers running non-amd64 processor architectures
-- [Docker-in-Dockside devtainers](extensions/runtimes/sysbox.md#sysbox-docker-in-dockside-devtainers) -- support for running devtainers using the sysbox or RunCVM runtimes
-- [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox or RunCVM runtimes
+- [Alternative runtimes](extensions/runtimes.md) -- Sysbox (Docker-in-Dockside devtainers), RunCVM (KVM VMs on amd64), gVisor (sandboxed kernel isolation)
 - [Backups](extensions/backups.md) -- strategies for backing up devtainers
 - [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows seamless one-click SSH access to devtainers from the command line and accessing devtainers using VS Code
 - [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality across Dockside IDEs (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within their UIs or terminals
@@ -271,7 +236,7 @@ Dockside was built at [NewsNow](https://www.newsnow.co.uk/about/) and has been t
 
 Near-term priorities include:
 
-- **Network firewall management**: per-devcontainer configurable outbound firewall rules, enabling safe AI agent sandboxing without elevated container capabilities — reproducing the security model of purpose-built AI devcontainer setups in a customisable, self-hosted way.
+- **Network firewall management**: per-Docker-network configurable outbound firewall rules, enabling safe AI agent sandboxing without elevated container capabilities — assign a devcontainer to a restricted network to define exactly what AI tools can reach.
 - **Terraform launch support**: first-class infrastructure-as-code deployment for teams managing Dockside at scale.
 
 Beyond that, the roadmap is shaped by what our users most need. We'd love to hear from you — tell us what would be most valuable to add next.
