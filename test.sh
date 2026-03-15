@@ -302,6 +302,16 @@ check_json() {
   return $failed
 }
 
+check_integration() {
+  if [[ -z "${DOCKSIDE_TEST_HOST:-}" && -z "${DOCKSIDE_TEST_IMAGE:-}" && \
+        "${DOCKSIDE_TEST_MODE:-}" != 'local' ]]; then
+    echo "  SKIP: Set DOCKSIDE_TEST_HOST or DOCKSIDE_TEST_IMAGE to run integration tests."
+    echo "  See t/integration/README.md for full usage."
+    return 1
+  fi
+  bash "$REPO_ROOT/t/integration/run_tests.sh"
+}
+
 # ── Run checks ───────────────────────────────────────────────────────────────
 echo -e "${BOLD}Dockside test suite${RESET}"
 echo "Repo: $REPO_ROOT"
@@ -315,6 +325,8 @@ run_check "json"       check_json
 # perltidy is available via --only perltidy but excluded from the default run:
 # the codebase pre-dates perltidy enforcement and has many pre-existing diffs.
 [[ -n "$ONLY" ]] && run_check "perltidy" check_perltidy
+# Integration tests require a running Dockside instance; opt-in only:
+[[ -n "$ONLY" ]] && run_check "integration" check_integration
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
