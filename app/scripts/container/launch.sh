@@ -484,6 +484,7 @@ launch_nonroot() {
 
 launch_theia() {
    IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/theia/* | tail -n 1)"
+   IIDE_PATH="$(busybox readlink -f "$IIDE_PATH")"
    
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    while true
@@ -505,6 +506,7 @@ launch_theia() {
 
 launch_openvscode() {
    IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/openvscode/* | tail -n 1)"
+   IIDE_PATH="$(busybox readlink -f "$IIDE_PATH")"
 
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    while true
@@ -578,6 +580,7 @@ init() {
    if [ -z "$IDE_PATH" ] || ! [ -d "$IDE_PATH" ]; then
       IDE_PATH="$(ls -d $DOCKSIDE_ROOT/system/* | tail -n 1)"
    fi
+   IDE_PATH="$($DOCKSIDE_ROOT/system/latest/bin/busybox readlink -f "$IDE_PATH")"
 
    [ -n "$IDE_USER" ] || IDE_USER="root"
 

@@ -15,6 +15,7 @@ FROM alpine:${SYSTEM_ALPINE_VERSION} AS base
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
+ARG DOCKSIDE_VERSION
 
 # Create:
 # - a BASH_ENV script targeting the desired versions of IDE for the platform,
@@ -73,7 +74,8 @@ export OPENVSCODE_VERSION="$OPENVSCODE_VERSION"
 export OPENVSCODE_BINARY="$OPENVSCODE_BINARY"
 export OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="$OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES"
 
-export DS_PATH=$OPT_PATH/system/latest
+export DOCKSIDE_VERSION="$DOCKSIDE_VERSION"
+export DS_PATH=$OPT_PATH/system/$DOCKSIDE_VERSION
 
 echo "Running command with environment:" >&2
 echo "- TARGETPLATFORM=\$TARGETPLATFORM" >&2
@@ -274,6 +276,8 @@ _EOE_
 # Patch all binaries and dynamic libraries for full portability.
 FROM base AS system
 
+ARG DOCKSIDE_VERSION
+
 # The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
 # COPY --from=base /tmp/dockside /tmp/dockside
 ENV BASH_ENV=/tmp/dockside/bash-env
@@ -308,6 +312,9 @@ RUN cd $DS_PATH/bin && \
     mv gh gh.orig && \
     echo -e "#!$DS_PATH/bin/sh\nexport SSL_CERT_FILE=$DS_PATH/certs/ca-certificates.crt\nexec gh.orig \"\$@\"\n" >gh && \
     chmod 755 gh
+
+# Create system/latest symlink pointing to the versioned directory
+RUN cd $DS_PATH/.. && ln -sf $DOCKSIDE_VERSION latest
 
 ################################################################################
 # BUILD OPENVSCODE IDE BINARY BUNDLE
@@ -384,7 +391,8 @@ RUN apt-get update && \
     apt-get -y --no-install-recommends --no-install-suggests install \
         apt-transport-https ca-certificates \
         curl \
-        gnupg2 && \
+        gnupg2 \
+        rsync && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - && \
     echo "deb https://download.docker.com/linux/debian $(cat /etc/os-release | grep VERSION_CODENAME | cut -d '=' -f2) stable" >/etc/apt/sources.list.d/docker.list && \
     apt-get update && \
@@ -511,6 +519,13 @@ RUN apt-get update && \
 #
 # (disabled as there are currently no VSIX extensions needing to be embedded in the image)
 # COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
+
+# -----------------------------------------------
+# Relocate /opt/dockside content to /opt/dockside.img so the entrypoint
+# can rsync it into the named volume at /opt/dockside on container start.
+# This enables safe in-place upgrades: launch a new container against the
+# same named volume and the rsync brings it up to date automatically.
+RUN mv $OPT_PATH $OPT_PATH.img && mkdir -p $OPT_PATH
 
 # -----------------------------------------------
 # Cause the creation of a volume at /opt/dockside

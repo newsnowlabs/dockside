@@ -322,6 +322,24 @@ fi
 log "Creating /var/log/$APP log directory ..."
 mkdir -p /var/log/$APP && chown -R $USER:$USER /var/log/$APP
 
+log "Rsyncing $OPT_PATH.img/ to $OPT_PATH/ ..."
+if [ -d "$OPT_PATH.img" ] && [ -d "$OPT_PATH" ]; then
+  # ide/: add new versions but preserve old ones (existing devtainers may still be using them)
+  mkdir -p "$OPT_PATH/ide"
+  rsync --archive "$OPT_PATH.img/ide/" "$OPT_PATH/ide/"
+
+  # Everything else (bin/, system/, etc.): clean sync, removing files not in the new image.
+  # Exclude ide/ (handled above without --delete) and host/ (separate named volume).
+  rsync --archive --delete \
+    --exclude=ide \
+    --exclude=host \
+    "$OPT_PATH.img/" "$OPT_PATH/"
+
+  log "- Rsync complete."
+else
+  log "- Skipping rsync: $OPT_PATH.img not found (development/legacy mode)."
+fi
+
 log "Testing if shared IDE volume '$OPT_PATH' is writeable ..."
 if (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then
   log "- Shared IDE volume is writeable ..."
