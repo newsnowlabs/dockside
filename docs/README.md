@@ -4,7 +4,7 @@
 
 # Introduction
 
-Dockside is a tool for provisioning lightweight access-controlled IDEs, staging environments and sandboxes - aka _devtainers_ - on local machine, self-hosted on-premises on bare metal or VM, or in the cloud.
+Dockside is a tool for provisioning lightweight access-controlled IDEs, staging environments and sandboxes - aka _devtainers_ - on local machine, self-hosted on-premises on bare metal or VM, or in the cloud. It packages multiple browser IDE options, such as OpenVSCode Server and Theia, alongside secure SSH access for terminal workflows or connecting local VS Code via Remote SSH.
 
 By provisioning a devtainer for every fork and branch, Dockside allows collaborative software and product development teams to take lean and iterative development and testing to a highly parallelised extreme.
 
@@ -18,7 +18,7 @@ By provisioning a devtainer for every fork and branch, Dockside allows collabora
 Core features:
 
 - Instantly launch and clone an almost infinite multiplicity of disposable devtainers - one for each task, bug, feature or design iteration.
-- Powerful VS Code-compatible IDE — choose between [Theia](https://theia-ide.org/) and [OpenVSCode](https://github.com/gitpod-io/openvscode-server).
+- Powerful IDE bundle including OpenVSCode Server and Theia, plus first-class SSH and VS Code-over-SSH access.
 - HTTPS automatically provisioned for every devtainer.
 - SSH server and access automatically provisioned for every devtainer.
 - User authentication and access control to running devtainers and their web services.
@@ -26,6 +26,8 @@ Core features:
 - Launch devtainers from stock Docker images, or from your own.
 - Root access within devtainers, so developers can upgrade their devtainers and install operating system packages when and how they need.
 - Bundled GitHub CLI (`gh`) with per-user token support for seamless `gh pr checkout` and other GitHub operations.
+
+Dockside supports working directly in browser IDEs, connecting local VS Code via SSH, or using plain SSH terminals, so teams can adopt the workflow that best fits each task.
 
 Benefits for developers:
 
@@ -207,7 +209,7 @@ See [Configuring and administering Dockside](setup.md)
 
 ## Upgrading
 
-See [Upgrading Dockside](upgrading.md) for strategies for upgrading Dockside, or Dockside components such as the Dockside Theia IDE.
+See [Upgrading Dockside](upgrading.md) for strategies for upgrading Dockside, or Dockside components such as the Dockside IDE bundle.
 
 ## Security
 
@@ -221,7 +223,7 @@ See [Securing profiles and devtainers](securing.md)
 - [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox runtime
 - [Backups](extensions/backups.md) -- strategies for backing up devtainers
 - [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows seamless one-click SSH access to devtainers from the command line and accessing devtainers using VS Code
-- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality of the IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the IDE UI or terminal
+- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality across Dockside IDEs (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within their UIs or terminals
 
 ## Case-study: Dockside in production at NewsNow
 
