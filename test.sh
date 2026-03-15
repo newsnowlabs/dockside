@@ -204,6 +204,8 @@ check_shellcheck() {
     app/server/bin/upgrade
     app/server/bin/password-wrapper
     app/scripts/container/launch.sh
+    t/integration/run_tests.sh
+    t/integration/harness.sh
   )
 
   local failed=0
@@ -267,6 +269,8 @@ check_json() {
   local json_files=(
     app/client/package.json
     app/client/jsconfig.json
+    t/integration/config/users.json
+    t/integration/config/roles.json
   )
 
   for f in "${json_files[@]}"; do
@@ -302,6 +306,32 @@ check_json() {
   return $failed
 }
 
+# ── 8. Python syntax check ───────────────────────────────────────────────────
+check_python() {
+  local failed=0
+  local py_files=()
+
+  # Gather all Python files under t/integration/ and cli/
+  while IFS= read -r -d '' f; do
+    py_files+=("$f")
+  done < <(find t/integration cli -name '*.py' -print0 2>/dev/null | sort -z)
+
+  if [[ ${#py_files[@]} -eq 0 ]]; then
+    echo "  (no Python files found)"
+    return 0
+  fi
+
+  for f in "${py_files[@]}"; do
+    if python3 -m py_compile "$f" 2>&1; then
+      echo "  OK:     $f"
+    else
+      echo "  FAILED: $f"
+      failed=1
+    fi
+  done
+  return $failed
+}
+
 check_integration() {
   if [[ -z "${DOCKSIDE_TEST_HOST:-}" && -z "${DOCKSIDE_TEST_IMAGE:-}" && \
         "${DOCKSIDE_TEST_MODE:-}" != 'local' ]]; then
@@ -322,6 +352,7 @@ run_check "eslint"     check_eslint
 run_check "stylelint"  check_stylelint
 run_check "shellcheck" check_shellcheck
 run_check "json"       check_json
+run_check "python"     check_python
 # perltidy is available via --only perltidy but excluded from the default run:
 # the codebase pre-dates perltidy enforcement and has many pre-existing diffs.
 [[ -n "$ONLY" ]] && run_check "perltidy" check_perltidy
