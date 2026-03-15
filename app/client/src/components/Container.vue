@@ -43,48 +43,6 @@
                               </select>
                            </td>
                         </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
-                           <th>Git URL</th>
-                           <td v-if="!isPrelaunchMode">{{ container.data.gitURL }}</td>
-                           <td v-else>
-                              <autocomplete
-                                 auto-select
-                                 class="autocomplete-class"
-                                 placeholder="Choose a gitURL"
-                                 aria-label="Choose a gitURL"
-                                 ref="gitURLAutocompleteInput"
-                                 :search="gitURLAutocompleteSearch"
-                                 @submit="gitURLAutocompleteSubmit"
-                                 @blur="gitURLAutocompleteSubmit"
-                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
-                                 :default-value="gitURLs[0]"
-                                 :readonly="!hasWildcardGitURLs"
-                              ></autocomplete>
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected">
-                           <th>Image</th>
-                           <td v-if="!isPrelaunchMode">{{ container.data.image }} ({{ container.docker ? container.docker.ImageId : '' }})</td>
-                           <td v-else-if="images.length > 1 && !hasWildcardImages">
-                              <select class="form-control" v-model="form.image" :disabled="images.length <= 1">
-                                 <option v-for="image in images" v-bind:key="image">{{ image }}</option>
-                              </select>
-                           </td>
-                           <td v-else>
-                              <autocomplete
-                                 class="autocomplete-class"
-                                 placeholder="Choose an image"
-                                 aria-label="Choose an image"
-                                 ref="imageAutocompleteInput"
-                                 :search="imageAutocompleteSearch"
-                                 @submit="imageAutocompleteSubmit"
-                                 @blur="imageAutocompleteSubmit"
-                                 :disabled="images.length <= 1 && !hasWildcardImages"
-                                 :default-value="images[0]"
-                                 :readonly="!hasWildcardImages"
-                              ></autocomplete>
-                           </td>
-                        </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>Runtime</th>
                            <td v-if="!isPrelaunchMode">{{ container.data ? container.data.runtime : '' }}</td>
@@ -110,6 +68,48 @@
                               <select class="form-control" v-model="form.IDE" :disabled="IDEs.length <= 1">
                                  <option v-for="IDE in IDEs" v-bind:key="IDE">{{ IDE }}</option>
                               </select>
+                           </td>
+                        </tr>
+                        <tr v-if="container.permissions.auth.developer && isSelected">
+                           <th>Image</th>
+                           <td v-if="!isPrelaunchMode">{{ container.data.image }} ({{ container.docker ? container.docker.ImageId : '' }})</td>
+                           <td v-else-if="images.length > 1 && !hasWildcardImages">
+                              <select class="form-control" v-model="form.image" :disabled="images.length <= 1">
+                                 <option v-for="image in images" v-bind:key="image">{{ image }}</option>
+                              </select>
+                           </td>
+                           <td v-else>
+                              <autocomplete
+                                 class="autocomplete-class"
+                                 placeholder="Choose an image"
+                                 aria-label="Choose an image"
+                                 ref="imageAutocompleteInput"
+                                 :search="imageAutocompleteSearch"
+                                 @submit="imageAutocompleteSubmit"
+                                 @blur="imageAutocompleteSubmit"
+                                 :disabled="images.length <= 1 && !hasWildcardImages"
+                                 :default-value="images[0]"
+                                 :readonly="!hasWildcardImages"
+                              ></autocomplete>
+                           </td>
+                        </tr>
+                        <tr v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
+                           <th>Git URL</th>
+                           <td v-if="!isPrelaunchMode">{{ container.data.gitURL }}</td>
+                           <td v-else>
+                              <autocomplete
+                                 auto-select
+                                 class="autocomplete-class"
+                                 placeholder="Choose a gitURL"
+                                 aria-label="Choose a gitURL"
+                                 ref="gitURLAutocompleteInput"
+                                 :search="gitURLAutocompleteSearch"
+                                 @submit="gitURLAutocompleteSubmit"
+                                 @blur="gitURLAutocompleteSubmit"
+                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
+                                 :default-value="gitURLs[0]"
+                                 :readonly="!hasWildcardGitURLs"
+                              ></autocomplete>
                            </td>
                         </tr>
                         <template v-if="container.permissions.auth.developer && isSelected">

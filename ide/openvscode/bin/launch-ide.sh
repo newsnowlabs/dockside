@@ -24,8 +24,10 @@ log "Evaling arguments $@ ..."
 eval "$@"
 
 # Set needed environment variables
-export PATH="$PATH:$IDE_PATH/bin"
+export PATH="$PATH:$IDE_PATH/bin:$IIDE_PATH/openvscode/bin/remote-cli"
 export GIT_EXEC_PATH="$IDE_PATH/bin"
+export GIT_EDITOR="$IIDE_PATH/openvscode/bin/remote-cli/openvscode-server --wait --reuse-window"
+export EDITOR="$GIT_EDITOR"
 
 log "Launching IDE with IIDE_PATH='$IIDE_PATH' and IDE_PATH='$IDE_PATH' using: ./node ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token ..."
 
@@ -34,7 +36,18 @@ SETTINGS_DIR="$HOME/.openvscode-server/data/Machine"
 SETTINGS_FILE="$SETTINGS_DIR/settings.json"
 mkdir -p $SETTINGS_DIR
 [ -f "$SETTINGS_FILE" ] || echo '{}' >$SETTINGS_FILE
-jq --arg binpath "$IDE_PATH/bin" '."git.path"=$binpath+"/git" | ."telemetry.telemetryLevel"="off" | ."terminal.integrated.env.linux".PATH="${env:PATH}:"+$binpath' $SETTINGS_FILE >$SETTINGS_FILE.new && mv $SETTINGS_FILE.new $SETTINGS_FILE
+jq --arg binpath "$IDE_PATH/bin" \
+  -f /dev/stdin \
+  "$SETTINGS_FILE" >"$SETTINGS_FILE.new" <<'EOF' && mv "$SETTINGS_FILE.new" "$SETTINGS_FILE"
+# set git binary path
+."git.path"=$binpath+"/git"
+# disable telemetry
+| ."telemetry.telemetryLevel"="off"
+# extend terminal PATH with bin dir
+| ."terminal.integrated.env.linux".PATH="${env:PATH}:"+$binpath
+# disable AI/Copilot features, while GitHub.copilot-chat VSIX is unavailable on OpenVSX
+| ."chat.disableAIFeatures"=true
+EOF
 
 cd $IIDE_PATH/openvscode
 unset IDE_PATH IDE IIDE_PATH LOG_PATH

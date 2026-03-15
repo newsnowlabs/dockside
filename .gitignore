@@ -1,16 +1,27 @@
+# Editor and temporary files
 .#*
 *~
+\#*\#
 *.bak
-*.o
-*.version
 *.orig
 *.tdy
+
+# Build and binary artifacts
+*.o
+*.packlist
+*.version
+
+# Generated metadata/documentation
 TAGS
-\#*\#
-.packlist
 perllocal.pod
+
+# Local environment and IDE settings
 .c9
-.Trash-1000
 .vscode
+
+# OS-specific trash
+.Trash-1000
+
+# Project-local generated/config files
 depot.json
 app/server/nginx/html/docs

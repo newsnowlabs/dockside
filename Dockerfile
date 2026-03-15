@@ -36,19 +36,19 @@ if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
     THEIA_VERSION="1.66.1"
     THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"
-    OPENVSCODE_VERSION="1.103.1"
+    OPENVSCODE_VERSION="1.109.5"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-x64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
     THEIA_VERSION="1.66.1"
     THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"
-    OPENVSCODE_VERSION="1.103.1"
+    OPENVSCODE_VERSION="1.109.5"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-arm64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then
     THEIA_VERSION="1.35.0"
     THEIA_BUILD_EXTRA_PACKAGES="ripgrep"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7"
-    OPENVSCODE_VERSION="1.103.1"
+    OPENVSCODE_VERSION="1.109.5"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-armhf.tar.gz"
     OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="libatomic1"
 else
@@ -75,11 +75,11 @@ export OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="$OPENVSCODE_BUILD_DEBIAN_EXTRA_PA
 
 export DS_PATH=$OPT_PATH/system/latest
 
-echo "Running command with environment:"
-echo "- TARGETPLATFORM=\$TARGETPLATFORM"
-echo "- WSTUNNEL_BINARY=\$WSTUNNEL_BINARY"
-echo "- THEIA_VERSION=\$THEIA_VERSION THEIA_BUILD_PATH=\$THEIA_BUILD_PATH THEIA_PATH=\$THEIA_PATH"
-echo "- OPENVSCODE_BINARY=\$OPENVSCODE_BINARY"
+echo "Running command with environment:" >&2
+echo "- TARGETPLATFORM=\$TARGETPLATFORM" >&2
+echo "- WSTUNNEL_BINARY=\$WSTUNNEL_BINARY" >&2
+echo "- THEIA_VERSION=\$THEIA_VERSION THEIA_BUILD_PATH=\$THEIA_BUILD_PATH THEIA_PATH=\$THEIA_PATH" >&2
+echo "- OPENVSCODE_BINARY=\$OPENVSCODE_BINARY" >&2
 _EOE_
 
 cat <<'_EOE_' >/tmp/dockside/theia-exec && chmod 755 /tmp/dockside/theia-exec
@@ -177,7 +177,7 @@ RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
       cp $(which rg) $(find $THEIA_BUILD_PATH -name rg); \
     fi
 
-RUN apk add --no-cache file patchelf
+RUN apk add --no-cache file patchelf coreutils findutils
 
 ADD build/development/make-bundelf-bundle.sh /tmp
 
@@ -208,7 +208,7 @@ FROM theia-ide AS theia-ide-plugins
 # - <publisher>.<name>-<ver> : download plugin directly from implied URL (faster and fully cacheable)
 
 # All small plugins
-ARG VSIX_PLUGINS="vscode.bat@1.95.3 vscode.clojure@1.95.3 vscode.coffeescript@1.95.3 vscode.configuration-editing@1.95.3 vscode.cpp@1.95.3 vscode.csharp@1.95.3 vscode.css@1.95.3 vscode.dart@1.95.3 vscode.debug-auto-launch@1.95.3 vscode.debug-server-ready@1.95.3 vscode.diff@1.95.3 vscode.docker@1.95.3 vscode.emmet@1.95.3 vscode.fsharp@1.95.3 vscode.git@1.95.3 vscode.git-base@1.95.3 vscode.github@1.95.3 vscode.github-authentication@1.95.3 vscode.go@1.95.3 vscode.groovy@1.95.3 vscode.grunt@1.95.3 vscode.gulp@1.95.3 vscode.handlebars@1.95.3 vscode.hlsl@1.95.3 vscode.html@1.95.3 vscode.ini@1.95.3 vscode.ipynb@1.95.3 vscode.jake@1.95.3 vscode.java@1.95.3 vscode.javascript@1.95.3 vscode.json@1.95.3 vscode.julia@1.95.3 vscode.latex@1.95.3 vscode.less@1.95.3 vscode.log@1.95.3 vscode.lua@1.95.3 vscode.make@1.95.3 vscode.markdown@1.95.3 vscode.markdown-math@1.95.3 vscode.media-preview@1.95.3 vscode.merge-conflict@1.95.3 vscode.builtin-notebook-renderers@1.95.3 vscode.npm@1.95.3 vscode.objective-c@1.95.3 vscode.perl@1.95.3 vscode.php@1.95.3 vscode.powershell@1.95.3 vscode.python@1.95.3 vscode.pug@1.95.3 vscode.r@1.95.3 vscode.razor@1.95.3 vscode.references-view@1.95.3 vscode.restructuredtext@1.95.3 vscode.ruby@1.95.3 vscode.rust@1.95.3 vscode.scss@1.95.3 vscode.search-result@1.95.3 vscode.shaderlab@1.95.3 vscode.shellscript@1.95.3 vscode.simple-browser@1.95.3 vscode.sql@1.95.3 vscode.swift@1.95.3 vscode.theme-abyss@1.95.3 vscode.theme-defaults@1.95.3 vscode.theme-kimbie-dark@1.95.3 vscode.theme-monokai@1.95.3 vscode.theme-monokai-dimmed@1.95.3 vscode.theme-quietlight@1.95.3 vscode.theme-red@1.95.3 vscode.vscode-theme-seti@1.95.3 vscode.theme-solarized-dark@1.95.3 vscode.theme-solarized-light@1.95.3 vscode.theme-tomorrow-night-blue@1.95.3 vscode.tunnel-forwarding@1.95.3 vscode.typescript@1.95.3 vscode.vb@1.95.3 vscode.xml@1.95.3 vscode.yaml@1.95.3 ms-vscode.js-debug-companion ms-vscode.js-debug github.vscode-pull-request-github openai.chatgpt"
+ARG VSIX_PLUGINS="vscode.bat@1.95.3 vscode.clojure@1.95.3 vscode.coffeescript@1.95.3 vscode.configuration-editing@1.95.3 vscode.cpp@1.95.3 vscode.csharp@1.95.3 vscode.css@1.95.3 vscode.dart@1.95.3 vscode.debug-auto-launch@1.95.3 vscode.debug-server-ready@1.95.3 vscode.diff@1.95.3 vscode.docker@1.95.3 vscode.emmet@1.95.3 vscode.fsharp@1.95.3 vscode.git@1.95.3 vscode.git-base@1.95.3 vscode.github@1.95.3 vscode.github-authentication@1.95.3 vscode.go@1.95.3 vscode.groovy@1.95.3 vscode.grunt@1.95.3 vscode.gulp@1.95.3 vscode.handlebars@1.95.3 vscode.hlsl@1.95.3 vscode.html@1.95.3 vscode.ini@1.95.3 vscode.ipynb@1.95.3 vscode.jake@1.95.3 vscode.java@1.95.3 vscode.javascript@1.95.3 vscode.json@1.95.3 vscode.julia@1.95.3 vscode.latex@1.95.3 vscode.less@1.95.3 vscode.log@1.95.3 vscode.lua@1.95.3 vscode.make@1.95.3 vscode.markdown@1.95.3 vscode.markdown-math@1.95.3 vscode.media-preview@1.95.3 vscode.merge-conflict@1.95.3 vscode.builtin-notebook-renderers@1.95.3 vscode.npm@1.95.3 vscode.objective-c@1.95.3 vscode.perl@1.95.3 vscode.php@1.95.3 vscode.powershell@1.95.3 vscode.python@1.95.3 vscode.pug@1.95.3 vscode.r@1.95.3 vscode.razor@1.95.3 vscode.references-view@1.95.3 vscode.restructuredtext@1.95.3 vscode.ruby@1.95.3 vscode.rust@1.95.3 vscode.scss@1.95.3 vscode.search-result@1.95.3 vscode.shaderlab@1.95.3 vscode.shellscript@1.95.3 vscode.simple-browser@1.95.3 vscode.sql@1.95.3 vscode.swift@1.95.3 vscode.theme-abyss@1.95.3 vscode.theme-defaults@1.95.3 vscode.theme-kimbie-dark@1.95.3 vscode.theme-monokai@1.95.3 vscode.theme-monokai-dimmed@1.95.3 vscode.theme-quietlight@1.95.3 vscode.theme-red@1.95.3 vscode.vscode-theme-seti@1.95.3 vscode.theme-solarized-dark@1.95.3 vscode.theme-solarized-light@1.95.3 vscode.theme-tomorrow-night-blue@1.95.3 vscode.tunnel-forwarding@1.95.3 vscode.typescript@1.95.3 vscode.vb@1.95.3 vscode.xml@1.95.3 vscode.yaml@1.95.3 ms-vscode.js-debug-companion ms-vscode.js-debug github.vscode-pull-request-github openai.chatgpt Anthropic.claude-code"
 
 # Large plugins: enable if needed
 # ARG VSIX_PLUGINS_LARGE="vscode.css-language-features@1.95.3 vscode.html-language-features@1.95.3 vscode.json-language-features@1.95.3 vscode.markdown-language-features@1.95.3 vscode.php-language-features@1.95.3 vscode.typescript-language-features@1.95.3"
@@ -341,7 +341,8 @@ RUN export \
     /tmp/make-bundelf-bundle.sh --bundle && \
     cd $BUNDELF_CODE_PATH/.. && \
     ln -s $OPENVSCODE_VERSION latest && \
-    cp -a /tmp/bin $OPENVSCODE_VERSION/
+    cp -a /tmp/bin $OPENVSCODE_VERSION/ && \
+    cd latest/openvscode/bin/remote-cli && ln -s openvscode-server code
 
 # Default diagnostics entrypoint for this stage (uses relocatable node and openvscode, loses BASH_ENV build environment)
 ENV BASH_ENV=""
