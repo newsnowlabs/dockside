@@ -93,6 +93,7 @@ check_perl() {
     app/server/lib/Reservation/Load.pm
     app/server/lib/Reservation/Mutate.pm
     app/server/lib/User.pm
+    app/server/lib/User/Manage.pm
     app/server/lib/Util.pm
   )
 
