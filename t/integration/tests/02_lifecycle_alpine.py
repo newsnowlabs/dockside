@@ -13,15 +13,22 @@ CONTAINER_NAME = 'inttest-alpine-01'
 
 
 class LifecycleAlpineTests(TestCase):
-    """Full lifecycle test: create → list → get → start → stop → remove."""
+    """Full lifecycle test: create → list → get → start → stop → remove.
+
+    State (the container) persists across all test methods in this class.
+    setUp does not register per-test cleanup; tearDownClass handles cleanup once.
+    """
 
     @classmethod
-    def _name(cls):
-        return CONTAINER_NAME
-
-    def setUp(self):
-        super().setUp()
-        self.register_cleanup(CONTAINER_NAME)
+    def tearDownClass(cls):
+        for fn in (
+            lambda: cls.admin.stop(CONTAINER_NAME, wait=False),
+            lambda: cls.admin.remove(CONTAINER_NAME),
+        ):
+            try:
+                fn()
+            except Exception:
+                pass
 
     def test_01_create(self):
         result = self.admin.create(
@@ -46,6 +53,11 @@ class LifecycleAlpineTests(TestCase):
         self.assert_true('name' in data or 'id' in data, 'get result missing name/id')
 
     def test_04_start(self):
+        # Container was created running (status=1); stop first to exercise the start path.
+        try:
+            self.admin.stop(CONTAINER_NAME, wait=True, timeout=30)
+        except Exception:
+            pass
         self.admin.start(CONTAINER_NAME, wait=True, timeout=120)
         data = self.admin.get_container(CONTAINER_NAME)
         status = data.get('status') if isinstance(data, dict) else None
@@ -70,8 +82,6 @@ class LifecycleAlpineTests(TestCase):
         self.admin.remove(CONTAINER_NAME)
         names = self.container_names_in_list(self.admin)
         self.assert_not_in(CONTAINER_NAME, names, f'{CONTAINER_NAME!r} still in list after remove')
-        # Don't double-cleanup
-        self._cleanup_names.clear()
 
 
 class LifecycleAlpineDev1Tests(TestCase):
