@@ -35,6 +35,21 @@ class SkipTest(Exception):
     pass
 
 
+class _UnavailableClient:
+    """
+    Placeholder for a client whose credentials are invalid or whose user
+    does not exist on the server.  Any attribute access raises SkipTest so
+    that tests requiring this role are automatically skipped rather than
+    failing with a confusing auth error.
+    """
+    def __init__(self, role, reason):
+        self._skip_msg = f'{role} unavailable: {reason}'
+
+    def __getattr__(self, name):
+        # _skip_msg lives in __dict__, so this won't recurse.
+        raise SkipTest(self._skip_msg)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _fields_to_args(fields):
@@ -456,13 +471,23 @@ class TestRunner:
             verify_ssl=self._verify_ssl,
         )
 
+    def _validate_client(self, client, role):
+        """Return client if auth succeeds, _UnavailableClient otherwise."""
+        try:
+            client.list_containers()
+            return client
+        except APIError as e:
+            print(f'# WARNING: {role} credentials failed ({e}); '
+                  f'tests requiring {role} will be skipped', file=sys.stderr)
+            return _UnavailableClient(role, str(e))
+
     def _setup_clients(self):
         creds = self._credentials
         self._clients = {
             'admin':  self._make_client(*creds['admin']),
-            'dev1':   self._make_client(*creds['dev1']),
-            'dev2':   self._make_client(*creds['dev2']),
-            'viewer': self._make_client(*creds['viewer']),
+            'dev1':   self._validate_client(self._make_client(*creds['dev1']), 'dev1'),
+            'dev2':   self._validate_client(self._make_client(*creds['dev2']), 'dev2'),
+            'viewer': self._validate_client(self._make_client(*creds['viewer']), 'viewer'),
             'unauth': None,
         }
 

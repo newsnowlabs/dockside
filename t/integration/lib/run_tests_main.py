@@ -124,4 +124,8 @@ def main():
 
 
 if __name__ == '__main__':
+    # When invoked as --cleanup by the bash EXIT/INT trap, do nothing.
+    # The TestRunner's own atexit/signal handlers already handle cleanup.
+    if '--cleanup' in sys.argv:
+        sys.exit(0)
     main()
