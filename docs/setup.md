@@ -95,6 +95,53 @@ The available router auth/access levels, from most to least restrictive, are:
 Planned but as-yet not-fully-implemented router auth/access levels, are:
 - Devtainer cookie (`containerCookie`) i.e. a secret cookie unique to the devtainer must be presented to access this router
 
+## Access Control Model
+
+This section explains how the two access-control concepts work together at runtime.
+
+### Profile `auth` array vs active access mode
+
+The profile's `auth` array defines the **selectable range** of access modes the owner may choose for each router. It does not dictate what mode is currently active.
+
+The **active access mode** per router is stored in `meta.access.{routerName}` on the devtainer record. It defaults to the first element of the profile's `auth` array and can be changed by the owner or a named developer via the Edit UI or CLI `--access` flag.
+
+### Who can access a service
+
+| Active mode | Who can access |
+|---|---|
+| `public` | Everyone (unauthenticated visitors and all Dockside users) |
+| `user` | Any authenticated Dockside user |
+| `viewer` | Devtainer owner + named developers + named viewers |
+| `developer` | Devtainer owner + named developers only |
+| `owner` | Devtainer owner only |
+
+### Viewer vs Developer roles on a devtainer
+
+A devtainer can be shared with other users by listing them in `meta.viewers` or `meta.developers`.
+
+**Named viewers** (`meta.viewers`):
+- Can view and list the devtainer in the Dockside UI
+- Can access services whose active mode is `viewer`, `user`, or `public`
+- **Cannot** access the IDE or SSH router — these are always restricted to `owner`/`developer`
+- **Cannot** edit any container properties (description, viewers, developers, access mode, network, IDE)
+
+**Named developers** (`meta.developers`):
+- Can view and list the devtainer
+- Can access the IDE and SSH router (subject to the router's active mode being `developer` or `owner`)
+- Can edit: description, viewers list, developers list, IDE, access modes, and network
+
+**Admin users** (role with `viewAllContainers` permission, or the `admin` role):
+- Can see all containers regardless of sharing
+- The `admin` role is special: a user with the `admin` role is auto-granted all permissions and access to all available resources, unless explicitly denied
+
+### Router visibility in list and get responses
+
+When listing containers (`GET /containers`) or fetching a specific container, Dockside filters each container's `profileObject.routers` to only those routers the requesting user can access at the current `meta.access` setting. For example, a viewer will see an empty routers list for a container whose services are all set to `developer` mode.
+
+### IDE and SSH routers
+
+The IDE and SSH routers are always restricted to `owner` or `developer` access. They cannot be set to `viewer`, `user`, or `public` mode. Only named developers (and the owner) receive an entry in the devtainer's `~/.ssh/authorized_keys` file.
+
 ## Users
 
 The `users.json` file describes registered Dockside users. An 'admin' user is the only user specified in the file by default. It is recommended to modify the admin user record with a dedicated username for at least one team admin.

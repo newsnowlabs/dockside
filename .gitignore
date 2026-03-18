@@ -22,6 +22,10 @@ perllocal.pod
 # OS-specific trash
 .Trash-1000
 
+# Python bytecode cache
+__pycache__/
+*.pyc
+
 # Project-local generated/config files
 depot.json
 app/server/nginx/html/docs

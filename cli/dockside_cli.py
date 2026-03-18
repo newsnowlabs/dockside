@@ -67,7 +67,7 @@ COOKIES_DIR  = os.path.join(CONFIG_DIR, 'cookies')
 
 # ── Status labels ─────────────────────────────────────────────────────────────
 
-STATUS_LABELS = {-2: 'prelaunch', -1: 'created', 0: 'exited', 1: 'running'}
+STATUS_LABELS = {-3: 'removed', -2: 'prelaunch', -1: 'created', 0: 'exited', 1: 'running'}
 
 # ── YAML serialiser (zero external dependencies) ──────────────────────────────
 
@@ -343,7 +343,19 @@ class APIError(Exception):
         self.http_status = http_status
 
 
-def _build_opener(cookie_file, verify_ssl):
+class _HostOverrideHandler(urllib.request.BaseHandler):
+    """Inject a fixed Host header into every outgoing request (for localhost testing)."""
+    def __init__(self, host):
+        self._host = host
+
+    def https_request(self, req):
+        req.add_unredirected_header('Host', self._host)
+        return req
+
+    http_request = https_request
+
+
+def _build_opener(cookie_file, verify_ssl, host_header=None):
     """Create a urllib opener with cookie jar and SSL settings."""
     jar = http.cookiejar.MozillaCookieJar(cookie_file)
     # Only load cookies from a real file (not a symlink)
@@ -356,11 +368,14 @@ def _build_opener(cookie_file, verify_ssl):
     if not verify_ssl:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-    opener = urllib.request.build_opener(
+    handlers = [
         urllib.request.HTTPCookieProcessor(jar),
         urllib.request.HTTPSHandler(context=ctx),
         urllib.request.HTTPRedirectHandler(),
-    )
+    ]
+    if host_header:
+        handlers.append(_HostOverrideHandler(host_header))
+    opener = urllib.request.build_opener(*handlers)
     opener._jar = jar
     return opener
 
@@ -420,7 +435,7 @@ def _inject_cookie(jar, server_url, name, value):
 # ── Authentication ────────────────────────────────────────────────────────────
 
 def login(server, username, password, verify_ssl=True,
-          extra_cookies=None, cookie_file=None):
+          extra_cookies=None, cookie_file=None, host_header=None):
     """
     POST credentials to Dockside, return the authenticated opener.
     extra_cookies: dict of {name: value} injected before the POST.
@@ -428,7 +443,7 @@ def login(server, username, password, verify_ssl=True,
     """
     if cookie_file is None:
         cookie_file = os.path.join(CONFIG_DIR, 'cookies.txt')
-    opener = _build_opener(cookie_file, verify_ssl)
+    opener = _build_opener(cookie_file, verify_ssl, host_header=host_header)
     if extra_cookies:
         for cname, cval in extra_cookies.items():
             _inject_cookie(opener._jar, server, cname, cval)
@@ -453,7 +468,7 @@ def login(server, username, password, verify_ssl=True,
 
 def get_authenticated_opener(server, server_entry, username, password,
                               verify_ssl=True, transient=False,
-                              extra_cookies=None):
+                              extra_cookies=None, host_header=None):
     """
     Return an authenticated opener.
 
@@ -463,7 +478,8 @@ def get_authenticated_opener(server, server_entry, username, password,
     cookie_file = _cookie_file_for(server_entry)
     if username and password:
         opener = login(server, username, password, verify_ssl=verify_ssl,
-                       extra_cookies=extra_cookies, cookie_file=cookie_file)
+                       extra_cookies=extra_cookies, cookie_file=cookie_file,
+                       host_header=host_header)
         if not transient:
             _ensure_config_dir()
             _save_cookie_jar(opener._jar, cookie_file)
@@ -475,7 +491,7 @@ def get_authenticated_opener(server, server_entry, username, password,
             f"Not logged in to {ref!r}. Run 'dockside login' first, "
             "or supply --username / --password (or DOCKSIDE_USER / DOCKSIDE_PASSWORD)."
         )
-    return _build_opener(cookie_file, verify_ssl)
+    return _build_opener(cookie_file, verify_ssl, host_header=host_header)
 
 
 # ── Container resolution ──────────────────────────────────────────────────────
@@ -566,7 +582,7 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
 
     target: 1      → running
             0      → exited/stopped (status <= 0)
-            'gone' → container removed (reservation gone or status -2 + no containerId)
+            'gone' → container removed (reservation gone or status -3)
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -576,12 +592,12 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
             if c is None:
                 # Reservation fully deleted.
                 if not quiet:
-                    print()
+                    print(file=sys.stderr)
                 return True
-            if c.get('status', 0) <= -2 and not c.get('containerId'):
-                # Docker container removed; reservation preserved in prelaunch state.
+            if c.get('status', 0) <= -3:
+                # Docker container removed; reservation preserved briefly.
                 if not quiet:
-                    print()
+                    print(file=sys.stderr)
                 return True
         else:
             for c in containers:
@@ -589,18 +605,18 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
                     status = c.get('status', -99)
                     if target == 1 and status == 1:
                         if not quiet:
-                            print()
+                            print(file=sys.stderr)
                         return True
                     if target == 0 and status <= 0:
                         if not quiet:
-                            print()
+                            print(file=sys.stderr)
                         return True
                     break
         if not quiet:
-            print('.', end='', flush=True)
+            print('.', end='', flush=True, file=sys.stderr)
         time.sleep(interval)
     if not quiet:
-        print()
+        print(file=sys.stderr)
     return False
 
 
@@ -819,6 +835,10 @@ def _add_global_flags(p):
         '--no-verify', action='store_true',
         help='Skip SSL certificate verification (e.g. for self-signed certs)',
     )
+    p.add_argument(
+        '--host-header', dest='host_header', metavar='HOST',
+        help='Override HTTP Host header sent with every request  [env: DOCKSIDE_HOST_HEADER]',
+    )
 
 
 def _add_wait_flags(p, verb='operation to complete'):
@@ -929,11 +949,14 @@ def _client(args):
         die('--password requires --username (or DOCKSIDE_USER)')
 
     verify = not getattr(args, 'no_verify', False)
+    host_header = (getattr(args, 'host_header', None)
+                   or os.environ.get('DOCKSIDE_HOST_HEADER'))
     try:
         opener = get_authenticated_opener(
             server_url, server_entry, username, password,
             verify_ssl=verify,
             transient=(username is not None),
+            host_header=host_header,
         )
     except APIError as e:
         die(str(e))
@@ -1012,11 +1035,14 @@ def cmd_login(args):
                          'cookie_file': cookie_file_override}
     cookie_file = _cookie_file_for(provisional_entry)
 
+    host_header = (getattr(args, 'host_header', None)
+                   or os.environ.get('DOCKSIDE_HOST_HEADER'))
     try:
         opener = login(server, username, password,
                        verify_ssl=not getattr(args, 'no_verify', False),
                        extra_cookies=extra_cookies or None,
-                       cookie_file=cookie_file)
+                       cookie_file=cookie_file,
+                       host_header=host_header)
     except APIError as e:
         die(str(e))
 
