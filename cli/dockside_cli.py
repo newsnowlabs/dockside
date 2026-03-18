@@ -67,7 +67,7 @@ COOKIES_DIR  = os.path.join(CONFIG_DIR, 'cookies')
 
 # ── Status labels ─────────────────────────────────────────────────────────────
 
-STATUS_LABELS = {-2: 'prelaunch', -1: 'created', 0: 'exited', 1: 'running'}
+STATUS_LABELS = {-3: 'removed', -2: 'prelaunch', -1: 'created', 0: 'exited', 1: 'running'}
 
 # ── YAML serialiser (zero external dependencies) ──────────────────────────────
 
@@ -649,7 +649,7 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
 
     target: 1      → running
             0      → exited/stopped (status <= 0)
-            'gone' → container removed (reservation gone or status -2 + no containerId)
+            'gone' → container removed (reservation gone or status -3)
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -661,8 +661,8 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
                 if not quiet:
                     print(file=sys.stderr)
                 return True
-            if c.get('status', 0) <= -2 and not c.get('containerId'):
-                # Docker container removed; reservation preserved in prelaunch state.
+            if c.get('status', 0) <= -3:
+                # Docker container removed; reservation preserved briefly.
                 if not quiet:
                     print(file=sys.stderr)
                 return True

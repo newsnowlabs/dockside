@@ -4,6 +4,7 @@
 
 import sys
 import os
+import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
@@ -80,21 +81,24 @@ class LifecycleAlpineTests(TestCase):
         except Exception:
             pass
         self.admin.remove(CONTAINER_NAME)
-        # Reservations linger in the list for ~30s after removal while dockside
-        # finalises async docker rm.  Accept success if the entry is either:
-        #   (a) absent from the list, or
-        #   (b) present but in "container-removed" state: status <= -2 and no containerId
-        containers = self.admin.list_containers()
-        c = next((item for item in containers
-                  if isinstance(item, dict) and item.get('name') == CONTAINER_NAME), None)
-        if c is not None:
-            status = c.get('status', 0)
-            container_id = c.get('containerId')
-            self.assert_true(
-                status <= -2 and not container_id,
-                f'{CONTAINER_NAME!r} still in list after remove '
-                f'(status={status!r}, containerId={container_id!r})',
-            )
+        # Poll for up to 10s: success once the entry is absent or reaches
+        # status -3 (docker container removed; reservation lingering briefly).
+        # Without any wait, dockerd may not yet have processed the removal so
+        # the status can still be 0 (exited).
+        deadline = time.monotonic() + 10
+        c = None
+        while time.monotonic() < deadline:
+            containers = self.admin.list_containers()
+            c = next((item for item in containers
+                      if isinstance(item, dict) and item.get('name') == CONTAINER_NAME), None)
+            if c is None or c.get('status', 0) <= -3:
+                return
+            time.sleep(0.5)
+        status = c.get('status') if c is not None else None
+        self.assert_true(
+            c is None or status <= -3,
+            f'{CONTAINER_NAME!r} still in list after remove (status={status!r})',
+        )
 
 
 class LifecycleAlpineDev1Tests(TestCase):
