@@ -241,7 +241,9 @@ class DocksideClient:
             return self._run('stop', '--timeout', str(timeout), name)
         return self._run('stop', '--no-wait', name)
 
-    def remove(self, name):
+    def remove(self, name, wait=True, timeout=60):
+        if wait:
+            return self._run('remove', '--force', '--timeout', str(timeout), name)
         return self._run('remove', '--force', '--no-wait', name)
 
     def logs(self, name):
@@ -331,7 +333,7 @@ class TestCase:
             except Exception:
                 pass
             try:
-                self.admin.remove(name)
+                self.admin.remove(name, wait=False)
             except Exception:
                 pass
 

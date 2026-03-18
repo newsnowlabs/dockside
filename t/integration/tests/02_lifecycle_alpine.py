@@ -23,7 +23,7 @@ class LifecycleAlpineTests(TestCase):
     def tearDownClass(cls):
         for fn in (
             lambda: cls.admin.stop(CONTAINER_NAME, wait=False),
-            lambda: cls.admin.remove(CONTAINER_NAME),
+            lambda: cls.admin.remove(CONTAINER_NAME, wait=False),
         ):
             try:
                 fn()
