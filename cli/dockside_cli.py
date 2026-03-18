@@ -592,12 +592,12 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
             if c is None:
                 # Reservation fully deleted.
                 if not quiet:
-                    print()
+                    print(file=sys.stderr)
                 return True
             if c.get('status', 0) <= -2 and not c.get('containerId'):
                 # Docker container removed; reservation preserved in prelaunch state.
                 if not quiet:
-                    print()
+                    print(file=sys.stderr)
                 return True
         else:
             for c in containers:
@@ -605,18 +605,18 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
                     status = c.get('status', -99)
                     if target == 1 and status == 1:
                         if not quiet:
-                            print()
+                            print(file=sys.stderr)
                         return True
                     if target == 0 and status <= 0:
                         if not quiet:
-                            print()
+                            print(file=sys.stderr)
                         return True
                     break
         if not quiet:
-            print('.', end='', flush=True)
+            print('.', end='', flush=True, file=sys.stderr)
         time.sleep(interval)
     if not quiet:
-        print()
+        print(file=sys.stderr)
     return False
 
 
