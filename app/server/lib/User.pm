@@ -7,7 +7,7 @@ use Try::Tiny;
 use URI::Escape;
 use Storable qw(dclone);
 use Data qw($CONFIG);
-use Util qw(flog wlog TO_JSON generate_auth_cookie_values);
+use Util qw(flog wlog TO_JSON generate_auth_cookie_values encrypt_password);
 use Reservation;
 
 ################################################################################
@@ -38,7 +38,8 @@ my @GENERAL_PERMISSIONS = (
    'viewAllContainers', # Permission to view all containers (except ones marked private)
    'viewAllPrivateContainers', # Permission to view all containers including private containers
    'developContainers', # Permission to develop containers that one owns or is a named developer on
-   'developAllContainers' # Permission to develop all containers irrespective of ownership or named developers
+   'developAllContainers', # Permission to develop all containers irrespective of ownership or named developers
+   'manageUsers' # Permission to create/update/remove/list users and roles
 );
 
 my @CONTAINER_PERMISSIONS = (
@@ -972,6 +973,339 @@ sub createContainerReservation ($self, $args) {
 
    # Store, launch, and create a sanitised clone of the reservation object, before returning.
    return $self->createClientReservation( $reservation->store()->launch() );
+}
+
+################################################################################
+# USER AND ROLE MANAGEMENT
+# ------------------------
+
+my $CONFIG_PATH = '/data/config';
+
+# Read a JSON config file (stripping // comments) and return parsed data.
+sub _read_config_file ($filename) {
+   my $path = "$CONFIG_PATH/$filename";
+   open( my $FH, '<', $path ) or die Exception->new( 'msg' => "Cannot read $path: $!" );
+   local $/;
+   my $raw = <$FH>;
+   close $FH;
+   return Data::parse_json($raw);
+}
+
+# Atomically write a data structure to a JSON config file.
+sub _write_config_file ($filename, $data) {
+   my $path = "$CONFIG_PATH/$filename";
+   my $tmp  = "$path.tmp.$$";
+   my $json = JSON->new->utf8->pretty->canonical->encode($data);
+   open( my $FH, '>', $tmp ) or die Exception->new( 'msg' => "Cannot write $tmp: $!" );
+   print $FH $json;
+   close $FH;
+   rename( $tmp, $path ) or die Exception->new( 'msg' => "Cannot rename $tmp to $path: $!" );
+}
+
+# Read the passwd file as a hash of username => encrypted_password.
+sub _read_passwd_file () {
+   my $path = "$CONFIG_PATH/passwd";
+   return {} unless -r $path;
+   open( my $FH, '<', $path ) or die Exception->new( 'msg' => "Cannot read $path: $!" );
+   my %passwd;
+   while ( my $line = <$FH> ) {
+      chomp $line;
+      $line =~ s/^\s*|\s*$//g;
+      next if $line =~ /^(#.*)?$/;
+      my ( $user, $hash ) = split( /:/, $line, 2 );
+      $passwd{$user} = $hash if defined $user && defined $hash;
+   }
+   close $FH;
+   return \%passwd;
+}
+
+# Atomically write a passwd hash back to the passwd file.
+sub _write_passwd_file ($passwd) {
+   my $path = "$CONFIG_PATH/passwd";
+   my $tmp  = "$path.tmp.$$";
+   open( my $FH, '>', $tmp ) or die Exception->new( 'msg' => "Cannot write $tmp: $!" );
+   for my $user ( sort keys %$passwd ) {
+      print $FH "$user:$passwd->{$user}\n";
+   }
+   close $FH;
+   rename( $tmp, $path ) or die Exception->new( 'msg' => "Cannot rename $tmp to $path: $!" );
+}
+
+# Attempt JSON decode of a value; fall back to the raw string.
+sub _decode_value ($val) {
+   return $val unless defined $val && length $val;
+   my $decoded = eval { decode_json($val) };
+   return $@ ? $val : $decoded;
+}
+
+# Apply flat args (possibly dotted-path keys, possibly JSON-encoded values) into
+# a record hashref in place. Shallower keys are applied first so deeper paths can
+# override them. Keys listed in @skip are ignored.
+sub _apply_args_to_record ($record, $args, @skip) {
+   my %skip = map { $_ => 1 } @skip;
+
+   for my $key ( sort { scalar( split /\./, $a ) <=> scalar( split /\./, $b ) } keys %$args ) {
+      next if $skip{$key};
+      next unless defined $args->{$key};
+
+      my $val   = _decode_value( $args->{$key} );
+      my @parts = split( /\./, $key );
+      my $ref   = $record;
+      for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
+         $ref->{$part} //= {};
+         $ref = $ref->{$part};
+      }
+      $ref->{ $parts[-1] } = $val;
+   }
+}
+
+# Convert a loaded User object back to its canonical users.json record form.
+sub _user_to_record ($user) {
+   return {
+      'username'    => $user->username,
+      'id'          => $user->{'id'},
+      'email'       => $user->{'email'},
+      'name'        => $user->{'name'},
+      'role'        => $user->{'role'},
+      'version'     => $user->{'version'},
+      'permissions' => $user->{'_permissions'} // {},
+      'resources'   => $user->{'_resources'}   // {},
+      'ssh'         => $user->{'ssh'},
+      'gh_token'    => $user->{'gh_token'},
+   };
+}
+
+# Sanitise a user record for API output: strip sensitive fields unless requested.
+sub _sanitise_user_record ($record, $sensitive = 0) {
+   my $out = {%$record};
+   unless ($sensitive) {
+      delete $out->{'gh_token'};
+      if ( ref $out->{'ssh'} eq 'HASH' && ref $out->{'ssh'}{'keypairs'} eq 'HASH' ) {
+         $out->{'ssh'}         = { %{ $out->{'ssh'} } };
+         $out->{'ssh'}{'keypairs'} = { %{ $out->{'ssh'}{'keypairs'} } };
+         for my $kp_name ( keys %{ $out->{'ssh'}{'keypairs'} } ) {
+            my $kp = $out->{'ssh'}{'keypairs'}{$kp_name};
+            if ( ref $kp eq 'HASH' ) {
+               $out->{'ssh'}{'keypairs'}{$kp_name} = {%$kp};
+               delete $out->{'ssh'}{'keypairs'}{$kp_name}{'private'};
+            }
+         }
+      }
+   }
+   return $out;
+}
+
+#
+# User CRUD
+#
+
+sub listUsers ($self, $args = {}) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+
+   my $sensitive = $args->{'sensitive'} ? 1 : 0;
+   return [ map { _sanitise_user_record( _user_to_record( $USERS->{$_} ), $sensitive ) }
+            sort keys %$USERS ];
+}
+
+sub getUser ($self, $username, $args = {}) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+   die Exception->new( 'msg' => "User '$username' not found" )
+      unless $USERS->{$username};
+
+   my $sensitive = $args->{'sensitive'} ? 1 : 0;
+   return _sanitise_user_record( _user_to_record( $USERS->{$username} ), $sensitive );
+}
+
+sub createUser ($self, $args) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+
+   my $username = $args->{'username'}
+      or die Exception->new( 'msg' => "username is required" );
+   die Exception->new( 'msg' => "Invalid username: use only letters, digits, hyphens, underscores" )
+      unless $username =~ /^[A-Za-z0-9_-]+$/;
+   die Exception->new( 'msg' => "User '$username' already exists" )
+      if $USERS->{$username};
+
+   my $users = _read_config_file('users.json');
+
+   # Auto-assign id if not provided or non-numeric.
+   my $id = $args->{'id'};
+   unless ( defined $id && $id =~ /^\d+$/ ) {
+      my $max_id = 0;
+      for my $u ( values %$users ) {
+         $max_id = $u->{'id'} if ( $u->{'id'} // 0 ) > $max_id;
+      }
+      $id = $max_id + 1;
+   }
+
+   my $new_user = {
+      'id'          => $id + 0,
+      'email'       => '',
+      'name'        => '',
+      'role'        => 'user',
+      'permissions' => {},
+      'resources'   => {},
+      'version'     => CURRENT_VERSION(),
+   };
+
+   _apply_args_to_record( $new_user, $args, qw(username password sensitive id) );
+
+   $users->{$username} = $new_user;
+   _write_config_file( 'users.json', $users );
+
+   if ( defined $args->{'password'} && length $args->{'password'} ) {
+      my $passwd = _read_passwd_file();
+      $passwd->{$username} = encrypt_password( $args->{'password'} );
+      _write_passwd_file($passwd);
+      Data::load('passwd');
+   }
+
+   Data::load('users.json');
+
+   return _sanitise_user_record( { %$new_user, 'username' => $username },
+      $args->{'sensitive'} ? 1 : 0 );
+}
+
+sub updateUser ($self, $username, $args) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+   die Exception->new( 'msg' => "User '$username' not found" )
+      unless $USERS->{$username};
+
+   my $users  = _read_config_file('users.json');
+   my $record = $users->{$username}
+      or die Exception->new( 'msg' => "User '$username' not found in users.json" );
+
+   _apply_args_to_record( $record, $args, qw(username password sensitive) );
+
+   $users->{$username} = $record;
+   _write_config_file( 'users.json', $users );
+
+   if ( defined $args->{'password'} && length $args->{'password'} ) {
+      my $passwd = _read_passwd_file();
+      $passwd->{$username} = encrypt_password( $args->{'password'} );
+      _write_passwd_file($passwd);
+      Data::load('passwd');
+   }
+
+   Data::load('users.json');
+
+   return _sanitise_user_record( { %$record, 'username' => $username },
+      $args->{'sensitive'} ? 1 : 0 );
+}
+
+sub removeUser ($self, $username, $args = {}) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+   die Exception->new( 'msg' => "User '$username' not found" )
+      unless $USERS->{$username};
+   die Exception->new( 'msg' => "Cannot remove your own account" )
+      if $self->username eq $username;
+
+   my $users = _read_config_file('users.json');
+   exists $users->{$username}
+      or die Exception->new( 'msg' => "User '$username' not found in users.json" );
+
+   delete $users->{$username};
+   _write_config_file( 'users.json', $users );
+
+   my $passwd = _read_passwd_file();
+   if ( exists $passwd->{$username} ) {
+      delete $passwd->{$username};
+      _write_passwd_file($passwd);
+      Data::load('passwd');
+   }
+
+   Data::load('users.json');
+
+   return { 'username' => $username };
+}
+
+#
+# Role CRUD
+#
+
+sub listRoles ($self) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+
+   return [ map { { 'name' => $_, %{ $ROLES->{$_} } } } sort keys %$ROLES ];
+}
+
+sub getRole ($self, $name) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+   die Exception->new( 'msg' => "Role '$name' not found" )
+      unless $ROLES->{$name};
+
+   return { 'name' => $name, %{ $ROLES->{$name} } };
+}
+
+sub createRole ($self, $name, $args) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+   die Exception->new( 'msg' => "Invalid role name: use only letters, digits, hyphens, underscores" )
+      unless $name =~ /^[A-Za-z0-9_-]+$/;
+   die Exception->new( 'msg' => "Role '$name' already exists" )
+      if $ROLES->{$name};
+
+   my $roles    = _read_config_file('roles.json');
+   my $new_role = { 'permissions' => {}, 'resources' => {} };
+
+   _apply_args_to_record( $new_role, $args, qw(name) );
+
+   $roles->{$name} = $new_role;
+   _write_config_file( 'roles.json', $roles );
+   Data::load('roles.json');
+   Data::load('users.json');
+
+   return { 'name' => $name, %$new_role };
+}
+
+sub updateRole ($self, $name, $args) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+   die Exception->new( 'msg' => "Role '$name' not found" )
+      unless $ROLES->{$name};
+
+   my $roles  = _read_config_file('roles.json');
+   my $record = $roles->{$name}
+      or die Exception->new( 'msg' => "Role '$name' not found in roles.json" );
+
+   _apply_args_to_record( $record, $args, qw(name) );
+
+   $roles->{$name} = $record;
+   _write_config_file( 'roles.json', $roles );
+   Data::load('roles.json');
+   Data::load('users.json');
+
+   return { 'name' => $name, %$record };
+}
+
+sub removeRole ($self, $name) {
+   die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
+      unless $self->has_permission('manageUsers');
+   die Exception->new( 'msg' => "Role '$name' not found" )
+      unless $ROLES->{$name};
+
+   my @users_with_role = grep { ( $USERS->{$_}{'role'} // '' ) eq $name } keys %$USERS;
+   die Exception->new(
+      'msg' => "Cannot remove role '$name': still assigned to: " . join( ', ', sort @users_with_role ) )
+      if @users_with_role;
+
+   my $roles = _read_config_file('roles.json');
+   exists $roles->{$name}
+      or die Exception->new( 'msg' => "Role '$name' not found in roles.json" );
+
+   delete $roles->{$name};
+   _write_config_file( 'roles.json', $roles );
+   Data::load('roles.json');
+   Data::load('users.json');
+
+   return { 'name' => $name };
 }
 
 1;
