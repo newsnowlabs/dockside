@@ -71,9 +71,9 @@ The currently-supported root properties within a profile are:
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
 | lxcfs | whether to mount [lxcfs](extensions/lxcfs.md) | optional | as specified in `config.json` | `true` |
 | security | `docker run` security options | optional | as specified in `config.json` | `{ "apparmor": "unconfined", "seccomp": "unconfined" }` |
-| command | [array] command to run on devtainer launch | mandatory if image does not specify a long-running entrypoint or command | `[]` | `["/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"]`
+| command | [array] command to run on devtainer launch | mandatory if image does not specify a long-running entrypoint or command | `[]` | `["/bin/sh", "-c", "[ -x \"$(which sudo)\" ] \|\| (apk update && apk add sudo;); sleep infinity"]`
 | entrypoint | [array] command with which to override image entrypoint | optional | `[]` | `["/my-entrypoint.sh"]` |
-| mountIDE | disable mounting the Dockside IDE volume (strictly for use with images, such as the Dockside image, that embed their own IDE volume) | optional | `false` | `true` |
+| mountIDE | mount the Dockside IDE volume (disable this only for images that either (a) embed their own IDE volume, such as the Dockside image itself, or (b) do not need an IDE or any Dockside configuration) | optional | `true` | `false` |
 | ssh | whether to enable ssh access | optional | as specified in `config.json` | `true` |
 
 #### Autodetection of networks, runtimes and IDEs
