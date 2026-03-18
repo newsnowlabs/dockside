@@ -169,14 +169,23 @@ class DocksideClient:
         cmd = [self._cli] + list(cmd_args[:1]) + self._base_args() + list(cmd_args[1:])
         env = os.environ.copy()
         env['DOCKSIDE_CONFIG_DIR'] = self._config_dir
+        debug = os.environ.get('DOCKSIDE_TEST_DEBUG', '').strip() == '1'
+        if debug:
+            print(f'# DEBUG cmd: {cmd}', file=sys.stderr)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if debug:
+            print(f'# DEBUG rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}',
+                  file=sys.stderr)
         if result.returncode != 0:
             msg = result.stderr.strip() or result.stdout.strip()
             raise APIError(msg or f'CLI exited {result.returncode}')
         # Reload cookie jar after each authenticated request
         self._reload_cookie_jar()
         if result.stdout.strip():
-            return json.loads(result.stdout)
+            try:
+                return json.loads(result.stdout)
+            except json.JSONDecodeError as e:
+                raise APIError(f'JSON parse error ({e}): stdout={result.stdout!r}')
         return None
 
     def _reload_cookie_jar(self):

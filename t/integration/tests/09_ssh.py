@@ -25,6 +25,8 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 from dockside_test import TestCase, APIError
 
+PROFILE_NAME = '10-alpine'
+
 _INTEGRATION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 _SSH_DIR = os.path.join(_INTEGRATION_DIR, 'config', 'ssh')
 _DEV1_KEY = os.path.join(_SSH_DIR, 'testdev1_ed25519')
@@ -89,7 +91,7 @@ class SshTests(TestCase):
         """Create and start the SSH test container (testdev1 is owner)."""
         try:
             self.dev1.create(
-                profile='Stock Image - Alpine Linux',
+                profile=PROFILE_NAME,
                 name=SSH_CONTAINER,
             )
         except APIError as e:

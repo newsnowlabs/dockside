@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
+PROFILE_NAME = '11-debian'
 CONTAINER_NAME = 'inttest-debian-01'
 
 
@@ -20,7 +21,7 @@ class LifecycleDebianTests(TestCase):
 
     def test_01_create(self):
         result = self.admin.create(
-            profile='Stock Image - Debian',
+            profile=PROFILE_NAME,
             name=CONTAINER_NAME,
         )
         self.assert_true(result is not None, 'create returned nothing')
@@ -69,7 +70,7 @@ class LifecycleDebianDev1Tests(TestCase):
 
     def test_07_dev1_can_create_own(self):
         result = self.dev1.create(
-            profile='Stock Image - Debian',
+            profile=PROFILE_NAME,
             name=self.DEV_CONTAINER,
         )
         self.assert_true(result is not None)
