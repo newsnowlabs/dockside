@@ -135,7 +135,6 @@ class DocksideClient:
 
     def _base_args(self):
         args = [
-            self._cli,
             '--server', self._server,
             '--output', 'json',
             '--username', self._username,
@@ -149,7 +148,10 @@ class DocksideClient:
 
     def _run(self, *cmd_args):
         """Run CLI subcommand; return parsed JSON or raise APIError."""
-        cmd = self._base_args() + list(cmd_args)
+        # Subcommand must come before global flags so argparse routes to the
+        # correct subparser (global flags like --server are only defined there,
+        # not on the top-level parser).
+        cmd = [self._cli] + list(cmd_args[:1]) + self._base_args() + list(cmd_args[1:])
         env = os.environ.copy()
         env['DOCKSIDE_CONFIG_DIR'] = self._config_dir
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -465,8 +467,11 @@ class TestRunner:
         }
 
     def _register_cleanup(self):
-        def _cleanup(*_):
+        def _cleanup(signum, _frame):
             self._emergency_cleanup()
+            # Restore default handler and re-raise so the process actually exits
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
         signal.signal(signal.SIGINT, _cleanup)
         signal.signal(signal.SIGTERM, _cleanup)
         atexit.register(self._emergency_cleanup)
