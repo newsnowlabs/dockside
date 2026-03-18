@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
+PROFILE_NAME = '11-debian'
 IDE_CONTAINER = 'inttest-ide-01'
 
 
@@ -21,7 +22,7 @@ class IdeTests(TestCase):
     def _ensure_created_and_started(self):
         try:
             self.admin.create(
-                profile='Stock Image - Debian',
+                profile=PROFILE_NAME,
                 name=IDE_CONTAINER,
                 ide='openvscode/latest',
             )
@@ -36,7 +37,7 @@ class IdeTests(TestCase):
         name = 'inttest-ide-noide'
         self.register_cleanup(name)
         result = self.admin.create(
-            profile='Stock Image - Debian',
+            profile=PROFILE_NAME,
             name=name,
         )
         self.assert_true(result is not None, 'create without --ide failed')

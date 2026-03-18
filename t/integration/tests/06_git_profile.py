@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
+PROFILE_NAME = '03-git-repo'
 GIT_URL = 'https://github.com/newsnowlabs/dockside.git'
 
 
@@ -21,7 +22,7 @@ class GitProfileTests(TestCase):
         name = 'inttest-git-01'
         self.register_cleanup(name)
         result = self.admin.create(
-            profile='Git Repo (Branch/PR)',
+            profile=PROFILE_NAME,
             name=name,
             gitURL=GIT_URL,
         )
@@ -37,7 +38,7 @@ class GitProfileTests(TestCase):
         self.register_cleanup(name)
         import json
         result = self.admin.create(
-            profile='Git Repo (Branch/PR)',
+            profile=PROFILE_NAME,
             name=name,
             gitURL=GIT_URL,
             options=json.dumps({'branch': 'main'}),
@@ -49,7 +50,7 @@ class GitProfileTests(TestCase):
         self.register_cleanup(name)
         import json
         result = self.admin.create(
-            profile='Git Repo (Branch/PR)',
+            profile=PROFILE_NAME,
             name=name,
             gitURL=GIT_URL,
             options=json.dumps({'pr': '1'}),
@@ -60,7 +61,7 @@ class GitProfileTests(TestCase):
         name = 'inttest-git-debian'
         self.register_cleanup(name)
         result = self.admin.create(
-            profile='Git Repo (Branch/PR)',
+            profile=PROFILE_NAME,
             name=name,
             gitURL=GIT_URL,
             image='debian:latest',
@@ -71,7 +72,7 @@ class GitProfileTests(TestCase):
         name = 'inttest-git-ubuntu'
         self.register_cleanup(name)
         result = self.admin.create(
-            profile='Git Repo (Branch/PR)',
+            profile=PROFILE_NAME,
             name=name,
             gitURL=GIT_URL,
             image='ubuntu:latest',

@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
+PROFILE_NAME = '10-alpine'
+
 
 class AuthTests(TestCase):
     """Authentication and basic permission checks."""
@@ -55,7 +57,7 @@ class AuthTests(TestCase):
             verify_ssl=self.admin._verify_ssl,
         )
         self.assert_api_error(
-            bad.create, profile='Stock Image - Alpine Linux', name='inttest-noauth-create'
+            bad.create, profile=PROFILE_NAME, name='inttest-noauth-create'
         )
         bad.cleanup()
 
@@ -63,6 +65,6 @@ class AuthTests(TestCase):
         # testviewer has no createContainerReservation permission
         self.assert_api_error(
             self.viewer.create,
-            profile='Stock Image - Alpine Linux',
+            profile=PROFILE_NAME,
             name='inttest-viewer-create-fail',
         )

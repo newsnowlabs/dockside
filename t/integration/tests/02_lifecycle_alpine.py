@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
+PROFILE_NAME = '10-alpine'
 CONTAINER_NAME = 'inttest-alpine-01'
 
 
@@ -24,7 +25,7 @@ class LifecycleAlpineTests(TestCase):
 
     def test_01_create(self):
         result = self.admin.create(
-            profile='Stock Image - Alpine Linux',
+            profile=PROFILE_NAME,
             name=CONTAINER_NAME,
         )
         self.assert_true(result is not None, 'create returned nothing')
@@ -84,7 +85,7 @@ class LifecycleAlpineDev1Tests(TestCase):
 
     def test_07_dev1_can_create_own(self):
         result = self.dev1.create(
-            profile='Stock Image - Alpine Linux',
+            profile=PROFILE_NAME,
             name=self.DEV_CONTAINER,
         )
         self.assert_true(result is not None, 'dev1 create returned nothing')

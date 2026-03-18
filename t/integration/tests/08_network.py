@@ -27,6 +27,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
+PROFILE_NAME = '10-alpine'
+
 
 def _docker_networks():
     """Return list of docker network names visible on the host."""
@@ -77,7 +79,7 @@ class NetworkTests(TestCase):
     def _create_and_cleanup(self, name, **kwargs):
         self.register_cleanup(name)
         return self.admin.create(
-            profile='Stock Image - Alpine Linux',
+            profile=PROFILE_NAME,
             name=name,
             **kwargs
         )
@@ -203,7 +205,7 @@ class NetworkTests(TestCase):
             self.register_cleanup(probe_name)
             try:
                 self.admin.create(
-                    profile='Stock Image - Alpine Linux',
+                    profile=PROFILE_NAME,
                     name=probe_name,
                     network=test_net,
                 )
@@ -264,7 +266,7 @@ class NetworkTests(TestCase):
             self.register_cleanup(name)
             try:
                 self.admin.create(
-                    profile='Stock Image - Alpine Linux',
+                    profile=PROFILE_NAME,
                     name=name,
                     network=test_net,
                 )

@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
+PROFILE_ALPINE = '10-alpine'
+PROFILE_NGINX = '30-nginx'
 AC_CONTAINER = 'inttest-ac-01'
 NGINX_CONTAINER = 'inttest-nginx-01'
 
@@ -50,7 +52,7 @@ class AccessAndHttpTests(TestCase):
         """Create both test containers."""
         # testdev1 creates the AC test container
         try:
-            self.dev1.create(profile='Stock Image - Alpine Linux', name=AC_CONTAINER)
+            self.dev1.create(profile=PROFILE_ALPINE, name=AC_CONTAINER)
         except APIError as e:
             if 'already' in str(e).lower() or 'exists' in str(e).lower():
                 pass
@@ -58,7 +60,7 @@ class AccessAndHttpTests(TestCase):
                 raise
         # Admin creates the nginx container
         try:
-            self.admin.create(profile='Stock Image - NGINX', name=NGINX_CONTAINER)
+            self.admin.create(profile=PROFILE_NGINX, name=NGINX_CONTAINER)
         except APIError as e:
             if 'already' in str(e).lower() or 'exists' in str(e).lower():
                 pass
@@ -197,7 +199,7 @@ class AccessAndHttpTests(TestCase):
         try:
             data = self.admin.get_container(NGINX_CONTAINER)
         except APIError:
-            self.admin.create(profile='Stock Image - NGINX', name=NGINX_CONTAINER)
+            self.admin.create(profile=PROFILE_NGINX, name=NGINX_CONTAINER)
             data = self.admin.get_container(NGINX_CONTAINER)
         if data.get('status') != 1:
             self.admin.start(NGINX_CONTAINER, wait=True, timeout=120)

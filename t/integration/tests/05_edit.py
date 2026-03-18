@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
+PROFILE_NAME = '10-alpine'
 CONTAINER_NAME = 'inttest-edit-01'
 
 
@@ -18,7 +19,7 @@ class EditTests(TestCase):
         super().setUp()
         self.register_cleanup(CONTAINER_NAME)
         try:
-            self.admin.create(profile='Stock Image - Alpine Linux', name=CONTAINER_NAME)
+            self.admin.create(profile=PROFILE_NAME, name=CONTAINER_NAME)
         except APIError as e:
             if 'already' not in str(e).lower() and 'exists' not in str(e).lower():
                 raise
