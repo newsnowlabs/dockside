@@ -7,7 +7,11 @@ use Try::Tiny;
 use URI::Escape;
 use Storable qw(dclone);
 use Data qw($CONFIG);
-use Util qw(flog wlog TO_JSON generate_auth_cookie_values);
+use Util qw(flog wlog TO_JSON generate_auth_cookie_values encrypt_password cacheReadWrite);
+use User::Manage qw(
+   listUsers getUser createUser updateUser removeUser
+   listRoles getRole createRole updateRole removeRole
+);
 use Reservation;
 
 ################################################################################
@@ -38,7 +42,8 @@ my @GENERAL_PERMISSIONS = (
    'viewAllContainers', # Permission to view all containers (except ones marked private)
    'viewAllPrivateContainers', # Permission to view all containers including private containers
    'developContainers', # Permission to develop containers that one owns or is a named developer on
-   'developAllContainers' # Permission to develop all containers irrespective of ownership or named developers
+   'developAllContainers', # Permission to develop all containers irrespective of ownership or named developers
+   'manageUsers' # Permission to create/update/remove/list users and roles
 );
 
 my @CONTAINER_PERMISSIONS = (
