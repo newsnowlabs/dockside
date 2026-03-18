@@ -461,6 +461,7 @@ class TestRunner:
         self._allow_network_modify = allow_network_modify
         self._clients = {}
         self._active_cases = []
+        self._active_class_teardowns = []
         self._total = 0
         self._passed = 0
         self._failed = 0
@@ -516,6 +517,13 @@ class TestRunner:
                 case.tearDown()
             except Exception:
                 pass
+        for cls in list(self._active_class_teardowns):
+            if hasattr(cls, 'tearDownClass'):
+                try:
+                    cls.tearDownClass()
+                except Exception:
+                    pass
+        self._active_class_teardowns.clear()
 
     def _inject_clients(self, case):
         case.admin = self._clients['admin']
@@ -543,6 +551,35 @@ class TestRunner:
             name for name in dir(cls)
             if name.startswith('test_') and callable(getattr(cls, name))
         )
+
+        # Inject clients as class attributes so setUpClass/tearDownClass can use them
+        cls.admin   = self._clients['admin']
+        cls.dev1    = self._clients['dev1']
+        cls.dev2    = self._clients['dev2']
+        cls.viewer  = self._clients['viewer']
+        cls.unauth  = self._clients['unauth']
+        cls.test_mode            = self._test_mode
+        cls.harness_container_id = self._harness_container_id
+        cls.allow_network_modify = self._allow_network_modify
+
+        # Class-level setup
+        if hasattr(cls, 'setUpClass') and callable(getattr(cls, 'setUpClass')):
+            try:
+                cls.setUpClass()
+            except Exception as e:
+                for method_name in methods:
+                    self._total += 1
+                    self._failed += 1
+                    label = f'{cls.__name__}.{method_name}'
+                    print(f'not ok {self._total} - {label}')
+                    print(f'  # setUpClass failed: {e}')
+                return
+
+        # Track this class for emergency teardown if it has tearDownClass
+        has_class_teardown = hasattr(cls, 'tearDownClass') and callable(getattr(cls, 'tearDownClass'))
+        if has_class_teardown:
+            self._active_class_teardowns.append(cls)
+
         for method_name in methods:
             self._total += 1
             case = cls()
@@ -579,6 +616,14 @@ class TestRunner:
                     print(f'  # {line}')
             finally:
                 self._active_cases.remove(case)
+
+        # Class-level teardown
+        if has_class_teardown:
+            try:
+                cls.tearDownClass()
+            except Exception:
+                pass
+            self._active_class_teardowns.remove(cls)
 
     def print_summary(self):
         print(f'# Tests: {self._total}, Passed: {self._passed}, '
