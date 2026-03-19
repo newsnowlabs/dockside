@@ -943,7 +943,8 @@ def _add_user_fields(p, create=False):
                    help='Set a nested property via dot-notation key (repeatable), e.g. '
                         "--set resources.profiles='[\"*\"]' or "
                         '--set permissions.createContainerReservation=1 ; '
-                        'use --set KEY= (empty value) to delete a key')
+                        'use --set KEY=@file to read the value from a file '
+                        '(.json files are parsed as JSON, others as a string)')
     p.add_argument('--unset', metavar='KEY', action='append',
                    help='Delete a nested property via dot-notation key (repeatable), '
                         'e.g. --unset ssh.xyzzy')
@@ -963,7 +964,8 @@ def _add_role_fields(p):
     p.add_argument('--set', metavar='KEY=VALUE', action='append',
                    help='Set a nested property via dot-notation key (repeatable), e.g. '
                         '--set permissions.createContainerReservation=1 ; '
-                        'use --set KEY= (empty value) to delete a key')
+                        'use --set KEY=@file to read the value from a file '
+                        '(.json files are parsed as JSON, others as a string)')
     p.add_argument('--unset', metavar='KEY', action='append',
                    help='Delete a nested property via dot-notation key (repeatable), '
                         'e.g. --unset permissions.createContainerReservation')
@@ -1348,6 +1350,9 @@ def _parse_set_args(set_args):
     dotted-path merging in _apply_args_to_record.
     VALUE is JSON-decoded when possible; otherwise treated as a plain string.
     An empty VALUE (--set KEY=) sets the key to an empty string.
+
+    If VALUE starts with '@', the remainder is treated as a file path:
+    .json files are parsed as JSON; all other files are read as a string.
     """
     result = {}
     for item in (set_args or []):
@@ -1357,7 +1362,21 @@ def _parse_set_args(set_args):
         key = key.strip()
         if not key:
             die(f'--set key is empty in: {item!r}')
-        if raw_val == '':
+        if raw_val.startswith('@'):
+            path = raw_val[1:]
+            try:
+                with open(path, 'r') as fh:
+                    content = fh.read()
+            except OSError as e:
+                die(f'--set {key}: cannot read file {path!r}: {e}')
+            if path.endswith('.json'):
+                try:
+                    result[key] = json.loads(content)
+                except (json.JSONDecodeError, ValueError) as e:
+                    die(f'--set {key}: {path!r} is not valid JSON: {e}')
+            else:
+                result[key] = content
+        elif raw_val == '':
             result[key] = ''
         else:
             try:
