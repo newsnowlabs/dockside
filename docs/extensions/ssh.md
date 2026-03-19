@@ -17,12 +17,19 @@ Dockside enables SSH by default for all new devcontainers. To disable it globall
 
 ### Configuring user public keys
 
-To control which developers can SSH into a devcontainer, add each developer's SSH public key to their record in `users.json` under `ssh.authorized_keys`:
+To control which developers can SSH into a devcontainer, add each developer's SSH public keys to their record in `users.json` under `ssh.publicKeys`, using a name of your choice for each key:
 
 ```json
 "ssh": {
-  "authorized_keys": ["ssh-ed25519 AAAA... alice@example.com"]
+  "publicKeys": { "laptop": "ssh-ed25519 AAAA... alice@example.com" }
 }
+```
+
+Individual keys can be added or removed via the CLI without affecting others:
+
+```bash
+dockside user edit alice --set ssh.publicKeys.laptop="ssh-ed25519 AAAA..."
+dockside user edit alice --set ssh.publicKeys.laptop=   # remove
 ```
 
 Whenever a devcontainer is started, its developer list is changed, or its SSH access mode is switched (between 'Devcontainer owner only' and 'Devcontainer developers only'), Dockside automatically writes the correct set of public keys to `~/.ssh/authorized_keys` inside the devcontainer. No manual step is needed.

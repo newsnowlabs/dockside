@@ -190,7 +190,7 @@ A user record specifies:
     - `images`: Docker images the user is permitted to launch, subject also to the profile (object or array)
     - `auth`: the auth/access levels the user is permitted to specify for a devtainer's router, subject also to the devtainer's profile (object or array)
 - `ssh`:
-    - `authorized_keys`: an array of standard ssh authorized keys strings that will be automatically written to devtainers' `~/.ssh/authorized_keys` files for devtainers owned by, or shared with, the user (as 'developer')
+    - `publicKeys`: a map of named ssh public key strings (e.g. `{ "laptop": "ssh-rsa ..." }`) that will be automatically written to devtainers' `~/.ssh/authorized_keys` files for devtainers owned by, or shared with, the user (as 'developer'); individual keys can be added/removed via the CLI with `--set ssh.publicKeys.keyname="ssh-rsa ..."` and `--set ssh.publicKeys.keyname=`
     - `keypairs`: an object representing named keypair objects; currently only one keypair per user, with the name `*`, is supported; the keypair object must have two properties, named `public` and `private` with appropriate values (e.g. `{"*": {{"public": "ssh-rsa AAAAAskjha... myname@myteam.com", "private": "-----BEGIN OPENSSH PRIVATE KEY-----\nhsgjhga...\n-----END OPENSSH PRIVATE KEY-----\n"}}}`)
 - `gh_token`: an optional GitHub Personal Access Token (string); when set, the token is passed as the `GH_TOKEN` environment variable into every container launched by or shared with the user, enabling the bundled `gh` CLI to authenticate automatically (e.g. for `gh pr checkout`)
 
