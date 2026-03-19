@@ -44,10 +44,9 @@ These instructions guide them through installing the [wstunnel](https://github.c
 ### Notes
 
 - Since Dockside manages `~/.ssh/authorized_keys` automatically, any manual changes you make to this file inside a devcontainer with SSH enabled may be overwritten on the next start or developer-list change. To add a key persistently, add it to the user's `users.json` record instead.
-
 - IDE functions that internally require an SSH client (such as `Git: Push` and `Git: Pull`) cannot use keys forwarded by an active `ssh -A` session. You can still use forwarded keys when running `git` commands manually in an SSH terminal, but the IDE itself cannot access them. Instead, the IDE reads keys from the local integrated `ssh-agent` — see [Local SSH agent support](#local-ssh-agent-support-and-automatic-key-provision) below.
 
-## Local SSH agent support and automatic key provision
+## Local SSH agent support and automatic keypair provision
 
 Dockside launches and manages an `ssh-agent` in each devcontainer, providing secure SSH key access when using the IDE and its integrated terminal.
 
@@ -72,12 +71,7 @@ To authenticate outbound SSH connections from within the IDE or terminal — for
 
 On devcontainer launch, Dockside automatically loads the keypair into the `ssh-agent`. The key is then immediately available to the IDE (for `Git: Push` / `Git: Pull`), to VS Code extensions, and to any terminal command — without any manual `ssh-add` step.
 
-> **Security note:** Private keys stored in `users.json` are readable by any administrator with access to the config files. Use an SSH key dedicated to your Dockside / development workflow, separate from personal or production keys. If your security requirements demand it, omit the private key from `users.json` and instead run `ssh-add <path-to-key>` manually each session.
-
-### Adding SSH keys to a devcontainer manually
-
-SSH key files can also be added to a devcontainer directly — by dragging and dropping them into the IDE file explorer, or by right-clicking a folder and selecting `Upload`. Once present in the container, load a key into the agent with `ssh-add <path-to-key>`.
-
-For most teams, configuring `ssh.keypairs` in `users.json` is simpler and more reliable, since keys are provisioned automatically into every new devcontainer with no manual steps required.
-
-> **Note:** If you share your devcontainer IDE with another user, they will have access to any unencrypted key files present in the container and to any keys currently loaded in the agent. Before sharing with an untrusted user, run `ssh-add -D` to remove all unencrypted identities from the agent (or `ssh-add -x` to lock it), and ensure any key files on disk are encrypted.
+> **Security notes:**
+> 1. If you share your devcontainer IDE with another user, they will have access to any unencrypted key files present in the container and to any keys currently loaded in the agent. Before sharing with an untrusted team member, run `ssh-add -D` to remove all unencrypted identities from the agent (or `ssh-add -x` to lock it), and ensure any key files on disk are encrypted.
+> 2. Private keys stored in `users.json` are currently readable by Dockside admins and anyone with sufficient access to the Dockside host. If you run a shared Dockside instance, use an SSH key dedicated to your Dockside / development workflow, separate from personal or production keys.
+> 3. If your security requirements demand it, omit the private key from `users.json` and instead run `ssh-add <path-to-key>` manually each session. SSH key files can also be added to a devcontainer directly — by dragging and dropping them into the IDE file explorer, or by right-clicking a folder and selecting `Upload`. Once present in the container, load a key into the agent with `ssh-add <path-to-key>`.
