@@ -19,7 +19,7 @@ use Reservation;
 # ---------------
 
 sub CURRENT_VERSION () {
-   return 1;
+   return 2;
 }
 
 ##################
@@ -29,6 +29,19 @@ sub CURRENT_VERSION () {
 sub versionUpgrade ($self) {
    if($self->version == 0) {
       $self->{'_resources'}{'IDEs'} //= ['*'];
+      $self->{'version'}++;
+   }
+   if($self->version == 1) {
+      # Migrate ssh.authorized_keys (array) → ssh.publicKeys (hash)
+      my $old = $self->{'ssh'}{'authorized_keys'};
+      if(ref($old) eq 'ARRAY' && @$old) {
+         my $i = 1;
+         for my $key (@$old) {
+            $self->{'ssh'}{'publicKeys'}{"key$i"} = $key;
+            $i++;
+         }
+      }
+      delete $self->{'ssh'}{'authorized_keys'};
       $self->{'version'}++;
    }
 }
@@ -204,7 +217,8 @@ sub passwordDefined ($self) {
 }
 
 sub authorized_keys ($self) {
-   return $self->{'ssh'}{'authorized_keys'} // [];
+   my $pk = $self->{'ssh'}{'publicKeys'} // {};
+   return [ values %$pk ];
 }
 
 sub keypairs ($self, $prefix) {
