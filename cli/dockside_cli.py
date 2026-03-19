@@ -1340,14 +1340,14 @@ def _collect_edit_fields(args):
     return fields
 
 
-def _parse_set_args(set_args, unset_args=None):
+def _parse_set_args(set_args):
     """
-    Parse --set KEY=VALUE and --unset KEY args into a flat dict.
+    Parse --set KEY=VALUE args into a flat dict.
 
     Keys use dot notation and are passed as-is to the server, which handles
-    dotted-path merging in _apply_args_to_record.  An empty value (--set KEY=
-    or --unset KEY) signals the server to delete that key.
+    dotted-path merging in _apply_args_to_record.
     VALUE is JSON-decoded when possible; otherwise treated as a plain string.
+    An empty VALUE (--set KEY=) sets the key to an empty string.
     """
     result = {}
     for item in (set_args or []):
@@ -1358,17 +1358,12 @@ def _parse_set_args(set_args, unset_args=None):
         if not key:
             die(f'--set key is empty in: {item!r}')
         if raw_val == '':
-            result[key] = ''  # empty string → server deletes this key
+            result[key] = ''
         else:
             try:
                 result[key] = json.loads(raw_val)
             except (json.JSONDecodeError, ValueError):
                 result[key] = raw_val
-    for key in (unset_args or []):
-        key = key.strip()
-        if not key:
-            die('--unset key is empty')
-        result[key] = ''  # empty string → server deletes this key
     return result
 
 
@@ -1398,8 +1393,11 @@ def _collect_user_fields(args, create=False):
             except (json.JSONDecodeError, ValueError) as e:
                 die(f'--{flag} is not valid JSON: {e}')
 
-    fields.update(_parse_set_args(getattr(args, 'set', None) or [],
-                                   getattr(args, 'unset', None) or []))
+    fields.update(_parse_set_args(getattr(args, 'set', None) or []))
+
+    unset = getattr(args, 'unset', None) or []
+    if unset:
+        fields['_unset'] = unset
 
     if getattr(args, 'sensitive', False):
         fields['sensitive'] = 1
@@ -1427,8 +1425,11 @@ def _collect_role_fields(args, create=False):
             except (json.JSONDecodeError, ValueError) as e:
                 die(f'--{flag} is not valid JSON: {e}')
 
-    fields.update(_parse_set_args(getattr(args, 'set', None) or [],
-                                   getattr(args, 'unset', None) or []))
+    fields.update(_parse_set_args(getattr(args, 'set', None) or []))
+
+    unset = getattr(args, 'unset', None) or []
+    if unset:
+        fields['_unset'] = unset
 
     return fields
 

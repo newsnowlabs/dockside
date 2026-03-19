@@ -46,20 +46,30 @@ sub _apply_args_to_record ($record, $args, @skip) {
 
    for my $key ( sort { scalar( split /\./, $a ) <=> scalar( split /\./, $b ) } keys %$args ) {
       next if $skip{$key};
+      next if $key eq '_unset';
       next unless defined $args->{$key};
 
+      my $val   = _decode_value( $args->{$key} );
       my @parts = split( /\./, $key );
       my $ref   = $record;
       for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
          $ref->{$part} //= {};
          $ref = $ref->{$part};
       }
+      $ref->{ $parts[-1] } = $val;
+   }
 
-      # Empty string value signals "delete this key"
-      if ( $args->{$key} eq '' ) {
-         delete $ref->{ $parts[-1] };
-      } else {
-         $ref->{ $parts[-1] } = _decode_value( $args->{$key} );
+   # _unset: JSON array of dotted-path keys to delete from the record
+   if ( defined $args->{_unset} ) {
+      my $keys = eval { decode_json( $args->{_unset} ) } // [];
+      for my $key (@$keys) {
+         my @parts = split( /\./, $key );
+         my $ref   = $record;
+         for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
+            last unless ref $ref eq 'HASH' && exists $ref->{$part};
+            $ref = $ref->{$part};
+         }
+         delete $ref->{ $parts[-1] } if ref $ref eq 'HASH';
       }
    }
 }
