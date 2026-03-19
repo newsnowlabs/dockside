@@ -508,16 +508,19 @@ def resolve(containers, identifier):
 
 # ── API calls ─────────────────────────────────────────────────────────────────
 
-def _encode_params(**kwargs):
+def _encode_params(p):
     """
     Build a URL query string suitable for the Dockside API.
 
+    Keys may contain dots (dotted-path notation for nested fields).
     Booleans → 0/1; dicts/lists → compact JSON strings; rest → str.
+    None values are skipped; empty strings are included as-is (signals
+    delete to the server).
     Uses quote() (not quote_plus()) so spaces become %20, not +.
     Perl's uri_unescape() only decodes %XX sequences, not + signs.
     """
     params = {}
-    for k, v in kwargs.items():
+    for k, v in p.items():
         if v is None:
             continue
         if isinstance(v, bool):
@@ -530,13 +533,13 @@ def _encode_params(**kwargs):
 
 
 def api_create(opener, server, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     data = _do_get(opener, server.rstrip('/') + '/containers/create?' + qs, timeout=30)
     return data.get('reservation')
 
 
 def api_update(opener, server, res_id, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     url = (server.rstrip('/') +
            f'/containers/{urllib.parse.quote(res_id)}/update?' + qs)
     data = _do_get(opener, url, timeout=30)
@@ -552,26 +555,26 @@ def api_control(opener, server, res_id, cmd):
 
 
 def api_user_list(opener, server, sensitive=False):
-    qs = ('?' + _encode_params(sensitive=1)) if sensitive else ''
+    qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
     data = _do_get(opener, server.rstrip('/') + '/users' + qs)
     return data.get('data') or []
 
 
 def api_user_get(opener, server, username, sensitive=False):
-    qs = ('?' + _encode_params(sensitive=1)) if sensitive else ''
+    qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
     url = server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='') + qs
     data = _do_get(opener, url)
     return data.get('data')
 
 
 def api_user_create(opener, server, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     data = _do_get(opener, server.rstrip('/') + '/users/create?' + qs, timeout=30)
     return data.get('data')
 
 
 def api_user_update(opener, server, username, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     url = (server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='')
            + '/update?' + qs)
     data = _do_get(opener, url, timeout=30)
@@ -596,13 +599,13 @@ def api_role_get(opener, server, name):
 
 
 def api_role_create(opener, server, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     data = _do_get(opener, server.rstrip('/') + '/roles/create?' + qs, timeout=30)
     return data.get('data')
 
 
 def api_role_update(opener, server, name, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     url = (server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='')
            + '/update?' + qs)
     data = _do_get(opener, url, timeout=30)
@@ -939,7 +942,11 @@ def _add_user_fields(p, create=False):
     p.add_argument('--set', metavar='KEY=VALUE', action='append',
                    help='Set a nested property via dot-notation key (repeatable), e.g. '
                         "--set resources.profiles='[\"*\"]' or "
-                        '--set permissions.createContainerReservation=1')
+                        '--set permissions.createContainerReservation=1 ; '
+                        'use --set KEY= (empty value) to delete a key')
+    p.add_argument('--unset', metavar='KEY', action='append',
+                   help='Delete a nested property via dot-notation key (repeatable), '
+                        'e.g. --unset ssh.xyzzy')
     p.add_argument('--from-json', metavar='FILE|-',
                    help='Read base record from a JSON file (use - for stdin); '
                         'other flags take precedence')
@@ -955,7 +962,11 @@ def _add_role_fields(p):
                         "e.g. '{\"networks\":{\"*\":1}}'")
     p.add_argument('--set', metavar='KEY=VALUE', action='append',
                    help='Set a nested property via dot-notation key (repeatable), e.g. '
-                        '--set permissions.createContainerReservation=1')
+                        '--set permissions.createContainerReservation=1 ; '
+                        'use --set KEY= (empty value) to delete a key')
+    p.add_argument('--unset', metavar='KEY', action='append',
+                   help='Delete a nested property via dot-notation key (repeatable), '
+                        'e.g. --unset permissions.createContainerReservation')
     p.add_argument('--from-json', metavar='FILE|-',
                    help='Read base record from a JSON file (use - for stdin); '
                         'other flags take precedence')
@@ -1329,49 +1340,35 @@ def _collect_edit_fields(args):
     return fields
 
 
-def _deep_merge(base, override):
-    """Recursively merge override into base in place; override wins on conflict."""
-    for k, v in override.items():
-        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
-            _deep_merge(base[k], v)
-        else:
-            base[k] = v
-
-
-def _parse_set_args(set_args):
+def _parse_set_args(set_args, unset_args=None):
     """
-    Parse a list of 'KEY=VALUE' strings into a nested dict.
+    Parse --set KEY=VALUE and --unset KEY args into a flat dict.
 
-    KEY may use dot notation for nested paths; shallower paths are applied first
-    so deeper ones override them.  VALUE is JSON-decoded when possible; otherwise
-    treated as a plain string.
+    Keys use dot notation and are passed as-is to the server, which handles
+    dotted-path merging in _apply_args_to_record.  An empty value (--set KEY=
+    or --unset KEY) signals the server to delete that key.
+    VALUE is JSON-decoded when possible; otherwise treated as a plain string.
     """
-    if not set_args:
-        return {}
-    pairs = []
-    for item in set_args:
+    result = {}
+    for item in (set_args or []):
         if '=' not in item:
             die(f'--set must be in KEY=VALUE format, got: {item!r}')
         key, _, raw_val = item.partition('=')
         key = key.strip()
         if not key:
             die(f'--set key is empty in: {item!r}')
-        pairs.append((key, raw_val))
-    # Apply shallowest paths first so deeper paths take precedence.
-    pairs.sort(key=lambda kv: kv[0].count('.'))
-    result = {}
-    for key, raw_val in pairs:
-        try:
-            val = json.loads(raw_val)
-        except (json.JSONDecodeError, ValueError):
-            val = raw_val
-        parts = key.split('.')
-        d = result
-        for part in parts[:-1]:
-            if part not in d or not isinstance(d[part], dict):
-                d[part] = {}
-            d = d[part]
-        d[parts[-1]] = val
+        if raw_val == '':
+            result[key] = ''  # empty string → server deletes this key
+        else:
+            try:
+                result[key] = json.loads(raw_val)
+            except (json.JSONDecodeError, ValueError):
+                result[key] = raw_val
+    for key in (unset_args or []):
+        key = key.strip()
+        if not key:
+            die('--unset key is empty')
+        result[key] = ''  # empty string → server deletes this key
     return result
 
 
@@ -1401,7 +1398,8 @@ def _collect_user_fields(args, create=False):
             except (json.JSONDecodeError, ValueError) as e:
                 die(f'--{flag} is not valid JSON: {e}')
 
-    _deep_merge(fields, _parse_set_args(getattr(args, 'set', None) or []))
+    fields.update(_parse_set_args(getattr(args, 'set', None) or [],
+                                   getattr(args, 'unset', None) or []))
 
     if getattr(args, 'sensitive', False):
         fields['sensitive'] = 1
@@ -1429,7 +1427,8 @@ def _collect_role_fields(args, create=False):
             except (json.JSONDecodeError, ValueError) as e:
                 die(f'--{flag} is not valid JSON: {e}')
 
-    _deep_merge(fields, _parse_set_args(getattr(args, 'set', None) or []))
+    fields.update(_parse_set_args(getattr(args, 'set', None) or [],
+                                   getattr(args, 'unset', None) or []))
 
     return fields
 

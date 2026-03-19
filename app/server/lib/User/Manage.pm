@@ -48,14 +48,19 @@ sub _apply_args_to_record ($record, $args, @skip) {
       next if $skip{$key};
       next unless defined $args->{$key};
 
-      my $val   = _decode_value( $args->{$key} );
       my @parts = split( /\./, $key );
       my $ref   = $record;
       for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
          $ref->{$part} //= {};
          $ref = $ref->{$part};
       }
-      $ref->{ $parts[-1] } = $val;
+
+      # Empty string value signals "delete this key"
+      if ( $args->{$key} eq '' ) {
+         delete $ref->{ $parts[-1] };
+      } else {
+         $ref->{ $parts[-1] } = _decode_value( $args->{$key} );
+      }
    }
 }
 
