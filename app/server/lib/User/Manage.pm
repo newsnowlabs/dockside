@@ -94,15 +94,15 @@ sub _user_to_record ($user) {
 sub _sanitise_user_record ($record, $sensitive = 0) {
    my $out = {%$record};
    unless ($sensitive) {
-      delete $out->{'gh_token'};
+      $out->{'gh_token'} = '<redacted>' if exists $out->{'gh_token'};
       if ( ref $out->{'ssh'} eq 'HASH' && ref $out->{'ssh'}{'keypairs'} eq 'HASH' ) {
          $out->{'ssh'}             = { %{ $out->{'ssh'} } };
          $out->{'ssh'}{'keypairs'} = { %{ $out->{'ssh'}{'keypairs'} } };
          for my $kp_name ( keys %{ $out->{'ssh'}{'keypairs'} } ) {
             my $kp = $out->{'ssh'}{'keypairs'}{$kp_name};
-            if ( ref $kp eq 'HASH' ) {
+            if ( ref $kp eq 'HASH' && exists $kp->{'private'} ) {
                $out->{'ssh'}{'keypairs'}{$kp_name} = {%$kp};
-               delete $out->{'ssh'}{'keypairs'}{$kp_name}{'private'};
+               $out->{'ssh'}{'keypairs'}{$kp_name}{'private'} = '<redacted>';
             }
          }
       }
