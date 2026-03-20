@@ -217,7 +217,6 @@ sub run_pty ($cmd, $logfile) {
 
    my $logger = sub {
       my ($chunk) = @_;
-      print $chunk;
 
       push(@input, $chunk);
 
