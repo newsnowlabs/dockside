@@ -1,0 +1,32 @@
+{
+  "networks": [
+    {
+      "name": "dockside",
+      "subnet": "172.15.0.0/16"
+    },
+    {
+      "name": "ds-prod",
+      "subnet": "172.16.0.0/16",
+      "gateway_ip": "172.16.0.2",
+      "gateway_mac": "02:00:00:00:00:01"
+    },
+    {
+      "name": "ds-clone",
+      "subnet": "172.17.0.0/16",
+      "gateway_ip": "172.17.0.2",
+      "gateway_mac": "02:00:00:00:00:01"
+    },
+    {
+      "name": "ds-priv",
+      "subnet": "172.18.0.0/16",
+      "gateway_ip": "172.18.0.2",
+      "gateway_mac": "02:00:00:00:00:01"
+    },
+    {
+      "name": "ds-claude",
+      "subnet": "172.19.0.0/16",
+      "gateway_ip": "172.19.0.2",
+      "gateway_mac": "02:00:00:00:00:01"
+    }
+  ]
+}

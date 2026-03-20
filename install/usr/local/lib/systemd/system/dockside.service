@@ -9,10 +9,10 @@ NotifyAccess=main
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=300
-ExecStart=/usr/local/lib/dockside/dockside-network-firewall.sh --daemon
+ExecStart=/usr/local/lib/dockside/dockside-network-firewall.py --daemon
 ExecStartPost=/usr/bin/docker compose -f /usr/local/lib/dockside/docker-compose.yml up -d
 ExecStop=/usr/bin/docker compose -f /usr/local/lib/dockside/docker-compose.yml down
-ExecReload=/usr/local/lib/dockside/dockside-network-firewall.sh --refresh
+ExecReload=/bin/kill -USR1 $MAINPID
 Restart=on-failure
 RestartSec=5
 
