@@ -7,7 +7,11 @@ use Try::Tiny;
 use URI::Escape;
 use Storable qw(dclone);
 use Data qw($CONFIG);
-use Util qw(flog wlog TO_JSON generate_auth_cookie_values);
+use Util qw(flog wlog TO_JSON generate_auth_cookie_values encrypt_password cacheReadWrite);
+use User::Manage qw(
+   listUsers getUser createUser updateUser removeUser
+   listRoles getRole createRole updateRole removeRole
+);
 use Reservation;
 
 ################################################################################
@@ -15,7 +19,7 @@ use Reservation;
 # ---------------
 
 sub CURRENT_VERSION () {
-   return 1;
+   return 2;
 }
 
 ##################
@@ -25,6 +29,19 @@ sub CURRENT_VERSION () {
 sub versionUpgrade ($self) {
    if($self->version == 0) {
       $self->{'_resources'}{'IDEs'} //= ['*'];
+      $self->{'version'}++;
+   }
+   if($self->version == 1) {
+      # Migrate ssh.authorized_keys (array) → ssh.publicKeys (hash)
+      my $old = $self->{'ssh'}{'authorized_keys'};
+      if(ref($old) eq 'ARRAY' && @$old) {
+         my $i = 1;
+         for my $key (@$old) {
+            $self->{'ssh'}{'publicKeys'}{"key$i"} = $key;
+            $i++;
+         }
+      }
+      delete $self->{'ssh'}{'authorized_keys'};
       $self->{'version'}++;
    }
 }
@@ -38,7 +55,8 @@ my @GENERAL_PERMISSIONS = (
    'viewAllContainers', # Permission to view all containers (except ones marked private)
    'viewAllPrivateContainers', # Permission to view all containers including private containers
    'developContainers', # Permission to develop containers that one owns or is a named developer on
-   'developAllContainers' # Permission to develop all containers irrespective of ownership or named developers
+   'developAllContainers', # Permission to develop all containers irrespective of ownership or named developers
+   'manageUsers' # Permission to create/update/remove/list users and roles
 );
 
 my @CONTAINER_PERMISSIONS = (
@@ -199,7 +217,8 @@ sub passwordDefined ($self) {
 }
 
 sub authorized_keys ($self) {
-   return $self->{'ssh'}{'authorized_keys'} // [];
+   my $pk = $self->{'ssh'}{'publicKeys'} // {};
+   return [ values %$pk ];
 }
 
 sub keypairs ($self, $prefix) {

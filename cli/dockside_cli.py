@@ -508,16 +508,19 @@ def resolve(containers, identifier):
 
 # ── API calls ─────────────────────────────────────────────────────────────────
 
-def _encode_params(**kwargs):
+def _encode_params(p):
     """
     Build a URL query string suitable for the Dockside API.
 
+    Keys may contain dots (dotted-path notation for nested fields).
     Booleans → 0/1; dicts/lists → compact JSON strings; rest → str.
+    None values are skipped; empty strings are included as-is (signals
+    delete to the server).
     Uses quote() (not quote_plus()) so spaces become %20, not +.
     Perl's uri_unescape() only decodes %XX sequences, not + signs.
     """
     params = {}
-    for k, v in kwargs.items():
+    for k, v in p.items():
         if v is None:
             continue
         if isinstance(v, bool):
@@ -530,13 +533,13 @@ def _encode_params(**kwargs):
 
 
 def api_create(opener, server, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     data = _do_get(opener, server.rstrip('/') + '/containers/create?' + qs, timeout=30)
     return data.get('reservation')
 
 
 def api_update(opener, server, res_id, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     url = (server.rstrip('/') +
            f'/containers/{urllib.parse.quote(res_id)}/update?' + qs)
     data = _do_get(opener, url, timeout=30)
@@ -549,6 +552,70 @@ def api_control(opener, server, res_id, cmd):
            f'/containers/{urllib.parse.quote(res_id)}/{urllib.parse.quote(cmd)}')
     data = _do_get(opener, url, timeout=30)
     return data.get('data') or []
+
+
+def api_user_list(opener, server, sensitive=False):
+    qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
+    data = _do_get(opener, server.rstrip('/') + '/users' + qs)
+    return data.get('data') or []
+
+
+def api_user_get(opener, server, username, sensitive=False):
+    qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
+    url = server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='') + qs
+    data = _do_get(opener, url)
+    return data.get('data')
+
+
+def api_user_create(opener, server, fields):
+    qs = _encode_params(fields)
+    data = _do_get(opener, server.rstrip('/') + '/users/create?' + qs, timeout=30)
+    return data.get('data')
+
+
+def api_user_update(opener, server, username, fields):
+    qs = _encode_params(fields)
+    url = (server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='')
+           + '/update?' + qs)
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
+
+
+def api_user_remove(opener, server, username):
+    url = (server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='') + '/remove')
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
+
+
+def api_role_list(opener, server):
+    data = _do_get(opener, server.rstrip('/') + '/roles')
+    return data.get('data') or []
+
+
+def api_role_get(opener, server, name):
+    url = server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='')
+    data = _do_get(opener, url)
+    return data.get('data')
+
+
+def api_role_create(opener, server, fields):
+    qs = _encode_params(fields)
+    data = _do_get(opener, server.rstrip('/') + '/roles/create?' + qs, timeout=30)
+    return data.get('data')
+
+
+def api_role_update(opener, server, name, fields):
+    qs = _encode_params(fields)
+    url = (server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='')
+           + '/update?' + qs)
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
+
+
+def api_role_remove(opener, server, name):
+    url = server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='') + '/remove'
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
 
 
 def api_logs(opener, server, res_id):
@@ -853,6 +920,58 @@ def _add_create_fields(p):
                    help='Read all creation parameters from a JSON file '
                         '(use - for stdin); command-line flags take precedence')
     _add_shared_fields(p)
+
+
+def _add_user_fields(p, create=False):
+    """Fields for user create/edit."""
+    p.add_argument('--email', metavar='EMAIL', help='Email address')
+    p.add_argument('--role', metavar='ROLE', help='Role name (e.g. admin, developer)')
+    p.add_argument('--name', metavar='DISPLAY_NAME', help='Display name')
+    p.add_argument('--user-password', dest='user_password', metavar='PASS',
+                   help="Set the user's login password (stored hashed in passwd file)")
+    p.add_argument('--gh-token', dest='gh_token', metavar='TOKEN',
+                   help='GitHub Personal Access Token passed as GH_TOKEN to containers')
+    p.add_argument('--permissions', metavar='JSON',
+                   help="Full permissions object as JSON, "
+                        "e.g. '{\"createContainerReservation\":1}'")
+    p.add_argument('--resources', metavar='JSON',
+                   help="Full resources object as JSON, "
+                        "e.g. '{\"profiles\":[\"*\"]}'")
+    p.add_argument('--ssh', metavar='JSON',
+                   help='Full ssh object as JSON')
+    p.add_argument('--set', metavar='KEY=VALUE', action='append',
+                   help='Set a nested property via dot-notation key (repeatable), e.g. '
+                        "--set resources.profiles='[\"*\"]' or "
+                        '--set permissions.createContainerReservation=1 ; '
+                        'use --set KEY=@file to read the value from a file '
+                        '(.json files are parsed as JSON, others as a string)')
+    p.add_argument('--unset', metavar='KEY', action='append',
+                   help='Delete a nested property via dot-notation key (repeatable), '
+                        'e.g. --unset ssh.xyzzy')
+    p.add_argument('--from-json', metavar='FILE|-',
+                   help='Read base record from a JSON file (use - for stdin); '
+                        'other flags take precedence')
+
+
+def _add_role_fields(p):
+    """Fields for role create/edit."""
+    p.add_argument('--permissions', metavar='JSON',
+                   help="Full permissions object as JSON, "
+                        "e.g. '{\"createContainerReservation\":1}'")
+    p.add_argument('--resources', metavar='JSON',
+                   help="Full resources object as JSON, "
+                        "e.g. '{\"networks\":{\"*\":1}}'")
+    p.add_argument('--set', metavar='KEY=VALUE', action='append',
+                   help='Set a nested property via dot-notation key (repeatable), e.g. '
+                        '--set permissions.createContainerReservation=1 ; '
+                        'use --set KEY=@file to read the value from a file '
+                        '(.json files are parsed as JSON, others as a string)')
+    p.add_argument('--unset', metavar='KEY', action='append',
+                   help='Delete a nested property via dot-notation key (repeatable), '
+                        'e.g. --unset permissions.createContainerReservation')
+    p.add_argument('--from-json', metavar='FILE|-',
+                   help='Read base record from a JSON file (use - for stdin); '
+                        'other flags take precedence')
 
 
 def _add_shared_fields(p):
@@ -1223,6 +1342,117 @@ def _collect_edit_fields(args):
     return fields
 
 
+def _parse_set_args(set_args):
+    """
+    Parse --set KEY=VALUE args into a flat dict.
+
+    Keys use dot notation and are passed as-is to the server, which handles
+    dotted-path merging in _apply_args_to_record.
+    VALUE is JSON-decoded when possible; otherwise treated as a plain string.
+    An empty VALUE (--set KEY=) sets the key to an empty string.
+
+    If VALUE starts with '@', the remainder is treated as a file path:
+    .json files are parsed as JSON; all other files are read as a string.
+    """
+    result = {}
+    for item in (set_args or []):
+        if '=' not in item:
+            die(f'--set must be in KEY=VALUE format, got: {item!r}')
+        key, _, raw_val = item.partition('=')
+        key = key.strip()
+        if not key:
+            die(f'--set key is empty in: {item!r}')
+        if raw_val.startswith('@'):
+            path = raw_val[1:]
+            try:
+                with open(path, 'r') as fh:
+                    content = fh.read()
+            except OSError as e:
+                die(f'--set {key}: cannot read file {path!r}: {e}')
+            if path.endswith('.json'):
+                try:
+                    result[key] = json.loads(content)
+                except (json.JSONDecodeError, ValueError) as e:
+                    die(f'--set {key}: {path!r} is not valid JSON: {e}')
+            else:
+                result[key] = content
+        elif raw_val == '':
+            result[key] = ''
+        else:
+            try:
+                result[key] = json.loads(raw_val)
+            except (json.JSONDecodeError, ValueError):
+                result[key] = raw_val
+    return result
+
+
+def _collect_user_fields(args, create=False):
+    """Build the fields dict for a user create/edit API call."""
+    fields = {}
+    from_json = getattr(args, 'from_json', None)
+    if from_json:
+        fields = _load_json_input(from_json)
+
+    def _set(k, attr):
+        v = getattr(args, attr, None)
+        if v is not None:
+            fields[k] = v
+
+    _set('email',    'email')
+    _set('role',     'role')
+    _set('name',     'name')
+    _set('password', 'user_password')
+    _set('gh_token', 'gh_token')
+
+    for flag in ('permissions', 'resources', 'ssh'):
+        raw = getattr(args, flag, None)
+        if raw is not None:
+            try:
+                fields[flag] = json.loads(raw)
+            except (json.JSONDecodeError, ValueError) as e:
+                die(f'--{flag} is not valid JSON: {e}')
+
+    fields.update(_parse_set_args(getattr(args, 'set', None) or []))
+
+    unset = getattr(args, 'unset', None) or []
+    if unset:
+        fields['_unset'] = unset
+
+    if getattr(args, 'sensitive', False):
+        fields['sensitive'] = 1
+
+    return fields
+
+
+def _collect_role_fields(args, create=False):
+    """Build the fields dict for a role create/edit API call."""
+    fields = {}
+    from_json = getattr(args, 'from_json', None)
+    if from_json:
+        fields = _load_json_input(from_json)
+
+    if create:
+        name = getattr(args, 'role_name', None)
+        if name:
+            fields['name'] = name
+
+    for flag in ('permissions', 'resources'):
+        raw = getattr(args, flag, None)
+        if raw is not None:
+            try:
+                fields[flag] = json.loads(raw)
+            except (json.JSONDecodeError, ValueError) as e:
+                die(f'--{flag} is not valid JSON: {e}')
+
+    fields.update(_parse_set_args(getattr(args, 'set', None) or []))
+
+    unset = getattr(args, 'unset', None) or []
+    if unset:
+        fields['_unset'] = unset
+
+    return fields
+
+
 def cmd_create(args):
     opener, server = _client(args)
     fields = _collect_create_fields(args)
@@ -1406,6 +1636,173 @@ def cmd_logs(args):
         logs = sanitize_terminal(logs)
 
     sys.stdout.write(logs)
+
+
+# ── User command implementations ──────────────────────────────────────────────
+
+def cmd_user_list(args):
+    opener, server = _client(args)
+    try:
+        users = api_user_list(opener, server,
+                              sensitive=getattr(args, 'sensitive', False))
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(users, args._fmt)
+        return
+    if not users:
+        print('No users found.')
+        return
+    for u in users:
+        uname = u.get('username', '')
+        role  = u.get('role', '')
+        name  = u.get('name', '') or ''
+        email = u.get('email', '') or ''
+        print(f'{uname:<20}  role={role:<16}  name={name!r:<24}  email={email}')
+
+
+def cmd_user_get(args):
+    opener, server = _client(args)
+    try:
+        record = api_user_get(opener, server, args.username,
+                              sensitive=getattr(args, 'sensitive', False))
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_user_create(args):
+    opener, server = _client(args)
+    fields = _collect_user_fields(args, create=True)
+    fields['username'] = args.username
+    try:
+        record = api_user_create(opener, server, fields)
+    except APIError as e:
+        die(str(e))
+    uname = (record or {}).get('username') or fields.get('username')
+    print(f'User created: {uname!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_user_edit(args):
+    opener, server = _client(args)
+    fields = _collect_user_fields(args, create=False)
+    if not fields:
+        die('Nothing to update – specify at least one flag or --set KEY=VALUE')
+    try:
+        record = api_user_update(opener, server, args.username, fields)
+    except APIError as e:
+        die(str(e))
+    print(f'User updated: {args.username!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_user_remove(args):
+    opener, server = _client(args)
+    if not getattr(args, 'force', False):
+        try:
+            confirm = input(f'Remove user {args.username!r}? [y/N] ').strip().lower()
+        except EOFError:
+            confirm = ''
+        if confirm not in ('y', 'yes'):
+            print('Aborted.')
+            return
+    try:
+        api_user_remove(opener, server, args.username)
+    except APIError as e:
+        die(str(e))
+    print(f'User {args.username!r} removed.')
+
+
+# ── Role command implementations ──────────────────────────────────────────────
+
+def cmd_role_list(args):
+    opener, server = _client(args)
+    try:
+        roles = api_role_list(opener, server)
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(roles, args._fmt)
+        return
+    if not roles:
+        print('No roles found.')
+        return
+    for r in roles:
+        name  = r.get('name', '')
+        perms = ', '.join(
+            k for k, v in (r.get('permissions') or {}).items() if v
+        ) or '(none)'
+        print(f'{name:<20}  permissions: {perms}')
+
+
+def cmd_role_get(args):
+    opener, server = _client(args)
+    try:
+        record = api_role_get(opener, server, args.role_name)
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_role_create(args):
+    opener, server = _client(args)
+    fields = _collect_role_fields(args, create=True)
+    fields['name'] = args.role_name
+    try:
+        record = api_role_create(opener, server, fields)
+    except APIError as e:
+        die(str(e))
+    print(f'Role created: {args.role_name!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_role_edit(args):
+    opener, server = _client(args)
+    fields = _collect_role_fields(args, create=False)
+    if not fields:
+        die('Nothing to update – specify at least one flag or --set KEY=VALUE')
+    try:
+        record = api_role_update(opener, server, args.role_name, fields)
+    except APIError as e:
+        die(str(e))
+    print(f'Role updated: {args.role_name!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_role_remove(args):
+    opener, server = _client(args)
+    if not getattr(args, 'force', False):
+        try:
+            confirm = input(f'Remove role {args.role_name!r}? [y/N] ').strip().lower()
+        except EOFError:
+            confirm = ''
+        if confirm not in ('y', 'yes'):
+            print('Aborted.')
+            return
+    try:
+        api_role_remove(opener, server, args.role_name)
+    except APIError as e:
+        die(str(e))
+    print(f'Role {args.role_name!r} removed.')
 
 
 # ── Argument parser ───────────────────────────────────────────────────────────
@@ -1601,6 +1998,117 @@ def build_parser():
                     help='Output logs without stripping ANSI escape sequences '
                          'and control characters (use only in trusted contexts)')
     sp.set_defaults(func=cmd_logs)
+
+    # ── user ───────────────────────────────────────────────────────────────────
+    user_p = sub.add_parser('user', help='Manage Dockside users (requires manageUsers permission)')
+    user_sub = user_p.add_subparsers(dest='user_command', metavar='SUBCOMMAND')
+    user_sub.required = True
+
+    sp = user_sub.add_parser('list', aliases=['ls'], help='List all users')
+    _add_global_flags(sp)
+    sp.add_argument('--sensitive', action='store_true',
+                    help='Include ssh private keys and gh_token in output')
+    sp.set_defaults(func=cmd_user_list)
+
+    sp = user_sub.add_parser('get', help='Show details of a specific user')
+    _add_global_flags(sp)
+    sp.add_argument('username', metavar='USERNAME')
+    sp.add_argument('--sensitive', action='store_true',
+                    help='Include ssh private keys and gh_token in output')
+    sp.set_defaults(func=cmd_user_get)
+
+    sp = user_sub.add_parser(
+        'create',
+        help='Create a new user',
+        description=(
+            'Create a new Dockside user.\n\n'
+            'Simple fields may be given as individual flags.  For nested\n'
+            'properties use --set KEY=VALUE with dot-notation, e.g.:\n'
+            "  --set resources.profiles='[\"*\"]'\n"
+            '  --set permissions.createContainerReservation=1\n\n'
+            'A complete record may also be supplied via --from-json.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('username', metavar='USERNAME', help='New username (must be unique)')
+    _add_user_fields(sp, create=True)
+    sp.set_defaults(func=cmd_user_create)
+
+    sp = user_sub.add_parser(
+        'edit',
+        help='Edit an existing user',
+        description=(
+            'Edit a Dockside user record.\n\n'
+            'Simple fields may be given as individual flags.  For nested\n'
+            'properties use --set KEY=VALUE with dot-notation.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('username', metavar='USERNAME')
+    _add_user_fields(sp, create=False)
+    sp.add_argument('--sensitive', action='store_true',
+                    help='Include ssh private keys and gh_token in output')
+    sp.set_defaults(func=cmd_user_edit)
+
+    sp = user_sub.add_parser('remove', aliases=['rm', 'delete'], help='Remove a user')
+    _add_global_flags(sp)
+    sp.add_argument('username', metavar='USERNAME')
+    sp.add_argument('--force', '-f', action='store_true',
+                    help='Skip confirmation prompt')
+    sp.set_defaults(func=cmd_user_remove)
+
+    # ── role ───────────────────────────────────────────────────────────────────
+    role_p = sub.add_parser('role', help='Manage Dockside roles (requires manageUsers permission)')
+    role_sub = role_p.add_subparsers(dest='role_command', metavar='SUBCOMMAND')
+    role_sub.required = True
+
+    sp = role_sub.add_parser('list', aliases=['ls'], help='List all roles')
+    _add_global_flags(sp)
+    sp.set_defaults(func=cmd_role_list)
+
+    sp = role_sub.add_parser('get', help='Show details of a specific role')
+    _add_global_flags(sp)
+    sp.add_argument('role_name', metavar='ROLE')
+    sp.set_defaults(func=cmd_role_get)
+
+    sp = role_sub.add_parser(
+        'create',
+        help='Create a new role',
+        description=(
+            'Create a new Dockside role.\n\n'
+            'Use --set KEY=VALUE for nested properties, e.g.:\n'
+            '  --set permissions.createContainerReservation=1\n'
+            "  --set resources.networks='{\"*\":1}'"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('role_name', metavar='ROLE', help='Role name')
+    _add_role_fields(sp)
+    sp.set_defaults(func=cmd_role_create)
+
+    sp = role_sub.add_parser(
+        'edit',
+        help='Edit an existing role',
+        description=(
+            'Edit a Dockside role.\n\n'
+            'Use --set KEY=VALUE for nested properties.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('role_name', metavar='ROLE', help='Role name')
+    _add_role_fields(sp)
+    sp.set_defaults(func=cmd_role_edit)
+
+    sp = role_sub.add_parser('remove', aliases=['rm', 'delete'], help='Remove a role')
+    _add_global_flags(sp)
+    sp.add_argument('role_name', metavar='ROLE', help='Role name')
+    sp.add_argument('--force', '-f', action='store_true',
+                    help='Skip confirmation prompt')
+    sp.set_defaults(func=cmd_role_remove)
 
     return p
 
