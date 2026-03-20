@@ -2,14 +2,14 @@
 
 Here is the procedure to follow to update Dockside to run the latest version of Theia.
 
-1. Find the latest version of Theia e.g. `1.35.0` via the Eclipse Theia GitHub website (https://github.com/eclipse-theia/theia).
-2. Inside a clone of [the Dockside repo](https://github.com/newsnowlabs/dockside), duplicate the latest Theia folder inside `ide/theia` and rename it to the new Theia version i.e. `1.35.0`
-3. Inside the `build` subdirectory of `1.35.0`
+1. Find the latest version of Theia e.g. `1.66.1` via the Eclipse Theia GitHub website (https://github.com/eclipse-theia/theia).
+2. Inside a clone of [the Dockside repo](https://github.com/newsnowlabs/dockside), duplicate the `ide/theia/latest` folder (the canonical Theia build source) and rename the copy to the new Theia version number e.g. `ide/theia/1.66.1`. Then update `ide/theia/latest` to point to the new folder (or replace it).
+3. Inside the `build` subdirectory of `1.66.1`
    1. Delete `yarn.lock`.
    2. Inside the `patches` directory, rename each file, changing references to the old Theia version to the new Theia version.
    3. In `package.json`:
       - Update references to the old Theia version to the new version.
-      - Audit the list of dependencies to ensure that every dependency referenced in the upstream new Theia version (at e.g. https://github.com/eclipse-theia/theia/blob/release/1.35.0/examples/browser/package.json) is referenced in your `package.json` with the exception of:
+      - Audit the list of dependencies to ensure that every dependency referenced in the upstream new Theia version (at e.g. https://github.com/eclipse-theia/theia/blob/release/1.66.1/examples/browser/package.json) is referenced in your `package.json` with the exception of:
          - @theia/api-samples
          - @theia/memory-inspector
 4. Update `Dockerfile` to reference the new Theia version for supported platforms.
@@ -46,8 +46,10 @@ The process for reimplementing Theia patches involves launching Theia, developin
       ```
 4. Finally, the `yarn.lock` file you need is the one present in the `my-theia-build` container home directory. You should copy it to the `ide/theia/<version>/build` directory of your repo, assuming you are already in that directory, using e.g.:
    ```sh
-   docker cp my-theia-build:/opt/dockside/ide/theia/theia-1.35.0/theia/yarn.lock ~/dockside/ide/theia/1.35.0/build/
+   docker cp my-theia-build:/opt/dockside/ide/theia/theia-1.66.1/theia/yarn.lock ~/dockside/ide/theia/1.66.1/build/
    ```
+
+> **Note:** System binaries (`git`, `bash`, `ssh`, `gh`, etc.) now reside in `/opt/dockside/system/latest/bin/` — a path separate from the IDE-specific binaries. No action is needed for these during a Theia version update.
 
 ## Testing for desired functionality of Theia patches
 

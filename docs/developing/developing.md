@@ -21,7 +21,7 @@ The main components of the Dockside application are:
 2. The [Dockside Server](#dockside-server), currently written in Perl and also embedded in NGINX using mod-http-perl
 3. The [Dockside Client](#dockside-client), written in Vue (HTML/CSS/JavaScript)
 4. The [Dockside Event Daemon](#dockside-event-daemon), written in Perl
-5. The [Eclipse Theia IDE](#eclipse-theia-ide), an open-source IDE framework, written in typescript 
+5. The [IDE layer](#ide-layer-theia-and-openvscode) — [Eclipse Theia](https://theia-ide.org/) and [OpenVSCode](https://github.com/gitpod-io/openvscode-server), open-source IDE frameworks written in TypeScript; each has its own Dockerfile build stage
 
 Additional optionally-enabled components are:
 
@@ -36,13 +36,13 @@ Whether these components are enabled depends on the command-line options given w
 To rebuild the client, run:
 
 ```sh
-cd ~/dockside/app/client && npm run build
+cd /home/dockside/dockside/app/client && npm run build
 ```
 
 To watch continuously for changes to client code, run:
 
 ```sh
-cd ~/dockside/app/client && npm run start
+cd /home/dockside/dockside/app/client && npm run start
 ```
 
 ## Dockside server
@@ -61,11 +61,27 @@ To restart the Dockside event daemon, run:
 sudo s6-svc -t /etc/service/docker-event-daemon
 ```
 
-## Eclipse Theia IDE
+## IDE layer (Theia and OpenVSCode)
 
-As Eclipse Theia is a third party open source application, developing it is largely outwith the scope of this documentation, the exceptions being updating the version of Theia running within Dockside, and reimplementing the Dockside-specific patches when required.
+Dockside bundles two web IDEs: [Eclipse Theia](https://theia-ide.org/) and [OpenVSCode](https://github.com/gitpod-io/openvscode-server). Both are third-party open-source applications; developing them is largely outside the scope of this documentation, the exceptions being updating the Theia version and reimplementing Dockside-specific patches.
 
-To learn more about these exceptions, see [updating Theia](updating-theia.md).
+To learn more about updating Theia, see [updating Theia](updating-theia.md).
+
+## Automated test suite
+
+The repo includes a `test.sh` script at the root that validates the codebase before committing changes. Run it from the repo root:
+
+```sh
+./test.sh
+```
+
+Checks performed include:
+- `perl` — syntax check on all `.pm` modules and scripts
+- `vue` — npm production build (webpack)
+- `eslint` — ESLint on Vue source files
+- `stylelint` — StyleLint on Vue styles
+- `shellcheck` — Bash script validation (severity: error)
+- `json` — JSON/YAML validation on key config files
 
 ## Rebuilding documentation
 

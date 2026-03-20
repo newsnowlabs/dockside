@@ -38,19 +38,20 @@ It can be a good idea to test a new version of Dockside like this:
 
 ### Testing a new Dockside version in parallel
 
-You can test a new version of Dockside without having to disrupt your running Dockside container, by launching Dockside in the usual manner but referencing a copy of the directory currently bind-mounted at `/data`, and listening on alternative ports.
+You can test a new version of Dockside without having to disrupt your running Dockside container, by launching Dockside in the usual manner but referencing a copy of the directory currently bind-mounted at `/data`, and listening on alternative ports (e.g. 444 and 81, instead of the standard 443 and 80, respectively).
 
 e.g. Assuming you originally launched Dockside with `-v ~/.dockside:/data` then run:
 
-```
-cp -a ~/.dockside ~/.dockside.tmp
+```sh
+mkdir -p ~/.dockside.tmp && \
 docker run -it --name dockside \
   -v ~/.dockside.tmp:/data \
+  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 444:443 -p 81:80 \
-  newsnowlabs/dockside <ssl-opts>
+  --security-opt=apparmor=unconfined \
+  newsnowlabs/dockside <arguments>
 ```
-
 > **Make sure your firewall allows incoming TCP connections on ports 444 and 81.**
 
 If the new Dockside container passes testing, remove it and relaunch it referencing the original `/data` directory and ports. If it doesn't, then just remove the new Dockside container.
