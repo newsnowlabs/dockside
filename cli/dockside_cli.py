@@ -2048,6 +2048,8 @@ def build_parser():
     _add_global_flags(sp)
     sp.add_argument('username', metavar='USERNAME')
     _add_user_fields(sp, create=False)
+    sp.add_argument('--sensitive', action='store_true',
+                    help='Include ssh private keys and gh_token in output')
     sp.set_defaults(func=cmd_user_edit)
 
     sp = user_sub.add_parser('remove', aliases=['rm', 'delete'], help='Remove a user')
