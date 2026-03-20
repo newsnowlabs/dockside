@@ -66,8 +66,12 @@ skip_check() {
 check_perl() {
   # Ensure CPAN dependencies are available (installed as Debian packages in the container)
   local missing_debs=()
-  for pkg in libtry-tiny-perl liburi-perl libterm-readkey-perl libjson-xs-perl libexpect-perl \
-              libcrypt-rijndael-perl libmojolicious-perl; do
+  for pkg in \
+              libtry-tiny-perl liburi-perl libterm-readkey-perl libjson-xs-perl libexpect-perl \
+              libcrypt-rijndael-perl libmojolicious-perl \
+              libyaml-libyaml-perl \
+              libio-async-perl \
+              ; do
     if ! dpkg -s "$pkg" &>/dev/null; then
       missing_debs+=("$pkg")
     fi
