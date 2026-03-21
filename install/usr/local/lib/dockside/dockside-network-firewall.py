@@ -465,18 +465,47 @@ def _resolve_hostname_all(hostname: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 class DockerNetworkManager:
+    """Creates and validates Docker bridge networks described by NetworkSpec objects.
+
+    Responsible only for the Docker layer (``docker network create``).
+    iptables/ipset management is handled separately by IptablesManager and
+    IpsetManager so that Docker network lifecycle is decoupled from firewall
+    rule lifecycle.
+    """
 
     def ensure_networks(
         self, networks: List[NetworkSpec], reset: bool = False
     ) -> None:
+        """Ensure every described network exists in Docker, creating it if needed.
+
+        Args:
+            networks: List of NetworkSpec objects to create/validate.
+            reset:    When True, delete any existing network before recreating
+                      it.  Used to force a clean state (e.g. after a subnet
+                      change).  Controlled by the RESET=1 environment variable
+                      in one-shot mode.
+        """
         for spec in networks:
             self._ensure_one(spec, reset)
 
     def _ensure_one(self, spec: NetworkSpec, reset: bool) -> None:
+        """Ensure one Docker network exists, optionally resetting it first.
+
+        Uses ``docker network inspect`` (allow_fail=True) to probe existence
+        without raising on a missing network.  If the network exists and
+        reset=True, it is removed first so the subsequent create starts clean.
+        If it exists and reset=False, the method returns immediately (idempotent).
+
+        The bridge interface name is pinned to ``spec.dev`` (lower-cased network
+        name) via the ``com.docker.network.bridge.name`` option so that iptables
+        rules that match on ``-i``/``-o <dev>`` are stable across daemon restarts.
+        """
         name    = spec.name
         subnet  = spec.subnet
+        # Fall back to deriving a .1 gateway if not explicitly configured.
         gateway = spec.gateway_ip or _subnet_to_gateway(subnet)
 
+        # Probe for an existing Docker network; returncode 0 = present.
         r      = _run(["docker", "network", "inspect", name], allow_fail=True)
         exists = r.returncode == 0
 
@@ -493,10 +522,15 @@ class DockerNetworkManager:
             "docker", "network", "create",
             f"--subnet={subnet}",
             f"--gateway={gateway}",
+            # Pin the Linux bridge interface name so iptables -i/-o rules are
+            # stable; without this Docker auto-generates an unpredictable name.
             "--opt=com.docker.network.bridge.name=" + spec.dev,
+            # Allow containers on the same bridge to communicate directly.
             "--opt=com.docker.network.bridge.enable_icc=true",
+            # Enable outbound MASQUERADE (SNAT) so containers can reach the internet.
             "--opt=com.docker.network.bridge.enable_ip_masquerade=true",
             "--opt=com.docker.network.driver.mtu=1500",
+            # Bind published container ports on all host interfaces by default.
             "--opt=com.docker.network.bridge.host_binding_ipv4=0.0.0.0",
             name,
         ])
@@ -507,21 +541,60 @@ class DockerNetworkManager:
 # ---------------------------------------------------------------------------
 
 class IpsetManager:
+    """Creates, populates and periodically refreshes kernel ipsets.
+
+    Each managed ipset stores the current IPv4 addresses for a set of
+    hostnames.  A companion "seen-set" (``<name>--seen``) tracks which IPs
+    have been returned by DNS recently; an IP is only evicted from the live
+    set once it has been absent from DNS long enough for its seen-set TTL to
+    expire.  This grace period prevents brief DNS flapping from causing
+    unnecessary packet drops.
+
+    Design summary:
+        live set  (<name>)        — no per-entry timeout; holds IPs actively in use.
+        seen-set  (<name>--seen)  — per-entry timeout = IPSET_STALE_TTL seconds;
+                                    acts as a sliding window of "recently seen" IPs.
+    """
 
     def __init__(self):
-        # name → list of hostnames
+        # Registry mapping each ipset name to its list of source hostnames.
+        # Populated by ensure_ipset(); used by refresh_all() to re-resolve.
         self._sets: Dict[str, List[str]] = {}
 
     def ensure_ipset(self, name: str, hostnames: List[str]) -> None:
-        """Register and initially populate an ipset."""
+        """Register a named ipset, create it in the kernel (if absent), and populate it.
+
+        Creates two kernel ipsets:
+          - ``name``        (hash:ip, no timeout) — the live set used by iptables rules.
+          - ``name--seen``  (hash:ip, with IPSET_STALE_TTL) — the staleness tracker.
+
+        ``-exist`` prevents an error if the set already exists (idempotent).
+        An initial ``_refresh_one`` call resolves hostnames and loads the live set.
+
+        Args:
+            name:      ipset name as used in iptables ``-m set --match-set`` rules.
+            hostnames: list of DNS hostnames (and/or literal IPs) whose resolved
+                       IPv4 addresses should populate this set.
+        """
         self._sets[name] = hostnames
+        # Create the live set; -exist means "silently skip if already present".
         _run(["ipset", "create", name, "hash:ip", "-exist"])
         seen = name + "--seen"
+        # Create the seen-set with per-entry TTL so entries auto-expire if not
+        # refreshed within IPSET_STALE_TTL seconds.
         _run(["ipset", "create", seen, "hash:ip",
               "timeout", str(IPSET_STALE_TTL), "-exist"])
         self._refresh_one(name)
 
     def refresh_all(self) -> None:
+        """Re-resolve and refresh every registered ipset.
+
+        Called periodically by the daemon's refresh loop.  Failures for
+        individual ipsets are logged but do not abort the loop (the live set
+        is left unchanged so existing connections are not disrupted).
+        """
+        # Iterate over a snapshot of keys so that concurrent modifications
+        # (unlikely but possible via socket reloads) do not raise RuntimeError.
         for name in list(self._sets):
             try:
                 self._refresh_one(name)
@@ -529,9 +602,26 @@ class IpsetManager:
                 logging.exception("Failed to refresh ipset %s", name)
 
     def _refresh_one(self, name: str) -> None:
+        """Re-resolve hostnames for one ipset and synchronise the kernel set.
+
+        Algorithm (the "seen-set" pattern):
+          1. Resolve all hostnames to a set of new IPs (new_ips).
+          2. Safety check: if resolution yields nothing, leave the live set
+             unchanged to avoid emptying it due to a transient DNS outage.
+          3. For each newly resolved IP:
+               a. Add it to the live set (idempotent; -exist skips duplicates).
+               b. Delete + re-add it to the seen-set to reset its TTL clock.
+                  (A plain ``ipset add … timeout`` does NOT extend an existing
+                  entry's TTL — only delete-then-add achieves that.)
+          4. For each IP currently in the live set but absent from new_ips:
+               check the seen-set; if the IP has also expired from the seen-set
+               (i.e. it has been absent from DNS for longer than IPSET_STALE_TTL)
+               remove it from the live set.  This is the grace-period mechanism.
+        """
         hostnames = self._sets.get(name, [])
         seen      = name + "--seen"
 
+        # Resolve all hostnames into a single set of current IPs.
         new_ips: set = set()
         for host in hostnames:
             ips = _resolve_hostname_all(host)
@@ -540,31 +630,48 @@ class IpsetManager:
             else:
                 logging.warning("Could not resolve %s for ipset %s", host, name)
 
+        # Safety guard: if every hostname failed to resolve, keep the live set
+        # as-is rather than emptying it (would block all traffic using this set).
         if not new_ips:
             logging.error(
                 "No IPs resolved for ipset %s — leaving live set unchanged", name
             )
             return
 
+        # Snapshot the IPs currently in the kernel live set before making changes.
         live_ips = self._get_ipset_ips(name)
 
-        # Add new IPs; refresh seen-set timeout (delete+add to reset TTL counter)
+        # Add new IPs; refresh seen-set timeout (delete+add to reset TTL counter).
         for ip in new_ips:
+            # Idempotent add to the live set; won't fail if already present.
             _run(["ipset", "add", "-exist", name, ip], allow_fail=True)
+            # Delete first — necessary to reset an existing entry's TTL in the
+            # seen-set (ipset does not allow in-place timeout extension).
             _run(["ipset", "del", seen, ip], allow_fail=True)
             _run(["ipset", "add", seen, ip,
                   "timeout", str(IPSET_STALE_TTL)], allow_fail=True)
 
-        # Remove IPs that are stale: absent from new resolution AND expired from seen-set
+        # Remove IPs that are stale: absent from new resolution AND expired from seen-set.
         for ip in live_ips - new_ips:
+            # ``ipset test`` exits 0 if the entry exists, non-zero if absent/expired.
             r = _run(["ipset", "test", seen, ip], allow_fail=True)
             if r.returncode != 0:
+                # IP has not appeared in DNS for at least IPSET_STALE_TTL seconds.
                 logging.info("Removing stale IP %s from ipset %s", ip, name)
                 _run(["ipset", "del", name, ip], allow_fail=True)
 
         logging.debug("ipset %s refreshed: %d active IPs", name, len(new_ips))
 
     def _get_ipset_ips(self, name: str) -> set:
+        """Return the set of IP addresses currently stored in a kernel ipset.
+
+        Parses the text output of ``ipset list <name>``.  The output format is:
+          ``Members:``   (header line)
+          ``1.2.3.4``    (plain entry, no timeout)
+          ``1.2.3.4 timeout 120 ...``  (entry with remaining TTL)
+        Only the first token of each member line is taken as the IP address.
+        Returns an empty set if the ipset does not exist or listing fails.
+        """
         r = _run(["ipset", "list", name], allow_fail=True)
         if r.returncode != 0:
             return set()
@@ -573,6 +680,7 @@ class IpsetManager:
         for line in r.stdout.splitlines():
             stripped = line.strip()
             if stripped == "Members:":
+                # All subsequent non-empty lines until end-of-output are member entries.
                 in_members = True
                 continue
             if in_members and stripped:
@@ -581,7 +689,13 @@ class IpsetManager:
         return ips
 
     def destroy_by_names(self, names: List[str]) -> None:
-        """Destroy named ipsets and their --seen/--tmp companions."""
+        """Destroy named ipsets and their ``--seen`` / ``--tmp`` companion sets.
+
+        Used during teardown.  Destroys all three variants of each ipset name
+        with ``allow_fail=True`` so that absent sets are silently skipped.
+        The ``--tmp`` suffix was used by an earlier swap-based refresh
+        implementation; it is cleaned up here for compatibility.
+        """
         for name in names:
             for suffix in ("--tmp", "--seen", ""):
                 _run(["ipset", "destroy", name + suffix], allow_fail=True)
@@ -592,30 +706,81 @@ class IpsetManager:
 # ---------------------------------------------------------------------------
 
 class IptablesManager:
+    """Manages all Dockside iptables filter and nat rules.
+
+    Rule architecture:
+      FORWARD (policy DROP)
+        └─ DOCKER-USER   (Docker's hook chain, evaluated before Docker's rules)
+             └─ DOCKSIDE-DISPATCH  (jump target for each managed network)
+                  ├─ <PREFIX>-ING  (intra-network ingress policy per network)
+                  └─ <PREFIX>-OUT  (container egress policy per network)
+
+    nat PREROUTING
+      └─ <PREFIX>-NAT   (per-network DNAT rules; one chain per network with NAT)
+
+    All Dockside filter chains are rebuilt atomically via a single
+    ``iptables-restore --noflush`` call.  ``--noflush`` preserves Docker's
+    own chains (DOCKER, DOCKER-USER, etc.) while completely replacing Dockside
+    chains, so there is no window where the firewall is open.
+    """
 
     def ensure_forward_drop(self) -> None:
+        """Set the FORWARD chain default policy to DROP.
+
+        Docker starts with FORWARD=ACCEPT; setting it to DROP ensures that
+        any packet not explicitly permitted by a FORWARD rule (or by
+        DOCKSIDE-DISPATCH via DOCKER-USER) is silently discarded.  This is
+        the foundation of the deny-by-default posture.
+        """
         _run(["iptables", "-P", "FORWARD", "DROP"])
         logging.debug("FORWARD policy set to DROP")
 
     def ensure_dispatch_chain(self) -> None:
-        """Create DOCKSIDE-DISPATCH and ensure DOCKER-USER jumps to it."""
+        """Create DOCKSIDE-DISPATCH and ensure DOCKER-USER jumps to it.
+
+        ``-N`` creates the chain; ``allow_fail=True`` ignores the error when
+        it already exists (iptables exits non-zero with "Chain already exists").
+
+        ``-C`` (check) probes whether the jump rule is already in DOCKER-USER
+        without modifying anything.  Only when the check fails (rule absent)
+        is ``-I … 1`` used to insert the jump at position 1 (top of the chain),
+        so Dockside's rules run before any other DOCKER-USER rules.
+        """
+        # Create the chain; allow_fail handles "already exists" gracefully.
         _run(["iptables", "-N", "DOCKSIDE-DISPATCH"], allow_fail=True)
+        # Check whether the jump rule already exists.
         r = _run(
             ["iptables", "-C", "DOCKER-USER", "-j", "DOCKSIDE-DISPATCH"],
             allow_fail=True,
         )
         if r.returncode != 0:
+            # Rule is absent; insert it at the top of DOCKER-USER.
             logging.info("Adding DOCKER-USER → DOCKSIDE-DISPATCH jump")
             _run(["iptables", "-I", "DOCKER-USER", "1", "-j", "DOCKSIDE-DISPATCH"])
 
     def apply_config(self, config: Config) -> None:
-        """Atomically apply all filter + nat rules via iptables-restore --noflush."""
+        """Atomically apply all filter + nat rules via iptables-restore --noflush.
+
+        Steps:
+          1. Build the full iptables-restore input (filter + nat tables) as a
+             single string via ``_build_restore_input``.
+          2. Feed it to ``iptables-restore --noflush`` in one system call.
+             ``--noflush`` preserves all chains not mentioned in the input
+             (i.e. Docker's own chains) while atomically replacing Dockside
+             chains.  This eliminates the open-firewall window that would occur
+             if rules were applied incrementally.
+          3. Add PREROUTING→NAT-chain jump rules separately for each network
+             that has NAT rules (cannot be done via iptables-restore without
+             flushing Docker's own PREROUTING entries).
+        """
+        # Only managed networks (those with gateway/rules configured) need chains.
         managed   = [s for s in config.networks if s.managed]
         nat_specs = [s for s in managed if s.nat_rules]
 
         restore_text = "\n".join(self._build_restore_input(managed, nat_specs)) + "\n"
 
         logging.debug("iptables-restore input:\n%s", restore_text)
+        # Single atomic call: all Dockside chains are replaced with no gap.
         _run(["iptables-restore", "--noflush"], input=restore_text)
 
         # PREROUTING → per-network NAT chain jumps are managed outside iptables-restore
@@ -633,36 +798,70 @@ class IptablesManager:
         managed: List[NetworkSpec],
         nat_specs: List[NetworkSpec],
     ) -> List[str]:
+        """Generate the full iptables-restore text for all Dockside chains.
+
+        The output is structured as one or two iptables-restore "table blocks":
+          ``*filter … COMMIT``  — always present.
+          ``*nat … COMMIT``     — only when at least one network has NAT rules.
+
+        Within each block the structure is: chain declarations, then flushes,
+        then append rules.  This order is required by iptables-restore.
+
+        Chain declaration syntax (e.g. ``:DOCKSIDE-DISPATCH - [0:0]``):
+          Tells iptables-restore to create the chain if it does not already
+          exist, and to zero its packet/byte counters.  The ``-`` is the
+          chain's default policy (``-`` means "no policy", i.e. user-defined
+          chain that falls through to the caller when all rules are exhausted).
+
+        Flush (``-F CHAIN``):
+          Removes all existing rules from the chain before new ones are added.
+          Combined with ``iptables-restore --noflush`` this achieves an atomic
+          replace of Dockside-owned chains without touching Docker's chains.
+
+        Args:
+            managed:   NetworkSpec objects that require firewall chains.
+            nat_specs: Subset of managed that have at least one NAT rule.
+
+        Returns:
+            List of iptables-restore lines (one rule/directive per element).
+        """
         lines: List[str] = []
 
         # ── filter table ──────────────────────────────────────────────────────
         lines.append("*filter")
 
-        # 1. Declare all Dockside filter chains (create if absent)
+        # 1. Declare all Dockside filter chains (creates them if absent; zeros counters).
         lines.append(":DOCKSIDE-DISPATCH - [0:0]")
         for spec in managed:
             p = spec.chain_prefix
-            lines.append(f":{p}-ING - [0:0]")
-            lines.append(f":{p}-OUT - [0:0]")
+            lines.append(f":{p}-ING - [0:0]")   # intra-network ingress chain
+            lines.append(f":{p}-OUT - [0:0]")   # container egress chain
 
-        # 2. Flush all Dockside filter chains
+        # 2. Flush all Dockside filter chains so we start with a clean slate.
         lines.append("-F DOCKSIDE-DISPATCH")
         for spec in managed:
             p = spec.chain_prefix
             lines.append(f"-F {p}-ING")
             lines.append(f"-F {p}-OUT")
 
-        # 3a. DOCKSIDE-DISPATCH: per-network dispatch jumps
+        # 3a. DOCKSIDE-DISPATCH: per-network dispatch jumps.
+        #   Packets are classified into two categories:
+        #     ING: same bridge on both -i and -o (container-to-container, intra-network).
+        #     OUT: enters the bridge (-i) but exits a different interface (egress to host/internet).
         for spec in managed:
             dev = spec.dev
             p   = spec.chain_prefix
-            # ING: intra-network traffic (same bridge in and out)
+            # ING: intra-network traffic — both ingress and egress interface are the same bridge.
             lines.append(f"-A DOCKSIDE-DISPATCH -i {dev} -o {dev} -j {p}-ING")
-            # OUT: egress from containers, gateway traffic excluded
+            # OUT: egress traffic — enters the bridge, exits a different interface.
+            #   Gateway traffic is excluded by _dispatch_out_match so it bypasses
+            #   the per-network OUT chain and reaches the gateway exemptions below.
             out_match = IptablesManager._dispatch_out_match(spec)
             lines.append(f"-A DOCKSIDE-DISPATCH {out_match} -j {p}-OUT")
 
-        # 3b. Gateway exemptions: let the gateway's own new egress pass the safety-net
+        # 3b. Gateway exemptions: allow the network gateway's own new outbound
+        #   connections to pass without going through the OUT chain.  Matches by
+        #   MAC address (more specific) or by source IP; both may be present.
         for spec in managed:
             dev = spec.dev
             if spec.gateway_mac:
@@ -675,37 +874,48 @@ class IptablesManager:
                     f"-A DOCKSIDE-DISPATCH -i {dev} -s {spec.gateway_ip} -j RETURN"
                 )
 
-        # 3c. Safety-net: drop new connections from managed bridges that weren't
-        #     dispatched (e.g. left-over bridge after network removed from config).
-        #     Only NEW connections; ESTABLISHED/RELATED fall through to Docker's
-        #     own FORWARD-chain ACCEPT rule.
+        # 3c. Safety-net DROP: drop NEW connections from any managed bridge that
+        #   was not caught by the dispatch jumps above.  This handles edge cases
+        #   like a stale bridge interface still present after a network is removed
+        #   from config.  Only NEW connections are dropped; ESTABLISHED/RELATED
+        #   traffic falls through DOCKSIDE-DISPATCH to Docker's own FORWARD ACCEPT.
         for spec in managed:
             dev = spec.dev
             lines.append(
                 f"-A DOCKSIDE-DISPATCH -i {dev} -m conntrack --ctstate NEW -j DROP"
             )
 
-        # 3d. RETURN: let non-Dockside traffic reach Docker's own FORWARD rules
+        # 3d. Terminal RETURN: any packet not matched above (non-Dockside bridge)
+        #   is returned to DOCKER-USER, which then returns to FORWARD.
         lines.append("-A DOCKSIDE-DISPATCH -j RETURN")
 
-        # 4. Per-network ING chains (control intra-network NEW connections)
+        # 4. Per-network ING chains — control NEW intra-network connections.
+        #   Purpose: prevent containers from initiating connections to each other
+        #   unless the packet originates from the gateway (which is trusted).
+        #   ESTABLISHED/RELATED packets are not matched here (no ctstate filter
+        #   on the DROP); they are allowed by Docker's FORWARD ACCEPT rule.
         for spec in managed:
             p  = spec.chain_prefix
             gm = spec.gateway_mac
             gi = spec.gateway_ip
             if gm:
+                # Allow TCP NEW connections whose source MAC is the gateway MAC.
                 lines.append(
                     f"-A {p}-ING -m mac --mac-source {gm} -p tcp"
                     f" -m conntrack --ctstate NEW -j RETURN"
                 )
             if gi:
+                # Allow TCP NEW connections whose source IP is the gateway IP.
                 lines.append(
                     f"-A {p}-ING -s {gi} -p tcp"
                     f" -m conntrack --ctstate NEW -j RETURN"
                 )
+            # Drop all other new intra-network connections (lateral movement).
             lines.append(f"-A {p}-ING -m conntrack --ctstate NEW -j DROP")
 
-        # 5. Per-network OUT chains (egress policy)
+        # 5. Per-network OUT chains — container egress policy.
+        #   Each EgressRule is translated to zero or more iptables RETURN or
+        #   REJECT/DROP lines by _egress_to_iptables().
         for spec in managed:
             p = spec.chain_prefix
             for rule in spec.egress_rules:
@@ -714,9 +924,12 @@ class IptablesManager:
         lines.append("COMMIT")
 
         # ── nat table ─────────────────────────────────────────────────────────
+        # Only emitted when at least one managed network has NAT rules, to avoid
+        # touching the nat table unnecessarily.
         if nat_specs:
             lines.append("*nat")
 
+            # Declare each per-network NAT chain.
             for spec in nat_specs:
                 p = spec.chain_prefix
                 lines.append(f":{p}-NAT - [0:0]")
@@ -724,17 +937,23 @@ class IptablesManager:
             for spec in nat_specs:
                 p   = spec.chain_prefix
                 dev = spec.dev
+                # Flush the chain before repopulating (idempotent rebuild).
                 lines.append(f"-F {p}-NAT")
                 for nat in spec.nat_rules:
+                    # Resolve the DNAT target IP from hostname or use literal IP.
                     to_ip = (
                         _resolve_hostname(nat.to_host) if nat.to_host else nat.to_ip
                     )
                     if not to_ip:
+                        # Skip rules whose hostname can't be resolved; log and
+                        # continue so other NAT rules in the same network still apply.
                         logging.warning(
                             "NAT rule for %s: could not resolve %r — skipped",
                             spec.name, nat.to_host,
                         )
                         continue
+                    # DNAT: rewrite destination IP:port on packets entering the bridge
+                    # whose destination port matches match_dport.
                     lines.append(
                         f"-A {p}-NAT -i {dev} -p {nat.proto}"
                         f" --dport {nat.match_dport}"
@@ -747,47 +966,104 @@ class IptablesManager:
 
     @staticmethod
     def _dispatch_out_match(spec: NetworkSpec) -> str:
-        """Build the OUT dispatch match fragment (without -j target)."""
+        """Build the iptables match fragment for the OUT dispatch rule.
+
+        The fragment matches packets that:
+          - enter the network's bridge interface (``-i <dev>``)
+          - exit a *different* interface (``! -o <dev>`` — i.e. not looping back)
+          - are *not* from the gateway (excluded so gateway traffic hits the
+            gateway exemption rules in step 3b instead)
+
+        Excluding gateway traffic from the OUT chain is important: the gateway
+        is a trusted host whose egress should not be subject to container egress
+        policy.
+
+        Returns a string of iptables match options (no ``-j`` target) ready to
+        be embedded in a ``-A DOCKSIDE-DISPATCH … -j <PREFIX>-OUT`` rule.
+        """
         dev   = spec.dev
         gm    = spec.gateway_mac
         gi    = spec.gateway_ip
+        # Start with the mandatory match: enters the bridge, exits elsewhere.
         parts = [f"-i {dev}", f"! -o {dev}"]
         if gm and gi:
+            # Exclude by both MAC and IP when both are known (most specific).
             parts += [f"-m mac ! --mac-source {gm}", f"! -s {gi}"]
         elif gm:
+            # Only MAC is known; exclude by MAC alone.
             parts.append(f"-m mac ! --mac-source {gm}")
         elif gi:
+            # Only IP is known; exclude by source IP alone.
             parts.append(f"! -s {gi}")
         # If neither is set: all outbound traffic from the bridge is dispatched
+        # into the OUT chain (no gateway exemption needed).
         return " ".join(parts)
 
     @staticmethod
     def _egress_to_iptables(chain: str, rule: EgressRule) -> List[str]:
-        """Translate one EgressRule to iptables-restore rule lines."""
+        """Translate one EgressRule into zero or more iptables-restore rule lines.
+
+        Drop rules:
+          A drop rule emits two lines:
+            1. REJECT with ``tcp-reset`` for TCP NEW connections (gives the
+               sender an immediate RST so it does not hang waiting for a timeout).
+            2. A plain DROP for all other traffic:
+               - When ``cidr`` is set (targeted drop): matches *all* ctstates,
+                 so even ESTABLISHED flows to that CIDR are killed.
+               - When ``cidr`` is absent (terminal drop): matches only NEW so
+                 that already-established connections elsewhere keep working.
+
+        Allow rules:
+          An allow rule emits a single RETURN line for NEW connections only.
+          ESTABLISHED/RELATED packets for allowed flows are already accepted by
+          Docker's FORWARD ACCEPT rule before they even reach DOCKSIDE-DISPATCH,
+          so no ESTABLISHED match is needed here.
+
+          Destination is selected by ``rule.to``:
+            ``all``   → no ``-d`` filter (match any destination).
+            ``cidr``  → ``-d <cidr>``.
+            ``ip``    → ``-d <ip>``.
+            ``host``  → resolve hostname to first IPv4; skip rule on failure.
+            ``ipset`` → ``-m set --match-set <name> dst``.
+
+        Args:
+            chain: iptables chain name to append rules to (e.g. "DOCKSIDE-MYNET-OUT").
+            rule:  EgressRule instance parsed from firewall-config.
+
+        Returns:
+            List of ``-A <chain> …`` rule lines for iptables-restore.
+            Empty list if the rule is skipped (unresolvable host or unknown proto).
+        """
         lines:  List[str] = []
         prefix  = f"-A {chain}"
 
         if rule.action == "drop":
+            # Build optional destination filter (empty string = match all destinations).
             dst = f"-d {rule.cidr} " if rule.cidr else ""
-            # TCP: send RST so the sender knows the connection was refused
+            # TCP: RST response gives the client immediate feedback instead of
+            # leaving it in SYN_SENT waiting for a timeout.
             lines.append(
                 f"{prefix} {dst}-p tcp -m conntrack --ctstate NEW"
                 f" -j REJECT --reject-with tcp-reset"
             )
-            # Other protocols: DROP.  Targeted drops catch all states (matches bash);
-            # terminal drops (no cidr) only drop NEW so established flows keep working.
+            # Non-TCP: plain DROP.
+            # Targeted drops (cidr present) catch all ctstates so existing flows
+            # to that CIDR are torn down immediately (matches the old bash behaviour).
+            # Terminal drops (no cidr) restrict to NEW only to avoid disrupting
+            # already-established flows to destinations not otherwise permitted.
             if rule.cidr:
                 lines.append(f"{prefix} -d {rule.cidr} -j DROP")
             else:
                 lines.append(f"{prefix} -m conntrack --ctstate NEW -j DROP")
             return lines
 
-        # Build destination selector
+        # ── Allow rule: build destination selector ────────────────────────────
         if rule.to == "cidr" and rule.cidr:
             dst = f"-d {rule.cidr} "
         elif rule.to == "ip" and rule.ip:
             dst = f"-d {rule.ip} "
         elif rule.to == "host" and rule.host:
+            # Resolve at apply-time; for frequently-changing addresses use "ipset".
             ip  = _resolve_hostname(rule.host)
             if not ip:
                 logging.warning(
@@ -796,16 +1072,22 @@ class IptablesManager:
                 return []
             dst = f"-d {ip} "
         elif rule.to == "ipset" and rule.ipset:
+            # Match against a kernel ipset populated and refreshed by IpsetManager.
             dst = f"-m set --match-set {rule.ipset} dst "
         else:
-            dst = ""  # to=all: no destination filter
+            dst = ""  # to=all: no destination filter; matches any remote IP
 
+        # ── Allow rule: build protocol + port match + RETURN target ───────────
         if rule.proto == "icmp":
+            # ICMP does not use ports; match by ICMP type (e.g. echo-request).
             lines.append(
                 f"{prefix} -p icmp --icmp-type {rule.icmp_type}"
                 f" -m conntrack --ctstate NEW -j RETURN"
             )
         elif rule.proto in ("tcp", "udp") and rule.ports:
+            # Use the ``multiport`` extension to match a comma-separated list of
+            # destination port numbers in a single rule (more efficient than one
+            # rule per port).
             ports_str = ",".join(str(p) for p in rule.ports)
             lines.append(
                 f"{prefix} -p {rule.proto} {dst}"
@@ -822,43 +1104,75 @@ class IptablesManager:
 
     @staticmethod
     def _ensure_nat_prerouting_jump(chain_name: str) -> None:
+        """Add a PREROUTING → <chain_name> jump in the nat table if absent.
+
+        Uses ``-C`` (check) to probe without modifying, then ``-A`` (append)
+        only when the jump is missing.  This is done outside iptables-restore
+        because including PREROUTING in a restore block would require flushing
+        it, which would destroy Docker's own PREROUTING MASQUERADE rules.
+
+        Args:
+            chain_name: NAT chain name, e.g. ``"DOCKSIDE-MYNET-NAT"``.
+        """
         r = _run(
             ["iptables", "-t", "nat", "-C", "PREROUTING", "-j", chain_name],
             allow_fail=True,
         )
         if r.returncode != 0:
+            # Jump absent; append it so PREROUTING evaluates this NAT chain.
             logging.info("Adding PREROUTING → %s jump", chain_name)
             _run(["iptables", "-t", "nat", "-A", "PREROUTING", "-j", chain_name])
 
     def teardown(self) -> None:
-        """Remove all Dockside iptables state."""
+        """Remove all Dockside iptables state.
+
+        Teardown order:
+          1. Remove the DOCKER-USER → DOCKSIDE-DISPATCH jump rule so Dockside
+             is immediately bypassed for new connections.
+          2. Remove any PREROUTING → DOCKSIDE-*-NAT jump rules.  These are
+             found by parsing ``iptables -t nat -S PREROUTING`` output and
+             cannot be flushed via ``iptables-restore`` without destroying
+             Docker's own PREROUTING rules.
+          3. Flush then delete all DOCKSIDE-* user chains in the filter table.
+          4. Flush then delete all DOCKSIDE-* user chains in the nat table.
+
+        All individual steps use ``allow_fail=True`` so that a partially-torn-
+        down state (e.g. some chains already absent) does not abort the process.
+        """
         logging.info("Starting iptables teardown")
 
-        # Remove DOCKER-USER → DOCKSIDE-DISPATCH
+        # Step 1: remove the hook into DOCKER-USER so Dockside is bypassed.
         _run(
             ["iptables", "-D", "DOCKER-USER", "-j", "DOCKSIDE-DISPATCH"],
             allow_fail=True,
         )
 
-        # Remove any PREROUTING → DOCKSIDE-*-NAT jumps
+        # Step 2: remove PREROUTING → DOCKSIDE-*-NAT jump rules.
+        # ``-S PREROUTING`` lists rules in save format, e.g.:
+        #   -A PREROUTING -j DOCKSIDE-MYNET-NAT
+        # Strip "-A PREROUTING" to get the remaining arguments, then use ``-D``
+        # with those same arguments to delete the rule.
         r = _run(
             ["iptables", "-t", "nat", "-S", "PREROUTING"], allow_fail=True
         )
         if r.returncode == 0:
             for line in r.stdout.splitlines():
                 if "-j DOCKSIDE-" in line:
+                    # Convert "-A PREROUTING <opts>" → ["<opts>"…] for -D.
                     del_args = line.replace("-A PREROUTING", "", 1).split()
                     _run(
                         ["iptables", "-t", "nat", "-D", "PREROUTING"] + del_args,
                         allow_fail=True,
                     )
 
-        # Flush + delete all DOCKSIDE-* chains in filter table
+        # Step 3: flush then delete all DOCKSIDE-* chains in the filter table.
+        # Flush (-F) must come before delete (-X) because iptables refuses to
+        # delete a non-empty chain.
         for chain in self._list_dockside_chains("filter"):
             _run(["iptables", "-F", chain], allow_fail=True)
             _run(["iptables", "-X", chain], allow_fail=True)
 
-        # Flush + delete all DOCKSIDE-* chains in nat table
+        # Step 4: flush then delete all DOCKSIDE-* chains in the nat table.
         for chain in self._list_dockside_chains("nat"):
             _run(["iptables", "-t", "nat", "-F", chain], allow_fail=True)
             _run(["iptables", "-t", "nat", "-X", chain], allow_fail=True)
@@ -867,12 +1181,29 @@ class IptablesManager:
 
     @staticmethod
     def _list_dockside_chains(table: str) -> List[str]:
+        """Return names of all DOCKSIDE-* user chains in the given iptables table.
+
+        Uses ``iptables [-t <table>] -S`` which prints all rules and chain
+        declarations in save format.  Chain declaration lines look like:
+          ``-N DOCKSIDE-MYNET-OUT``
+        Only ``-N`` (new-chain) lines are considered; rule lines (``-A``, ``-P``)
+        are ignored.  The second token of each ``-N`` line is the chain name.
+
+        Args:
+            table: iptables table name, e.g. ``"filter"`` or ``"nat"``.
+                   For ``"filter"`` no ``-t`` flag is passed (default table).
+
+        Returns:
+            List of Dockside chain names found in the table.
+        """
+        # Omit -t flag for the filter table (it is the default).
         flags = ["-t", table] if table != "filter" else []
         r = _run(["iptables"] + flags + ["-S"], allow_fail=True)
         if r.returncode != 0:
             return []
         chains = []
         for line in r.stdout.splitlines():
+            # -N lines declare user-defined chains; only pick Dockside-owned ones.
             if line.startswith("-N DOCKSIDE-"):
                 chains.append(line.split()[1])
         return chains
