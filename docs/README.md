@@ -33,17 +33,17 @@ AI coding tools work best when they have their own isolated environment to opera
 - **Network firewall management** _(coming soon)_: configurable outbound firewall rules per Docker custom network, letting you define exactly what AI agents can and cannot reach. Assign a devcontainer to a restricted network and Dockside enforces the rules — without requiring elevated container capabilities or weakening isolation.
 
 ## Why Dockside?
-
 | | Dockside | GitHub Codespaces | Gitpod | Coder |
 |---|---|---|---|---|
-| **Self-hosted / private cloud** | ✅ | ❌ | Partial | ✅ |
+| **Self-hosted / private cloud** | ✅ | ❌ | ✅ | ✅ |
 | **No per-seat cloud fees** | ✅ | ❌ | ❌ | ✅ |
 | **Your data stays on your infra** | ✅ | ❌ | ❌ | ✅ |
 | **Full root in containers** | ✅ | ❌ | ❌ | Partial |
 | **AI CLI tools run natively in IDE** | ✅ | Partial | Partial | Partial |
 | **Per-network outbound firewall for AI** | ✅ soon | ❌ | ❌ | ❌ |
-| **Browser IDE + SSH + JetBrains** | ✅ | ✅ | ✅ | ✅ |
-| **Works on your laptop** | ✅ | ❌ | ❌ | ❌ |
+| **Browser IDE + SSH + VS Code + JetBrains** | ✅ | Partial | ✅ | ✅ |
+| **Integrated access-controlled HTTPS staging server** | ✅ | ❌ | ❌ | ❌ |
+| **Works on your laptop** | ✅ | ❌ | Partial | ❌ |
 | **Open source** | ✅ Apache 2.0 | ❌ | Partial | ✅ AGPL |
 
 Dockside's sweet spot: teams that want **Codespaces-style devcontainers without the cloud lock-in**, and teams that want to run AI coding agents **safely and privately** on their own infrastructure.
