@@ -1214,21 +1214,56 @@ class IptablesManager:
 # ---------------------------------------------------------------------------
 
 class ManagementSocket:
+    """Unix-domain socket server for runtime daemon management.
+
+    Listens on an AF_UNIX SOCK_STREAM socket.  Each client connection sends a
+    single newline-terminated JSON object (the request) and receives a single
+    newline-terminated JSON object (the response).
+
+    Protocol:
+      Request:  ``{"action": "<action>", …}\\n``
+      Response: ``{"status": "ok"|"error", …}\\n``
+
+    The server runs its accept loop in a daemon thread; each accepted
+    connection is handled in its own short-lived daemon thread.  All
+    connections share the caller-supplied ``handler`` callable, which must be
+    thread-safe (FirewallDaemon uses ``self._lock`` for this purpose).
+    """
 
     def __init__(self):
+        # The listening server socket; None until start() is called.
         self._server: Optional[socket.socket] = None
+        # Set by stop() to signal the accept loop to exit.
         self._stop    = threading.Event()
+        # Callable invoked with the parsed request dict; returns response dict.
         self._handler = None
 
     def start(self, path: str, handler) -> None:
+        """Create the socket file, start listening, and launch the accept thread.
+
+        If a socket file already exists at ``path`` it is removed first; a
+        stale socket from a previous run would otherwise prevent ``bind()``.
+
+        Permissions are set to 0o660 (owner + group read/write, no world
+        access) so that only processes in the same group (e.g. the dockside
+        service group) can connect.
+
+        Args:
+            path:    Filesystem path for the Unix-domain socket.
+            handler: Callable(req: dict) → dict; must be thread-safe.
+        """
+        # Remove stale socket file from a previous run so bind() can succeed.
         if os.path.exists(path):
             os.unlink(path)
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(path)
         try:
+            # 0o660: owner+group can connect; world cannot.
             os.chmod(path, 0o660)
         except OSError:
             pass
+        # Backlog of 5: at most 5 connections may queue while the accept loop
+        # is busy; additional connections will be refused by the kernel.
         srv.listen(5)
         self._server  = srv
         self._handler = handler
@@ -1239,6 +1274,11 @@ class ManagementSocket:
         logging.info("Management socket listening at %s", path)
 
     def stop(self) -> None:
+        """Signal the accept loop to exit and close the server socket.
+
+        Closing the socket causes the blocking ``accept()`` in the accept loop
+        to raise ``OSError``, which the loop catches as its exit condition.
+        """
         self._stop.set()
         if self._server:
             try:
@@ -1247,18 +1287,38 @@ class ManagementSocket:
                 pass
 
     def _accept_loop(self) -> None:
+        """Accept connections in a loop, spawning a handler thread per connection.
+
+        Exits when the stop event is set or when the server socket is closed
+        (``accept()`` raises ``OSError``).  Each connection is handled in its
+        own daemon thread so a slow client does not block others.
+        """
         while not self._stop.is_set():
             try:
                 conn, _ = self._server.accept()
             except OSError:
+                # Server socket closed by stop() or an unrecoverable error.
                 break
             threading.Thread(
                 target=self._handle_conn, args=(conn,), daemon=True
             ).start()
 
     def _handle_conn(self, conn: socket.socket) -> None:
+        """Read one newline-terminated JSON request, dispatch it, send JSON response.
+
+        Reads in 4 KiB chunks until a newline is found (end of request) or a
+        1 MiB hard limit is reached (runaway client guard).  On any exception
+        during dispatch or serialisation, an error JSON is sent back to the
+        client before the connection is closed.
+
+        The ``finally`` block ensures the connection is always closed, even on
+        unexpected exceptions, so file descriptors are not leaked.
+        """
         try:
             buf = b""
+            # Accumulate bytes until we see a newline (end of request) or the
+            # buffer exceeds 1 MiB (protection against a client that sends
+            # data without ever sending a newline).
             while b"\n" not in buf and len(buf) < 1024 * 1024:
                 chunk = conn.recv(4096)
                 if not chunk:
@@ -1267,8 +1327,11 @@ class ManagementSocket:
             if buf.strip():
                 req  = json.loads(buf.decode())
                 resp = self._handler(req)
+                # Newline-terminate the response so the client can detect
+                # the end of the message without relying on connection close.
                 conn.sendall((json.dumps(resp) + "\n").encode())
         except Exception as exc:
+            # Best-effort error reply; ignore send failure (client may have gone).
             try:
                 conn.sendall(
                     (json.dumps({"status": "error", "message": str(exc)}) + "\n")
@@ -1285,6 +1348,31 @@ class ManagementSocket:
 # ---------------------------------------------------------------------------
 
 class FirewallDaemon:
+    """Top-level daemon that wires DockerNetworkManager, IpsetManager and
+    IptablesManager together, handles signals, and runs the ipset refresh loop.
+
+    Thread model:
+      Main thread      — blocks on ``_stop.wait()`` after startup; handles signals.
+      ipset-refresh    — daemon thread; re-resolves all ipsets every
+                         IPSET_REFRESH_INTERVAL seconds.
+      mgmt-socket      — daemon thread (if ``socket_path`` provided); accepts
+                         management connections.
+      config-reload    — short-lived daemon thread spawned on SIGUSR1.
+      per-connection   — short-lived daemon threads spawned by ManagementSocket.
+
+    Thread safety:
+      ``_lock`` serialises all operations that mutate kernel state (ipset
+      membership, iptables rules).  Signal handlers must return quickly, so
+      SIGUSR1 off-loads the reload work to a daemon thread.
+
+    Lifecycle:
+      1. ``run()`` registers signal handlers, applies config, starts socket and
+         refresh thread, notifies systemd READY=1, then blocks until signalled.
+      2. On SIGTERM/SIGINT, ``_stop`` is set; ``run()`` unblocks and exits.
+         iptables rules are deliberately left in place so containers remain
+         protected during a ``systemctl restart``.  Use ``--teardown`` to
+         remove them explicitly.
+    """
 
     def __init__(
         self,
@@ -1292,11 +1380,16 @@ class FirewallDaemon:
         firewall_config_path: str,
         socket_path: Optional[str] = None,
     ):
+        # Paths to the two JSON config files; reloaded on SIGUSR1 or "reload" action.
         self._net_path  = network_config_path
         self._fw_path   = firewall_config_path
+        # Optional path for the management Unix socket; None = no socket.
         self._sock_path = socket_path
+        # Mutex protecting all kernel-state mutations from concurrent threads.
         self._lock      = threading.Lock()
+        # Set by signal handlers to stop the main thread and clean up.
         self._stop      = threading.Event()
+        # Currently active Config; None until first _apply_full() succeeds.
         self._config: Optional[Config] = None
 
         self._docker_mgr = DockerNetworkManager()
@@ -1305,8 +1398,24 @@ class FirewallDaemon:
         self._socket     = ManagementSocket()
 
     def run(self) -> None:
+        """Start the daemon: apply config, start threads, block until stopped.
+
+        Startup sequence:
+          1. Install signal handlers for SIGTERM, SIGINT (graceful shutdown)
+             and SIGUSR1 (config reload — maps to ``ExecReload=`` in the
+             systemd unit).
+          2. Load config from disk and call _apply_full to set up Docker
+             networks, ipsets, and iptables rules.
+          3. Start the management socket (if configured).
+          4. Notify systemd ``READY=1`` (service is live).
+          5. Start the ipset-refresh background thread.
+          6. Block the main thread on ``_stop.wait()`` — exits when a shutdown
+             signal is received.
+          7. Stop the management socket and log exit.
+        """
         signal.signal(signal.SIGTERM, self._on_shutdown)
         signal.signal(signal.SIGINT,  self._on_shutdown)
+        # SIGUSR1 triggers config reload; systemd sends this on ``systemctl reload``.
         signal.signal(signal.SIGUSR1, self._on_sigusr1)
 
         self._config = Config.from_files(self._net_path, self._fw_path)
@@ -1317,6 +1426,8 @@ class FirewallDaemon:
         if self._sock_path:
             self._socket.start(self._sock_path, self._handle_request)
 
+        # Notify systemd that startup is complete and the daemon is ready to
+        # accept work.  Ignored if not running under systemd.
         _systemd_notify("READY=1")
         logging.info("Daemon ready. ipset refresh every %ds.", IPSET_REFRESH_INTERVAL)
 
@@ -1325,25 +1436,46 @@ class FirewallDaemon:
         )
         refresh_t.start()
 
+        # Block the main thread until a shutdown signal sets ``_stop``.
         self._stop.wait()
 
         if self._sock_path:
             self._socket.stop()
 
+        # iptables rules are intentionally preserved on shutdown so containers
+        # remain protected while a new daemon instance starts (zero-gap restart).
         logging.info(
             "Daemon stopped. iptables rules left in place "
             "(use --teardown for explicit cleanup)."
         )
 
     def _apply_full(self, config: Config, reset: bool = False) -> None:
-        # System tuning carried over from the original bash script
+        """Perform a full one-shot configuration apply.
+
+        Applies all subsystems in dependency order:
+          1. Kernel inotify limits (carried over from the original bash script;
+             needed for file-watch-heavy workloads running inside containers).
+          2. Docker networks — must exist before iptables rules reference their
+             bridge interface names.
+          3. FORWARD default policy set to DROP.
+          4. DOCKSIDE-DISPATCH chain and DOCKER-USER jump.
+          5. ipsets — must exist before iptables rules reference them by name.
+          6. iptables filter + nat rules.
+
+        Args:
+            config: Config to apply.
+            reset:  Passed through to DockerNetworkManager.ensure_networks();
+                    when True, existing Docker networks are destroyed and
+                    recreated.
+        """
+        # System tuning carried over from the original bash script.
         _run(
             [
                 "sysctl",
                 "fs.inotify.max_user_watches=524288",
                 "fs.inotify.max_user_instances=8192",
             ],
-            allow_fail=True,
+            allow_fail=True,  # Not fatal if sysctl fails (e.g. insufficient privilege).
         )
         self._docker_mgr.ensure_networks(config.networks, reset=reset)
         self._ipt_mgr.ensure_forward_drop()
@@ -1353,6 +1485,15 @@ class FirewallDaemon:
         self._ipt_mgr.apply_config(config)
 
     def _refresh_loop(self) -> None:
+        """Periodically re-resolve all hostname-backed ipsets.
+
+        Uses ``_stop.wait(timeout=…)`` as an interruptible sleep: it returns
+        False after the timeout (time to refresh) or True early if the stop
+        event is set (daemon is shutting down, exit the loop immediately).
+        The ``with self._lock`` ensures the refresh does not race with a
+        concurrent config reload triggered by SIGUSR1 or a socket "reload"
+        action.
+        """
         while not self._stop.wait(timeout=IPSET_REFRESH_INTERVAL):
             try:
                 with self._lock:
@@ -1361,22 +1502,38 @@ class FirewallDaemon:
                 logging.exception("ipset refresh error")
 
     def _on_shutdown(self, signum, frame) -> None:
+        """SIGTERM / SIGINT handler: set the stop event to unblock run()."""
         logging.info("Signal %d received — shutting down", signum)
         self._stop.set()
 
     def _on_sigusr1(self, signum, frame) -> None:
+        """SIGUSR1 handler: trigger a config reload in a background thread.
+
+        Signal handlers must return quickly (they run on the main thread and
+        can interrupt any other operation), so the actual reload work is
+        delegated to a short-lived daemon thread.
+        """
         logging.info("SIGUSR1 received — reloading config")
         threading.Thread(
             target=self._reload, daemon=True, name="config-reload"
         ).start()
 
     def _reload(self) -> None:
+        """Load config from disk and atomically apply it while holding _lock.
+
+        Acquires ``_lock`` for the apply phase so the refresh loop cannot
+        concurrently modify ipset state.  On any error the existing config
+        remains active (partial failure does not corrupt state because
+        IptablesManager.apply_config uses atomic iptables-restore).
+        """
         try:
             new_config = Config.from_files(self._net_path, self._fw_path)
             with self._lock:
                 self._docker_mgr.ensure_networks(new_config.networks)
                 for name, hostnames in new_config.ipsets.items():
                     self._ipset_mgr.ensure_ipset(name, hostnames)
+                # Refresh immediately after updating ipset membership so rules
+                # that reference newly-added ipsets are populated before use.
                 self._ipset_mgr.refresh_all()
                 self._ipt_mgr.apply_config(new_config)
                 self._config = new_config
@@ -1385,12 +1542,36 @@ class FirewallDaemon:
             logging.exception("Config reload failed")
 
     def _handle_request(self, req: dict) -> dict:
+        """Dispatch a management socket request to the appropriate handler.
+
+        Supported actions:
+          ``reload``  — reload config from disk (same as SIGUSR1).
+          ``apply``   — apply an inline config supplied in the request body;
+                        the request must contain ``network_config`` and
+                        ``firewall_config`` dict keys matching the JSON file
+                        structure.
+          ``refresh`` — re-resolve all ipsets immediately without reloading
+                        the rest of the config.
+          ``status``  — return current daemon state (networks and live ipset IPs).
+
+        All mutating actions are serialised by ``_lock``.  Any exception is
+        caught and returned as ``{"status": "error", "message": "…"}``.
+
+        Args:
+            req: Parsed request dict from the management socket.
+
+        Returns:
+            Response dict to be serialised and sent back to the client.
+        """
         action = req.get("action", "")
         try:
             if action == "reload":
+                # Reload config from disk; same effect as SIGUSR1.
                 self._reload()
                 return {"status": "ok"}
             elif action == "apply":
+                # Apply an inline config provided in the request body.
+                # Useful for programmatic config updates without touching files.
                 net_data = req.get("network_config", {})
                 fw_data  = req.get("firewall_config", {})
                 new_cfg  = Config.from_dicts(net_data, fw_data)
@@ -1402,6 +1583,7 @@ class FirewallDaemon:
                     self._config = new_cfg
                 return {"status": "ok"}
             elif action == "refresh":
+                # Re-resolve ipsets immediately; does not reload other config.
                 with self._lock:
                     self._ipset_mgr.refresh_all()
                 return {"status": "ok"}
@@ -1413,14 +1595,26 @@ class FirewallDaemon:
             return {"status": "error", "message": str(exc)}
 
     def _get_status(self) -> dict:
+        """Return a status dict describing the current daemon state.
+
+        Includes the list of configured network names and a snapshot of the
+        live IP addresses currently in each ipset.  IPs are sorted for
+        deterministic output (useful when diffing successive status calls).
+
+        Returns:
+            ``{"status": "ok", "ready": True, "networks": […], "ipsets": {…}}``
+            or ``{"status": "ok", "ready": False}`` before first apply.
+        """
         cfg = self._config
         if not cfg:
+            # Daemon started but _apply_full has not completed yet.
             return {"status": "ok", "ready": False}
         return {
             "status":   "ok",
             "ready":    True,
             "networks": [s.name for s in cfg.networks],
             "ipsets":   {
+                # Snapshot live kernel ipset membership (not the hostname list).
                 name: sorted(self._ipset_mgr._get_ipset_ips(name))
                 for name in cfg.ipsets
             },
@@ -1432,11 +1626,32 @@ class FirewallDaemon:
 # ---------------------------------------------------------------------------
 
 def _socket_query(sock_path: str, req: dict) -> dict:
+    """Send a JSON request to a running daemon's management socket and return the response.
+
+    Connects to the AF_UNIX socket at ``sock_path``, sends the request as a
+    newline-terminated JSON line, and reads back a newline-terminated JSON
+    response.  The ``finally`` block guarantees the socket is closed even if
+    an exception is raised during send or receive.
+
+    Args:
+        sock_path: Path to the daemon's Unix-domain socket.
+        req:       Request dict (e.g. ``{"action": "status"}``).
+
+    Returns:
+        Parsed response dict from the daemon.
+
+    Raises:
+        ConnectionRefusedError: if no daemon is listening at ``sock_path``.
+        json.JSONDecodeError:   if the response is malformed.
+    """
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(sock_path)
     try:
+        # Newline-terminate the request so the daemon's _handle_conn exits
+        # its accumulation loop.
         s.sendall((json.dumps(req) + "\n").encode())
         buf = b""
+        # Read until newline (end of response) or connection closed.
         while b"\n" not in buf:
             chunk = s.recv(4096)
             if not chunk:
@@ -1452,8 +1667,32 @@ def _socket_query(sock_path: str, req: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    """Parse CLI arguments and dispatch to the appropriate operating mode.
+
+    Operating modes (mutually exclusive; evaluated in order):
+
+    1. ``--status``    Connect to a running daemon via the management socket
+                       and print its status as formatted JSON, then exit.
+                       Requires ``--socket`` (or ``$DOCKSIDE_FIREWALL_SOCKET``).
+
+    2. ``--teardown``  Remove all Dockside iptables chains and ipsets, then exit.
+                       Attempts to load config files to discover ipset names; on
+                       failure (config missing/invalid) ipsets are not cleaned up
+                       but iptables teardown still proceeds.
+
+    3. ``--daemon``    Full daemon mode: apply config, start management socket
+                       and ipset-refresh thread, block until signalled.
+
+    4. (no flags)      One-shot mode: apply config once and exit.  Backwards-
+                       compatible with the original bash script invocation.
+                       The management socket is not started in this mode.
+
+    The RESET=1 environment variable causes Docker networks to be removed and
+    recreated on startup (useful after subnet changes).
+    """
     import argparse
 
+    # Pull the "CLI modes:" section from the module docstring as epilog text.
     ap = argparse.ArgumentParser(
         description="Dockside network firewall daemon",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1473,6 +1712,8 @@ def main() -> None:
     )
     ap.add_argument(
         "--socket", metavar="PATH",
+        # Allow the socket path to be set via environment variable so the
+        # systemd unit does not need to hard-code it.
         default=os.environ.get("DOCKSIDE_FIREWALL_SOCKET"),
         help="Unix socket path (default: $DOCKSIDE_FIREWALL_SOCKET)",
     )
@@ -1498,11 +1739,15 @@ def main() -> None:
         if not args.socket:
             logging.error("--socket PATH is required for --status")
             sys.exit(1)
+        # Query the running daemon and pretty-print its JSON status response.
         resp = _socket_query(args.socket, {"action": "status"})
         print(json.dumps(resp, indent=2))
         return
 
     if args.teardown:
+        # Try to read config to learn ipset names so they can be destroyed.
+        # Tolerate config load failures: if config files are gone, ipset
+        # cleanup is skipped but iptables teardown still proceeds.
         ipset_names: List[str] = []
         try:
             cfg = Config.from_files(args.network_config, args.firewall_config)
@@ -1520,13 +1765,16 @@ def main() -> None:
     daemon = FirewallDaemon(
         network_config_path=args.network_config,
         firewall_config_path=args.firewall_config,
+        # Only pass the socket path in daemon mode; one-shot mode has no socket.
         socket_path=args.socket if args.daemon else None,
     )
 
     if args.daemon:
+        # Full daemon: runs until signalled.
         daemon.run()
     else:
-        # One-shot: apply config and exit (backwards-compatible with bash one-shot mode)
+        # One-shot: apply config and exit (backwards-compatible with bash one-shot mode).
+        # No management socket, no refresh loop.
         config = Config.from_files(args.network_config, args.firewall_config)
         daemon._apply_full(config, reset=(os.environ.get("RESET", "0") == "1"))
 
