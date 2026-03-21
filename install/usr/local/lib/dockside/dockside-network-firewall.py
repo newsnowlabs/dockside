@@ -39,8 +39,20 @@ from typing import Dict, List, Optional
 # Environment-driven constants
 # ---------------------------------------------------------------------------
 
+# How long (seconds) a resolved IP address may linger in an ipset after it
+# is no longer returned by DNS.  The grace period prevents brief DNS flapping
+# (common with CDN services returning different IP pools) from immediately
+# blocking in-flight connections.
 IPSET_STALE_TTL = int(os.environ.get("IPSET_STALE_TTL", "300"))
+
+# How often (seconds) the daemon re-resolves hostname-backed ipsets to catch
+# DNS changes.  Should be comfortably below IPSET_STALE_TTL so fresh IPs are
+# added well before stale ones expire.
 IPSET_REFRESH_INTERVAL = int(os.environ.get("IPSET_REFRESH_INTERVAL", "60"))
+
+# String prefix applied to every iptables chain name and ipset name created
+# by this daemon.  Makes Dockside-owned objects instantly identifiable and
+# easy to enumerate during teardown.
 DOCKSIDE_PREFIX = "DOCKSIDE"
 
 
@@ -53,17 +65,40 @@ def _run(
     input: Optional[str] = None,
     allow_fail: bool = False,
 ) -> subprocess.CompletedProcess:
+    """Run an external command, capturing stdout and stderr as strings.
+
+    Args:
+        args:       Argv list; first element is the executable name.
+        input:      Optional string written to the process's stdin.  Used to
+                    feed multi-line rule sets to ``iptables-restore``.
+        allow_fail: When True, a non-zero exit code is logged at DEBUG level
+                    and the CompletedProcess is returned to the caller rather
+                    than raising.  Use this for idempotent operations where
+                    failure simply means "nothing to do" (e.g. "ipset already
+                    exists", "rule not found", "chain does not exist").
+
+    Returns:
+        CompletedProcess with .stdout and .stderr available as strings.
+
+    Raises:
+        subprocess.CalledProcessError: if the command exits non-zero and
+            ``allow_fail`` is False.
+    """
+    # Log the command at DEBUG level; append a byte-count note when stdin data
+    # is provided so the log line stays readable without dumping the full input.
     logging.debug("+ %s%s", " ".join(str(a) for a in args),
                   f"  [{len(input)} bytes stdin]" if input else "")
     result = subprocess.run(
         args,
         input=input,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        stdout=subprocess.PIPE,   # capture stdout so callers can inspect it
+        stderr=subprocess.PIPE,   # capture stderr for error messages
+        text=True,                # decode bytes to str; avoids manual .decode()
     )
     if result.returncode != 0:
         if allow_fail:
+            # Expected failure: log quietly and return so the caller can
+            # decide whether the outcome matters (e.g. check stderr text).
             logging.debug("  exit %d: %s", result.returncode,
                           result.stderr.strip()[:200])
         else:
@@ -76,9 +111,23 @@ def _run(
 
 
 def _systemd_notify(state: str) -> None:
+    """Send an sd_notify(3) status string to the systemd supervisor process.
+
+    Common values for *state*:
+      ``"READY=1"``           — startup complete; service is ready to accept work.
+      ``"RELOADING=1"``       — config reload in progress.
+      ``"STATUS=<message>"``  — free-form human-readable status shown by
+                                ``systemctl status``.
+
+    Silently ignored when systemd-notify is not installed (e.g. during
+    development or inside a container that does not run systemd).
+    """
     try:
+        # allow_fail=True: a non-zero exit (e.g. daemon was not started by
+        # systemd, so there is no notification socket) is not fatal.
         _run(["systemd-notify", state], allow_fail=True)
     except FileNotFoundError:
+        # systemd-notify binary absent — not running under systemd; skip.
         pass
 
 
@@ -87,17 +136,52 @@ def _systemd_notify(state: str) -> None:
 # ---------------------------------------------------------------------------
 
 class EgressRule:
-    """One rule in a network's egress policy."""
+    """One rule in a network's outbound (egress) traffic policy.
+
+    Each instance is parsed directly from a JSON object inside the
+    ``"egress"`` array of a firewall-config network entry.  The rule is later
+    translated into one or more iptables match/target lines by
+    ``IptablesManager._egress_to_iptables()``.
+    """
 
     def __init__(self, d: dict):
+        # Optional transport-protocol filter.  None means match any protocol.
         self.proto     = d.get("proto")               # "tcp"|"udp"|"icmp"|None
+
+        # Destination port numbers to match.  Empty list means all ports.
         self.ports     = d.get("ports", [])            # list[int]
+
+        # Selector type for the traffic destination:
+        #   "all"   — match any destination address
+        #   "cidr"  — match a specific subnet (see self.cidr)
+        #   "ip"    — match a single IP address (see self.ip)
+        #   "ipset" — match against a named ipset (see self.ipset)
+        #   "host"  — resolve a hostname at runtime and match its IPs (see self.host)
         self.to        = d.get("to", "all")            # "all"|"cidr"|"ip"|"ipset"|"host"
+
+        # CIDR string used when to=="cidr" (e.g. "10.0.0.0/8").
         self.cidr      = d.get("cidr")
+
+        # Single IPv4 address string used when to=="ip".
         self.ip        = d.get("ip")
+
+        # Name of a pre-defined ipset (from the "ipsets" config section)
+        # used when to=="ipset".
         self.ipset     = d.get("ipset")
+
+        # Hostname resolved to one or more IPs at rule-apply time when
+        # to=="host".
         self.host      = d.get("host")
+
+        # ICMP message type; only relevant when proto=="icmp".
+        # Defaults to "echo-request" (i.e. allow outbound ping).
         self.icmp_type = d.get("type", "echo-request")
+
+        # What to do when traffic matches this rule:
+        #   "allow" — emit an iptables RETURN rule (traffic is accepted by
+        #             Docker's existing FORWARD ACCEPT rule higher in the chain).
+        #   "drop"  — emit REJECT (for TCP: tcp-reset) + DROP rules to
+        #             actively refuse the traffic and notify the sender.
         self.action    = d.get("action", "allow")      # "allow"|"drop"
 
     def __repr__(self) -> str:
