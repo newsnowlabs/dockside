@@ -6,6 +6,10 @@
 *.orig
 *.tdy
 
+# Python bytecode cache
+__pycache__/
+*.py[cod]
+
 # Build and binary artifacts
 *.o
 *.packlist
