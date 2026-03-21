@@ -451,6 +451,9 @@ case "${1:-}" in
     # IPSET_HOSTS must be populated by setup() before daemon() is called,
     # and both run in the same process so the associative array is shared.
     setup
+    # Signal systemd that setup is complete and the service is ready.
+    # ExecStartPost (docker compose up) will not run until this fires.
+    systemd-notify --ready
     daemon
     ;;
   --refresh)
