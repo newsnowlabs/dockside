@@ -191,37 +191,101 @@ class EgressRule:
 
 
 class NatRule:
-    """One DNAT rule in a network's nat config."""
+    """One DNAT (Destination NAT) rule in a network's nat config.
+
+    Each instance is parsed from an object in the ``"nat"`` array of a
+    firewall-config network entry and is translated into an iptables
+    PREROUTING DNAT rule by ``IptablesManager._build_restore_input()``.
+
+    A DNAT rule intercepts packets arriving on the network whose destination
+    port matches ``match_dport`` and rewrites the destination address/port to
+    redirect them to a different host and/or port inside the network.
+    """
 
     def __init__(self, d: dict):
+        # Transport protocol for the DNAT match; defaults to "tcp".
         self.proto       = d.get("proto", "tcp")
+
+        # Destination port number to intercept (the "external" port seen by
+        # the original sender).
         self.match_dport = d.get("match_dport")   # int: port to intercept
+
+        # Optional hostname resolved at apply-time to supply the DNAT target
+        # IP.  Mutually exclusive with to_ip.
         self.to_host     = d.get("to_host")        # hostname, resolved at apply-time
+
+        # Optional literal IP address used as the DNAT target.  Used when a
+        # fixed IP is preferred over a hostname lookup.
         self.to_ip       = d.get("to_ip")          # IP directly (alternative to to_host)
+
+        # Target port number to rewrite the destination port to.
         self.to_port     = d.get("to_port")        # int: redirect target port
 
 
 class NetworkSpec:
+    """Describes one Docker network and the firewall policy attached to it.
+
+    Populated from a combination of network-config.json (basic topology) and
+    firewall-config.json (egress/NAT rules).  Used throughout the code as the
+    single source of truth for a network's configuration.
+    """
 
     def __init__(self, d: dict):
+        # Docker network name (also used to derive the Linux bridge interface
+        # name via the ``dev`` property and iptables chain names via
+        # ``chain_prefix``).
         self.name        = d["name"]
+
+        # CIDR subnet for the network (e.g. "172.20.0.0/16").
         self.subnet      = d["subnet"]
+
+        # Optional explicit gateway IP.  When absent, derived automatically
+        # from the subnet by ``_subnet_to_gateway()`` (first host, i.e. x.x.x.1).
         self.gateway_ip  = d.get("gateway_ip")
+
+        # Optional MAC address of the gateway interface.  When provided,
+        # iptables rules allow traffic from this MAC address unconditionally,
+        # ensuring gateway-initiated packets are never blocked.
         self.gateway_mac = d.get("gateway_mac")
+
+        # Outbound traffic rules appended by Config.from_dicts() after parsing
+        # the firewall-config "egress" array for this network.
         self.egress_rules: List[EgressRule] = []
+
+        # DNAT rules appended by Config.from_dicts() after parsing the
+        # firewall-config "nat" array for this network.
         self.nat_rules:   List[NatRule]    = []
 
     @property
     def dev(self) -> str:
+        """Linux bridge interface name for this network.
+
+        Docker names the kernel bridge interface after the network name,
+        lower-cased (e.g. network "MyNet" → bridge "mynet").  iptables rules
+        match on this name via ``-i <dev>`` (inbound) and ``-o <dev>``
+        (outbound).
+        """
         return self.name.lower()
 
     @property
     def chain_prefix(self) -> str:
+        """Base name for the iptables chains belonging to this network.
+
+        The ingress chain will be ``<prefix>-ING`` and the egress chain
+        ``<prefix>-OUT``.  Using DOCKSIDE_PREFIX ensures all Dockside-owned
+        chains are identifiable by name and can be enumerated for teardown.
+        """
         return f"{DOCKSIDE_PREFIX}-{self.name.upper()}"
 
     @property
     def managed(self) -> bool:
-        """True if this network needs DOCKSIDE-DISPATCH entries and firewall chains."""
+        """True if this network needs DOCKSIDE-DISPATCH entries and firewall chains.
+
+        An "unmanaged" network (no gateway configured, no egress or NAT rules)
+        does not require custom firewall chains; its traffic flows through
+        Docker's default FORWARD rules unchanged.  Only managed networks get
+        entries in the DOCKSIDE-DISPATCH jump chain.
+        """
         return bool(
             self.gateway_ip or self.gateway_mac
             or self.egress_rules or self.nat_rules
@@ -232,13 +296,38 @@ class NetworkSpec:
 
 
 class Config:
+    """Merged runtime configuration: network topology + firewall policy.
+
+    Combines data from the two config files into a ready-to-use object.
+    ``networks`` is the authoritative list of NetworkSpec objects (each with
+    their egress/NAT rules already attached) and ``ipsets`` is the mapping of
+    ipset name → list of hostnames/IPs to populate it with.
+    """
 
     def __init__(self, networks: List[NetworkSpec], ipsets: Dict[str, List[str]]):
+        # Ordered list of all configured networks.
         self.networks = networks
+
+        # Mapping of ipset name → list of hostnames/CIDR strings.
+        # Populated by IpsetManager at apply time.
         self.ipsets   = ipsets
 
     @classmethod
     def from_files(cls, network_path: str, firewall_path: str) -> "Config":
+        """Load and merge config from the two JSON files on disk.
+
+        Args:
+            network_path:  Path to network-config.json (network topology).
+            firewall_path: Path to firewall-config.json (egress/NAT/ipset rules).
+
+        Returns:
+            A fully populated Config instance.
+
+        Raises:
+            OSError:       if either file cannot be opened.
+            json.JSONDecodeError: if either file contains invalid JSON.
+            ValueError:    if firewall-config references an unknown network.
+        """
         with open(network_path) as f:
             net_data = json.load(f)
         with open(firewall_path) as f:
@@ -247,15 +336,43 @@ class Config:
 
     @classmethod
     def from_dicts(cls, net_data: dict, fw_data: dict) -> "Config":
+        """Build a Config from already-parsed JSON dictionaries.
+
+        First pass: build a NetworkSpec for every entry in the network-config
+        "networks" array, keyed by name.
+
+        Second pass: walk the firewall-config "networks" map; for each network
+        name append its EgressRules and NatRules onto the matching NetworkSpec.
+        If a firewall-config entry names a network that was not present in the
+        network-config, raise immediately — a silent mismatch would lead to
+        rules never being installed.
+
+        Args:
+            net_data: Parsed network-config.json (top-level dict).
+            fw_data:  Parsed firewall-config.json (top-level dict).
+
+        Returns:
+            A fully populated Config instance.
+
+        Raises:
+            ValueError: if firewall-config references a network name not found
+                in net_data.
+        """
+        # First pass: create a NetworkSpec for every declared network.
         specs: Dict[str, NetworkSpec] = {}
         for nd in net_data.get("networks", []):
             spec = NetworkSpec(nd)
             specs[spec.name] = spec
 
+        # Collect ipset definitions (name → list of hosts/CIDRs).
         ipsets = fw_data.get("ipsets", {})
 
+        # Second pass: attach egress and NAT rules from firewall-config to the
+        # matching NetworkSpec objects.
         for net_name, fw in fw_data.get("networks", {}).items():
             if net_name not in specs:
+                # Guard: a typo in firewall-config would silently produce no
+                # rules for the intended network; raise early instead.
                 raise ValueError(
                     f"firewall-config references unknown network {net_name!r}"
                 )
@@ -273,16 +390,37 @@ class Config:
 # ---------------------------------------------------------------------------
 
 def _subnet_to_gateway(subnet: str) -> str:
-    """172.16.0.0/16 → 172.16.0.1"""
+    """Derive the conventional gateway IP (host .1) from a CIDR subnet string.
+
+    Example: ``"172.16.0.0/16"`` → ``"172.16.0.1"``
+
+    Used when a NetworkSpec does not supply an explicit ``gateway_ip``.  The
+    convention of placing the gateway at the first host address (.1) matches
+    Docker's own default bridge gateway assignment.
+    """
+    # Strip the prefix length (everything after "/") to get the bare base IP.
     base  = subnet.split("/")[0]
+    # Replace the last octet with "1" to get the .1 host address.
     parts = base.split(".")
     parts[-1] = "1"
     return ".".join(parts)
 
 
 def _resolve_hostname(hostname: str) -> Optional[str]:
-    """Return first IPv4 address for hostname, or None."""
+    """Resolve a hostname to its first IPv4 address, or None on failure.
+
+    Uses ``socket.AF_INET`` to restrict results to IPv4, avoiding IPv6
+    addresses that iptables (non-ip6tables) cannot match.
+
+    Args:
+        hostname: DNS name or dotted-decimal IP string.
+
+    Returns:
+        The first IPv4 address string, or None if resolution fails.
+    """
     try:
+        # getaddrinfo returns a list of 5-tuples; element [4] is the address
+        # tuple, and [4][0] is the IP string for AF_INET results.
         infos = socket.getaddrinfo(hostname, None, socket.AF_INET)
         return infos[0][4][0] if infos else None
     except socket.gaierror as exc:
@@ -291,13 +429,28 @@ def _resolve_hostname(hostname: str) -> Optional[str]:
 
 
 def _resolve_hostname_all(hostname: str) -> List[str]:
-    """Return deduplicated list of all IPv4 addresses for hostname."""
+    """Resolve a hostname to all its IPv4 addresses, deduplicated.
+
+    CDN services and load-balanced hostnames may return many A records.
+    This function collects all of them while preserving order and removing
+    duplicates, so every IP can be added to an ipset.
+
+    Uses ``socket.AF_INET`` to restrict results to IPv4.
+
+    Args:
+        hostname: DNS name or dotted-decimal IP string.
+
+    Returns:
+        Deduplicated list of IPv4 address strings in resolution order.
+        Empty list if resolution fails.
+    """
     try:
         infos = socket.getaddrinfo(hostname, None, socket.AF_INET)
+        # Use a set for O(1) duplicate detection while ips[] preserves order.
         seen: set = set()
         ips: List[str] = []
         for info in infos:
-            ip = info[4][0]
+            ip = info[4][0]   # AF_INET address tuple → IP string
             if ip not in seen:
                 seen.add(ip)
                 ips.append(ip)
