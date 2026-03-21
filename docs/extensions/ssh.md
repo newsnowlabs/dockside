@@ -29,7 +29,7 @@ Individual keys can be added or removed via the CLI without affecting others:
 
 ```bash
 dockside user edit alice --set ssh.publicKeys.laptop="ssh-ed25519 AAAA..."
-dockside user edit alice --set ssh.publicKeys.laptop=   # remove
+dockside user edit alice --unset ssh.publicKeys.laptop                      # remove
 ```
 
 Whenever a devcontainer is started, its developer list is changed, or its SSH access mode is switched (between 'Devcontainer owner only' and 'Devcontainer developers only'), Dockside automatically writes the correct set of public keys to `~/.ssh/authorized_keys` inside the devcontainer. No manual step is needed.
@@ -74,6 +74,13 @@ To authenticate outbound SSH connections from within the IDE or terminal — for
     }
   }
 }
+```
+
+Keys can be added and removed via the Dockside CLI using:
+```sh
+dockside user edit alice --set ssh.keypairs.*.public=@/Users/alice/.ssh/id_rsa.pub
+dockside user edit alice --set ssh.keypairs.*.private=@/Users/alice/.ssh/id_rsa
+dockside user edit alice --unset ssh.keypairs.*.public --unset ssh.keypairs.*.private
 ```
 
 On devcontainer launch, Dockside automatically loads the keypair into the `ssh-agent`. The key is then immediately available to the IDE (for `Git: Push` / `Git: Pull`), to VS Code extensions, and to any terminal command — without any manual `ssh-add` step.
