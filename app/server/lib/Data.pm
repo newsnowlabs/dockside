@@ -3,7 +3,7 @@ package Data;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO);
+our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO invalidate_profile_cache);
 
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
@@ -282,6 +282,13 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
          flog("Data::load: error parsing '$p': '$_'");
       };
    }
+}
+
+# Force the profile glob to reload on the next Data::load call.
+# Needed after profile file deletion or rename, where mtime of remaining
+# files does not change and the cache would otherwise not detect the update.
+sub invalidate_profile_cache () {
+   delete $CONFIG_FILES->{'profiles/*.json'}{'lastModified'};
 }
 
 1;

@@ -490,6 +490,51 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       ######################################
+      # Profile management
+      #
+
+      if( $route =~ m!^/profiles/?$! ) {
+         my $args = split_args($querystring);
+         return json($r, 200, { 'status' => '200', 'data' => $User->listProfiles($args) });
+      }
+
+      if( $route =~ m!^/profiles/create/?$! ) {
+         my $args = split_args($querystring);
+         my $id = $args->{'id'}
+            or die Exception->new( 'msg' => "id is required" );
+         my $record = $User->createProfile($id, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/?$! && $r->request_method eq 'GET' ) {
+         my $name = $1;
+         my $args = split_args($querystring);
+         return json($r, 200, { 'status' => '200', 'data' => $User->getProfile($name, $args) });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/update/?$! ) {
+         my $name = $1;
+         my $args = split_args($querystring);
+         my $record = $User->updateProfile($name, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/remove/?$! ) {
+         my $name = $1;
+         my $result = $User->removeProfile($name);
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/rename/?$! ) {
+         my $name = $1;
+         my $args = split_args($querystring);
+         my $new_name = $args->{'new_name'}
+            or die Exception->new( 'msg' => "new_name is required" );
+         my $result = $User->renameProfile($name, $new_name, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
+      ######################################
       # Load Reservations and container data
       #
       if( $route =~ m!^/getAuthCookies/?$! ) {
