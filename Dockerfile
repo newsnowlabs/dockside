@@ -358,6 +358,20 @@ RUN apk update && \
     /root/install-vsix.sh
 
 ################################################################################
+# DOCKSIDE REPO CLEAN BUILD
+#
+FROM alpine/git AS dockside-repo
+
+COPY . /git/dockside
+RUN cd /git/dockside && \
+    current=$(git rev-parse --abbrev-ref HEAD) && \
+    remote=$(git remote get-url origin) && \
+    git remote remove origin && \
+    git remote add origin "$remote" && \
+    git branch | grep -v '^\* ' | xargs -r git branch -D && \
+    git gc
+
+################################################################################
 # MAIN DOCKSIDE BUILD
 #
 FROM node:$DOCKSIDE_NODE_VERSION-$DOCKSIDE_DEBIAN_VERSION AS dockside-1
@@ -460,7 +474,7 @@ COPY --from=openvscode-ide $VSCODE_PATH $VSCODE_PATH/
 # ---------------------------------------------
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
 #
-COPY --chown=$USER:$USER . $HOME/$APP/
+COPY --from=dockside-repo --chown=$USER:$USER /git/dockside $HOME/$APP/
 
 # -----------------------------
 # Last things for dockside user
