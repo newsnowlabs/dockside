@@ -275,15 +275,12 @@ _EOE_
 FROM base AS system
 
 # The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
-# COPY --from=base /tmp/dockside /tmp/dockside
 ENV BASH_ENV=/tmp/dockside/bash-env
 SHELL ["/bin/bash", "-c"]
 
 RUN apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq git openssh-client-default github-cli
 
 ADD build/development/make-bundelf-bundle.sh /tmp
-
-RUN cat /tmp/dockside/bash-env
 
 RUN export \
         BUNDELF_BINARIES="bash busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan gh" \
