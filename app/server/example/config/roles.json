@@ -5,6 +5,8 @@
    "admin": {
       // The admin role is special: users with the admin role have all permissions
       // unless explicitly denied either in the 'admin' role or in the user record.
+      // To deny user/role management for ALL admin users, uncomment:
+      // "permissions": { "manageUsers": 0 },
       "permissions": {},
       "resources": {}
    },
