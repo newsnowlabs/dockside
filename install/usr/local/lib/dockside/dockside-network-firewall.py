@@ -1064,7 +1064,7 @@ class IptablesManager:
             # ING: intra-network traffic — both ingress and egress interface are the same bridge.
             lines.append(
                 f"-A DOCKSIDE-DISPATCH -i {dev} -o {dev}"
-                f" -m comment --comment \"intra:{dev}\""
+                f" -m comment --comment \"ingress to devcontainers from dockside container\""
                 f" -j {p}-ING"
             )
             # OUT: egress traffic — enters the bridge, exits a different interface.
@@ -1073,7 +1073,7 @@ class IptablesManager:
             out_match = IptablesManager._dispatch_out_match(spec)
             lines.append(
                 f"-A DOCKSIDE-DISPATCH {out_match}"
-                f" -m comment --comment \"egress:{dev}\""
+                f" -m comment --comment \"egress from devcontainers\""
                 f" -j {p}-OUT"
             )
 
@@ -1096,19 +1096,24 @@ class IptablesManager:
             gm = spec.dockside_mac
             gi = spec.dockside_ip
             if gm:
-                # Allow TCP NEW connections whose source MAC is the dockside container MAC.
                 lines.append(
                     f"-A {p}-ING -m mac --mac-source {gm} -p tcp"
-                    f" -m conntrack --ctstate NEW -j RETURN"
+                    f" -m conntrack --ctstate NEW"
+                    f" -m comment --comment \"Allow ingress from dockside container\""
+                    f" -j RETURN"
                 )
             if gi:
-                # Allow TCP NEW connections whose source IP is the dockside container IP.
                 lines.append(
                     f"-A {p}-ING -s {gi} -p tcp"
-                    f" -m conntrack --ctstate NEW -j RETURN"
+                    f" -m conntrack --ctstate NEW"
+                    f" -m comment --comment \"Allow ingress from dockside container\""
+                    f" -j RETURN"
                 )
-            # Drop all other new intra-network connections (lateral movement).
-            lines.append(f"-A {p}-ING -m conntrack --ctstate NEW -j DROP")
+            lines.append(
+                f"-A {p}-ING -m conntrack --ctstate NEW"
+                f" -m comment --comment \"Drop all other ingress to devcontainers\""
+                f" -j DROP"
+            )
 
         # 5. Per-network OUT chains — container egress policy.
         #   Each EgressRule is translated to zero or more iptables RETURN or
