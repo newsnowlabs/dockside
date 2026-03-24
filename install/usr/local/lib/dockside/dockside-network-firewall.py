@@ -186,7 +186,7 @@ class EgressRule:
 
     def __repr__(self) -> str:
         if self.action == "drop":
-            return f"EgressRule(drop, cidr={self.cidr!r})"
+            return f"EgressRule(drop, to={self.to!r}, cidr={self.cidr!r})"
         return f"EgressRule({self.proto}, ports={self.ports}, to={self.to!r})"
 
 
@@ -1038,8 +1038,24 @@ class IptablesManager:
         prefix  = f"-A {chain}"
 
         if rule.action == "drop":
-            # Build optional destination filter (empty string = match all destinations).
-            dst = f"-d {rule.cidr} " if rule.cidr else ""
+            # Build destination filter using the same selectors as allow rules.
+            if rule.cidr:
+                dst = f"-d {rule.cidr} "
+            elif rule.to == "ip" and rule.ip:
+                dst = f"-d {rule.ip} "
+            elif rule.to == "host" and rule.host:
+                ip  = _resolve_hostname(rule.host)
+                if not ip:
+                    logging.warning(
+                        "Egress drop rule: could not resolve host %r — rule skipped",
+                        rule.host,
+                    )
+                    return []
+                dst = f"-d {ip} "
+            elif rule.to == "ipset" and rule.ipset:
+                dst = f"-m set --match-set {rule.ipset} dst "
+            else:
+                dst = ""
             # TCP: RST response gives the client immediate feedback instead of
             # leaving it in SYN_SENT waiting for a timeout.
             lines.append(
@@ -1047,12 +1063,12 @@ class IptablesManager:
                 f" -j REJECT --reject-with tcp-reset"
             )
             # Non-TCP: plain DROP.
-            # Targeted drops (cidr present) catch all ctstates so existing flows
-            # to that CIDR are torn down immediately (matches the old bash behaviour).
-            # Terminal drops (no cidr) restrict to NEW only to avoid disrupting
-            # already-established flows to destinations not otherwise permitted.
-            if rule.cidr:
-                lines.append(f"{prefix} -d {rule.cidr} -j DROP")
+            # Targeted drops (destination filter present) catch all ctstates so
+            # existing flows to that destination are torn down immediately.
+            # Terminal drops (no destination) restrict to NEW only to avoid
+            # disrupting already-established flows to destinations not otherwise permitted.
+            if dst:
+                lines.append(f"{prefix} {dst}-j DROP")
             else:
                 lines.append(f"{prefix} -m conntrack --ctstate NEW -j DROP")
             return lines
