@@ -31,6 +31,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Dict, List, Optional
@@ -184,6 +185,35 @@ class EgressRule:
         #             actively refuse the traffic and notify the sender.
         self.action    = d.get("action", "allow")      # "allow"|"drop"
 
+    def to_dict(self) -> dict:
+        """Serialise back to the JSON dict form used in firewall-config.json.
+
+        Only non-default, non-None fields are emitted so the round-trip output
+        stays as compact as the original input.  The ``action`` key is omitted
+        when it is ``"allow"`` (the default); it is always emitted for
+        ``"drop"`` rules.  The ``"type"`` key (ICMP type) is only emitted when
+        ``proto`` is ``"icmp"``.
+        """
+        d: dict = {}
+        if self.action != "allow":
+            d["action"] = self.action
+        if self.proto:
+            d["proto"] = self.proto
+        if self.ports:
+            d["ports"] = self.ports
+        d["to"] = self.to
+        if self.cidr:
+            d["cidr"] = self.cidr
+        if self.ip:
+            d["ip"] = self.ip
+        if self.ipset:
+            d["ipset"] = self.ipset
+        if self.host:
+            d["host"] = self.host
+        if self.proto == "icmp":
+            d["type"] = self.icmp_type
+        return d
+
     def __repr__(self) -> str:
         if self.action == "drop":
             return f"EgressRule(drop, to={self.to!r}, cidr={self.cidr!r})"
@@ -220,6 +250,19 @@ class NatRule:
 
         # Target port number to rewrite the destination port to.
         self.to_port     = d.get("to_port")        # int: redirect target port
+
+    def to_dict(self) -> dict:
+        """Serialise back to the JSON dict form used in firewall-config.json."""
+        d: dict = {"proto": self.proto}
+        if self.match_dport is not None:
+            d["match_dport"] = self.match_dport
+        if self.to_host:
+            d["to_host"] = self.to_host
+        if self.to_ip:
+            d["to_ip"] = self.to_ip
+        if self.to_port is not None:
+            d["to_port"] = self.to_port
+        return d
 
 
 class NetworkSpec:
@@ -290,6 +333,37 @@ class NetworkSpec:
             self.gateway_ip or self.gateway_mac
             or self.egress_rules or self.nat_rules
         )
+
+    def to_net_dict(self) -> dict:
+        """Serialise the network topology fields to a network-config.json entry.
+
+        Returns a dict suitable for inclusion in the ``"networks"`` array of
+        network-config.json.  Optional fields (``gateway_ip``, ``gateway_mac``)
+        are omitted when not set so the output stays compact.
+        """
+        d: dict = {"name": self.name, "subnet": self.subnet}
+        if self.gateway_ip:
+            d["gateway_ip"] = self.gateway_ip
+        if self.gateway_mac:
+            d["gateway_mac"] = self.gateway_mac
+        return d
+
+    def to_fw_dict(self) -> Optional[dict]:
+        """Serialise the firewall rules to a firewall-config.json network entry.
+
+        Returns a dict with ``"egress"`` and/or ``"nat"`` keys, or ``None``
+        when the network has no firewall rules (so it can be omitted from the
+        ``"networks"`` map in firewall-config.json rather than emitting an
+        empty object).
+        """
+        if not self.egress_rules and not self.nat_rules:
+            return None
+        d: dict = {}
+        if self.egress_rules:
+            d["egress"] = [r.to_dict() for r in self.egress_rules]
+        if self.nat_rules:
+            d["nat"] = [r.to_dict() for r in self.nat_rules]
+        return d
 
     def __repr__(self) -> str:
         return f"NetworkSpec({self.name!r}, subnet={self.subnet!r})"
@@ -384,6 +458,47 @@ class Config:
 
         return cls(list(specs.values()), ipsets)
 
+    def network_names(self) -> set:
+        """Return the set of network names in this config."""
+        return {s.name for s in self.networks}
+
+    def ipset_referenced_names(self) -> set:
+        """Return the set of ipset names referenced by any egress rule.
+
+        Used by the cleanup phase to determine which ipsets are still "live"
+        (referenced by at least one iptables rule in the current config) and
+        must not be destroyed even if they were removed from ``self.ipsets``.
+        """
+        names: set = set()
+        for spec in self.networks:
+            for rule in spec.egress_rules:
+                if rule.to == "ipset" and rule.ipset:
+                    names.add(rule.ipset)
+        return names
+
+    def to_net_data(self) -> dict:
+        """Reconstruct the network-config.json top-level dict from this Config."""
+        return {"networks": [s.to_net_dict() for s in self.networks]}
+
+    def to_fw_data(self) -> dict:
+        """Reconstruct the firewall-config.json top-level dict from this Config.
+
+        ``"ipsets"`` is only emitted when there are ipsets defined (avoids an
+        empty ``"ipsets": {}`` key in the output file).  Networks with no
+        firewall rules are omitted from ``"networks"`` (same as the source
+        files typically do).
+        """
+        fw_nets: dict = {}
+        for s in self.networks:
+            fw = s.to_fw_dict()
+            if fw is not None:
+                fw_nets[s.name] = fw
+        result: dict = {}
+        if self.ipsets:
+            result["ipsets"] = dict(self.ipsets)
+        result["networks"] = fw_nets
+        return result
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -458,6 +573,66 @@ def _resolve_hostname_all(hostname: str) -> List[str]:
     except socket.gaierror as exc:
         logging.warning("DNS resolution failed for %s: %s", hostname, exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Config-diff helpers
+# ---------------------------------------------------------------------------
+
+def _diff_configs(
+    old: Optional["Config"],
+    new: "Config",
+) -> tuple:
+    """Compute what was removed between two Config objects.
+
+    Returns a 2-tuple ``(removed_nets, removed_ipsets)`` where each element
+    is a ``set`` of name strings that are present in *old* but absent in *new*.
+    When *old* is ``None`` (first apply; no previous state) both sets are empty.
+
+    Pure Python — no kernel calls, no side effects.
+    """
+    if old is None:
+        return set(), set()
+    removed_nets   = old.network_names()   - new.network_names()
+    removed_ipsets = set(old.ipsets.keys()) - set(new.ipsets.keys())
+    return removed_nets, removed_ipsets
+
+
+def _network_has_containers(name: str) -> bool:
+    """Return True if a Docker network currently has containers connected.
+
+    Parses the JSON output of ``docker network inspect <name>``.  The
+    ``Containers`` key in the top-level object is a dict whose keys are
+    container IDs; an empty dict means no containers are attached.
+
+    On any parse failure (invalid JSON, unexpected structure) the function
+    returns ``True`` — the conservative choice — to prevent a buggy inspect
+    output from causing unintended chain deletion.
+
+    Args:
+        name: Docker network name.
+
+    Returns:
+        True if the network has connected containers (or if the check fails
+        conservatively), False if the network has no containers or does not
+        exist.
+    """
+    r = _run(["docker", "network", "inspect", name], allow_fail=True)
+    if r.returncode != 0:
+        # Network does not exist in Docker; nothing to protect.
+        return False
+    try:
+        data = json.loads(r.stdout)
+        if not data:
+            return False
+        containers = data[0].get("Containers", {})
+        return bool(containers)
+    except (ValueError, IndexError, KeyError, TypeError):
+        logging.warning(
+            "Could not parse docker network inspect output for %s; "
+            "assuming containers present — deferring chain cleanup", name
+        )
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +874,19 @@ class IpsetManager:
         for name in names:
             for suffix in ("--tmp", "--seen", ""):
                 _run(["ipset", "destroy", name + suffix], allow_fail=True)
+
+    def deregister(self, name: str) -> None:
+        """Remove an ipset from the refresh registry without touching the kernel.
+
+        After this call the refresh loop will no longer re-resolve or update
+        the named ipset.  Callers should follow up with ``destroy_by_names``
+        to remove the kernel ipset objects as well.
+        """
+        self._sets.pop(name, None)
+
+    def registered_names(self) -> set:
+        """Return the set of ipset names currently registered for periodic refresh."""
+        return set(self._sets.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -1184,6 +1372,40 @@ class IptablesManager:
 
         logging.info("iptables teardown complete")
 
+    def remove_network_chains(self, spec: NetworkSpec) -> None:
+        """Flush and delete all iptables chains belonging to a removed network.
+
+        **Must be called after** ``apply_config()`` has rebuilt
+        ``DOCKSIDE-DISPATCH`` without this network's jump entries.  By the
+        time this method runs the chains are already unreachable; this is
+        purely a kernel-object cleanup step.
+
+        Deletion order in the nat table:
+          1. Remove the ``PREROUTING → <PREFIX>-NAT`` jump rule first.
+             iptables refuses to delete a chain that is still a jump target.
+          2. Flush the NAT chain.
+          3. Delete the NAT chain.
+
+        All steps use ``allow_fail=True`` so that absent chains (e.g. when
+        the network had no NAT rules and the NAT chain was never created) are
+        silently skipped.
+        """
+        p = spec.chain_prefix
+        # Filter table: flush then delete ingress and egress chains.
+        for chain in (f"{p}-ING", f"{p}-OUT"):
+            _run(["iptables", "-F", chain], allow_fail=True)
+            _run(["iptables", "-X", chain], allow_fail=True)
+        # Nat table: remove the PREROUTING jump before flushing/deleting the
+        # chain (iptables rejects deleting a chain still referenced by a rule).
+        nat_chain = f"{p}-NAT"
+        _run(
+            ["iptables", "-t", "nat", "-D", "PREROUTING", "-j", nat_chain],
+            allow_fail=True,
+        )
+        _run(["iptables", "-t", "nat", "-F", nat_chain], allow_fail=True)
+        _run(["iptables", "-t", "nat", "-X", nat_chain], allow_fail=True)
+        logging.info("Removed iptables chains for network %s", spec.name)
+
     @staticmethod
     def _list_dockside_chains(table: str) -> List[str]:
         """Return names of all DOCKSIDE-* user chains in the given iptables table.
@@ -1523,25 +1745,263 @@ class FirewallDaemon:
             target=self._reload, daemon=True, name="config-reload"
         ).start()
 
+    def _cleanup_phase(
+        self,
+        old_config: Optional[Config],
+        new_config: Config,
+    ) -> None:
+        """Phase 2 of two-phase apply: remove kernel objects dropped from config.
+
+        Must be called **after** ``apply_config()`` has atomically rebuilt
+        ``DOCKSIDE-DISPATCH`` for *new_config* (so removed networks' chains are
+        already unreachable before they are deleted).
+
+        Container safety
+        ----------------
+        Before deleting a removed network's chains, ``_network_has_containers``
+        is called.  If the network still has running containers the chain
+        deletion is deferred and a warning is logged.  The firewall policy is
+        already correct — ``DOCKSIDE-DISPATCH`` no longer dispatches to those
+        chains — so deferring the cleanup is safe.  The orphaned chains will be
+        removed on the next reload/apply/remove-network once the containers
+        have gone.
+
+        Ipset safety
+        ------------
+        An ipset is only destroyed when it is safe to do so:
+          - Not still defined in *new_config*.
+          - Not referenced by any egress rule in *new_config*.
+          - Not referenced by any deferred network's egress rules (i.e. a
+            network whose chains were kept because containers are connected).
+
+        Caller must hold ``self._lock``.
+        """
+        if old_config is None:
+            return
+
+        removed_nets, removed_ipsets = _diff_configs(old_config, new_config)
+        if not removed_nets and not removed_ipsets:
+            return
+
+        # Build a name→spec map from old_config for removed networks.
+        old_specs = {s.name: s for s in old_config.networks}
+
+        # --- Network chain cleanup ---
+        kept_nets: set = set()   # networks whose cleanup was deferred
+        for net_name in removed_nets:
+            spec = old_specs[net_name]
+            if _network_has_containers(net_name):
+                logging.warning(
+                    "Network %s still has active containers; "
+                    "deferring chain cleanup until containers disconnect",
+                    net_name,
+                )
+                kept_nets.add(net_name)
+            else:
+                self._ipt_mgr.remove_network_chains(spec)
+
+        # --- Ipset cleanup ---
+        # An ipset must NOT be destroyed when it is:
+        #   (a) still defined in new_config.ipsets, OR
+        #   (b) referenced by a remaining network's egress rules, OR
+        #   (c) referenced by a deferred network's egress rules
+        #       (its chains are still in the kernel; destruction would leave
+        #        iptables rules pointing at a non-existent ipset).
+        new_ipset_defs = set(new_config.ipsets.keys())
+        new_ipset_refs = new_config.ipset_referenced_names()
+
+        kept_refs: set = set()
+        for net_name in kept_nets:
+            for rule in old_specs[net_name].egress_rules:
+                if rule.to == "ipset" and rule.ipset:
+                    kept_refs.add(rule.ipset)
+
+        safe_to_destroy = removed_ipsets - new_ipset_defs - new_ipset_refs - kept_refs
+        for ipset_name in safe_to_destroy:
+            self._ipset_mgr.deregister(ipset_name)
+            self._ipset_mgr.destroy_by_names([ipset_name])
+            logging.info("Destroyed removed ipset %s", ipset_name)
+
+        deferred_ipsets = removed_ipsets - safe_to_destroy
+        if deferred_ipsets:
+            logging.info(
+                "Ipset cleanup deferred (still referenced or containers active): %s",
+                ", ".join(sorted(deferred_ipsets)),
+            )
+
+    def _two_phase_apply(
+        self,
+        new_config: Config,
+        old_config: Optional[Config],
+    ) -> None:
+        """Apply *new_config* in two ordered phases.
+
+        **Phase 1 — addition/update (atomic):**
+          - Ensure Docker networks exist (``ensure_networks``).
+          - Ensure ipsets are created and populated (``ensure_ipset``).
+          - Atomically rebuild all Dockside iptables chains via a single
+            ``iptables-restore --noflush`` call (``apply_config``).
+
+        **Phase 2 — cleanup (diff-driven):**
+          - Compute what was removed: ``old_config − new_config``.
+          - Flush and delete orphaned chains for removed networks (deferred
+            when containers are still connected).
+          - Deregister and destroy removed ipsets (deferred when still
+            referenced by active chains or the new config).
+
+        **Ordering invariant (safety-critical):** ``apply_config()`` MUST
+        complete before ``_cleanup_phase()`` deletes anything.  After
+        ``apply_config()``, ``DOCKSIDE-DISPATCH`` no longer references removed
+        networks (so their chains are safe to delete) and no active iptables
+        rules reference removed ipsets (so they are safe to destroy).
+
+        Caller must hold ``self._lock``.
+        """
+        # Phase 1: ensure everything required by new_config exists.
+        self._docker_mgr.ensure_networks(new_config.networks)
+        for name, hostnames in new_config.ipsets.items():
+            self._ipset_mgr.ensure_ipset(name, hostnames)
+        self._ipset_mgr.refresh_all()
+        self._ipt_mgr.apply_config(new_config)   # atomic iptables-restore
+
+        # Phase 2: clean up objects removed from old_config.
+        self._cleanup_phase(old_config, new_config)
+
+        # Update in-memory config last, after both phases succeed.
+        self._config = new_config
+
+    def _save_config(self, config: Config) -> None:
+        """Atomically write *config* back to both on-disk JSON config files.
+
+        Each file is written to a temporary sibling (same directory = same
+        filesystem) and then renamed into place via ``os.replace()``, which
+        maps to ``rename(2)`` on Linux — an atomic operation that ensures
+        readers always see either the old or the new file, never a partial
+        write.
+
+        Caller must hold ``self._lock`` to prevent two concurrent socket
+        actions from racing on the disk write.
+
+        Raises:
+            OSError / IOError: if the temp file cannot be written or renamed.
+        """
+        for path, data in (
+            (self._net_path, config.to_net_data()),
+            (self._fw_path,  config.to_fw_data()),
+        ):
+            dir_path = os.path.dirname(os.path.abspath(path))
+            fd, tmp_path = tempfile.mkstemp(
+                dir=dir_path, prefix=".tmp-firewall-", suffix=".json"
+            )
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f, indent=2)
+                    f.write("\n")
+                os.replace(tmp_path, path)   # atomic rename(2)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        logging.debug(
+            "Config saved atomically: %s and %s", self._net_path, self._fw_path
+        )
+
+    def _reconcile(self) -> dict:
+        """Compare in-memory config against host state; remove orphaned objects.
+
+        Performs three checks, all under ``_lock``:
+
+        1. **Orphaned iptables chains**: enumerates all ``DOCKSIDE-*`` chains
+           in the kernel via ``_list_dockside_chains``; flushes and deletes any
+           whose name prefix is not expected from ``self._config``.
+
+        2. **Orphaned ipsets**: destroys any ipsets registered in
+           ``IpsetManager._sets`` that are no longer defined in
+           ``self._config.ipsets``.
+
+        3. **Docker network orphans**: lists Docker networks and reports (but
+           never deletes) any whose names look Dockside-owned but are absent
+           from ``self._config``.  Docker network deletion requires stopping
+           all connected containers first, which is the operator's
+           responsibility.
+
+        Returns a dict suitable for returning directly as a socket response.
+        """
+        with self._lock:
+            cfg = self._config
+            if cfg is None:
+                return {"status": "error", "message": "daemon not yet initialized"}
+
+            removed_chains:      List[str] = []
+            removed_ipsets_list: List[str] = []
+            docker_orphans:      List[str] = []
+
+            # 1. Orphaned iptables chains.
+            expected_prefixes: set = set()
+            for s in cfg.networks:
+                if s.managed:
+                    expected_prefixes.add(s.chain_prefix)
+            # DOCKSIDE-DISPATCH chain begins with DOCKSIDE_PREFIX.
+            expected_prefixes.add(DOCKSIDE_PREFIX)
+
+            for table in ("filter", "nat"):
+                flags = ["-t", table] if table != "filter" else []
+                for chain in self._ipt_mgr._list_dockside_chains(table):
+                    if not any(chain.startswith(p) for p in expected_prefixes):
+                        _run(["iptables"] + flags + ["-F", chain], allow_fail=True)
+                        _run(["iptables"] + flags + ["-X", chain], allow_fail=True)
+                        removed_chains.append(chain)
+                        logging.info(
+                            "Reconcile: removed orphaned chain %s (%s table)",
+                            chain, table,
+                        )
+
+            # 2. Orphaned ipsets: registered in IpsetManager but absent from config.
+            config_ipset_names = set(cfg.ipsets.keys())
+            for name in list(self._ipset_mgr.registered_names() - config_ipset_names):
+                self._ipset_mgr.deregister(name)
+                self._ipset_mgr.destroy_by_names([name])
+                removed_ipsets_list.append(name)
+                logging.info("Reconcile: destroyed orphaned ipset %s", name)
+
+            # 3. Docker network orphans (informational only; never deleted).
+            r = _run(
+                ["docker", "network", "ls", "--format", "{{.Name}}"],
+                allow_fail=True,
+            )
+            if r.returncode == 0:
+                config_nets = cfg.network_names()
+                for net_name in r.stdout.split():
+                    if net_name not in config_nets and net_name.lower().startswith("ds-"):
+                        docker_orphans.append(net_name)
+                if docker_orphans:
+                    logging.warning(
+                        "Reconcile: Docker networks not in config "
+                        "(not removed — operator action required): %s",
+                        ", ".join(docker_orphans),
+                    )
+
+        return {
+            "status":         "ok",
+            "removed_chains": removed_chains,
+            "removed_ipsets": removed_ipsets_list,
+            "docker_orphans": docker_orphans,
+        }
+
     def _reload(self) -> None:
         """Load config from disk and atomically apply it while holding _lock.
 
-        Acquires ``_lock`` for the apply phase so the refresh loop cannot
-        concurrently modify ipset state.  On any error the existing config
-        remains active (partial failure does not corrupt state because
-        IptablesManager.apply_config uses atomic iptables-restore).
+        Uses ``_two_phase_apply`` so that networks and ipsets removed from the
+        config files since the last reload are cleaned up from the kernel.
+        On any error the existing config remains active (the atomic
+        ``iptables-restore --noflush`` in Phase 1 ensures no partial state).
         """
         try:
             new_config = Config.from_files(self._net_path, self._fw_path)
             with self._lock:
-                self._docker_mgr.ensure_networks(new_config.networks)
-                for name, hostnames in new_config.ipsets.items():
-                    self._ipset_mgr.ensure_ipset(name, hostnames)
-                # Refresh immediately after updating ipset membership so rules
-                # that reference newly-added ipsets are populated before use.
-                self._ipset_mgr.refresh_all()
-                self._ipt_mgr.apply_config(new_config)
-                self._config = new_config
+                self._two_phase_apply(new_config, self._config)
             logging.info("Config reload complete")
         except Exception:
             logging.exception("Config reload failed")
@@ -1550,14 +2010,21 @@ class FirewallDaemon:
         """Dispatch a management socket request to the appropriate handler.
 
         Supported actions:
-          ``reload``  — reload config from disk (same as SIGUSR1).
-          ``apply``   — apply an inline config supplied in the request body;
-                        the request must contain ``network_config`` and
-                        ``firewall_config`` dict keys matching the JSON file
-                        structure.
-          ``refresh`` — re-resolve all ipsets immediately without reloading
-                        the rest of the config.
-          ``status``  — return current daemon state (networks and live ipset IPs).
+          ``reload``          — reload config from disk (same as SIGUSR1);
+                                cleans up objects removed since last apply.
+          ``apply``           — apply an inline config supplied in the request
+                                body (``network_config`` + ``firewall_config``
+                                keys); saves to disk; cleans up removed objects.
+          ``refresh``         — re-resolve all ipsets immediately without
+                                reloading the rest of the config.
+          ``status``          — return current daemon state (networks + IPs).
+          ``set-network``     — upsert one network (topology + firewall rules);
+                                saves to disk.
+          ``remove-network``  — remove one network from config; saves to disk.
+          ``set-ipset``       — upsert one ipset definition; saves to disk.
+          ``remove-ipset``    — remove one ipset; saves to disk.
+          ``reconcile``       — compare in-memory config against host state and
+                                clean up orphaned iptables chains and ipsets.
 
         All mutating actions are serialised by ``_lock``.  Any exception is
         caught and returned as ``{"status": "error", "message": "…"}``.
@@ -1574,30 +2041,265 @@ class FirewallDaemon:
                 # Reload config from disk; same effect as SIGUSR1.
                 self._reload()
                 return {"status": "ok"}
+
             elif action == "apply":
-                # Apply an inline config provided in the request body.
-                # Useful for programmatic config updates without touching files.
+                # Apply an inline config; two-phase apply cleans up removals.
                 net_data = req.get("network_config", {})
                 fw_data  = req.get("firewall_config", {})
                 new_cfg  = Config.from_dicts(net_data, fw_data)
                 with self._lock:
-                    self._docker_mgr.ensure_networks(new_cfg.networks)
-                    for name, hostnames in new_cfg.ipsets.items():
-                        self._ipset_mgr.ensure_ipset(name, hostnames)
-                    self._ipt_mgr.apply_config(new_cfg)
-                    self._config = new_cfg
+                    self._two_phase_apply(new_cfg, self._config)
+                    self._save_config(new_cfg)
                 return {"status": "ok"}
+
             elif action == "refresh":
                 # Re-resolve ipsets immediately; does not reload other config.
                 with self._lock:
                     self._ipset_mgr.refresh_all()
                 return {"status": "ok"}
+
             elif action == "status":
                 return self._get_status()
+
+            elif action == "set-network":
+                return self._handle_set_network(req)
+
+            elif action == "remove-network":
+                return self._handle_remove_network(req)
+
+            elif action == "set-ipset":
+                return self._handle_set_ipset(req)
+
+            elif action == "remove-ipset":
+                return self._handle_remove_ipset(req)
+
+            elif action == "reconcile":
+                return self._reconcile()
+
             else:
                 return {"status": "error", "message": f"unknown action: {action!r}"}
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
+
+    def _handle_set_network(self, req: dict) -> dict:
+        """Upsert one network entry (topology + optional firewall rules).
+
+        Request keys:
+          ``name``     (str, required)  — network name.
+          ``network``  (dict, optional) — topology fields to set or update:
+                                          ``subnet``, ``gateway_ip``,
+                                          ``gateway_mac``.  Missing fields
+                                          preserve existing values.
+          ``firewall`` (dict, optional) — firewall rules for this network:
+                                          ``egress`` list, ``nat`` list.
+                                          Omitting this key removes any
+                                          existing rules for the network.
+
+        A subnet change on an existing network is rejected because it requires
+        Docker network recreation (which disconnects containers).  The operator
+        should update the file and use ``reload`` with ``RESET=1`` instead.
+        """
+        name = req.get("name")
+        if not name:
+            return {"status": "error", "message": "missing 'name'"}
+        net_obj = req.get("network") or {}
+        fw_obj  = req.get("firewall")   # None means "no rules"
+
+        with self._lock:
+            old_cfg = self._config or Config([], {})
+
+            # Build the new raw network-spec dict by merging provided fields
+            # onto the existing NetworkSpec (if any) so callers can do partial
+            # updates (e.g. change gateway_ip without re-specifying subnet).
+            existing_spec: dict = {}
+            for s in old_cfg.networks:
+                if s.name == name:
+                    existing_spec = s.to_net_dict()
+                    break
+
+            # Reject subnet changes on existing networks.
+            if (
+                existing_spec
+                and net_obj.get("subnet")
+                and existing_spec.get("subnet") != net_obj["subnet"]
+            ):
+                return {
+                    "status": "error",
+                    "message": (
+                        f"subnet change for existing network {name!r} is not "
+                        "supported via set-network (would disconnect containers);"
+                        " update network-config.json and reload with RESET=1"
+                    ),
+                }
+
+            # Overlay provided fields onto existing values.
+            new_net_spec: dict = dict(existing_spec)
+            new_net_spec["name"] = name
+            for key in ("subnet", "gateway_ip", "gateway_mac"):
+                val = net_obj.get(key)
+                if val is not None:
+                    new_net_spec[key] = val
+
+            if "subnet" not in new_net_spec:
+                return {
+                    "status": "error",
+                    "message": f"'subnet' is required for new network {name!r}",
+                }
+
+            # Build the updated network list (replace existing or append).
+            new_net_specs = []
+            replaced = False
+            for s in old_cfg.networks:
+                if s.name == name:
+                    new_net_specs.append(new_net_spec)
+                    replaced = True
+                else:
+                    new_net_specs.append(s.to_net_dict())
+            if not replaced:
+                new_net_specs.append(new_net_spec)
+
+            # Build the updated firewall networks map.
+            new_fw_nets: dict = {}
+            for s in old_cfg.networks:
+                if s.name == name:
+                    continue    # will be replaced below
+                fw = s.to_fw_dict()
+                if fw is not None:
+                    new_fw_nets[s.name] = fw
+            if fw_obj:
+                new_fw_nets[name] = fw_obj
+
+            net_data = {"networks": new_net_specs}
+            fw_data  = {"ipsets": dict(old_cfg.ipsets), "networks": new_fw_nets}
+            new_cfg  = Config.from_dicts(net_data, fw_data)
+            self._two_phase_apply(new_cfg, old_cfg)
+            self._save_config(new_cfg)
+
+        return {"status": "ok", "networks": [s.name for s in new_cfg.networks]}
+
+    def _handle_remove_network(self, req: dict) -> dict:
+        """Remove one network from config and apply cleanup.
+
+        Request keys:
+          ``name`` (str, required) — network name to remove.
+
+        Container safety is handled by ``_cleanup_phase``: if the network
+        still has containers connected, the iptables chain deletion is deferred
+        and a warning is logged.  The firewall is immediately correct (the
+        network is removed from ``DOCKSIDE-DISPATCH`` by the Phase 1
+        ``iptables-restore`` call) regardless of deferral.
+        """
+        name = req.get("name")
+        if not name:
+            return {"status": "error", "message": "missing 'name'"}
+
+        with self._lock:
+            old_cfg = self._config
+            if old_cfg is None:
+                return {"status": "error", "message": "daemon not yet initialized"}
+            if name not in old_cfg.network_names():
+                return {
+                    "status": "error",
+                    "message": f"network {name!r} not in config",
+                }
+
+            # Build new config with this network removed.
+            new_net_specs = [
+                s.to_net_dict() for s in old_cfg.networks if s.name != name
+            ]
+            new_fw_nets: dict = {}
+            for s in old_cfg.networks:
+                if s.name == name:
+                    continue
+                fw = s.to_fw_dict()
+                if fw is not None:
+                    new_fw_nets[s.name] = fw
+
+            net_data = {"networks": new_net_specs}
+            fw_data  = {"ipsets": dict(old_cfg.ipsets), "networks": new_fw_nets}
+            new_cfg  = Config.from_dicts(net_data, fw_data)
+            self._two_phase_apply(new_cfg, old_cfg)
+            self._save_config(new_cfg)
+
+        return {"status": "ok"}
+
+    def _handle_set_ipset(self, req: dict) -> dict:
+        """Upsert one ipset definition.
+
+        Request keys:
+          ``name``      (str, required)  — ipset name.
+          ``hostnames`` (list, required) — list of hostnames/IPs to populate
+                                           the ipset with.
+        """
+        ipset_name = req.get("name")
+        hostnames  = req.get("hostnames", [])
+        if not ipset_name:
+            return {"status": "error", "message": "missing 'name'"}
+        if not isinstance(hostnames, list):
+            return {"status": "error", "message": "'hostnames' must be a list"}
+
+        with self._lock:
+            old_cfg = self._config or Config([], {})
+            new_ipsets = dict(old_cfg.ipsets)
+            new_ipsets[ipset_name] = hostnames
+            net_data = old_cfg.to_net_data()
+            fw_data  = old_cfg.to_fw_data()
+            fw_data["ipsets"] = new_ipsets
+            new_cfg  = Config.from_dicts(net_data, fw_data)
+            self._two_phase_apply(new_cfg, old_cfg)
+            self._save_config(new_cfg)
+
+        return {"status": "ok"}
+
+    def _handle_remove_ipset(self, req: dict) -> dict:
+        """Remove one ipset definition and destroy its kernel objects.
+
+        Request keys:
+          ``name`` (str, required) — ipset name to remove.
+
+        Pre-flight guard: the request is rejected if any remaining network's
+        egress rules still reference this ipset by name.  Removing a
+        referenced ipset would leave dangling ``-m set --match-set`` rules
+        in the kernel that silently fail to match.  The operator must first
+        update or remove the referencing network's firewall rules.
+        """
+        ipset_name = req.get("name")
+        if not ipset_name:
+            return {"status": "error", "message": "missing 'name'"}
+
+        with self._lock:
+            old_cfg = self._config
+            if old_cfg is None:
+                return {"status": "error", "message": "daemon not yet initialized"}
+            if ipset_name not in old_cfg.ipsets:
+                return {
+                    "status": "error",
+                    "message": f"ipset {ipset_name!r} not in config",
+                }
+            # Guard: refuse removal if still referenced by egress rules.
+            referencing = [
+                s.name for s in old_cfg.networks
+                if any(r.ipset == ipset_name for r in s.egress_rules)
+            ]
+            if referencing:
+                return {
+                    "status": "error",
+                    "message": (
+                        f"ipset {ipset_name!r} is still referenced by: "
+                        + ", ".join(referencing)
+                        + "; remove or update those network rules first"
+                    ),
+                }
+
+            new_ipsets = {k: v for k, v in old_cfg.ipsets.items() if k != ipset_name}
+            net_data = old_cfg.to_net_data()
+            fw_data  = old_cfg.to_fw_data()
+            fw_data["ipsets"] = new_ipsets
+            new_cfg  = Config.from_dicts(net_data, fw_data)
+            self._two_phase_apply(new_cfg, old_cfg)
+            self._save_config(new_cfg)
+
+        return {"status": "ok"}
 
     def _get_status(self) -> dict:
         """Return a status dict describing the current daemon state.
