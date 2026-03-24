@@ -1197,11 +1197,11 @@ class IptablesManager:
           A drop rule emits two lines:
             1. REJECT with ``tcp-reset`` for TCP NEW connections (gives the
                sender an immediate RST so it does not hang waiting for a timeout).
-            2. A plain DROP for all other traffic:
-               - When ``cidr`` is set (targeted drop): matches *all* ctstates,
-                 so even ESTABLISHED flows to that CIDR are killed.
-               - When ``cidr`` is absent (terminal drop): matches only NEW so
-                 that already-established connections elsewhere keep working.
+            2. A plain DROP for non-TCP NEW connections only.
+          Both rules restrict to NEW connections so that ESTABLISHED/RELATED
+          packets for already-permitted flows (e.g. a DNAT-redirected port that
+          was allowed by an earlier rule) are not disrupted — they fall through
+          the OUT chain and are accepted by Docker's FORWARD ESTABLISHED rule.
 
         Allow rules:
           An allow rule emits a single RETURN line for NEW connections only.
@@ -1252,15 +1252,12 @@ class IptablesManager:
                 f"{prefix} {dst}-p tcp -m conntrack --ctstate NEW"
                 f" -j REJECT --reject-with tcp-reset"
             )
-            # Non-TCP: plain DROP.
-            # Targeted drops (destination filter present) catch all ctstates so
-            # existing flows to that destination are torn down immediately.
-            # Terminal drops (no destination) restrict to NEW only to avoid
-            # disrupting already-established flows to destinations not otherwise permitted.
-            if dst:
-                lines.append(f"{prefix} {dst}-j DROP")
-            else:
-                lines.append(f"{prefix} -m conntrack --ctstate NEW -j DROP")
+            # Non-TCP: plain DROP for NEW connections only.
+            # Restricting to NEW means ESTABLISHED/RELATED packets for already-allowed
+            # flows (e.g. a DNAT-redirected MySQL connection) are not disrupted — they
+            # fall through the OUT chain and are accepted by Docker's FORWARD ESTABLISHED
+            # rule.  This applies to both targeted (dst set) and terminal (dst empty) drops.
+            lines.append(f"{prefix} {dst}-m conntrack --ctstate NEW -j DROP")
             return lines
 
         # ── Allow rule: build destination selector ────────────────────────────
