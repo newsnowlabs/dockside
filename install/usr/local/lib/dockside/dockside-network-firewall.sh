@@ -94,27 +94,27 @@ init_iptables_chains() {
   local dev="$(net_to_dev $net)"
   local chn="$(net_to_chn $net)"
   local subnet="$2"
-  local gateway_ip="$3"
-  local gateway_mac="$4"
+  local dockside_ip="$3"
+  local dockside_mac="$4"
 
-  if [ -z "$gateway_mac" ] && [ -z "$gateway_ip" ]; then
-    echo "Error: No gateway MAC or IP specified for network '$net'." >&2
+  if [ -z "$dockside_mac" ] && [ -z "$dockside_ip" ]; then
+    echo "Error: No dockside container MAC or IP specified for network '$net'." >&2
     exit 1
   fi
 
   iptables -A DOCKER-USER -i $dev -o $dev -j $chn-ING || true
 
-  [ -n "$gateway_mac" ] && iptables -A $chn-ING -m mac --mac-source $gateway_mac -p tcp -m conntrack --ctstate NEW -j RETURN
-  [ -n "$gateway_ip" ]  && iptables -A $chn-ING -s $gateway_ip -p tcp -m conntrack --ctstate NEW -j RETURN
+  [ -n "$dockside_mac" ] && iptables -A $chn-ING -m mac --mac-source $dockside_mac -p tcp -m conntrack --ctstate NEW -j RETURN
+  [ -n "$dockside_ip" ]  && iptables -A $chn-ING -s $dockside_ip -p tcp -m conntrack --ctstate NEW -j RETURN
 
   iptables -A $chn-ING -m conntrack --ctstate NEW -j DROP
 
-  if [ -n "$gateway_mac" ] && [ -n "$gateway_ip" ]; then
-    iptables -A DOCKER-USER -i $dev ! -o $dev -m mac ! --mac-source $gateway_mac ! -s $gateway_ip -j $chn-OUT
-  elif [ -n "$gateway_mac" ]; then
-    iptables -A DOCKER-USER -i $dev ! -o $dev -m mac ! --mac-source $gateway_mac -j $chn-OUT
-  elif [ -n "$gateway_ip" ]; then
-    iptables -A DOCKER-USER -i $dev ! -o $dev ! -s $gateway_ip -j $chn-OUT
+  if [ -n "$dockside_mac" ] && [ -n "$dockside_ip" ]; then
+    iptables -A DOCKER-USER -i $dev ! -o $dev -m mac ! --mac-source $dockside_mac ! -s $dockside_ip -j $chn-OUT
+  elif [ -n "$dockside_mac" ]; then
+    iptables -A DOCKER-USER -i $dev ! -o $dev -m mac ! --mac-source $dockside_mac -j $chn-OUT
+  elif [ -n "$dockside_ip" ]; then
+    iptables -A DOCKER-USER -i $dev ! -o $dev ! -s $dockside_ip -j $chn-OUT
   fi
 
   iptables -t nat -A PREROUTING -j $chn-NAT
@@ -356,15 +356,15 @@ ssh_to_github() {
 create_network() {
   local net="$1"
   local subnet="$2"
-  local gateway_ip="$3"
-  local gateway_mac="$4"
+  local dockside_ip="$3"
+  local dockside_mac="$4"
 
   create_docker_network "$net" "$subnet"
   delete_iptables_chains "$net"
   create_iptables_chains "$net" "$subnet"
 
   if [ "$net" != "dockside" ]; then
-    init_iptables_chains "$net" "$subnet" "$gateway_ip" "$gateway_mac"
+    init_iptables_chains "$net" "$subnet" "$dockside_ip" "$dockside_mac"
   fi
 }
 

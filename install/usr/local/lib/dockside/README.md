@@ -78,10 +78,10 @@ Defines the Docker bridge networks to create.
 {
   "networks": [
     {
-      "name":        "ds-prod",
-      "subnet":      "172.16.0.0/16",
-      "gateway_ip":  "172.16.0.2",
-      "gateway_mac": "02:00:00:00:00:01"
+      "name":         "ds-prod",
+      "subnet":       "172.16.0.0/16",
+      "dockside_ip":  "172.16.0.2",
+      "dockside_mac": "02:00:00:00:00:01"
     }
   ]
 }
@@ -91,10 +91,14 @@ Defines the Docker bridge networks to create.
 |---|---|---|
 | `name` | yes | Docker network name; also the Linux bridge name (lower-cased) |
 | `subnet` | yes | CIDR subnet, e.g. `"172.16.0.0/16"` |
-| `gateway_ip` | no | Gateway IP; defaults to the `.1` host of the subnet |
-| `gateway_mac` | no | Gateway MAC address; gateway traffic bypasses the egress chain when set |
+| `gateway_ip` | no | Docker network gateway IP; defaults to the `.1` host of the subnet |
+| `dockside_ip` | no | Source IP of the dockside container on this network (typically `.2`); traffic from this IP bypasses the egress chain |
+| `dockside_mac` | no | MAC address of the dockside container's interface; traffic from this MAC bypasses the egress chain |
 
-A network with no `gateway_ip`, `gateway_mac`, egress rules, or NAT rules is
+At least one of `dockside_ip` or `dockside_mac` (or both) should be set for any
+managed network; either is sufficient to identify dockside-container traffic.
+
+A network with no `dockside_ip`, `dockside_mac`, egress rules, or NAT rules is
 considered **unmanaged** and receives no Dockside firewall chains; its traffic
 passes through Docker's default FORWARD rules unchanged.
 
@@ -250,7 +254,7 @@ rules.
   "action": "apply",
   "network_config": {
     "networks": [
-      {"name": "ds-prod", "subnet": "172.16.0.0/16", "gateway_ip": "172.16.0.2"}
+      {"name": "ds-prod", "subnet": "172.16.0.0/16", "dockside_ip": "172.16.0.2"}
     ]
   },
   "firewall_config": {
@@ -356,7 +360,7 @@ with open("/etc/dockside/firewall-config.json") as f:
 
 # Add a new network
 net_cfg["networks"].append({
-    "name": "ds-newnet", "subnet": "172.20.0.0/16", "gateway_ip": "172.20.0.2"
+    "name": "ds-newnet", "subnet": "172.20.0.0/16", "dockside_ip": "172.20.0.2"
 })
 fw_cfg["networks"]["ds-newnet"] = {
     "egress": [

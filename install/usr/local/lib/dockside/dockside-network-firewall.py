@@ -282,14 +282,24 @@ class NetworkSpec:
         # CIDR subnet for the network (e.g. "172.20.0.0/16").
         self.subnet      = d["subnet"]
 
-        # Optional explicit gateway IP.  When absent, derived automatically
-        # from the subnet by ``_subnet_to_gateway()`` (first host, i.e. x.x.x.1).
+        # Optional explicit gateway IP for Docker network creation.  When absent,
+        # derived automatically from the subnet by ``_subnet_to_gateway()``
+        # (first host, i.e. x.x.x.1).  Not used for iptables rule matching;
+        # see ``dockside_ip`` for that purpose.
         self.gateway_ip  = d.get("gateway_ip")
 
-        # Optional MAC address of the gateway interface.  When provided,
-        # iptables rules allow traffic from this MAC address unconditionally,
-        # ensuring gateway-initiated packets are never blocked.
-        self.gateway_mac = d.get("gateway_mac")
+        # Optional source IP of the dockside container on this network (typically
+        # the x.x.x.2 host).  When provided, DOCKSIDE-DISPATCH rules use ``-s``
+        # to identify traffic originating from the dockside container and exempt
+        # it from the per-network OUT chain / allow it through the ING chain.
+        self.dockside_ip  = d.get("dockside_ip")
+
+        # Optional MAC address of the dockside container's interface on this
+        # network.  When provided, DOCKSIDE-DISPATCH rules use ``--mac-source``
+        # to identify dockside-container traffic.  Either ``dockside_ip``,
+        # ``dockside_mac``, or both may be set; at least one is needed for the
+        # network to be "managed" (unless egress/NAT rules are present).
+        self.dockside_mac = d.get("dockside_mac")
 
         # Outbound traffic rules appended by Config.from_dicts() after parsing
         # the firewall-config "egress" array for this network.
@@ -324,13 +334,13 @@ class NetworkSpec:
     def managed(self) -> bool:
         """True if this network needs DOCKSIDE-DISPATCH entries and firewall chains.
 
-        An "unmanaged" network (no gateway configured, no egress or NAT rules)
-        does not require custom firewall chains; its traffic flows through
-        Docker's default FORWARD rules unchanged.  Only managed networks get
-        entries in the DOCKSIDE-DISPATCH jump chain.
+        An "unmanaged" network (no dockside container IP/MAC configured, no
+        egress or NAT rules) does not require custom firewall chains; its
+        traffic flows through Docker's default FORWARD rules unchanged.  Only
+        managed networks get entries in the DOCKSIDE-DISPATCH jump chain.
         """
         return bool(
-            self.gateway_ip or self.gateway_mac
+            self.dockside_ip or self.dockside_mac
             or self.egress_rules or self.nat_rules
         )
 
@@ -338,14 +348,16 @@ class NetworkSpec:
         """Serialise the network topology fields to a network-config.json entry.
 
         Returns a dict suitable for inclusion in the ``"networks"`` array of
-        network-config.json.  Optional fields (``gateway_ip``, ``gateway_mac``)
-        are omitted when not set so the output stays compact.
+        network-config.json.  Optional fields (``gateway_ip``, ``dockside_ip``,
+        ``dockside_mac``) are omitted when not set so the output stays compact.
         """
         d: dict = {"name": self.name, "subnet": self.subnet}
         if self.gateway_ip:
             d["gateway_ip"] = self.gateway_ip
-        if self.gateway_mac:
-            d["gateway_mac"] = self.gateway_mac
+        if self.dockside_ip:
+            d["dockside_ip"] = self.dockside_ip
+        if self.dockside_mac:
+            d["dockside_mac"] = self.dockside_mac
         return d
 
     def to_fw_dict(self) -> Optional[dict]:
@@ -1047,19 +1059,20 @@ class IptablesManager:
             out_match = IptablesManager._dispatch_out_match(spec)
             lines.append(f"-A DOCKSIDE-DISPATCH {out_match} -j {p}-OUT")
 
-        # 3b. Gateway exemptions: allow the network gateway's own new outbound
-        #   connections to pass without going through the OUT chain.  Matches by
-        #   MAC address (more specific) or by source IP; both may be present.
+        # 3b. Dockside-container exemptions: allow the dockside container's own
+        #   outbound connections to pass without going through the OUT chain.
+        #   Matches by MAC address (more specific) or by source IP; both may
+        #   be present.
         for spec in managed:
             dev = spec.dev
-            if spec.gateway_mac:
+            if spec.dockside_mac:
                 lines.append(
                     f"-A DOCKSIDE-DISPATCH -i {dev}"
-                    f" -m mac --mac-source {spec.gateway_mac} -j RETURN"
+                    f" -m mac --mac-source {spec.dockside_mac} -j RETURN"
                 )
-            if spec.gateway_ip:
+            if spec.dockside_ip:
                 lines.append(
-                    f"-A DOCKSIDE-DISPATCH -i {dev} -s {spec.gateway_ip} -j RETURN"
+                    f"-A DOCKSIDE-DISPATCH -i {dev} -s {spec.dockside_ip} -j RETURN"
                 )
 
         # 3c. Terminal RETURN: any packet not matched above (non-Dockside bridge)
@@ -1073,16 +1086,16 @@ class IptablesManager:
         #   on the DROP); they are allowed by Docker's FORWARD ACCEPT rule.
         for spec in managed:
             p  = spec.chain_prefix
-            gm = spec.gateway_mac
-            gi = spec.gateway_ip
+            gm = spec.dockside_mac
+            gi = spec.dockside_ip
             if gm:
-                # Allow TCP NEW connections whose source MAC is the gateway MAC.
+                # Allow TCP NEW connections whose source MAC is the dockside container MAC.
                 lines.append(
                     f"-A {p}-ING -m mac --mac-source {gm} -p tcp"
                     f" -m conntrack --ctstate NEW -j RETURN"
                 )
             if gi:
-                # Allow TCP NEW connections whose source IP is the gateway IP.
+                # Allow TCP NEW connections whose source IP is the dockside container IP.
                 lines.append(
                     f"-A {p}-ING -s {gi} -p tcp"
                     f" -m conntrack --ctstate NEW -j RETURN"
@@ -1148,19 +1161,19 @@ class IptablesManager:
         The fragment matches packets that:
           - enter the network's bridge interface (``-i <dev>``)
           - exit a *different* interface (``! -o <dev>`` — i.e. not looping back)
-          - are *not* from the gateway (excluded so gateway traffic hits the
-            gateway exemption rules in step 3b instead)
+          - are *not* from the dockside container (excluded so dockside-container
+            traffic hits the dockside exemption rules in step 3b instead)
 
-        Excluding gateway traffic from the OUT chain is important: the gateway
-        is a trusted host whose egress should not be subject to container egress
-        policy.
+        Excluding dockside-container traffic from the OUT chain is important: the
+        dockside container is a trusted host whose egress should not be subject
+        to container egress policy.
 
         Returns a string of iptables match options (no ``-j`` target) ready to
         be embedded in a ``-A DOCKSIDE-DISPATCH … -j <PREFIX>-OUT`` rule.
         """
         dev   = spec.dev
-        gm    = spec.gateway_mac
-        gi    = spec.gateway_ip
+        gm    = spec.dockside_mac
+        gi    = spec.dockside_ip
         # Start with the mandatory match: enters the bridge, exits elsewhere.
         parts = [f"-i {dev}", f"! -o {dev}"]
         if gm and gi:
@@ -1173,7 +1186,7 @@ class IptablesManager:
             # Only IP is known; exclude by source IP alone.
             parts.append(f"! -s {gi}")
         # If neither is set: all outbound traffic from the bridge is dispatched
-        # into the OUT chain (no gateway exemption needed).
+        # into the OUT chain (no dockside exemption needed).
         return " ".join(parts)
 
     @staticmethod
@@ -2088,8 +2101,8 @@ class FirewallDaemon:
           ``name``     (str, required)  — network name.
           ``network``  (dict, optional) — topology fields to set or update:
                                           ``subnet``, ``gateway_ip``,
-                                          ``gateway_mac``.  Missing fields
-                                          preserve existing values.
+                                          ``dockside_ip``, ``dockside_mac``.
+                                          Missing fields preserve existing values.
           ``firewall`` (dict, optional) — firewall rules for this network:
                                           ``egress`` list, ``nat`` list.
                                           Omitting this key removes any
@@ -2110,7 +2123,7 @@ class FirewallDaemon:
 
             # Build the new raw network-spec dict by merging provided fields
             # onto the existing NetworkSpec (if any) so callers can do partial
-            # updates (e.g. change gateway_ip without re-specifying subnet).
+            # updates (e.g. change dockside_ip without re-specifying subnet).
             existing_spec: dict = {}
             for s in old_cfg.networks:
                 if s.name == name:
@@ -2135,7 +2148,7 @@ class FirewallDaemon:
             # Overlay provided fields onto existing values.
             new_net_spec: dict = dict(existing_spec)
             new_net_spec["name"] = name
-            for key in ("subnet", "gateway_ip", "gateway_mac"):
+            for key in ("subnet", "gateway_ip", "dockside_ip", "dockside_mac"):
                 val = net_obj.get(key)
                 if val is not None:
                     new_net_spec[key] = val
