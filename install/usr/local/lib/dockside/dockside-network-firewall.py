@@ -874,18 +874,7 @@ class IptablesManager:
                     f"-A DOCKSIDE-DISPATCH -i {dev} -s {spec.gateway_ip} -j RETURN"
                 )
 
-        # 3c. Safety-net DROP: drop NEW connections from any managed bridge that
-        #   was not caught by the dispatch jumps above.  This handles edge cases
-        #   like a stale bridge interface still present after a network is removed
-        #   from config.  Only NEW connections are dropped; ESTABLISHED/RELATED
-        #   traffic falls through DOCKSIDE-DISPATCH to Docker's own FORWARD ACCEPT.
-        for spec in managed:
-            dev = spec.dev
-            lines.append(
-                f"-A DOCKSIDE-DISPATCH -i {dev} -m conntrack --ctstate NEW -j DROP"
-            )
-
-        # 3d. Terminal RETURN: any packet not matched above (non-Dockside bridge)
+        # 3c. Terminal RETURN: any packet not matched above (non-Dockside bridge)
         #   is returned to DOCKER-USER, which then returns to FORWARD.
         lines.append("-A DOCKSIDE-DISPATCH -j RETURN")
 
