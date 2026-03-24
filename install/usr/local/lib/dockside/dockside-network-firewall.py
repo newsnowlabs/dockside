@@ -185,6 +185,11 @@ class EgressRule:
         #             actively refuse the traffic and notify the sender.
         self.action    = d.get("action", "allow")      # "allow"|"drop"
 
+        # Optional human-readable description of the rule; transferred verbatim
+        # to iptables via ``-m comment --comment "..."`` so it appears in
+        # ``iptables -L`` output alongside the rule.
+        self.comment   = d.get("comment")              # str|None
+
     def to_dict(self) -> dict:
         """Serialise back to the JSON dict form used in firewall-config.json.
 
@@ -212,6 +217,8 @@ class EgressRule:
             d["host"] = self.host
         if self.proto == "icmp":
             d["type"] = self.icmp_type
+        if self.comment:
+            d["comment"] = self.comment
         return d
 
     def __repr__(self) -> str:
@@ -1048,36 +1055,36 @@ class IptablesManager:
         #   Packets are classified into two categories:
         #     ING: same bridge on both -i and -o (container-to-container, intra-network).
         #     OUT: enters the bridge (-i) but exits a different interface (egress to host/internet).
+        #   The dockside container's own MAC/IP are already excluded by _dispatch_out_match,
+        #   so its traffic never reaches the per-network OUT chains; no separate exemption
+        #   rules are needed.
         for spec in managed:
             dev = spec.dev
             p   = spec.chain_prefix
             # ING: intra-network traffic — both ingress and egress interface are the same bridge.
-            lines.append(f"-A DOCKSIDE-DISPATCH -i {dev} -o {dev} -j {p}-ING")
+            lines.append(
+                f"-A DOCKSIDE-DISPATCH -i {dev} -o {dev}"
+                f" -m comment --comment \"intra:{dev}\""
+                f" -j {p}-ING"
+            )
             # OUT: egress traffic — enters the bridge, exits a different interface.
-            #   Gateway traffic is excluded by _dispatch_out_match so it bypasses
-            #   the per-network OUT chain and reaches the gateway exemptions below.
+            #   Dockside's own MAC/IP are excluded by _dispatch_out_match, so its traffic
+            #   falls through to the terminal RETURN below without touching the OUT chain.
             out_match = IptablesManager._dispatch_out_match(spec)
-            lines.append(f"-A DOCKSIDE-DISPATCH {out_match} -j {p}-OUT")
+            lines.append(
+                f"-A DOCKSIDE-DISPATCH {out_match}"
+                f" -m comment --comment \"egress:{dev}\""
+                f" -j {p}-OUT"
+            )
 
-        # 3b. Dockside-container exemptions: allow the dockside container's own
-        #   outbound connections to pass without going through the OUT chain.
-        #   Matches by MAC address (more specific) or by source IP; both may
-        #   be present.
-        for spec in managed:
-            dev = spec.dev
-            if spec.dockside_mac:
-                lines.append(
-                    f"-A DOCKSIDE-DISPATCH -i {dev}"
-                    f" -m mac --mac-source {spec.dockside_mac} -j RETURN"
-                )
-            if spec.dockside_ip:
-                lines.append(
-                    f"-A DOCKSIDE-DISPATCH -i {dev} -s {spec.dockside_ip} -j RETURN"
-                )
-
-        # 3c. Terminal RETURN: any packet not matched above (non-Dockside bridge)
-        #   is returned to DOCKER-USER, which then returns to FORWARD.
-        lines.append("-A DOCKSIDE-DISPATCH -j RETURN")
+        # 3b. Terminal RETURN: any packet not matched above (non-managed bridge, or
+        #   the dockside container's own traffic excluded by _dispatch_out_match) is
+        #   returned to DOCKER-USER, which then returns to FORWARD.
+        lines.append(
+            "-A DOCKSIDE-DISPATCH"
+            " -m comment --comment \"pass-through\""
+            " -j RETURN"
+        )
 
         # 4. Per-network ING chains — control NEW intra-network connections.
         #   Purpose: prevent containers from initiating connections to each other
@@ -1226,6 +1233,11 @@ class IptablesManager:
         """
         lines:  List[str] = []
         prefix  = f"-A {chain}"
+        # Optional iptables comment fragment, inserted before every -j target.
+        cmt = (
+            f" -m comment --comment \"{rule.comment.replace(chr(34), chr(39))}\""
+            if rule.comment else ""
+        )
 
         if rule.action == "drop":
             # Build destination filter using the same selectors as allow rules.
@@ -1250,14 +1262,14 @@ class IptablesManager:
             # leaving it in SYN_SENT waiting for a timeout.
             lines.append(
                 f"{prefix} {dst}-p tcp -m conntrack --ctstate NEW"
-                f" -j REJECT --reject-with tcp-reset"
+                f"{cmt} -j REJECT --reject-with tcp-reset"
             )
             # Non-TCP: plain DROP for NEW connections only.
             # Restricting to NEW means ESTABLISHED/RELATED packets for already-allowed
             # flows (e.g. a DNAT-redirected MySQL connection) are not disrupted — they
             # fall through the OUT chain and are accepted by Docker's FORWARD ESTABLISHED
             # rule.  This applies to both targeted (dst set) and terminal (dst empty) drops.
-            lines.append(f"{prefix} {dst}-m conntrack --ctstate NEW -j DROP")
+            lines.append(f"{prefix} {dst}-m conntrack --ctstate NEW{cmt} -j DROP")
             return lines
 
         # ── Allow rule: build destination selector ────────────────────────────
@@ -1285,7 +1297,7 @@ class IptablesManager:
             # ICMP does not use ports; match by ICMP type (e.g. echo-request).
             lines.append(
                 f"{prefix} -p icmp --icmp-type {rule.icmp_type}"
-                f" -m conntrack --ctstate NEW -j RETURN"
+                f" -m conntrack --ctstate NEW{cmt} -j RETURN"
             )
         elif rule.proto in ("tcp", "udp") and rule.ports:
             # Use the ``multiport`` extension to match a comma-separated list of
@@ -1295,7 +1307,7 @@ class IptablesManager:
             lines.append(
                 f"{prefix} -p {rule.proto} {dst}"
                 f"-m multiport --dports {ports_str}"
-                f" -m conntrack --ctstate NEW -j RETURN"
+                f" -m conntrack --ctstate NEW{cmt} -j RETURN"
             )
         else:
             logging.warning(
