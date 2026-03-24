@@ -919,7 +919,7 @@ class IptablesManager:
         for spec in managed:
             p = spec.chain_prefix
             for rule in spec.egress_rules:
-                lines.extend(IptablesManager._egress_to_iptables(p, rule))
+                lines.extend(IptablesManager._egress_to_iptables(f"{p}-OUT", rule))
 
         lines.append("COMMIT")
 
