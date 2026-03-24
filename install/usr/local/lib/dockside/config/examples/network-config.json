@@ -3,28 +3,27 @@
     {
       "comment": "Unmanaged internal network used by the Dockside control plane itself.",
       "name": "dockside",
-      "subnet": "172.15.0.0/16"
-    },
-    {
-      "comment": "Production workspaces: full outbound internet access, restricted lateral movement.",
-      "name": "ds-prod",
-      "subnet": "172.16.0.0/16",
-      "dockside_ip": "172.16.0.2",
-      "dockside_mac": "02:00:00:00:00:01"
-    },
-    {
-      "comment": "Clone/staging workspaces: like prod but with a DNAT redirect for the test database.",
-      "name": "ds-clone",
-      "subnet": "172.17.0.0/16",
-      "dockside_ip": "172.17.0.2",
-      "dockside_mac": "02:00:00:00:00:01"
+      "subnet": "172.20.0.0/24",
+      "dockside_mac": "02:00:00:00:00:02"
     },
     {
       "comment": "Private/sensitive workspaces: internet access but blocked from the LAN.",
       "name": "ds-priv",
-      "subnet": "172.18.0.0/16",
-      "dockside_ip": "172.18.0.2",
-      "dockside_mac": "02:00:00:00:00:01"
+      "subnet": "172.20.1.0/24",
+      "dockside_mac": "02:00:00:00:00:02"
+    },
+    {
+      "comment": "Clone/staging workspaces: like prod but with a DNAT redirect to the test database.",
+      "name": "ds-clone",
+      "subnet": "172.20.2.0/24",
+      "dockside_mac": "02:00:00:00:00:02"
+    },
+    {
+      "comment": "Production workspaces: full outbound internet access, restricted lateral movement.",
+      "name": "ds-prod",
+      "subnet": "172.20.3.0/24",
+      "dockside_ip": "172.20.3.2",
+      "dockside_mac": "02:00:00:00:00:02"
     }
   ]
 }
