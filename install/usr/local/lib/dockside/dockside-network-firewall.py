@@ -712,7 +712,7 @@ class DockerNetworkManager:
                 return
 
         logging.info("Creating Docker network %s (%s, gw %s)", name, subnet, gateway)
-        _run([
+        r = _run([
             "docker", "network", "create",
             f"--subnet={subnet}",
             f"--gateway={gateway}",
@@ -727,7 +727,19 @@ class DockerNetworkManager:
             # Bind published container ports on all host interfaces by default.
             "--opt=com.docker.network.bridge.host_binding_ipv4=0.0.0.0",
             name,
-        ])
+        ], allow_fail=True)
+        if r.returncode != 0:
+            # Docker socket may be unavailable (e.g. macOS bind-mount omitted).
+            # iptables rules are still applied and reference the bridge name; they
+            # will take effect automatically once the network is created externally.
+            # There is no security risk: a container cannot join a non-existent
+            # network, so the absence of the network implies no containers to protect.
+            logging.warning(
+                "Could not create Docker network %s — Docker socket unavailable "
+                "or creation failed; iptables rules will be applied regardless "
+                "and will take effect if the network is created later",
+                name,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -931,16 +943,57 @@ class IptablesManager:
     chains, so there is no window where the firewall is open.
     """
 
-    def ensure_forward_drop(self) -> None:
-        """Set the FORWARD chain default policy to DROP.
+    def ensure_forward_policy(self, forward_policy: str) -> bool:
+        """Manage the FORWARD chain default policy.
 
-        Docker starts with FORWARD=ACCEPT; setting it to DROP ensures that
-        any packet not explicitly permitted by a FORWARD rule (or by
-        DOCKSIDE-DISPATCH via DOCKER-USER) is silently discarded.  This is
-        the foundation of the deny-by-default posture.
+        When ``forward_policy`` is ``'drop'`` (the default), the FORWARD chain
+        policy is set to DROP.  If the current policy is already DROP (the
+        normal Linux case — Docker sets this before the daemon starts) the call
+        is a no-op.  When the current policy is ACCEPT and we are about to
+        change it to DROP (the macOS Docker Desktop case, where Docker leaves
+        FORWARD as ACCEPT), this method returns True to signal that the caller
+        should subsequently insert the ESTABLISHED,RELATED conntrack workaround
+        in DOCKER-USER; without that rule, ongoing ``docker exec`` sessions
+        would be interrupted by the policy change.
+
+        When ``forward_policy`` is ``'allow-accept'``, an existing ACCEPT
+        policy is left unchanged and the method returns False.  The policy is
+        never actively set to ACCEPT by this method.
+
+        Args:
+            forward_policy: ``'drop'`` or ``'allow-accept'``.
+
+        Returns:
+            True if the policy was changed from ACCEPT to DROP (macOS case),
+            meaning ``ensure_conntrack_accept`` should be called after
+            ``ensure_dispatch_chain``; False otherwise.
         """
+        r = _run(["iptables", "-S", "FORWARD"], allow_fail=True)
+        currently_accept = (
+            r.returncode == 0 and "-P FORWARD ACCEPT" in r.stdout
+        )
+
+        if not currently_accept:
+            logging.debug("FORWARD policy already DROP; nothing to change")
+            return False
+
+        if forward_policy == "allow-accept":
+            logging.info(
+                "FORWARD policy is ACCEPT and --forward-policy=allow-accept; "
+                "leaving unchanged"
+            )
+            return False
+
+        # Changing ACCEPT → DROP: this is the macOS Docker Desktop case.
+        # Log clearly so operators understand why the extra rule is added.
+        logging.info(
+            "FORWARD policy is ACCEPT — setting to DROP "
+            "(macOS Docker Desktop detected); "
+            "will insert ESTABLISHED,RELATED workaround in DOCKER-USER"
+        )
         _run(["iptables", "-P", "FORWARD", "DROP"])
         logging.debug("FORWARD policy set to DROP")
+        return True
 
     def ensure_dispatch_chain(self) -> None:
         """Create DOCKSIDE-DISPATCH and ensure DOCKER-USER jumps to it.
@@ -964,6 +1017,48 @@ class IptablesManager:
             # Rule is absent; insert it at the top of DOCKER-USER.
             logging.info("Adding DOCKER-USER → DOCKSIDE-DISPATCH jump")
             _run(["iptables", "-I", "DOCKER-USER", "1", "-j", "DOCKSIDE-DISPATCH"])
+
+    def ensure_conntrack_accept(self) -> None:
+        """Insert an ESTABLISHED,RELATED ACCEPT rule at the top of DOCKER-USER.
+
+        This is the macOS Docker Desktop workaround applied when the FORWARD
+        policy is changed from ACCEPT to DROP.  On macOS, ``docker exec``
+        traffic traverses FORWARD and uses connection-tracking states that
+        would otherwise be silently discarded by the DROP policy before
+        Docker's own FORWARD ESTABLISHED,RELATED rule can accept them.
+
+        The rule is inserted at position 1 of DOCKER-USER, i.e. before the
+        ``-j DOCKSIDE-DISPATCH`` jump that ``ensure_dispatch_chain`` added.
+        This guarantees that established/related traffic is accepted
+        immediately without traversing any of Dockside's dispatch or
+        per-network chains.
+
+        The ``-C`` (check) probe makes the insertion idempotent: if the rule
+        is already present (e.g. from a previous daemon run) it is not
+        duplicated.
+        """
+        r = _run(
+            [
+                "iptables", "-C", "DOCKER-USER",
+                "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+                "-j", "ACCEPT",
+            ],
+            allow_fail=True,
+        )
+        if r.returncode == 0:
+            logging.debug(
+                "DOCKER-USER ESTABLISHED,RELATED rule already present; skipping"
+            )
+            return
+        logging.info(
+            "Inserting ESTABLISHED,RELATED ACCEPT at top of DOCKER-USER "
+            "(macOS Docker Desktop workaround)"
+        )
+        _run([
+            "iptables", "-I", "DOCKER-USER", "1",
+            "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+            "-j", "ACCEPT",
+        ])
 
     def apply_config(self, config: Config) -> None:
         """Atomically apply all filter + nat rules via iptables-restore --noflush.
@@ -1361,9 +1456,18 @@ class IptablesManager:
         """
         logging.info("Starting iptables teardown")
 
-        # Step 1: remove the hook into DOCKER-USER so Dockside is bypassed.
+        # Step 1: remove all Dockside-inserted rules from DOCKER-USER.
         _run(
             ["iptables", "-D", "DOCKER-USER", "-j", "DOCKSIDE-DISPATCH"],
+            allow_fail=True,
+        )
+        # Remove the macOS ESTABLISHED,RELATED workaround rule if present.
+        _run(
+            [
+                "iptables", "-D", "DOCKER-USER",
+                "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+                "-j", "ACCEPT",
+            ],
             allow_fail=True,
         )
 
@@ -1633,12 +1737,15 @@ class FirewallDaemon:
         network_config_path: str,
         firewall_config_path: str,
         socket_path: Optional[str] = None,
+        forward_policy: str = "drop",
     ):
         # Paths to the two JSON config files; reloaded on SIGUSR1 or "reload" action.
-        self._net_path  = network_config_path
-        self._fw_path   = firewall_config_path
+        self._net_path      = network_config_path
+        self._fw_path       = firewall_config_path
         # Optional path for the management Unix socket; None = no socket.
-        self._sock_path = socket_path
+        self._sock_path     = socket_path
+        # FORWARD chain policy: 'drop' or 'allow-accept'.
+        self._forward_policy = forward_policy
         # Mutex protecting all kernel-state mutations from concurrent threads.
         self._lock      = threading.Lock()
         # Set by signal handlers to stop the main thread and clean up.
@@ -1711,8 +1818,10 @@ class FirewallDaemon:
              needed for file-watch-heavy workloads running inside containers).
           2. Docker networks — must exist before iptables rules reference their
              bridge interface names.
-          3. FORWARD default policy set to DROP.
+          3. FORWARD default policy (see ensure_forward_policy).
           4. DOCKSIDE-DISPATCH chain and DOCKER-USER jump.
+          4a. macOS conntrack workaround (only when FORWARD was changed from
+              ACCEPT to DROP — see ensure_conntrack_accept).
           5. ipsets — must exist before iptables rules reference them by name.
           6. iptables filter + nat rules.
 
@@ -1732,8 +1841,14 @@ class FirewallDaemon:
             allow_fail=True,  # Not fatal if sysctl fails (e.g. insufficient privilege).
         )
         self._docker_mgr.ensure_networks(config.networks, reset=reset)
-        self._ipt_mgr.ensure_forward_drop()
+        changed_to_drop = self._ipt_mgr.ensure_forward_policy(self._forward_policy)
         self._ipt_mgr.ensure_dispatch_chain()
+        if changed_to_drop:
+            # FORWARD was ACCEPT and we just set it to DROP (macOS Docker Desktop).
+            # Insert the conntrack workaround AFTER ensure_dispatch_chain so that
+            # the ESTABLISHED,RELATED rule sits at position 1 of DOCKER-USER,
+            # ahead of the -j DOCKSIDE-DISPATCH jump inserted by ensure_dispatch_chain.
+            self._ipt_mgr.ensure_conntrack_accept()
         for name, hostnames in config.ipsets.items():
             self._ipset_mgr.ensure_ipset(name, hostnames)
         self._ipt_mgr.apply_config(config)
@@ -2459,6 +2574,20 @@ def main() -> None:
         "--firewall-config", metavar="PATH",
         default="/etc/dockside/firewall-config.json",
     )
+    ap.add_argument(
+        "--forward-policy",
+        choices=["drop", "allow-accept"],
+        default="drop",
+        dest="forward_policy",
+        help=(
+            "FORWARD chain policy. "
+            "'drop' (default): set FORWARD to DROP, inserting an "
+            "ESTABLISHED,RELATED workaround in DOCKER-USER when the policy "
+            "was previously ACCEPT (macOS Docker Desktop). "
+            "'allow-accept': leave an existing ACCEPT policy unchanged "
+            "(FAOD: never actively sets the policy to ACCEPT)."
+        ),
+    )
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()
 
@@ -2501,6 +2630,7 @@ def main() -> None:
         firewall_config_path=args.firewall_config,
         # Only pass the socket path in daemon mode; one-shot mode has no socket.
         socket_path=args.socket if args.daemon else None,
+        forward_policy=args.forward_policy,
     )
 
     if args.daemon:
