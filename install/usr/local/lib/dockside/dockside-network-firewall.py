@@ -24,11 +24,14 @@ CLI modes:
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
+import re
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -55,6 +58,125 @@ IPSET_REFRESH_INTERVAL = int(os.environ.get("IPSET_REFRESH_INTERVAL", "60"))
 # by this daemon.  Makes Dockside-owned objects instantly identifiable and
 # easy to enumerate during teardown.
 DOCKSIDE_PREFIX = "DOCKSIDE"
+
+
+# ---------------------------------------------------------------------------
+# Config value validators
+# ---------------------------------------------------------------------------
+# All validators raise ValueError with a descriptive message on bad input so
+# that Config.from_dicts() / Config.from_files() aborts before any kernel
+# mutation is attempted.  They are intentionally strict: allow-list rather
+# than deny-list.
+
+_IDENTIFIER_RE = re.compile(r'^[A-Za-z0-9_.:-]+$')
+_MAC_RE         = re.compile(r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+_VALID_PROTOS   = frozenset({"tcp", "udp", "icmp"})
+_VALID_ACTIONS  = frozenset({"allow", "drop"})
+_VALID_TO       = frozenset({"all", "cidr", "ip", "ipset", "host"})
+
+
+def _val_identifier(value: str, field: str, max_len: int = 64) -> None:
+    """Validate a name used as an iptables chain/network/ipset identifier.
+
+    Accepts only ``[A-Za-z0-9_.:-]`` so that the value is safe to interpolate
+    directly into iptables-restore text without risk of injecting rule tokens.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field}: expected non-empty string, got {value!r}")
+    if len(value) > max_len:
+        raise ValueError(f"{field}: identifier too long ({len(value)} > {max_len})")
+    if not _IDENTIFIER_RE.match(value):
+        raise ValueError(
+            f"{field}: {value!r} contains characters outside [A-Za-z0-9_.:-]"
+        )
+
+
+def _val_iface(value: str, field: str) -> None:
+    """Validate a Linux network interface name (IFNAMSIZ-1 = 15 chars max)."""
+    _val_identifier(value, field, max_len=15)
+
+
+def _val_ip(value: str, field: str) -> None:
+    """Validate an IPv4 address string using the stdlib ipaddress module."""
+    try:
+        ipaddress.IPv4Address(value)
+    except ValueError:
+        raise ValueError(f"{field}: {value!r} is not a valid IPv4 address")
+
+
+def _val_cidr(value: str, field: str) -> None:
+    """Validate an IPv4 CIDR string (host bits need not be zero)."""
+    try:
+        ipaddress.IPv4Network(value, strict=False)
+    except ValueError:
+        raise ValueError(f"{field}: {value!r} is not a valid IPv4 CIDR")
+
+
+def _val_mac(value: str, field: str) -> None:
+    """Validate a colon-separated MAC address (e.g. ``aa:bb:cc:dd:ee:ff``)."""
+    if not isinstance(value, str) or not _MAC_RE.match(value):
+        raise ValueError(f"{field}: {value!r} is not a valid MAC address")
+
+
+def _val_proto(value: str, field: str) -> None:
+    """Validate a transport-layer protocol name."""
+    if value not in _VALID_PROTOS:
+        raise ValueError(
+            f"{field}: {value!r} is not a supported protocol; "
+            f"must be one of {sorted(_VALID_PROTOS)}"
+        )
+
+
+def _val_port(value, field: str) -> None:
+    """Validate a TCP/UDP port number (1–65535)."""
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{field}: port must be an integer, got {value!r}")
+    if not 1 <= value <= 65535:
+        raise ValueError(f"{field}: port {value} is out of range 1–65535")
+
+
+def _val_comment(value: str, field: str, max_len: int = 200) -> None:
+    """Validate a free-text comment: no control characters, bounded length.
+
+    iptables comments are embedded in rule text; newlines and other control
+    characters could corrupt the iptables-restore input stream.
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{field}: expected string, got {type(value).__name__!r}")
+    if len(value) > max_len:
+        raise ValueError(f"{field}: comment too long ({len(value)} > {max_len})")
+    for ch in value:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            raise ValueError(
+                f"{field}: comment contains control character "
+                f"U+{ord(ch):04X} — not permitted"
+            )
+
+
+def _val_icmp_type(value: str, field: str) -> None:
+    """Validate an ICMP type string (name or decimal number, no control chars)."""
+    _val_comment(value, field, max_len=40)
+
+
+def _val_host_entry(value: str, field: str) -> None:
+    """Validate one entry in an ipset host list: IP, CIDR, or hostname.
+
+    Hostnames are not resolved here; we only check for control characters and
+    an identifier-safe character set to prevent injection into ipset commands.
+    """
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field}: expected non-empty string, got {value!r}")
+    for ch in value:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            raise ValueError(
+                f"{field}: entry {value!r} contains control character U+{ord(ch):04X}"
+            )
+    # Reject characters that could be interpreted as shell metacharacters or
+    # iptables option delimiters when used in ipset add/test commands.
+    if re.search(r'[\s\'"\\;|&<>]', value):
+        raise ValueError(
+            f"{field}: entry {value!r} contains a disallowed character"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +312,32 @@ class EgressRule:
         # ``iptables -L`` output alongside the rule.
         self.comment   = d.get("comment")              # str|None
 
+        # ── Validate all fields before any rule generation can use them ──────
+        if self.action not in _VALID_ACTIONS:
+            raise ValueError(
+                f"egress rule: action {self.action!r} is not valid; "
+                f"must be one of {sorted(_VALID_ACTIONS)}"
+            )
+        if self.to not in _VALID_TO:
+            raise ValueError(
+                f"egress rule: to {self.to!r} is not valid; "
+                f"must be one of {sorted(_VALID_TO)}"
+            )
+        if self.proto is not None:
+            _val_proto(self.proto, "egress rule: proto")
+        for p in self.ports:
+            _val_port(p, "egress rule: ports entry")
+        if self.cidr is not None:
+            _val_cidr(self.cidr, "egress rule: cidr")
+        if self.ip is not None:
+            _val_ip(self.ip, "egress rule: ip")
+        if self.ipset is not None:
+            _val_identifier(self.ipset, "egress rule: ipset")
+        if self.comment is not None:
+            _val_comment(self.comment, "egress rule: comment")
+        if self.proto == "icmp":
+            _val_icmp_type(self.icmp_type, "egress rule: type")
+
     def to_dict(self) -> dict:
         """Serialise back to the JSON dict form used in firewall-config.json.
 
@@ -258,6 +406,15 @@ class NatRule:
         # Target port number to rewrite the destination port to.
         self.to_port     = d.get("to_port")        # int: redirect target port
 
+        # ── Validate all fields ───────────────────────────────────────────────
+        _val_proto(self.proto, "nat rule: proto")
+        if self.match_dport is not None:
+            _val_port(self.match_dport, "nat rule: match_dport")
+        if self.to_ip is not None:
+            _val_ip(self.to_ip, "nat rule: to_ip")
+        if self.to_port is not None:
+            _val_port(self.to_port, "nat rule: to_port")
+
     def to_dict(self) -> dict:
         """Serialise back to the JSON dict form used in firewall-config.json."""
         d: dict = {"proto": self.proto}
@@ -307,6 +464,18 @@ class NetworkSpec:
         # ``dockside_mac``, or both may be set; at least one is needed for the
         # network to be "managed" (unless egress/NAT rules are present).
         self.dockside_mac = d.get("dockside_mac")
+
+        # ── Validate topology fields ──────────────────────────────────────────
+        # Network name is used as part of iptables chain names and the Docker
+        # bridge device name; it must be safe for both contexts.
+        _val_identifier(self.name, "network: name")
+        _val_cidr(self.subnet, "network: subnet")
+        if self.gateway_ip is not None:
+            _val_ip(self.gateway_ip, "network: gateway_ip")
+        if self.dockside_ip is not None:
+            _val_ip(self.dockside_ip, "network: dockside_ip")
+        if self.dockside_mac is not None:
+            _val_mac(self.dockside_mac, "network: dockside_mac")
 
         # Outbound traffic rules appended by Config.from_dicts() after parsing
         # the firewall-config "egress" array for this network.
@@ -457,8 +626,17 @@ class Config:
             spec = NetworkSpec(nd)
             specs[spec.name] = spec
 
-        # Collect ipset definitions (name → list of hosts/CIDRs).
+        # Collect ipset definitions (name → list of hosts/CIDRs) and validate.
         ipsets = fw_data.get("ipsets", {})
+        for set_name, entries in ipsets.items():
+            _val_identifier(set_name, "ipset name")
+            if not isinstance(entries, list):
+                raise ValueError(
+                    f"ipset {set_name!r}: expected a list of host entries, "
+                    f"got {type(entries).__name__!r}"
+                )
+            for entry in entries:
+                _val_host_entry(entry, f"ipset {set_name!r}: entry")
 
         # Second pass: attach egress and NAT rules from firewall-config to the
         # matching NetworkSpec objects.
@@ -1586,7 +1764,22 @@ class ManagementSocket:
     connection is handled in its own short-lived daemon thread.  All
     connections share the caller-supplied ``handler`` callable, which must be
     thread-safe (FirewallDaemon uses ``self._lock`` for this purpose).
+
+    Authorization:
+      Peer credentials are read via ``SO_PEERCRED`` for every connection.
+      Mutating actions (those that alter iptables/ipset state or persisted
+      config) require the connecting process to run as root (UID 0).
+      Read-only actions (``status``, ``refresh``) are permitted for any
+      process in the socket's group.  All requests are logged with their peer
+      PID/UID/GID for audit purposes.
     """
+
+    # Actions that alter iptables/ipset kernel state or the persisted config
+    # files; these require the connecting peer to be root (UID 0).
+    _MUTATING_ACTIONS = frozenset({
+        "reload", "apply", "set-network", "remove-network",
+        "set-ipset", "remove-ipset", "reconcile",
+    })
 
     def __init__(self):
         # The listening server socket; None until start() is called.
@@ -1669,10 +1862,26 @@ class ManagementSocket:
         during dispatch or serialisation, an error JSON is sent back to the
         client before the connection is closed.
 
+        Peer credentials are read via ``SO_PEERCRED`` before the request is
+        dispatched.  Mutating actions require the peer to be root (UID 0).
+        All requests are logged with peer PID/UID/GID for audit purposes.
+
         The ``finally`` block ensures the connection is always closed, even on
         unexpected exceptions, so file descriptors are not leaked.
         """
         try:
+            # ── Read peer credentials (Linux SO_PEERCRED) ─────────────────────
+            # struct ucred { pid_t pid; uid_t uid; gid_t gid; } — all 32-bit.
+            try:
+                raw = conn.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
+                )
+                peer_pid, peer_uid, peer_gid = struct.unpack("iII", raw)
+            except OSError:
+                # SO_PEERCRED unavailable (non-Linux or unusual socket type).
+                # Treat as unknown peer; will be blocked for mutating actions.
+                peer_pid = peer_uid = peer_gid = -1
+
             buf = b""
             # Accumulate bytes until we see a newline (end of request) or the
             # buffer exceeds 1 MiB (protection against a client that sends
@@ -1683,8 +1892,30 @@ class ManagementSocket:
                     break
                 buf += chunk
             if buf.strip():
-                req  = json.loads(buf.decode())
-                resp = self._handler(req)
+                req    = json.loads(buf.decode())
+                action = req.get("action", "")
+
+                # ── Audit log ─────────────────────────────────────────────────
+                logging.info(
+                    "mgmt-socket: pid=%s uid=%s gid=%s action=%r",
+                    peer_pid, peer_uid, peer_gid, action,
+                )
+
+                # ── Authorization ─────────────────────────────────────────────
+                # Mutating actions may only be invoked by root (UID 0).
+                # Read-only actions (status, refresh) are open to any peer
+                # that can connect (already constrained by socket 0o660 perms).
+                if action in self._MUTATING_ACTIONS and peer_uid != 0:
+                    resp = {
+                        "status": "error",
+                        "message": (
+                            f"permission denied: action {action!r} requires "
+                            f"root (uid 0); peer uid={peer_uid}"
+                        ),
+                    }
+                else:
+                    resp = self._handler(req)
+
                 # Newline-terminate the response so the client can detect
                 # the end of the message without relying on connection close.
                 conn.sendall((json.dumps(resp) + "\n").encode())
