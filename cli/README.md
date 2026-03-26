@@ -102,6 +102,8 @@ echo '{"profile":"ci","name":"pr-123","image":"ubuntu:22.04"}' | \
 | `edit`         | Edit devtainer metadata |
 | `remove`       | Remove a devtainer (aliases: `rm`, `delete`) |
 | `logs`         | Retrieve devtainer logs |
+| `user list/get/create/edit/remove` | Manage users (requires `manageUsers` permission) |
+| `role list/get/create/edit/remove` | Manage roles (requires `manageUsers` permission) |
 
 ## Addressing devtainers
 
@@ -177,6 +179,51 @@ dockside list -o json | jq '.[].name'
 
 The default output format can be set per-server at login time
 (`dockside login --output json`) and is stored in `config.json`.
+
+## User and role management
+
+These commands require `manageUsers` permission (granted to the `admin` role by default).
+
+```sh
+# List / inspect users
+dockside user list
+dockside user get alice
+dockside user get alice --sensitive   # include private keys and gh_token in output
+
+# Create a user (password is hashed and stored in the passwd file)
+dockside user create alice \
+    --email alice@example.com \
+    --role developer \
+    --user-password s3cret
+
+# Edit user properties — use simple flags for top-level fields,
+# or dot-notation --set for nested fields
+dockside user edit alice --gh-token github_pat_xxx
+dockside user edit alice --set ssh.publicKeys.laptop="ssh-ed25519 AAAA... alice@laptop"
+dockside user edit alice --set resources.profiles='["myprofile","ci"]'
+dockside user edit alice --set permissions.createContainerReservation=1
+dockside user edit alice --unset ssh.publicKeys.oldkey
+
+# Remove a user
+dockside user remove alice --force
+```
+
+```sh
+# List / inspect roles
+dockside role list
+dockside role get developer
+
+# Create a role
+dockside role create developer \
+    --set permissions.createContainerReservation=1 \
+    --set resources.profiles='["*"]'
+
+# Update a role
+dockside role edit developer --set permissions.stopContainer=1
+
+# Remove a role
+dockside role remove developer --force
+```
 
 ## Waiting behaviour
 

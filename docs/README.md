@@ -162,8 +162,14 @@ docker logs dockside 2>&1 | grep 'Sign in'
 **Once Dockside is running:**
 
 1. In your browser, navigate to [https://www.local.dockside.dev/](https://www.local.dockside.dev). Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
-2. In the Dockside UI, click **Launch**, and pick an example profile (e.g. `Dockside.io`) to launch your first trial devcontainer — this confirms everything is working.
-3. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects. See [**Setup**](#setup) below for a guided overview and [**read full details of the config files here**](setup.md).
+2. **Authenticate the CLI** (optional — for terminal management and CI/CD): install from the Dockside repository and log in to your local instance:
+   ```sh
+   pip install ./cli
+   dockside login --server https://www.local.dockside.dev --nickname local
+   ```
+   Enter your `admin` credentials when prompted. Your session is saved to `~/.config/dockside/` and reused by subsequent `dockside` commands. See the [Dockside CLI README](../cli/README.md) for full installation options and available commands.
+3. In the Dockside UI, click **Launch**, and pick an example profile (e.g. `Dockside.io`) to launch your first trial devcontainer — this confirms everything is working.
+4. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects. See [**Setup**](#setup) below for a guided overview and [**read full details of the config files here**](setup.md).
 
 ### Launch on a public domain with auto-generated SSL
 
