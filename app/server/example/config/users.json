@@ -1,6 +1,6 @@
 // This JSON is parsed:
-// - so a line beginning // denotes a comment.
-
+// - so a line beginning // denotes a comment;
+// - `// ...` ending a line will also be considered a comment, as long as it contains no `"`
 {
    // Administrator
    "admin": {
@@ -22,30 +22,34 @@
          // "manageUsers": 0  // Deny user/role management even for this admin user
       },
       "resources": {
-         "profiles": [ "*" ], // or equivalently { "*": 1 }
-         "networks": [ "*" ], // or equivalently { "*": 1 }
-         "runtimes": [ "*" ], // or equivalently { "*": 1 }
-         "IDEs":     [ "*" ], // or equivalently { "*": 1 }
-         "images":   [ "*" ], // or equivalently { "*": 1 }
-         "auth":     [ "*" ]  // or equivalently { "*": 1 }
+         
+         "profiles": [ "*" ],
+         "networks": [ "*" ],
+         "runtimes": [ "*" ],
+         "IDEs":     [ "*" ],
+         "images":   [ "*" ],
+         "auth":     [ "*" ] 
       },
       "ssh": {
          // SSH public keys allowed to ssh to containers this user owns or is a developer of
          // Use named entries, e.g. "publicKeys": { "laptop": "ssh-rsa AAAA... user@laptop" }
-         "publicKeys": {}, // { "laptop": "ssh-rsa AAAAB... admin@myexamplecorp.com" }
+         //  "publicKeys": { "laptop": "ssh-rsa AAAAB... admin@myexamplecorp.com" }
+         "publicKeys": {},
 
          // SSH keypair(s) added to integrated ssh-agent running in IDE context
          "keypairs": {
             "*": {
-               "private": "", // "-----BEGIN OPENSSH PRIVATE KEY-----\n2afedc...\n-----END OPENSSH PRIVATE KEY-----\n",
-               "public": "" // "ssh-rsa AAAAB... admin@myexamplecorp.com"
+               // "private": "-----BEGIN OPENSSH PRIVATE KEY-----\n..."
+               "private": "", 
+               // "public": "ssh-rsa AAAAB... admin@myexamplecorp.com"
+               "public": ""
             }
          }
       },
       // Optional: GitHub Personal Access Token passed as GH_TOKEN to all containers
       // launched by this user, enabling 'gh pr checkout' and other gh CLI operations.
       // Requires 'repo' scope for private repos; 'public_repo' scope for public repos.
-      "gh_token": "" // "github_pat_11..."
+      "gh_token": ""
    }
    // Example developer user (add/manage users like this via: dockside user create)
    // "johnsmith": {
