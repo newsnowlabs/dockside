@@ -1,10 +1,14 @@
 import Vuex from 'vuex';
 import { getContainers } from '@/services/container';
+import adminModule from '@/store/admin';
 
 const welcomeTextStatusLocalStorageKey = '/dockside/welcomeTextStatus';
 
 const createStore = () => new Vuex.Store({
    strict: process.env.NODE_ENV !== 'production',
+   modules: {
+      admin: adminModule,
+   },
    state: {
       selectedContainer: { name: undefined, mode: 'view' },
       containersFilter: 'shared',

@@ -3,8 +3,14 @@
       <b-container fluid>
          <Header></Header>
          <b-row>
-            <Sidebar></Sidebar>
-            <Main></Main>
+            <template v-if="isAdminRoute || isAccountRoute">
+               <AdminSidebar v-if="isAdminRoute"></AdminSidebar>
+               <AdminMain></AdminMain>
+            </template>
+            <template v-else>
+               <Sidebar></Sidebar>
+               <Main></Main>
+            </template>
             <SSHInfo></SSHInfo>
          </b-row>
       </b-container>
@@ -13,11 +19,13 @@
 </template>
 
 <script>
-   import Header from '@/components/Header';
-   import Footer from '@/components/Footer';
-   import Sidebar from '@/components/Sidebar';
-   import Main from '@/components/Main';
-   import SSHInfo from '@/components/SSHInfo';
+   import Header       from '@/components/Header';
+   import Footer       from '@/components/Footer';
+   import Sidebar      from '@/components/Sidebar';
+   import Main         from '@/components/Main';
+   import SSHInfo      from '@/components/SSHInfo';
+   import AdminSidebar from '@/components/admin/AdminSidebar';
+   import AdminMain    from '@/components/admin/AdminMain';
 
    export default {
       name: 'App',
@@ -26,22 +34,43 @@
          Footer,
          Sidebar,
          Main,
-         SSHInfo
+         SSHInfo,
+         AdminSidebar,
+         AdminMain,
+      },
+      computed: {
+         isAdminRoute() {
+            return this.$route.path.startsWith('/admin');
+         },
+         isAccountRoute() {
+            return this.$route.path === '/account';
+         },
       },
       created() {
          this.updateStateFromRoute(this.$route);
          this.pruneURLBasedOnUserPermissions();
          this.$store.dispatch('updateContainers');
+         if (this.isAdminRoute || this.isAccountRoute) {
+            this.$store.dispatch('admin/fetchAll');
+         }
       },
       methods: {
          updateStateFromRoute(route) {
-            this.$store.dispatch('updateSelectedContainerName', route.params.name);
-            this.$store.dispatch('updateContainersFilter', route.query.cf);
+            if (!this.isAdminRoute && !this.isAccountRoute) {
+               this.$store.dispatch('updateSelectedContainerName', route.params.name);
+               this.$store.dispatch('updateContainersFilter', route.query.cf);
+            } else if (this.isAdminRoute && route.params.type && route.params.id) {
+               const typeMap = { users: 'user', roles: 'role', profiles: 'profile' };
+               const type = typeMap[route.params.type];
+               if (type) {
+                  this.$store.commit('admin/setSelected', { type, id: route.params.id, mode: 'view' });
+               }
+            }
          },
          pruneURLBasedOnUserPermissions() {
             // If user can't develop and 'own' containers is their default view,
             // then remove this query param from the url.
-            if ((this.$route.query.cf === 'own') && !window.dockside.user.permissions.developContainers) {
+            if ((this.$route.query.cf === 'own') && !window.dockside.user.permissions.actions.developContainers) {
                const query = Object.assign({}, this.$route.query);
                delete query.cf;
                this.$router.replace({ path: '/', query });
@@ -51,6 +80,11 @@
       watch: {
          $route(to) {
             this.updateStateFromRoute(to);
+            // Fetch admin data when entering admin/account routes for the first time
+            if ((to.path.startsWith('/admin') || to.path === '/account') &&
+                this.$store.state.admin.users.length === 0) {
+               this.$store.dispatch('admin/fetchAll');
+            }
          }
       }
    };
@@ -72,7 +106,7 @@
       -webkit-appearance: none;
       width: 7px;
    }
-   
+
    ::-webkit-scrollbar-thumb {
       border-radius: 4px;
       background-color: rgba(0, 0, 0, .5);

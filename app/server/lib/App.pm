@@ -78,6 +78,32 @@ sub split_args ($queryString) {
    return { map { $_ // '' } %hash };
 }
 
+# Parse a POST request body as JSON (if Content-Type is application/json) or
+# as form-encoded key=value pairs, returning a hashref.
+sub parse_body_args ($r) {
+   my $body = $r->request_body // '';
+   my $ct   = $r->header_in('Content-Type') // '';
+
+   if ( $ct =~ m{application/json}i && length $body ) {
+      my $decoded = eval { JSON::XS->new->utf8->decode($body) };
+      return ref($decoded) eq 'HASH' ? $decoded : {};
+   }
+
+   # Form-encoded fallback
+   return { map { uri_unescape($_) } split( /[=&]/, $body ) };
+}
+
+# Return merged args: for POST requests, the body (JSON or form-encoded) is
+# merged with query-string args; query-string values take precedence.
+sub get_args ($r, $querystring) {
+   if ( $r->request_method eq 'POST' ) {
+      my $body_args = parse_body_args($r);
+      my $qs_args   = split_args($querystring);
+      return { %$body_args, %$qs_args };   # query-string wins on collision
+   }
+   return split_args($querystring);
+}
+
 sub json ($r, $code, $data) {
    $r->status($code);
    $r->header_out( 'Cache-Control', 'no-store' );
@@ -294,7 +320,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # Enable for verbose request logging:
    # flog("App: route=$route; User=" . $User->username);
 
-   if( $route eq '/' || $route =~ m!^/container/! ) {
+   if( $route eq '/' || $route =~ m!^/(container|admin|account)(/|$)! ) {
       ###############################
       # Display main page HTML
       #
@@ -345,6 +371,28 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # AJAX SERVICES
    #
 
+   # For POST requests to API endpoints, the nginx Perl module requires the body
+   # to be read via has_request_body() before it is accessible via request_body().
+   # We capture $User and $parentFQDN in the closure so _api_handler can use them.
+   if ( $r->request_method eq 'POST' ) {
+      if ( $r->has_request_body(
+            sub { return _api_handler( $_[0], $User, $_[0]->args, $parentFQDN ) }
+         )) {
+         return nginx::OK;
+      }
+      return nginx::HTTP_BAD_REQUEST;
+   }
+
+   return _api_handler( $r, $User, $querystring, $parentFQDN );
+}
+
+# ---------------------------------------------------------------------------
+# _api_handler — dispatches all authenticated API requests.
+# Called directly for GET; called from within a has_request_body() callback
+# for POST (at which point $r->request_body is populated and get_args() works).
+# ---------------------------------------------------------------------------
+sub _api_handler ($r, $User, $querystring, $parentFQDN) {
+   my $route = $r->uri;
    my $type = 'json';
    try {
 
@@ -427,8 +475,21 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
          return json($r, 200, { 'status' => '200', 'data' => $User->listUsers($args) });
       }
 
-      if( $route =~ m!^/users/create/?$! ) {
+      # Self-service: any authenticated user can view and update their own personal fields.
+      if( $route =~ m!^/users/me/?$! ) {
          my $args = split_args($querystring);
+         my $record = $User->getUser($User->username, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/users/me/update/?$! ) {
+         my $args = get_args($r, $querystring);
+         my $record = $User->updateSelf($args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/users/create/?$! ) {
+         my $args = get_args($r, $querystring);
          my $record = $User->createUser($args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
@@ -442,7 +503,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
 
       if( $route =~ m!^/users/([^/]+)/update/?$! ) {
          my $username = $1;
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->updateUser($username, $args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
@@ -499,7 +560,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       if( $route =~ m!^/profiles/create/?$! ) {
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $id = $args->{'id'}
             or die Exception->new( 'msg' => "id is required" );
          my $record = $User->createProfile($id, $args);
@@ -514,7 +575,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
 
       if( $route =~ m!^/profiles/([^/]+)/update/?$! ) {
          my $name = $1;
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->updateProfile($name, $args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }

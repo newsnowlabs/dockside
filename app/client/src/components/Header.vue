@@ -7,20 +7,24 @@
       <b-collapse id="nav-collapse" is-nav>
          <b-navbar-nav class="w-100" align="right">
 
-            <b-nav-item v-show="!isSelected">
+            <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute">
                <select class="selectpicker" id="filterContainers" v-model="containersFilter" v-on:change="onContainersFilterChange">
                   <option value="shared">Shared</option>
                   <option value="all">All</option>
                </select>
             </b-nav-item>
 
-            <b-nav-item v-show="user.permissions.actions.createContainerReservation && !isPrelaunchMode" v-on:click="goToContainer('new', 'prelaunch')"><a href="javascript:">Launch</a></b-nav-item>
+            <b-nav-item v-show="user.permissions.actions.createContainerReservation && !isPrelaunchMode && !isAdminRoute && !isAccountRoute" v-on:click="goToContainer('new', 'prelaunch')"><a href="javascript:">Launch</a></b-nav-item>
 
-            <b-nav-item v-show="!isSelected" to="/docs"><a href="javascript:">Docs</a></b-nav-item>
+            <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute" to="/docs"><a href="javascript:">Docs</a></b-nav-item>
 
-            <b-nav-item v-show="!isSelected" to="/docksideio"><a href="https://dockside.io/">Dockside.io</a></b-nav-item>
+            <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute" to="/docksideio"><a href="https://dockside.io/">Dockside.io</a></b-nav-item>
 
-            <b-nav-item v-show="!isSelected" to="/dockside-github"><a href="https://github.com/newsnowlabs/dockside">GitHub</a></b-nav-item>
+            <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute" to="/dockside-github"><a href="https://github.com/newsnowlabs/dockside">GitHub</a></b-nav-item>
+
+            <b-nav-item v-show="canAccessAdmin" to="/admin"><a href="javascript:">Admin</a></b-nav-item>
+
+            <b-nav-item to="/account"><a href="javascript:" :title="'Account settings for ' + user.username">{{ user.username }}</a></b-nav-item>
          </b-navbar-nav>
       </b-collapse>
    </b-navbar>
@@ -49,6 +53,16 @@
          ]),
          ...mapState([
          ]),
+         isAdminRoute() {
+            return this.$route.path.startsWith('/admin');
+         },
+         isAccountRoute() {
+            return this.$route.path === '/account';
+         },
+         canAccessAdmin() {
+            const p = this.user.permissions.actions;
+            return p.manageUsers || p.manageProfiles;
+         },
          containersFilter: {
             get() {
                return this.$store.state.containersFilter;

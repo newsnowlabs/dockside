@@ -5,7 +5,7 @@ use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = qw(
-   listUsers getUser createUser updateUser removeUser
+   listUsers getUser createUser updateUser updateSelf removeUser
    listRoles getRole createRole updateRole removeRole
 );
 
@@ -222,6 +222,42 @@ sub updateUser ($self, $username, $args) {
 
    return _sanitise_user_record( { %$record, 'username' => $username },
       $args->{'sensitive'} ? 1 : 0 );
+}
+
+# Self-service update: any authenticated user may update their own name, email,
+# gh_token, and ssh fields without requiring the manageUsers permission.
+# All other fields in $args are silently ignored.
+sub updateSelf ($self, $args) {
+   my $username = $self->username;
+   die Exception->new( 'msg' => "Not authenticated" ) unless $username;
+   die Exception->new( 'msg' => "User '$username' not found" )
+      unless $User::USERS->{$username};
+
+   # Whitelist: only personal fields may be updated via this method
+   my %allowed = map { $_ => 1 } qw(name email gh_token ssh);
+   my $safe_args = { map { $_ => $args->{$_} } grep { $allowed{$_} } keys %$args };
+
+   # Also allow dotted-path variants such as ssh.publicKeys, ssh.keypairs.*
+   for my $key ( keys %$args ) {
+      my ($top) = split /\./, $key;
+      $safe_args->{$key} = $args->{$key} if $allowed{$top};
+   }
+
+   my $record;
+   cacheReadWrite( "$CONFIG_PATH/users.json", sub ($oldData) {
+      my $users = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
+      $record = $users->{$username}
+         or die Exception->new( 'msg' => "User '$username' not found in users.json" );
+
+      _apply_args_to_record( $record, $safe_args );
+
+      $users->{$username} = $record;
+      return JSON->new->utf8->pretty->canonical->encode($users);
+   } );
+
+   Data::load('users.json');
+
+   return _sanitise_user_record( { %$record, 'username' => $username } );
 }
 
 sub removeUser ($self, $username, $args = {}) {

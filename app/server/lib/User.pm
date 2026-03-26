@@ -9,7 +9,7 @@ use Storable qw(dclone);
 use Data qw($CONFIG);
 use Util qw(flog wlog TO_JSON generate_auth_cookie_values encrypt_password cacheReadWrite);
 use User::Manage qw(
-   listUsers getUser createUser updateUser removeUser
+   listUsers getUser createUser updateUser updateSelf removeUser
    listRoles getRole createRole updateRole removeRole
 );
 use Profile::Manage qw(
