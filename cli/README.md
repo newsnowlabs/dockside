@@ -199,7 +199,9 @@ dockside user create alice \
 # Edit user properties — use simple flags for top-level fields,
 # or dot-notation --set for nested fields
 dockside user edit alice --gh-token github_pat_xxx
-dockside user edit alice --set ssh.publicKeys.laptop="ssh-ed25519 AAAA... alice@laptop"
+dockside user edit alice --set ssh.publicKeys.laptop=@~/.ssh/id_ed25519.pub
+dockside user edit alice --set ssh.keypairs.*.public=@~/.ssh/id_ed25519.pub
+dockside user edit alice --set ssh.keypairs.*.private=@~/.ssh/id_ed25519
 dockside user edit alice --set resources.profiles='["myprofile","ci"]'
 dockside user edit alice --set permissions.createContainerReservation=1
 dockside user edit alice --unset ssh.publicKeys.oldkey

@@ -28,8 +28,8 @@ To control which developers can SSH into a devcontainer, add each developer's SS
 Individual keys can be added or removed via the CLI without affecting others:
 
 ```bash
-dockside user edit alice --set ssh.publicKeys.laptop="ssh-ed25519 AAAA..."
-dockside user edit alice --unset ssh.publicKeys.laptop                      # remove
+dockside user edit alice --set ssh.publicKeys.laptop=@~/.ssh/id_ed25519.pub
+dockside user edit alice --unset ssh.publicKeys.laptop                       # remove
 ```
 
 Whenever a devcontainer is started, its developer list is changed, or its SSH access mode is switched (between 'Devcontainer owner only' and 'Devcontainer developers only'), Dockside automatically writes the correct set of public keys to `~/.ssh/authorized_keys` inside the devcontainer. No manual step is needed.

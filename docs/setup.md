@@ -210,8 +210,12 @@ dockside user create alice --email alice@example.com --role developer --user-pas
 # Inspect a user record
 dockside user get alice
 
-# Add an SSH public key (auto-provisioned into the user's devtainers)
-dockside user edit alice --set ssh.publicKeys.laptop="ssh-ed25519 AAAA... alice@laptop"
+# Add an SSH public key from file (auto-provisioned into the user's devtainers)
+dockside user edit alice --set ssh.publicKeys.laptop=@~/.ssh/id_ed25519.pub
+
+# Add a keypair for outbound SSH/git operations (e.g. git push to GitHub)
+dockside user edit alice --set ssh.keypairs.*.public=@~/.ssh/id_ed25519.pub
+dockside user edit alice --set ssh.keypairs.*.private=@~/.ssh/id_ed25519
 
 # Set a GitHub Personal Access Token (enables automatic gh CLI authentication)
 dockside user edit alice --gh-token github_pat_xxx
