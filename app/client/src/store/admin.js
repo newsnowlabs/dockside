@@ -2,9 +2,10 @@
 import * as api from '@/services/admin';
 
 const createState = () => ({
-   users:    [],
-   roles:    [],
-   profiles: [],
+   users:         [],
+   roles:         [],
+   profiles:      [],
+   hostResources: null, // { runtimes, networks, IDEs, authModes } — loaded once
    // type: 'user' | 'role' | 'profile' | null; id: string | null; mode: 'view' | 'edit'
    selected: { type: null, id: null, mode: 'view' },
    loading:  false,
@@ -41,9 +42,10 @@ export default {
       setLoading(state, v)  { state.loading = v; },
       setError(state, v)    { state.error   = v; },
 
-      setUsers(state, list)    { state.users    = list; },
-      setRoles(state, list)    { state.roles    = list; },
-      setProfiles(state, list) { state.profiles = list; },
+      setUsers(state, list)          { state.users         = list; },
+      setRoles(state, list)          { state.roles         = list; },
+      setProfiles(state, list)       { state.profiles      = list; },
+      setHostResources(state, data)  { state.hostResources = data; },
 
       upsertUser(state, user) {
          const idx = state.users.findIndex(u => u.username === user.username);
@@ -93,6 +95,7 @@ export default {
             dispatch('fetchUsers'),
             dispatch('fetchRoles'),
             dispatch('fetchProfiles'),
+            dispatch('fetchResources'),
          ]);
       },
 
@@ -129,6 +132,15 @@ export default {
             commit('setError', e.message || 'Failed to load profiles');
          } finally {
             commit('setLoading', false);
+         }
+      },
+
+      async fetchResources({ commit }) {
+         try {
+            const data = await api.getResources();
+            commit('setHostResources', data);
+         } catch (e) {
+            // Non-fatal — admin UI works without resource suggestions
          }
       },
 

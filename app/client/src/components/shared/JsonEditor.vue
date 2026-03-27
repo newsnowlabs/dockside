@@ -3,10 +3,11 @@
       <json-editor-vue
          v-model="localValue"
          :mode="currentMode"
-         :modes="['tree', 'code']"
+         :modes="allowedModes"
+         :read-only="readonly"
          class="json-editor"
       />
-      <div class="json-editor-toolbar">
+      <div v-if="!readonly" class="json-editor-toolbar">
          <span class="json-editor-mode-label">Mode:</span>
          <b-button-group size="sm">
             <b-button
@@ -24,8 +25,9 @@
    /**
     * JsonEditor — thin wrapper around json-editor-vue.
     *
-    * Props:  value (Object|Array|string)
-    *         mode  ('tree' | 'code')  default 'tree'
+    * Props:  value    (Object|Array|string)
+    *         mode     ('tree' | 'code')  default 'tree'
+    *         readonly (Boolean)          default false — shows read-only tree view
     * Emits:  input(newValue)
     *
     * Vue 3 migration: rename 'value' → 'modelValue' and 'input' → 'update:modelValue'.
@@ -44,12 +46,22 @@
             default: 'tree',
             validator: v => ['tree', 'code'].includes(v),
          },
+         readonly: {
+            type: Boolean,
+            default: false,
+         },
       },
       data() {
          return {
             localValue:  this.value,
             currentMode: this.mode,
          };
+      },
+      computed: {
+         allowedModes() {
+            // In readonly mode hide the mode switcher and lock to tree view
+            return this.readonly ? [] : ['tree', 'code'];
+         },
       },
       watch: {
          value(v) {
@@ -59,7 +71,9 @@
             }
          },
          localValue(v) {
-            this.$emit('input', v);
+            if (!this.readonly) {
+               this.$emit('input', v);
+            }
          },
          mode(v) {
             this.currentMode = v;

@@ -14,7 +14,8 @@ use URI::Escape;
 use Try::Tiny;
 use File::Path;
 use Util qw(flog wlog run run_pty YYYYMMDDHHMMSS);
-use Data qw($CONFIG $VERSION);
+use Data qw($CONFIG $VERSION $HOSTINFO $HOSTNAME);
+use Containers;
 use Profile;
 use Reservation;
 use Request;
@@ -464,6 +465,26 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
 
          my $containers = $User->reservations({'client' => 1});
          return json($r, 200, { 'status' => '200', 'data' => $containers });
+      }
+
+      ######################################
+      # Host resources — runtimes, networks, IDEs, auth modes
+      # Used by the admin UI to populate resource suggestion lists.
+      #
+
+      if( $route =~ m!^/resources/?$! ) {
+         my @networks = sort { $a cmp $b } keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} };
+         my @runtimes = sort { $a cmp $b } keys %{ ($HOSTINFO->{'docker'} // {})->{'Runtimes'} // {} };
+         my @IDEs     = @{ $HOSTINFO->{'IDEs'} // [] };
+         return json($r, 200, {
+            'status' => '200',
+            'data'   => {
+               'runtimes'  => \@runtimes,
+               'networks'  => \@networks,
+               'IDEs'      => \@IDEs,
+               'authModes' => ['user', 'developer', 'public', 'viewer', 'owner'],
+            }
+         });
       }
 
       ######################################

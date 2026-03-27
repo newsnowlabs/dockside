@@ -22,13 +22,15 @@ export const PERMISSIONS = [
    { key: 'manageProfiles',             label: 'Manage profiles',         group: 'Admin' },
 ];
 
+// allowDeny: true  → tags can be green (allowed) or red (denied); suggests value:disabled variants
+// allowDeny: false → plain string list only (e.g. images are always "allowed")
 export const RESOURCES = [
-   { key: 'profiles',  label: 'Profiles'   },
-   { key: 'runtimes',  label: 'Runtimes'   },
-   { key: 'networks',  label: 'Networks'   },
-   { key: 'auth',      label: 'Auth modes' },
-   { key: 'images',    label: 'Images'     },
-   { key: 'IDEs',      label: 'IDEs'       },
+   { key: 'profiles',  label: 'Profiles',    allowDeny: true  },
+   { key: 'runtimes',  label: 'Runtimes',    allowDeny: true  },
+   { key: 'networks',  label: 'Networks',    allowDeny: true  },
+   { key: 'auth',      label: 'Auth modes',  allowDeny: true  },
+   { key: 'images',    label: 'Images',      allowDeny: false },
+   { key: 'IDEs',      label: 'IDEs',        allowDeny: true  },
 ];
 
 // Group PERMISSIONS entries by their 'group' field, preserving order.

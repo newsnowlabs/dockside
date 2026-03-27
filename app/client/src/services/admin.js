@@ -105,3 +105,11 @@ export function renameProfile(id, newName) {
       params: { new_name: newName }
    }).then(r => r.data.data);
 }
+
+// ---------------------------------------------------------------------------
+// Host resource suggestions (runtimes, networks, IDEs, auth modes)
+// ---------------------------------------------------------------------------
+
+export function getResources() {
+   return axios.get('/resources').then(r => r.data.data);
+}

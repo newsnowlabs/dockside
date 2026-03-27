@@ -104,14 +104,11 @@
             <b-form-input :value="form.version" readonly plaintext />
          </b-form-group>
 
-         <!-- JSON body editor -->
+         <!-- JSON body — read-only tree view when not editing, full editor when editing -->
          <b-form-group label="Profile body" label-cols="3">
-            <div v-if="!isEditMode && !isNew" class="json-readonly-hint">
-               Switch to Edit mode to modify the profile body.
-            </div>
             <JsonEditor
-               v-else
                :value="profileBody"
+               :readonly="!isEditMode && !isNew"
                mode="tree"
                @input="profileBody = $event"
             />
@@ -427,12 +424,5 @@
 
    .save-error {
       font-size: 0.85rem;
-   }
-
-   .json-readonly-hint {
-      color: #888;
-      font-style: italic;
-      font-size: 0.85rem;
-      padding: 6px 0;
    }
 </style>
