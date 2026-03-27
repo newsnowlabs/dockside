@@ -38,6 +38,12 @@
             type: Boolean,
             default: true,
          },
+         // Optional custom description for the null/absent state used in the tooltip.
+         // Defaults to "inherited from role" when allowInherit=true.
+         nullLabel: {
+            type: String,
+            default: null,
+         },
          readonly: {
             type: Boolean,
             default: false,
@@ -50,9 +56,10 @@
             return 'value-tag--absent';
          },
          title() {
-            if (this.value === '1') return `${this.label}: explicitly granted`;
-            if (this.value === '0') return `${this.label}: explicitly denied`;
-            return this.allowInherit ? `${this.label}: inherited from role (click to set)` : `${this.label}: not granted (click to grant)`;
+            if (this.value === '1') return `${this.label}: allowed (click to deny)`;
+            if (this.value === '0') return `${this.label}: denied (click to remove)`;
+            const absentHint = this.nullLabel || (this.allowInherit ? 'inherited from role' : 'not granted');
+            return `${this.label}: ${absentHint} (click to allow)`;
          },
       },
       methods: {

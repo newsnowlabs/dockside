@@ -12,7 +12,8 @@
                :key="tag.value"
                :label="tag.value"
                :value="tag.state"
-               :allow-inherit="false"
+               :allow-inherit="true"
+               null-label="remove"
                @change="onTagChange(res.key, tag.value, $event)"
             />
             <!-- New value input -->
@@ -25,7 +26,6 @@
                   placeholder="value (e.g. * or specific name)"
                   @keyup.enter="commitAdd(res.key)"
                   @keyup.escape="cancelAdd"
-                  @blur="cancelAdd"
                />
                <b-button
                   v-else
@@ -38,9 +38,7 @@
          </div>
       </div>
       <div class="resources-legend">
-         <span class="legend-green">Green = allowed</span>
-         <span class="legend-red">Red = denied (click green to toggle)</span>
-         <span class="legend-grey">Click × to remove</span>
+         Click a value to cycle: <span class="legend-green">green = allowed</span> → <span class="legend-red">red = denied</span> → removed · Use + to add a value
       </div>
    </div>
 </template>
