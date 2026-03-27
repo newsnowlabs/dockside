@@ -1,0 +1,47 @@
+services:
+  dockside:
+    container_name: ${DOCKSIDE_NAME:-dockside}
+    image: ${DOCKSIDE_IMAGE:-newsnowlabs/dockside:image}
+    restart: unless-stopped
+    attach: false
+    command: ["--ssl-letsencrypt", "--ssl-zone", "dockside.example.com"]
+    ports:
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTP_PORT:-80}:80"
+      - "53:53/udp"
+    volumes:
+      - ${HOME}/.dockside:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ide:/opt/dockside
+      - hostdata:/opt/dockside/host
+    security_opt:
+      - apparmor:unconfined
+    networks:
+      ds-priv:
+        mac_address: "02:00:00:00:00:01"
+        ipv4_address: 172.18.0.2
+        gw_priority: 100
+      ds-prod:
+        mac_address: "02:00:00:00:00:01"
+        ipv4_address: 172.16.0.2
+        gw_priority: 102
+      ds-clone:
+        mac_address: "02:00:00:00:00:01"
+        ipv4_address: 172.17.0.2
+        gw_priority: 101
+      dockside:
+        gw_priority: 1000
+
+volumes:
+  ide:
+  hostdata:
+
+networks:
+  dockside:
+    external: true
+  ds-priv:
+    external: true
+  ds-prod:
+    external: true
+  ds-clone:
+    external: true
