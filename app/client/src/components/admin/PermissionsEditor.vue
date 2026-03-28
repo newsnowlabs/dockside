@@ -13,7 +13,7 @@
                :label="perm.label"
                :value="tagValue(perm.key)"
                :allow-inherit="allowInherit"
-               :title="inheritHint(perm.key)"
+               :title="tagTitle(perm)"
                @change="onTagChange(perm.key, $event)"
             />
          </div>
@@ -70,12 +70,35 @@
             return null;
          },
 
-         inheritHint(key) {
-            if (!this.allowInherit) return undefined;
+         tagTitle(perm) {
+            const { key, label } = perm;
+            const v  = this.tagValue(key);
             const rp = this.rolePermissions[key];
-            if (rp === '1' || rp === 1 || rp === true)  return `Inherited from role: granted`;
-            if (rp === '0' || rp === 0 || rp === false) return `Inherited from role: denied`;
-            return `Inherited from role: not set`;
+
+            if (this.readonly) {
+               if (v === '1') return `${label}: explicitly granted`;
+               if (v === '0') return `${label}: explicitly denied`;
+               if (!this.allowInherit) return `${label}: not granted`;
+               const roleStr = (rp === '1' || rp === 1 || rp === true)  ? 'granted'
+                             : (rp === '0' || rp === 0 || rp === false) ? 'denied'
+                             : 'not set';
+               return `${label}: inherited from role (${roleStr})`;
+            }
+
+            if (!this.allowInherit) {
+               // Role context: null = not granted, "1" = granted
+               return v === '1'
+                  ? `${label}: granted — click to remove`
+                  : `${label}: not granted — click to grant`;
+            }
+
+            // User context: null = inherited, "1" = explicit grant, "0" = explicit deny
+            if (v === '1') return `${label}: explicitly granted — click to deny`;
+            if (v === '0') return `${label}: explicitly denied — click to allow`;
+            const roleStr = (rp === '1' || rp === 1 || rp === true)  ? 'granted'
+                          : (rp === '0' || rp === 0 || rp === false) ? 'denied'
+                          : 'not set';
+            return `${label}: inherited from role (${roleStr}) — click to grant explicitly`;
          },
 
          onTagChange(key, newValue) {

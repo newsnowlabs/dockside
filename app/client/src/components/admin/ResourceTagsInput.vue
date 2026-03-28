@@ -17,7 +17,11 @@
          :placeholder="placeholder"
          class="resource-tags-input"
          @tags-changed="onTagsChanged"
-      />
+      >
+         <template v-slot:tag-center="{ tag }">
+            <span :title="tagTooltip(tag)">{{ tag.text }}</span>
+         </template>
+      </vue-tags-input>
    </div>
 </template>
 
@@ -138,6 +142,19 @@
 
       methods: {
          noop() {},
+
+         tagTooltip(tag) {
+            if (!this.allowDeny) {
+               return this.readonly ? tag.text : `${tag.text} — × to remove`;
+            }
+            const allowed = tag.classes === 'state-allowed';
+            if (this.readonly) {
+               return allowed ? `${tag.text}: allowed` : `${tag.text}: denied`;
+            }
+            return allowed
+               ? `${tag.text}: allowed — click to deny, × to remove`
+               : `${tag.text}: denied — click to allow, × to remove`;
+         },
 
          /**
           * Click-to-toggle: clicking a tag text (not the × close button) cycles
