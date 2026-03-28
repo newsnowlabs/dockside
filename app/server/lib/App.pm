@@ -545,7 +545,7 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       }
 
       if( $route =~ m!^/roles/create/?$! ) {
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $name = $args->{'name'}
             or die Exception->new( 'msg' => "name is required" );
          my $record = $User->createRole($name, $args);
@@ -560,7 +560,7 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
 
       if( $route =~ m!^/roles/([^/]+)/update/?$! ) {
          my $name = $1;
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->updateRole($name, $args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }

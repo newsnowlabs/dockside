@@ -165,6 +165,15 @@
    import ConfirmModal      from '@/components/shared/ConfirmModal';
    import { getSelf }       from '@/services/admin';
 
+   const DEFAULT_RESOURCES = () => ({
+      profiles: ['*'],
+      runtimes: ['*'],
+      networks: ['*'],
+      auth:     ['*'],
+      images:   ['*'],
+      IDEs:     ['*'],
+   });
+
    const EMPTY_FORM = () => ({
       username:        '',
       name:            '',
@@ -174,7 +183,7 @@
       gh_token:        '',        // new token value (empty = not changing)
       gh_token_is_set: false,     // true when server returned '<redacted>'
       permissions:     {},
-      resources:       {},
+      resources:       DEFAULT_RESOURCES(),
       ssh:             {},
    });
 
@@ -286,6 +295,11 @@
          async save() {
             this.saving   = true;
             this.saveError = null;
+            if (!this.selfEdit && !this.form.role) {
+               this.saveError = 'A role is required.';
+               this.saving = false;
+               return;
+            }
             try {
                const payload = {
                   name:  this.form.name,

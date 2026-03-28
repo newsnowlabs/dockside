@@ -31,9 +31,12 @@ sub _parse_passwd_text ($text) {
    return %passwd;
 }
 
-# Attempt JSON decode of a value; fall back to the raw string.
+# Attempt JSON decode of a scalar value; pass through refs and undefs unchanged.
+# When the POST body is application/json, values may already be decoded data
+# structures (hashrefs, arrayrefs); we must not try to re-decode those.
 sub _decode_value ($val) {
-   return $val unless defined $val && length $val;
+   return $val if !defined($val) || ref($val);
+   return $val unless length $val;
    my $decoded = eval { decode_json($val) };
    return $@ ? $val : $decoded;
 }

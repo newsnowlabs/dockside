@@ -56,11 +56,11 @@ export function getRole(name) {
 }
 
 export function createRole(data) {
-   return axios.get('/roles/create', { params: data }).then(r => r.data.data);
+   return axios.post('/roles/create', data).then(r => r.data.data);
 }
 
 export function updateRole(name, data) {
-   return axios.get(`/roles/${encodeURIComponent(name)}/update`, { params: data }).then(r => r.data.data);
+   return axios.post(`/roles/${encodeURIComponent(name)}/update`, data).then(r => r.data.data);
 }
 
 export function removeRole(name) {
