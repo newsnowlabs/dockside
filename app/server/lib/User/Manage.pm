@@ -114,7 +114,12 @@ sub _restore_redacted_ssh ($record, $orig_keypairs) {
 sub _sanitise_user_record ($record, $sensitive = 0) {
    my $out = {%$record};
    unless ($sensitive) {
-      $out->{'gh_token'} = '<redacted>' if exists $out->{'gh_token'};
+      if ( exists $out->{'gh_token'} && defined $out->{'gh_token'} ) {
+         my $t = $out->{'gh_token'};
+         $out->{'gh_token'} = length($t) > 8
+            ? substr( $t, 0, 4 ) . ( '*' x ( length($t) - 8 ) ) . substr( $t, -4 )
+            : '*' x length($t);
+      }
       if ( ref $out->{'ssh'} eq 'HASH' && ref $out->{'ssh'}{'keypairs'} eq 'HASH' ) {
          $out->{'ssh'}             = { %{ $out->{'ssh'} } };
          $out->{'ssh'}{'keypairs'} = { %{ $out->{'ssh'}{'keypairs'} } };

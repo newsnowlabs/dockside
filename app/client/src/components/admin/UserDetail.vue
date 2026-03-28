@@ -98,7 +98,7 @@
             <b-form-input
                v-else
                disabled
-               :placeholder="form.gh_token_is_set ? '<redacted>' : ''"
+               :placeholder="form.gh_token_masked || ''"
             />
          </b-form-group>
 
@@ -181,7 +181,8 @@
       role:            'user',
       password:        '',
       gh_token:        '',        // new token value (empty = not changing)
-      gh_token_is_set: false,     // true when server returned '<redacted>'
+      gh_token_is_set: false,     // true when server returned a masked token
+      gh_token_masked: '',        // masked token value from server (e.g. ghp_****abcd)
       permissions:     {},
       resources:       DEFAULT_RESOURCES(),
       ssh:             {},
@@ -297,15 +298,17 @@
 
       methods: {
          populateForm(record) {
-            const tokenIsSet = record.gh_token === '<redacted>';
+            const maskedToken = record.gh_token || '';
+            const tokenIsSet  = !!maskedToken;
             this.form = {
                username:        record.username    || '',
                name:            record.name        || '',
                email:           record.email       || '',
                role:            record.role        || 'user',
                password:        '',
-               gh_token:        tokenIsSet ? '' : (record.gh_token || ''),
+               gh_token:        '',
                gh_token_is_set: tokenIsSet,
+               gh_token_masked: maskedToken,
                permissions:     record.permissions ? { ...record.permissions } : {},
                resources:       record.resources   ? { ...record.resources }   : {},
                ssh:             record.ssh         ? { ...record.ssh }         : {},
