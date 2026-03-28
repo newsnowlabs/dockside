@@ -106,6 +106,7 @@
             <PermissionsEditor
                :permissions="form.permissions"
                :role-permissions="rolePermissions"
+               :perm-default="rolePermDefault"
                :allow-inherit="true"
                :readonly="!isEditMode && !isNew"
                @update:permissions="form.permissions = $event"
@@ -242,6 +243,12 @@
          rolePermissions() {
             const role = this.roles.find(r => r.name === this.form.role);
             return (role && role.permissions) || {};
+         },
+
+         // Effective default for permissions not explicitly set by the user's role.
+         // Admin role grants everything by default; other roles deny by default.
+         rolePermDefault() {
+            return this.form.role === 'admin' ? '1' : '0';
          },
       },
 

@@ -60,9 +60,10 @@
          // The effective inherited/absent value — drives colour when value===null.
          inheritedValue() {
             if (this.allowInherit) {
-               return this.rolePermission; // user context: from role
+               // User context: role's explicit setting, falling back to role's default.
+               return this.rolePermission !== null ? this.rolePermission : this.permDefault;
             } else {
-               return this.permDefault;    // role context: from permDefault
+               return this.permDefault; // role context: from permDefault
             }
          },
          stateClass() {
@@ -76,19 +77,25 @@
          title() {
             const act = (action) => this.readonly ? '' : ` — click to ${action}`;
             if (this.allowInherit) {
-               // User context
+               // User context: null=inherited, "1"=explicit grant, "0"=explicit deny
+               // Cycle: null → "1" → "0" → null
                if (this.value === '1') return `${this.label}: explicitly granted${act('deny')}`;
-               if (this.value === '0') return `${this.label}: explicitly denied${act('allow')}`;
-               const roleStr = this.rolePermission === '1' ? 'granted'
-                             : this.rolePermission === '0' ? 'denied'
-                             : 'not set';
+               if (this.value === '0') return `${this.label}: explicitly denied${act('inherit from role')}`;
+               // null — inherited from role
+               const eff = this.inheritedValue;
+               const roleStr = eff === '1' ? 'granted' : eff === '0' ? 'denied' : 'not set';
                return `${this.label}: inherited from role (${roleStr})${act('grant explicitly')}`;
             } else {
-               // Role context
-               if (this.value === '1') return `${this.label}: granted${act('deny')}`;
-               if (this.value === '0') return `${this.label}: denied${act('grant')}`;
+               // Role context: null=not set, "1"=explicit grant, "0"=explicit deny
+               // Cycle: null → "1" → "0" → null
+               if (this.value === '1') return `${this.label}: explicitly granted${act('deny')}`;
+               if (this.value === '0') {
+                  const revertStr = this.permDefault === '1' ? 'granted by default' : 'not granted';
+                  return `${this.label}: explicitly denied${act(`revert to ${revertStr}`)}`;
+               }
+               // null — not explicitly set; show effective default
                const defStr = this.permDefault === '1' ? 'granted by default' : 'not granted';
-               return `${this.label}: ${defStr}${act('grant')}`;
+               return `${this.label}: ${defStr}${act(this.permDefault === '1' ? 'deny' : 'grant')}`;
             }
          },
       },
