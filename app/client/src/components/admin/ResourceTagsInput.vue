@@ -107,14 +107,14 @@
       computed: {
          placeholder() {
             if (this.readonly) return '';
-            if (this.allowDeny) return 'Type to add · value:disabled to deny · * to allow all';
+            if (this.allowDeny) return 'Type to add · value (Denied) to deny · * to allow all';
             return 'Type to add · * to allow all';
          },
 
          autocompleteItems() {
             const existing = new Set(this.tags.map(t => t.text));
-            // Strip a trailing :disabled from the query for base-name matching
-            const searchQ = this.inputText.toLowerCase().replace(/:disabled$/, '');
+            // Strip a trailing " (Denied)" from the query for base-name matching
+            const searchQ = this.inputText.toLowerCase().replace(/ \(denied\)$/i, '');
 
             const base = this.suggestions.filter(
                s => !existing.has(s) && (searchQ === '' || s.toLowerCase().includes(searchQ))
@@ -125,7 +125,7 @@
             }
             return [
                ...base.map(s => ({ text: s })),
-               ...base.map(s => ({ text: s + ':disabled' })),
+               ...base.map(s => ({ text: s + ' (Denied)' })),
             ];
          },
       },
@@ -203,9 +203,9 @@
                if (tag.classes === 'state-allowed' || tag.classes === 'state-denied') {
                   // Existing tag — preserve its state from the class we assigned
                   state = tag.classes === 'state-allowed' ? '1' : '0';
-               } else if (this.allowDeny && key.endsWith(':disabled')) {
-                  // New tag typed/selected with the :disabled deny-convention
-                  key   = key.slice(0, -9); // strip ':disabled' (9 chars)
+               } else if (this.allowDeny && key.toLowerCase().endsWith(' (denied)')) {
+                  // New tag typed/selected with the " (Denied)" deny-convention
+                  key   = key.replace(/ \(denied\)$/i, ''); // strip ' (Denied)'
                   state = '0';
                } else {
                   // New plain tag → allowed

@@ -16,10 +16,14 @@
             />
          </div>
       </div>
-      <div v-if="!readonly" class="resources-legend">
+      <div class="resources-legend">
          <span class="legend-green">green = allowed</span> ·
-         <span class="legend-red">red = denied</span> ·
-         type <em>value:disabled</em> to deny · × to remove
+         <span class="legend-red">red = denied</span>
+         <template v-if="!readonly"> ·
+            click tag to toggle granted/denied ·
+            type <em>value (Denied)</em> to deny ·
+            × to remove
+         </template>
       </div>
    </div>
 </template>

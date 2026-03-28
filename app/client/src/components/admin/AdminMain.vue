@@ -8,7 +8,7 @@
 
       <!-- User detail -->
       <UserDetail
-         v-if="selected.type === 'user' && selected.id"
+         v-if="!isAccountRoute && selected.type === 'user' && selected.id"
          :key="'user-' + selected.id"
          :username="selected.id === 'new' ? null : selected.id"
          :self-edit="false"
@@ -16,14 +16,14 @@
 
       <!-- Role detail -->
       <RoleDetail
-         v-else-if="selected.type === 'role' && selected.id"
+         v-else-if="!isAccountRoute && selected.type === 'role' && selected.id"
          :key="'role-' + selected.id"
          :role-name="selected.id === 'new' ? null : selected.id"
       />
 
       <!-- Profile detail -->
       <ProfileDetail
-         v-else-if="selected.type === 'profile' && selected.id"
+         v-else-if="!isAccountRoute && selected.type === 'profile' && selected.id"
          :key="'profile-' + selected.id"
          :profile-id="selected.id === 'new' ? null : selected.id"
       />

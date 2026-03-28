@@ -428,8 +428,9 @@ sub can_use_resource ($self, $resourceType, $resource) {
 
 sub profiles ($self) {
    my %userProfiles = map {
-      $self->can_use_resource('profiles', $_) ?
-         ($_ => Profile->load($_)->cloneWithConstraints($self->derivedResourceConstraints)->sanitise) :
+      my $p = Profile->load($_);
+      ($self->can_use_resource('profiles', $_) && $p->{'active'}) ?
+         ($_ => $p->cloneWithConstraints($self->derivedResourceConstraints)->sanitise) :
          ()
    } (Profile->names);
 

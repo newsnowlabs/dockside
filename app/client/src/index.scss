@@ -25,3 +25,14 @@ $theme-colors: (
       }
    }
 }
+
+// Narrow label column for all form groups (was 25% for col-3)
+.col-3 {
+   flex: 0 0 15% !important;
+   max-width: 15% !important;
+}
+
+// Tighter form group spacing
+.form-group {
+   margin-bottom: 0.5rem;
+}

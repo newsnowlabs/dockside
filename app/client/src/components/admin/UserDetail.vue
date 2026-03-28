@@ -94,11 +94,12 @@
                   </b-button>
                </b-input-group-append>
             </b-input-group>
-            <!-- View mode: show whether token is set -->
-            <div v-else-if="form.gh_token_is_set" class="token-set-notice">
-               <span class="badge badge-success mr-2">Token set</span>
-            </div>
-            <span v-else class="text-muted font-italic" style="font-size:0.85rem">No token set.</span>
+            <!-- View mode: disabled input; placeholder reflects token status -->
+            <b-form-input
+               v-else
+               disabled
+               :placeholder="form.gh_token_is_set ? '&lt;redacted&gt;' : ''"
+            />
          </b-form-group>
 
          <!-- Permissions — not shown in selfEdit mode -->
