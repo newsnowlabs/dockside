@@ -90,11 +90,11 @@
                // Cycle: null → "1" → "0" → null
                if (this.value === '1') return `${this.label}: explicitly granted${act('deny')}`;
                if (this.value === '0') {
-                  const revertStr = this.permDefault === '1' ? 'granted by default' : 'not granted';
+                  const revertStr = this.permDefault === '1' ? 'granted by default' : 'not granted by default';
                   return `${this.label}: explicitly denied${act(`revert to ${revertStr}`)}`;
                }
                // null — not explicitly set; show effective default
-               const defStr = this.permDefault === '1' ? 'granted by default' : 'not granted';
+               const defStr = this.permDefault === '1' ? 'granted by default' : 'not granted by default';
                return `${this.label}: ${defStr}${act(this.permDefault === '1' ? 'deny' : 'grant')}`;
             }
          },
