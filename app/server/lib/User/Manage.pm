@@ -5,7 +5,7 @@ use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = qw(
-   listUsers getUser createUser updateUser updateSelf removeUser
+   listUsers getUser getSelf createUser updateUser updateSelf removeUser
    listRoles getRole createRole updateRole removeRole
 );
 
@@ -93,6 +93,23 @@ sub _user_to_record ($user) {
    };
 }
 
+# After _apply_args_to_record, restore any SSH keypair private keys that the
+# client sent back as the '<redacted>' sentinel (returned by _sanitise_user_record).
+# Without this, a save would overwrite stored private key material with the
+# literal string '<redacted>'.  Captures must be taken BEFORE _apply_args_to_record.
+sub _restore_redacted_ssh ($record, $orig_keypairs) {
+   my $kps = ( ( $record->{'ssh'} // {} )->{'keypairs'} // {} );
+   for my $kp_name ( keys %$kps ) {
+      my $kp = $kps->{$kp_name};
+      next unless ref $kp eq 'HASH' && ( $kp->{'private'} // '' ) eq '<redacted>';
+      if ( exists( $orig_keypairs->{$kp_name} // {} )->{'private'} ) {
+         $kp->{'private'} = $orig_keypairs->{$kp_name}{'private'};
+      } else {
+         delete $kp->{'private'};
+      }
+   }
+}
+
 # Sanitise a user record for API output: strip sensitive fields unless requested.
 sub _sanitise_user_record ($record, $sensitive = 0) {
    my $out = {%$record};
@@ -133,6 +150,17 @@ sub getUser ($self, $username, $args = {}) {
 
    my $sensitive = $args->{'sensitive'} ? 1 : 0;
    return _sanitise_user_record( _user_to_record( $User::USERS->{$username} ), $sensitive );
+}
+
+# Self-service read: any authenticated user may read their own record.
+# No manageUsers permission is required.
+sub getSelf ($self, $args = {}) {
+   my $username = $self->username;
+   die Exception->new( 'msg' => "Not authenticated" ) unless $username;
+   die Exception->new( 'msg' => "User '$username' not found" )
+      unless $User::USERS->{$username};
+
+   return _sanitise_user_record( _user_to_record( $User::USERS->{$username} ) );
 }
 
 sub createUser ($self, $args) {
@@ -206,7 +234,9 @@ sub updateUser ($self, $username, $args) {
       $record = $users->{$username}
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
 
+      my $orig_kps = { %{ ( $record->{'ssh'} // {} )->{'keypairs'} // {} } };
       _apply_args_to_record( $record, $args, qw(username password sensitive) );
+      _restore_redacted_ssh( $record, $orig_kps );
 
       $users->{$username} = $record;
       return JSON->new->utf8->pretty->canonical->encode($users);
@@ -252,7 +282,9 @@ sub updateSelf ($self, $args) {
       $record = $users->{$username}
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
 
+      my $orig_kps = { %{ ( $record->{'ssh'} // {} )->{'keypairs'} // {} } };
       _apply_args_to_record( $record, $safe_args );
+      _restore_redacted_ssh( $record, $orig_kps );
 
       $users->{$username} = $record;
       return JSON->new->utf8->pretty->canonical->encode($users);

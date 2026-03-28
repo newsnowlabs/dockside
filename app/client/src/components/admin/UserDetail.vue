@@ -221,6 +221,7 @@
             saveError:     null,
             localEditMode: false,  // view/edit toggle used for selfEdit
             savedForm:     null,   // snapshot of form taken when entering edit mode
+            sshLoaded:     false,  // true once SSH data has been fetched from server
          };
       },
 
@@ -304,6 +305,7 @@
                resources:       record.resources   ? { ...record.resources }   : {},
                ssh:             record.ssh         ? { ...record.ssh }         : {},
             };
+            if (record.ssh !== undefined) this.sshLoaded = true;
          },
 
          startEdit() {
@@ -348,8 +350,10 @@
                const payload = {
                   name:  this.form.name,
                   email: this.form.email,
-                  ssh:   this.form.ssh,
                };
+               // Only include ssh when we have actually loaded it from the server;
+               // omitting it prevents wiping SSH data if the server fetch failed.
+               if (this.isNew || this.sshLoaded) payload.ssh = this.form.ssh;
                // Only send gh_token when the user has typed a new value.
                if (this.form.gh_token) payload.gh_token = this.form.gh_token;
 

@@ -38,6 +38,11 @@
          AdminSidebar,
          AdminMain,
       },
+      data() {
+         return {
+            user: window.dockside.user,
+         };
+      },
       computed: {
          isAdminRoute() {
             return this.$route.path.startsWith('/admin');
@@ -45,12 +50,16 @@
          isAccountRoute() {
             return this.$route.path === '/account';
          },
+         canAccessAdmin() {
+            const p = this.user.permissions.actions;
+            return p.manageUsers || p.manageProfiles;
+         },
       },
       created() {
          this.updateStateFromRoute(this.$route);
          this.pruneURLBasedOnUserPermissions();
          this.$store.dispatch('updateContainers');
-         if (this.isAdminRoute || this.isAccountRoute) {
+         if (this.isAdminRoute && this.canAccessAdmin) {
             this.$store.dispatch('admin/fetchAll');
          }
       },
@@ -80,8 +89,8 @@
       watch: {
          $route(to) {
             this.updateStateFromRoute(to);
-            // Fetch admin data when entering admin/account routes for the first time
-            if ((to.path.startsWith('/admin') || to.path === '/account') &&
+            // Fetch admin data when entering admin routes for the first time
+            if (to.path.startsWith('/admin') && this.canAccessAdmin &&
                 this.$store.state.admin.users.length === 0) {
                this.$store.dispatch('admin/fetchAll');
             }

@@ -498,8 +498,7 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
 
       # Self-service: any authenticated user can view and update their own personal fields.
       if( $route =~ m!^/users/me/?$! ) {
-         my $args = split_args($querystring);
-         my $record = $User->getUser($User->username, $args);
+         my $record = $User->getSelf();
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
 
