@@ -1109,16 +1109,23 @@ def _parse_extra_cookies(cookie_args):
 def cmd_login(args):
     cfg = load_config()
 
+    current_entry = _current_server(cfg)
     server = (getattr(args, 'server', None)
               or os.environ.get('DOCKSIDE_SERVER')
+              or (current_entry or {}).get('url', '')
               or (cfg.get('servers') or [{}])[0].get('url', '')
               or '')
     if not server:
         server = input('Server URL: ').strip()
     server = _normalise_server_url(server)
+    # Re-resolve current_entry in case server was overridden or typed
+    if not current_entry or current_entry.get('url') != server:
+        current_entry = _find_server(cfg, server)
 
-    # Nickname: from flag, or prompt interactively
-    nickname = getattr(args, 'nickname', None) or ''
+    # Nickname: from flag, then stored config entry, then prompt
+    nickname = (getattr(args, 'nickname', None) or '').strip()
+    if not nickname and current_entry:
+        nickname = (current_entry.get('nickname') or '').strip()
     if not nickname and sys.stdin.isatty():
         parsed   = urllib.parse.urlparse(server)
         default  = parsed.hostname or server
@@ -1126,6 +1133,9 @@ def cmd_login(args):
         nickname = prompted or default
     if nickname:
         nickname = nickname.strip()
+
+    display_ref = nickname if nickname else urllib.parse.urlparse(server).hostname or server
+    print(f'Logging in to [{display_ref}]')
 
     username = (getattr(args, 'username', None)
                 or os.environ.get('DOCKSIDE_USER')
