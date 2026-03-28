@@ -267,6 +267,11 @@
          rolePermDefault() {
             return this.form.role === 'admin' ? '1' : '0';
          },
+
+         hasSshChanges() {
+            const ssh = this.form.ssh || {};
+            return Object.keys(ssh).length > 0;
+         },
       },
 
       created() {
@@ -351,9 +356,10 @@
                   name:  this.form.name,
                   email: this.form.email,
                };
-               // Only include ssh when we have actually loaded it from the server;
-               // omitting it prevents wiping SSH data if the server fetch failed.
-               if (this.isNew || this.sshLoaded) payload.ssh = this.form.ssh;
+               // Include SSH when creating a user, when the existing SSH block was
+               // fetched, or when the editor contains newly added SSH data.
+               // This still avoids wiping unknown SSH data after a failed fetch.
+               if (this.isNew || this.sshLoaded || this.hasSshChanges) payload.ssh = this.form.ssh;
                // Only send gh_token when the user has typed a new value.
                if (this.form.gh_token) payload.gh_token = this.form.gh_token;
 
