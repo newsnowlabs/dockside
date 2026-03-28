@@ -40,6 +40,7 @@
             <PermissionsEditor
                :permissions="form.permissions"
                :allow-inherit="false"
+               :perm-default="form.name === 'admin' ? '1' : '0'"
                :readonly="!isEditMode && !isNew"
                @update:permissions="form.permissions = $event"
             />

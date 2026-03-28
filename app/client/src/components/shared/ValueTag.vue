@@ -9,14 +9,14 @@
 
 <script>
    /**
-    * ValueTag — a tri-state (or bi-state) chip used for permissions and resources.
+    * ValueTag — a tri-state chip used for permissions and resources.
     *
     * States:
-    *   null   → absent / inherited from role  (grey, shown only when allowInherit=true)
+    *   null   → absent / inherited / not set
     *   "1"    → explicitly granted / allowed  (green ✓)
     *   "0"    → explicitly denied             (red ✗)
     *
-    * When allowInherit=false (role context) cycling skips the absent state.
+    * Cycle is always: null → "1" → "0" → null
     *
     * Emits:  change(newValue)   where newValue is null | "1" | "0"
     */
@@ -32,15 +32,22 @@
             default: null,
             validator: v => v === null || v === '1' || v === '0',
          },
-         // allowInherit=true  → cycle: null → "1" → "0" → null
-         // allowInherit=false → cycle: "1"  → null (treat null as "not set" = denied for roles)
+         // allowInherit=true  → user context (null = inherited from role)
+         // allowInherit=false → role context (null = not explicitly set)
          allowInherit: {
             type: Boolean,
             default: true,
          },
          // The role's resolved value for this permission ('1', '0', or null).
-         // Included in the inherited-state tooltip when allowInherit=true.
+         // Used in the user context (allowInherit=true) for tooltip and inherited colour.
          rolePermission: {
+            default: null,
+            validator: v => v === null || v === '1' || v === '0',
+         },
+         // The default effective value when this permission is not explicitly set.
+         // Used in the role context (allowInherit=false) for tooltip and absent colour.
+         // '1' = admin-style role (all granted by default); '0' or null = normal role (denied by default).
+         permDefault: {
             default: null,
             validator: v => v === null || v === '1' || v === '0',
          },
@@ -50,40 +57,49 @@
          },
       },
       computed: {
+         // The effective inherited/absent value — drives colour when value===null.
+         inheritedValue() {
+            if (this.allowInherit) {
+               return this.rolePermission; // user context: from role
+            } else {
+               return this.permDefault;    // role context: from permDefault
+            }
+         },
          stateClass() {
             if (this.value === '1') return 'value-tag--granted';
             if (this.value === '0') return 'value-tag--denied';
+            // null: colour by the effective inherited/absent value
+            if (this.inheritedValue === '1') return 'value-tag--inherited-granted';
+            if (this.inheritedValue === '0') return 'value-tag--inherited-denied';
             return 'value-tag--absent';
          },
          title() {
+            const act = (action) => this.readonly ? '' : ` — click to ${action}`;
             if (this.allowInherit) {
-               // User context: null = inherited, '1' = explicit grant, '0' = explicit deny
-               if (this.value === '1') return `${this.label}: explicitly granted — click to deny`;
-               if (this.value === '0') return `${this.label}: explicitly denied — click to allow`;
+               // User context
+               if (this.value === '1') return `${this.label}: explicitly granted${act('deny')}`;
+               if (this.value === '0') return `${this.label}: explicitly denied${act('allow')}`;
                const roleStr = this.rolePermission === '1' ? 'granted'
                              : this.rolePermission === '0' ? 'denied'
                              : 'not set';
-               return `${this.label}: inherited from role (${roleStr}) — click to grant explicitly`;
+               return `${this.label}: inherited from role (${roleStr})${act('grant explicitly')}`;
             } else {
-               // Role context: '1' = granted, null/'0' = not granted
-               if (this.value === '1') return `${this.label}: granted — click to revoke`;
-               return `${this.label}: not granted — click to grant`;
+               // Role context
+               if (this.value === '1') return `${this.label}: granted${act('deny')}`;
+               if (this.value === '0') return `${this.label}: denied${act('grant')}`;
+               const defStr = this.permDefault === '1' ? 'granted by default' : 'not granted';
+               return `${this.label}: ${defStr}${act('grant')}`;
             }
          },
       },
       methods: {
          cycle() {
             if (this.readonly) return;
+            // Cycle: null → "1" → "0" → null
             let next;
-            if (this.allowInherit) {
-               // null → "1" → "0" → null
-               if (this.value === null)  next = '1';
-               else if (this.value === '1') next = '0';
-               else                      next = null;
-            } else {
-               // null/"0" → "1" → null
-               next = (this.value === '1') ? null : '1';
-            }
+            if (this.value === null)     next = '1';
+            else if (this.value === '1') next = '0';
+            else                         next = null;
             this.$emit('change', next);
          },
       },
@@ -112,6 +128,20 @@
          background-color: #e9ecef;
          color: #6c757d;
          border-color: #dee2e6;
+      }
+
+      // Inherited/absent but effective value is "granted" — lighter green
+      &--inherited-granted {
+         background-color: #eaf6ed;
+         color: #4a8c5c;
+         border-color: #c3e6cb;
+      }
+
+      // Inherited/absent but effective value is "denied" — lighter red
+      &--inherited-denied {
+         background-color: #fdf0f1;
+         color: #a94442;
+         border-color: #f5c6cb;
       }
 
       &--granted {
