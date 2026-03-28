@@ -1,4 +1,5 @@
 import Vuex from 'vuex';
+import axios from 'axios';
 import { getContainers } from '@/services/container';
 import adminModule from '@/store/admin';
 
@@ -13,6 +14,7 @@ const createStore = () => new Vuex.Store({
       selectedContainer: { name: undefined, mode: 'view' },
       containersFilter: 'shared',
       containers: window.dockside.containers,
+      profiles: window.dockside.profiles,
       welcomeTextStatus: localStorage.getItem(welcomeTextStatusLocalStorageKey) !== null ?
          parseInt(localStorage.getItem(welcomeTextStatusLocalStorageKey)) : 0
    },
@@ -42,6 +44,9 @@ const createStore = () => new Vuex.Store({
       },
       updateContainers(state, containers) {
          state.containers = containers;
+      },
+      updateProfiles(state, profiles) {
+         state.profiles = profiles;
       },
       addContainer(state, container) {
          state.containers = state.containers.filter(c => c.id !== container.id).concat(container);
@@ -80,6 +85,11 @@ const createStore = () => new Vuex.Store({
       },
       addContainer(context, container) {
          context.commit('addContainer', container);
+      },
+      fetchProfiles({ commit }) {
+         return axios.get('/profiles/mine')
+            .then(r => { commit('updateProfiles', r.data.data); })
+            .catch(() => {});   // non-fatal — stale profiles still work
       },
    }
 });

@@ -200,30 +200,34 @@ export default {
       // -----------------------------------------------------------------------
       // Profile CRUD
       // -----------------------------------------------------------------------
-      async createProfile({ commit }, data) {
+      async createProfile({ commit, dispatch }, data) {
          commit('setError', null);
          const record = await api.createProfile(data);
          commit('upsertProfile', record);
+         dispatch('fetchProfiles', null, { root: true });
          return record;
       },
 
-      async updateProfile({ commit }, { id, data }) {
+      async updateProfile({ commit, dispatch }, { id, data }) {
          commit('setError', null);
          const record = await api.updateProfile(id, data);
          commit('upsertProfile', record);
+         dispatch('fetchProfiles', null, { root: true });
          return record;
       },
 
-      async removeProfile({ commit }, id) {
+      async removeProfile({ commit, dispatch }, id) {
          commit('setError', null);
          await api.removeProfile(id);
          commit('removeProfile', id);
+         dispatch('fetchProfiles', null, { root: true });
       },
 
-      async renameProfile({ commit }, { id, newName }) {
+      async renameProfile({ commit, dispatch }, { id, newName }) {
          commit('setError', null);
          const result = await api.renameProfile(id, newName);
          commit('renameProfile', { oldId: id, newId: result.id });
+         dispatch('fetchProfiles', null, { root: true });
          return result;
       },
    },

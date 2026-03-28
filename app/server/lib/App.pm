@@ -580,6 +580,12 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
          return json($r, 200, { 'status' => '200', 'data' => $User->listProfiles($args) });
       }
 
+      # Returns the calling user's accessible profiles in the same format as the
+      # page-bootstrap window.dockside.profiles object — usable by any authenticated user.
+      if( $route =~ m!^/profiles/mine/?$! ) {
+         return json($r, 200, { 'status' => '200', 'data' => $User->profiles() });
+      }
+
       if( $route =~ m!^/profiles/create/?$! ) {
          my $args = get_args($r, $querystring);
          my $id = $args->{'id'}

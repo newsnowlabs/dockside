@@ -284,19 +284,17 @@
          container: Object
       },
       data() {
-         let profiles = window.dockside.profiles;
-         let profileNames = Object.keys(profiles).sort();
-
          return {
             userName: (window.dockside.viewers.find(viewer => viewer.username === this.container.meta.owner) || []).name,
-            profiles: profiles,
-            profileNames: profileNames,
             form: {
             }
          };
       },
       created() {
-         if(this.isPrelaunchMode) this.initialiseForm();
+         if(this.isPrelaunchMode) {
+            this.$store.dispatch('fetchProfiles');
+            this.initialiseForm();
+         }
       },
       computed: {
          ...mapGetters([
@@ -304,8 +302,10 @@
             'isEditMode',
             'isPrelaunchMode'
          ]),
-         ...mapState([
-         ]),
+         ...mapState(['profiles']),
+         profileNames() {
+            return Object.keys(this.profiles).sort();
+         },
          runtimes() {
             return (this.profile && this.profile.runtimes) ? this.profile.runtimes : [];
          },

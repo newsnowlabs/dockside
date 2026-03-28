@@ -154,8 +154,8 @@
             const tagEl = event.target.closest('.ti-tag');
             if (!tagEl) return;
 
-            // Tag text is in the direct child <div>
-            const textEl = tagEl.querySelector(':scope > div');
+            // Tag text is in .ti-tag-center > span
+            const textEl = tagEl.querySelector('.ti-tag-center > span');
             const tagText = textEl ? textEl.textContent.trim() : null;
             if (!tagText) return;
 
@@ -243,7 +243,7 @@
             border: 1px solid #c3e6cb;
             cursor: pointer;
 
-            > div::after { content: ' ✓'; font-weight: bold; }
+            .ti-tag-center > span::before { content: '✓ '; font-weight: bold; }
          }
 
          &.state-denied {
@@ -252,7 +252,7 @@
             border: 1px solid #f5c6cb;
             cursor: pointer;
 
-            > div::after { content: ' ✗'; font-weight: bold; }
+            .ti-tag-center > span::before { content: '✗ '; font-weight: bold; }
          }
 
          // Default (images / no-deny mode) — neutral grey
@@ -260,6 +260,18 @@
             background-color: #e9ecef;
             color: #495057;
             border: 1px solid #dee2e6;
+         }
+
+         // Separate the dismiss × area with a subtle divider + tint
+         .ti-actions {
+            border-left: 1px solid rgba(0, 0, 0, 0.15);
+            padding-left: 4px;
+            margin-left: 4px;
+            background: rgba(0, 0, 0, 0.06);
+            border-radius: 0 12px 12px 0;
+            align-self: stretch;
+            display: flex;
+            align-items: center;
          }
 
          .ti-icon-close {

@@ -14,9 +14,9 @@
                </select>
             </b-nav-item>
 
-            <b-nav-item v-show="user.permissions.actions.createContainerReservation && !isPrelaunchMode && !isAdminRoute && !isAccountRoute" v-on:click="goToContainer('new', 'prelaunch')"><a href="javascript:">Launch</a></b-nav-item>
+            <b-nav-item v-show="user.permissions.actions.createContainerReservation && !isPrelaunchMode && !isAccountRoute" v-on:click="goToContainer('new', 'prelaunch')"><a href="javascript:">Launch</a></b-nav-item>
 
-            <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute" to="/docs"><a href="javascript:">Docs</a></b-nav-item>
+            <b-nav-item v-show="!isSelected && !isAccountRoute" to="/docs"><a href="javascript:">Docs</a></b-nav-item>
 
             <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute" to="/docksideio"><a href="https://dockside.io/">Dockside.io</a></b-nav-item>
 

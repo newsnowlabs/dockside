@@ -78,19 +78,14 @@
             />
          </b-form-group>
 
-         <!-- GitHub token — write-once: once set the value is never shown or re-editable -->
+         <!-- GitHub token -->
          <b-form-group label="GitHub token" label-cols="3">
-            <!-- Token already set: show locked indicator in all modes -->
-            <div v-if="form.gh_token_is_set" class="token-set-notice">
-               <span class="badge badge-success mr-2">Token set</span>
-               <span class="text-muted font-italic">Token is stored securely and cannot be viewed or changed.</span>
-            </div>
-            <!-- Token not set, edit/new mode: allow entry -->
-            <b-input-group v-else-if="isEditMode || isNew">
+            <!-- Edit / new mode: always show input (existing value never pre-filled) -->
+            <b-input-group v-if="isEditMode || isNew">
                <b-form-input
                   v-model="form.gh_token"
                   :type="showToken ? 'text' : 'password'"
-                  placeholder="ghp_…"
+                  :placeholder="form.gh_token_is_set ? 'Enter new token to replace existing, or leave blank to keep' : 'ghp_…'"
                   autocomplete="off"
                />
                <b-input-group-append>
@@ -99,7 +94,10 @@
                   </b-button>
                </b-input-group-append>
             </b-input-group>
-            <!-- Token not set, view mode -->
+            <!-- View mode: show whether token is set -->
+            <div v-else-if="form.gh_token_is_set" class="token-set-notice">
+               <span class="badge badge-success mr-2">Token set</span>
+            </div>
             <span v-else class="text-muted font-italic" style="font-size:0.85rem">No token set.</span>
          </b-form-group>
 
