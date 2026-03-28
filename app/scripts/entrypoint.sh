@@ -322,8 +322,6 @@ fi
 log "Creating /var/log/$APP log directory ..."
 mkdir -p /var/log/$APP && chown -R $USER:$USER /var/log/$APP
 
-log() { echo "$1" >&2; }
-OPT_PATH=/opt/dockside
 log "Populating $OPT_PATH from ${OPT_PATH}.img/ ..."
 if [ -d "${OPT_PATH}.img" ] && [ -d "$OPT_PATH" ]; then
 
