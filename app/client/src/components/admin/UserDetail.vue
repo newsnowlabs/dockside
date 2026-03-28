@@ -80,7 +80,7 @@
 
          <!-- GitHub token -->
          <b-form-group label="GitHub token" label-cols="3">
-            <!-- Edit / new mode: always show input (existing value never pre-filled) -->
+            <!-- Edit / new mode: show input with show/hide toggle -->
             <b-input-group v-if="isEditMode || isNew">
                <b-form-input
                   v-model="form.gh_token"
@@ -98,7 +98,7 @@
             <b-form-input
                v-else
                disabled
-               :placeholder="form.gh_token_is_set ? '&lt;redacted&gt;' : ''"
+               :placeholder="form.gh_token_is_set ? '<redacted>' : ''"
             />
          </b-form-group>
 
@@ -203,24 +203,39 @@
       },
 
       data() {
+         // Pre-populate name/email from bootstrap data so the account view
+         // shows real content instantly without waiting for getSelf().
+         const initial = EMPTY_FORM();
+         if (this.selfEdit) {
+            const u = window.dockside && window.dockside.user;
+            if (u) {
+               initial.username = u.username || '';
+               initial.name     = u.name     || '';
+               initial.email    = u.email    || '';
+            }
+         }
          return {
-            form:       EMPTY_FORM(),
-            showToken:  false,
-            saving:     false,
-            saveError:  null,
+            form:          initial,
+            showToken:     false,
+            saving:        false,
+            saveError:     null,
+            localEditMode: false,  // view/edit toggle used for selfEdit
+            savedForm:     null,   // snapshot of form taken when entering edit mode
          };
       },
 
       computed: {
          ...mapState('admin', ['users', 'roles', 'selected']),
-         ...mapGetters('admin', ['isEditMode', 'isNewItem', 'roleNames']),
+         ...mapGetters('admin', ['isNewItem', 'roleNames']),
 
          isNew() {
             return !this.username;
          },
 
+         // selfEdit uses local state; admin view uses Vuex mode + isNew.
          isEditMode() {
-            return this.selfEdit || this.$store.getters['admin/isEditMode'] || this.isNew;
+            if (this.selfEdit) return this.localEditMode;
+            return this.$store.getters['admin/isEditMode'] || this.isNew;
          },
 
          canDelete() {
@@ -255,13 +270,20 @@
 
       created() {
          if (this.selfEdit) {
-            getSelf().then(record => this.populateForm(record)).catch(() => {});
+            // Populate from store synchronously (no flash) if data is already loaded.
+            if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
+            // Always refresh from server — may include sensitive fields (gh_token, ssh).
+            getSelf().then(record => {
+               if (!this.localEditMode) this.populateForm(record);
+            }).catch(() => {});
          } else if (!this.isNew && this.currentUserRecord) {
             this.populateForm(this.currentUserRecord);
          }
       },
 
       watch: {
+         // Re-sync view data when store updates (e.g. after save or fetchAll).
+         // Never re-sync while the user is actively editing.
          currentUserRecord(r) {
             if (r && !this.isEditMode) this.populateForm(r);
          },
@@ -285,13 +307,29 @@
          },
 
          startEdit() {
-            this.$store.commit('admin/setSelectedMode', 'edit');
+            if (this.selfEdit) {
+               // Snapshot current form so cancel() can revert cleanly.
+               this.savedForm    = JSON.parse(JSON.stringify(this.form));
+               this.showToken    = false;
+               this.localEditMode = true;
+            } else {
+               this.$store.commit('admin/setSelectedMode', 'edit');
+            }
          },
 
          cancel() {
             if (this.isNew) {
                this.$router.push('/admin/users').catch(() => {});
                this.$store.commit('admin/clearSelected');
+            } else if (this.selfEdit) {
+               this.localEditMode = false;
+               // Restore the pre-edit snapshot.
+               if (this.savedForm) {
+                  this.form      = this.savedForm;
+                  this.savedForm = null;
+               } else if (this.currentUserRecord) {
+                  this.populateForm(this.currentUserRecord);
+               }
             } else {
                this.$store.commit('admin/setSelectedMode', 'view');
                if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
@@ -299,7 +337,7 @@
          },
 
          async save() {
-            this.saving   = true;
+            this.saving    = true;
             this.saveError = null;
             if (!this.selfEdit && !this.form.role) {
                this.saveError = 'A role is required.';
@@ -313,8 +351,6 @@
                   ssh:   this.form.ssh,
                };
                // Only send gh_token when the user has typed a new value.
-               // If the token was already set (<redacted>) and the field is empty,
-               // omitting it leaves the existing token unchanged on the server.
                if (this.form.gh_token) payload.gh_token = this.form.gh_token;
 
                if (!this.selfEdit) {
@@ -326,6 +362,9 @@
 
                if (this.selfEdit) {
                   await this.$store.dispatch('admin/updateSelf', payload);
+                  this.savedForm     = null;
+                  this.localEditMode = false;
+                  // currentUserRecord watcher fires after store update and re-populates form.
                } else if (this.isNew) {
                   payload.username = this.form.username;
                   const record = await this.$store.dispatch('admin/createUser', payload);
@@ -334,9 +373,8 @@
                   return;
                } else {
                   await this.$store.dispatch('admin/updateUser', { username: this.username, data: payload });
+                  this.$store.commit('admin/setSelectedMode', 'view');
                }
-
-               this.$store.commit('admin/setSelectedMode', 'view');
             } catch (e) {
                this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
             } finally {
@@ -391,13 +429,6 @@
    }
 
    .save-error {
-      font-size: 0.85rem;
-   }
-
-   .token-set-notice {
-      display: flex;
-      align-items: center;
-      padding: 4px 0;
       font-size: 0.85rem;
    }
 </style>

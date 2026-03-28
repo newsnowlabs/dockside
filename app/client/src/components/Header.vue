@@ -144,10 +144,4 @@
       vertical-align: -0.1em;
       margin-right: 2px;
    }
-
-   // Active route: underline the nav link
-   ::v-deep .nav-item.active > .nav-link {
-      border-bottom: 2px solid rgba(255, 255, 255, 0.65);
-      padding-bottom: 3px;
-   }
 </style>

@@ -101,6 +101,12 @@
       padding-top: 58px; /* Move down content because we have a fixed navbar that is 56px tall */
    }
 
+   // Active nav link: underline on dark navbar
+   .navbar-dark .navbar-nav .nav-link.router-link-active {
+      border-bottom: 2px solid rgba(255, 255, 255, 0.65);
+      padding-bottom: 3px;
+   }
+
    /* Define MacOS Safari scrollbar appearance */
    ::-webkit-scrollbar {
       -webkit-appearance: none;
