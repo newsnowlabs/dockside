@@ -102,7 +102,7 @@ sub _restore_redacted_ssh ($record, $orig_keypairs) {
    for my $kp_name ( keys %$kps ) {
       my $kp = $kps->{$kp_name};
       next unless ref $kp eq 'HASH' && ( $kp->{'private'} // '' ) eq '<redacted>';
-      if ( exists( $orig_keypairs->{$kp_name} // {} )->{'private'} ) {
+      if ( exists $orig_keypairs->{$kp_name} && exists $orig_keypairs->{$kp_name}{'private'} ) {
          $kp->{'private'} = $orig_keypairs->{$kp_name}{'private'};
       } else {
          delete $kp->{'private'};
