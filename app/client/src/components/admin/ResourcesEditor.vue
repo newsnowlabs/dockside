@@ -58,12 +58,12 @@
          suggestionMap() {
             const hr = this.hostResources || {};
             return {
-               profiles: (this.profiles || []).map(p => p.id),
-               runtimes: hr.runtimes  || [],
-               networks: hr.networks  || [],
-               auth:     hr.authModes || DEFAULT_AUTH_MODES,
-               images:   [],
-               IDEs:     hr.IDEs      || [],
+               profiles: ['*', ...(this.profiles || []).map(p => p.id)],
+               runtimes: ['*', ...(hr.runtimes  || [])],
+               networks: ['*', ...(hr.networks  || [])],
+               auth:     ['*', ...(hr.authModes || DEFAULT_AUTH_MODES)],
+               images:   ['*'],
+               IDEs:     ['*', ...(hr.IDEs      || [])],
             };
          },
       },

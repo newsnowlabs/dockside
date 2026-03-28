@@ -157,6 +157,32 @@
       version:     null,
    });
 
+   // Template body shown in the JSON editor when creating a new profile.
+   // Lists every supported top-level property at the current schema version (4)
+   // with sensible empty defaults so the user can see what's available.
+   const PROFILE_TEMPLATE_BODY = {
+      version:          4,
+      routers:          [],
+      runtimes:         [],
+      networks:         [],
+      images:           [],
+      unixusers:        [],
+      ssh:              false,
+      IDEs:             [],
+      mountIDE:         false,
+      imagePathsFilter: [],
+      mounts:           {},
+      runDockerInit:    false,
+      dockerArgs:       [],
+      command:          [],
+      entrypoint:       [],
+      metadata:         {},
+      lxcfs:            false,
+      security:         {},
+      gitURLs:          [],
+      options:          [],
+   };
+
    export default {
       name: 'ProfileDetail',
       components: { JsonEditor, ConfirmModal },
@@ -171,7 +197,7 @@
       data() {
          return {
             form:         EMPTY_FORM(),
-            profileBody:  {},   // the profile JSON minus structured keys
+            profileBody:  this.profileId ? {} : { ...PROFILE_TEMPLATE_BODY },
             saving:       false,
             saveError:    null,
             isRenaming:   false,

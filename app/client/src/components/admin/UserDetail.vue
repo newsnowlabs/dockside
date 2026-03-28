@@ -78,23 +78,29 @@
             />
          </b-form-group>
 
-         <!-- GitHub token -->
+         <!-- GitHub token — write-once: once set the value is never shown or re-editable -->
          <b-form-group label="GitHub token" label-cols="3">
-            <b-input-group>
+            <!-- Token already set: show locked indicator in all modes -->
+            <div v-if="form.gh_token_is_set" class="token-set-notice">
+               <span class="badge badge-success mr-2">Token set</span>
+               <span class="text-muted font-italic">Token is stored securely and cannot be viewed or changed.</span>
+            </div>
+            <!-- Token not set, edit/new mode: allow entry -->
+            <b-input-group v-else-if="isEditMode || isNew">
                <b-form-input
                   v-model="form.gh_token"
                   :type="showToken ? 'text' : 'password'"
-                  :readonly="!isEditMode && !isNew"
-                  :plaintext="!isEditMode && !isNew"
                   placeholder="ghp_…"
                   autocomplete="off"
                />
-               <b-input-group-append v-if="isEditMode || isNew">
+               <b-input-group-append>
                   <b-button variant="outline-secondary" size="sm" @click="showToken = !showToken">
                      {{ showToken ? 'Hide' : 'Reveal' }}
                   </b-button>
                </b-input-group-append>
             </b-input-group>
+            <!-- Token not set, view mode -->
+            <span v-else class="text-muted font-italic" style="font-size:0.85rem">No token set.</span>
          </b-form-group>
 
          <!-- Permissions — not shown in selfEdit mode -->
@@ -160,15 +166,16 @@
    import { getSelf }       from '@/services/admin';
 
    const EMPTY_FORM = () => ({
-      username:    '',
-      name:        '',
-      email:       '',
-      role:        'user',
-      password:    '',
-      gh_token:    '',
-      permissions: {},
-      resources:   {},
-      ssh:         {},
+      username:        '',
+      name:            '',
+      email:           '',
+      role:            'user',
+      password:        '',
+      gh_token:        '',        // new token value (empty = not changing)
+      gh_token_is_set: false,     // true when server returned '<redacted>'
+      permissions:     {},
+      resources:       {},
+      ssh:             {},
    });
 
    export default {
@@ -247,16 +254,18 @@
 
       methods: {
          populateForm(record) {
+            const tokenIsSet = record.gh_token === '<redacted>';
             this.form = {
-               username:    record.username    || '',
-               name:        record.name        || '',
-               email:       record.email       || '',
-               role:        record.role        || 'user',
-               password:    '',
-               gh_token:    record.gh_token    || '',
-               permissions: record.permissions ? { ...record.permissions } : {},
-               resources:   record.resources   ? { ...record.resources }   : {},
-               ssh:         record.ssh         ? { ...record.ssh }         : {},
+               username:        record.username    || '',
+               name:            record.name        || '',
+               email:           record.email       || '',
+               role:            record.role        || 'user',
+               password:        '',
+               gh_token:        tokenIsSet ? '' : (record.gh_token || ''),
+               gh_token_is_set: tokenIsSet,
+               permissions:     record.permissions ? { ...record.permissions } : {},
+               resources:       record.resources   ? { ...record.resources }   : {},
+               ssh:             record.ssh         ? { ...record.ssh }         : {},
             };
          },
 
@@ -279,11 +288,14 @@
             this.saveError = null;
             try {
                const payload = {
-                  name:        this.form.name,
-                  email:       this.form.email,
-                  gh_token:    this.form.gh_token,
-                  ssh:         this.form.ssh,
+                  name:  this.form.name,
+                  email: this.form.email,
+                  ssh:   this.form.ssh,
                };
+               // Only send gh_token when the user has typed a new value.
+               // If the token was already set (<redacted>) and the field is empty,
+               // omitting it leaves the existing token unchanged on the server.
+               if (this.form.gh_token) payload.gh_token = this.form.gh_token;
 
                if (!this.selfEdit) {
                   payload.role        = this.form.role;
@@ -359,6 +371,13 @@
    }
 
    .save-error {
+      font-size: 0.85rem;
+   }
+
+   .token-set-notice {
+      display: flex;
+      align-items: center;
+      padding: 4px 0;
       font-size: 0.85rem;
    }
 </style>

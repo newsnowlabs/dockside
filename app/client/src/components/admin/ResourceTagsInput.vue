@@ -1,10 +1,15 @@
 <template>
-   <!-- Wrapper intercepts Enter keydown to prevent form submission -->
-   <div class="resource-tags-wrap" @keydown.enter.stop.prevent="noop">
+   <!-- Wrapper intercepts Enter keydown (prevents form submit) and tag clicks (for toggle) -->
+   <div
+      class="resource-tags-wrap"
+      @keydown.enter.stop.prevent="noop"
+      @click="handleTagAreaClick"
+   >
       <vue-tags-input
          v-model="inputText"
          :tags="tags"
          :autocomplete-items="autocompleteItems"
+         :autocomplete-min-length="0"
          :add-on-key="[13]"
          :allow-edit-tags="false"
          :add-only-from-autocomplete="false"
@@ -98,7 +103,8 @@
       computed: {
          placeholder() {
             if (this.readonly) return '';
-            return this.allowDeny ? 'Type to add, or value:disabled to deny…' : 'Type to add…';
+            if (this.allowDeny) return 'Type to add · value:disabled to deny · * to allow all';
+            return 'Type to add · * to allow all';
          },
 
          autocompleteItems() {
@@ -132,6 +138,42 @@
 
       methods: {
          noop() {},
+
+         /**
+          * Click-to-toggle: clicking a tag text (not the × close button) cycles
+          * its state between allowed (green ✓) and denied (red ✗).
+          * Only active when allowDeny=true and not readonly.
+          */
+         handleTagAreaClick(event) {
+            if (!this.allowDeny || this.readonly) return;
+
+            // Ignore clicks on the close button
+            if (event.target.closest('.ti-icon-close')) return;
+
+            // Find the enclosing tag element
+            const tagEl = event.target.closest('.ti-tag');
+            if (!tagEl) return;
+
+            // Tag text is in the direct child <div>
+            const textEl = tagEl.querySelector(':scope > div');
+            const tagText = textEl ? textEl.textContent.trim() : null;
+            if (!tagText) return;
+
+            const tagIndex = this.tags.findIndex(t => t.text === tagText);
+            if (tagIndex < 0) return;
+
+            const tag      = this.tags[tagIndex];
+            const newState = tag.classes === 'state-allowed' ? '0' : '1';
+            const newTags  = this.tags.map((t, i) =>
+               i !== tagIndex ? t : { ...t, classes: newState === '1' ? 'state-allowed' : 'state-denied' }
+            );
+            this.tags = newTags;
+
+            const newMap = Object.fromEntries(
+               newTags.map(t => [t.text, t.classes === 'state-allowed' ? '1' : '0'])
+            );
+            this.$emit('update:value', serialise(newMap));
+         },
 
          onTagsChanged(newVtiTags) {
             const processedTags = [];
@@ -199,12 +241,18 @@
             background-color: #d4edda;
             color: #155724;
             border: 1px solid #c3e6cb;
+            cursor: pointer;
+
+            > div::after { content: ' ✓'; font-weight: bold; }
          }
 
          &.state-denied {
             background-color: #f8d7da;
             color: #721c24;
             border: 1px solid #f5c6cb;
+            cursor: pointer;
+
+            > div::after { content: ' ✗'; font-weight: bold; }
          }
 
          // Default (images / no-deny mode) — neutral grey
@@ -216,6 +264,7 @@
 
          .ti-icon-close {
             opacity: 0.7;
+            cursor: pointer;
             &:hover { opacity: 1; }
          }
       }
@@ -235,11 +284,6 @@
             &.ti-selected-item,
             &:hover {
                background: #e9ecef;
-            }
-
-            // Visually distinguish :disabled autocomplete entries
-            > div[data-v] {
-               color: #721c24;
             }
          }
       }
