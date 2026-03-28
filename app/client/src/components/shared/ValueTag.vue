@@ -38,11 +38,11 @@
             type: Boolean,
             default: true,
          },
-         // Optional custom description for the null/absent state used in the tooltip.
-         // Defaults to "inherited from role" when allowInherit=true.
-         nullLabel: {
-            type: String,
+         // The role's resolved value for this permission ('1', '0', or null).
+         // Included in the inherited-state tooltip when allowInherit=true.
+         rolePermission: {
             default: null,
+            validator: v => v === null || v === '1' || v === '0',
          },
          readonly: {
             type: Boolean,
@@ -56,10 +56,19 @@
             return 'value-tag--absent';
          },
          title() {
-            if (this.value === '1') return `${this.label}: allowed (click to deny)`;
-            if (this.value === '0') return `${this.label}: denied (click to remove)`;
-            const absentHint = this.nullLabel || (this.allowInherit ? 'inherited from role' : 'not granted');
-            return `${this.label}: ${absentHint} (click to allow)`;
+            if (this.allowInherit) {
+               // User context: null = inherited, '1' = explicit grant, '0' = explicit deny
+               if (this.value === '1') return `${this.label}: explicitly granted — click to deny`;
+               if (this.value === '0') return `${this.label}: explicitly denied — click to allow`;
+               const roleStr = this.rolePermission === '1' ? 'granted'
+                             : this.rolePermission === '0' ? 'denied'
+                             : 'not set';
+               return `${this.label}: inherited from role (${roleStr}) — click to grant explicitly`;
+            } else {
+               // Role context: '1' = granted, null/'0' = not granted
+               if (this.value === '1') return `${this.label}: granted — click to revoke`;
+               return `${this.label}: not granted — click to grant`;
+            }
          },
       },
       methods: {
