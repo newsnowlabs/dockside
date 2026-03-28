@@ -24,7 +24,7 @@
 
             <b-nav-item v-show="canAccessAdmin" to="/admin"><a href="javascript:">Admin</a></b-nav-item>
 
-            <b-nav-item to="/account"><a href="javascript:" :title="'Account settings for ' + user.username">{{ user.username }}</a></b-nav-item>
+            <b-nav-item to="/account"><a href="javascript:" :title="'Account settings for ' + user.username">{{ displayName }}</a></b-nav-item>
          </b-navbar-nav>
       </b-collapse>
    </b-navbar>
@@ -53,6 +53,21 @@
          ]),
          ...mapState([
          ]),
+         displayName() {
+            const { name, email, username } = this.user;
+            // Prefer first name, then surname — both come from the same 'name' field.
+            // A multi-word name yields the first word; a single-word name is treated as
+            // a surname and used directly.
+            if (name) {
+               const words = name.trim().split(/\s+/).filter(Boolean);
+               if (words.length) return words[0];
+            }
+            if (email) {
+               // Slightly obfuscate: keep first 1–3 chars of local part + … + @domain
+               return email.replace(/^(.{1,3})[^@]*(@.+)$/, '$1\u2026$2');
+            }
+            return username;
+         },
          isAdminRoute() {
             return this.$route.path.startsWith('/admin');
          },

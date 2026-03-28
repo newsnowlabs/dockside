@@ -338,7 +338,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
                         {
                            # FIXME: set 'user' => $User, after simply either (a) changing User object definition to make 'permissions' the derivedPermissions; or (b) the Vue app to check user.derivedPermissions.
                            'user'    => {
-                              'username' => $User->username,
+                              %{ $User->details() }, # username, name, email, id
                               'role' => $User->role, # User's role
                               'role_as_meta' => $User->role_as_meta, # User's role in metadata format
                               'permissions' => { 'actions' => $User->permissions() } # User's permissions
