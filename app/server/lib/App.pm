@@ -473,6 +473,8 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       #
 
       if( $route =~ m!^/resources/?$! ) {
+         die Exception->new( 'msg' => "You need the 'manageUsers' or 'manageProfiles' permission" )
+            unless $User->has_permission('manageUsers') || $User->has_permission('manageProfiles');
          my @networks = sort { $a cmp $b } keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} };
          my @runtimes = sort { $a cmp $b } keys %{ ($HOSTINFO->{'docker'} // {})->{'Runtimes'} // {} };
          my @IDEs     = @{ $HOSTINFO->{'IDEs'} // [] };

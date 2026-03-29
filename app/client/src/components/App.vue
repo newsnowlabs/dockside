@@ -38,12 +38,10 @@
          AdminSidebar,
          AdminMain,
       },
-      data() {
-         return {
-            user: window.dockside.user,
-         };
-      },
       computed: {
+         user() {
+            return this.$store.state.currentUser;
+         },
          isAdminRoute() {
             return this.$route.path.startsWith('/admin');
          },
@@ -91,7 +89,7 @@
             this.updateStateFromRoute(to);
             // Fetch admin data when entering admin routes for the first time
             if (to.path.startsWith('/admin') && this.canAccessAdmin &&
-                this.$store.state.admin.users.length === 0) {
+                !this.$store.state.admin.hostResources) {
                this.$store.dispatch('admin/fetchAll');
             }
          }

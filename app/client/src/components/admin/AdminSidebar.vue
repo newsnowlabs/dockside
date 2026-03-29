@@ -2,7 +2,7 @@
    <b-col md="3" lg="2" class="sidebar admin-sidebar">
       <b-nav vertical class="nav-sidebar">
 
-         <template v-for="section in sections">
+         <template v-for="section in visibleSections">
             <!-- Section heading (click to collapse) -->
             <b-nav-text
                :key="section.type + '-heading'"
@@ -62,7 +62,6 @@
 
       data() {
          return {
-            sections: SECTIONS,
             collapsed: { user: false, role: false, profile: false },
          };
       },
@@ -71,6 +70,15 @@
          ...mapState('admin', ['users', 'roles', 'profiles', 'selected', 'loading']),
 
          ...mapGetters('admin', ['isEditMode']),
+
+         visibleSections() {
+            const p = window.dockside.user.permissions.actions;
+            return SECTIONS.filter(s => {
+               if (s.type === 'user' || s.type === 'role') return !!p.manageUsers;
+               if (s.type === 'profile')                   return !!p.manageProfiles;
+               return true;
+            });
+         },
       },
 
       methods: {

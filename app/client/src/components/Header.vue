@@ -31,7 +31,6 @@
 </template>
 
 <script>
-   import { mapState } from 'vuex';
    import { mapGetters } from 'vuex';
    import { routing } from '@/components/mixins';
    import Dockside from '@/components/Dockside';
@@ -41,18 +40,11 @@
       components: {
          Dockside
       },
-      data() {
-         return {
-            user: window.dockside.user
-         };
-      },
       computed: {
-         ...mapGetters([
-            'isSelected',
-            'isPrelaunchMode'
-         ]),
-         ...mapState([
-         ]),
+         ...mapGetters(['isSelected', 'isPrelaunchMode']),
+         user() {
+            return this.$store.state.currentUser;
+         },
          displayName() {
             const { name, email, username } = this.user;
             // Prefer first name, then surname — both come from the same 'name' field.

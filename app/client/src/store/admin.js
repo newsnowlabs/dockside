@@ -91,12 +91,13 @@ export default {
 
    actions: {
       async fetchAll({ dispatch }) {
-         await Promise.all([
-            dispatch('fetchUsers'),
-            dispatch('fetchRoles'),
-            dispatch('fetchProfiles'),
-            dispatch('fetchResources'),
-         ]);
+         const p = window.dockside.user.permissions.actions;
+         const fetches = [dispatch('fetchProfiles'), dispatch('fetchResources')];
+         if (p.manageUsers) {
+            fetches.push(dispatch('fetchUsers'));
+            fetches.push(dispatch('fetchRoles'));
+         }
+         await Promise.all(fetches);
       },
 
       async fetchUsers({ commit }) {
@@ -165,6 +166,7 @@ export default {
          commit('setError', null);
          const record = await api.updateSelf(data);
          commit('upsertUser', record);
+         commit('setCurrentUser', { name: record.name, email: record.email }, { root: true });
          return record;
       },
 

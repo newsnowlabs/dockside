@@ -13,7 +13,12 @@ Vue.use(IconsPlugin);
 
 const routes = [
    { path: '/container/:name', name: 'container', component: App },
-   { path: '/admin',           redirect: '/admin/users' },
+   { path: '/admin', beforeEnter(to, from, next) {
+      const p = window.dockside.user.permissions.actions;
+      if (p.manageUsers)         next('/admin/users');
+      else if (p.manageProfiles) next('/admin/profiles');
+      else                       next('/');
+   }},
    { path: '/admin/:type',     name: 'adminList',   component: App },
    { path: '/admin/:type/:id', name: 'adminDetail', component: App },
    { path: '/account',         name: 'account',     component: App },

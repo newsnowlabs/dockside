@@ -11,6 +11,7 @@ const createStore = () => new Vuex.Store({
       admin: adminModule,
    },
    state: {
+      currentUser: { ...window.dockside.user },
       selectedContainer: { name: undefined, mode: 'view' },
       containersFilter: 'shared',
       containers: window.dockside.containers,
@@ -29,6 +30,9 @@ const createStore = () => new Vuex.Store({
       isPrelaunchMode: (state, getters) => getters.isSelected && state.selectedContainer.name === "new",
    },
    mutations: {
+      setCurrentUser(state, patch) {
+         state.currentUser = { ...state.currentUser, ...patch };
+      },
       updateWelcomeTextStatus(state, status) {
          state.welcomeTextStatus = status;
          localStorage.setItem(welcomeTextStatusLocalStorageKey, status);
