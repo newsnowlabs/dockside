@@ -158,14 +158,19 @@ sub getUser ($self, $username, $args = {}) {
 }
 
 # Self-service read: any authenticated user may read their own record.
+# Returns bootstrap-equivalent format: derived permissions (role-inherited +
+# user overrides) and role_as_meta, matching what window.dockside.user provides.
 # No manageUsers permission is required.
 sub getSelf ($self, $args = {}) {
    my $username = $self->username;
    die Exception->new( 'msg' => "Not authenticated" ) unless $username;
-   die Exception->new( 'msg' => "User '$username' not found" )
-      unless $User::USERS->{$username};
+   my $user = $User::USERS->{$username};
+   die Exception->new( 'msg' => "User '$username' not found" ) unless $user;
 
-   return _sanitise_user_record( _user_to_record( $User::USERS->{$username} ) );
+   my $record = _sanitise_user_record( _user_to_record( $user ) );
+   $record->{'role_as_meta'} = $user->role_as_meta;
+   $record->{'permissions'}  = { 'actions' => $user->permissions() };
+   return $record;
 }
 
 sub createUser ($self, $args) {

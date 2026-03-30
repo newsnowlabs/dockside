@@ -153,28 +153,30 @@ export default {
          return record;
       },
 
-      async updateUser({ commit, rootState }, { username, data }) {
+      async fetchSelf({ commit }) {
+         try {
+            const record = await api.getSelf();
+            commit('setCurrentUser', record, { root: true });
+         } catch (e) {
+            // Non-fatal — currentUser retains its previous state
+         }
+      },
+
+      async updateUser({ commit, dispatch, rootState }, { username, data }) {
          commit('setError', null);
          const record = await api.updateUser(username, data);
          commit('upsertUser', record);
          if (record.username === rootState.currentUser.username) {
-            commit('setCurrentUser', {
-               name:        record.name,
-               email:       record.email,
-               role:        record.role,
-               // Wrap to match bootstrap shape: permissions.actions.*
-               // (CRUD response returns flat { manageUsers: ... }, not { actions: { ... } })
-               permissions: { actions: record.permissions || {} },
-            }, { root: true });
+            await dispatch('fetchSelf');
          }
          return record;
       },
 
-      async updateSelf({ commit }, data) {
+      async updateSelf({ commit, dispatch }, data) {
          commit('setError', null);
          const record = await api.updateSelf(data);
          commit('upsertUser', record);
-         commit('setCurrentUser', { name: record.name, email: record.email }, { root: true });
+         await dispatch('fetchSelf');
          return record;
       },
 
