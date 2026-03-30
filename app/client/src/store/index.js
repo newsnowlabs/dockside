@@ -31,7 +31,12 @@ const createStore = () => new Vuex.Store({
    },
    mutations: {
       setCurrentUser(state, patch) {
-         state.currentUser = { ...state.currentUser, ...patch };
+         const merged = { ...state.currentUser, ...patch };
+         // Keep role_as_meta derived from role so it never goes stale.
+         if (patch.role !== undefined) {
+            merged.role_as_meta = patch.role ? ('role:' + patch.role) : undefined;
+         }
+         state.currentUser = merged;
       },
       updateWelcomeTextStatus(state, status) {
          state.welcomeTextStatus = status;
