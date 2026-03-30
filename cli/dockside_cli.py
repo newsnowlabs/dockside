@@ -416,6 +416,38 @@ def _do_get_text(opener, url, timeout=60):
         raise APIError(f'Connection error: {e.reason}')
 
 
+def _do_post(opener, url, params, timeout=30):
+    """POST url with form-encoded params → parsed JSON, raising APIError on failure."""
+    payload = _encode_params(params).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+    )
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        body = e.read()
+        try:
+            data = json.loads(body)
+            raise APIError(data.get('msg') or str(e), e.code)
+        except (json.JSONDecodeError, ValueError):
+            raise APIError(f'HTTP {e.code}: {e.reason}', e.code)
+    except urllib.error.URLError as e:
+        raise APIError(f'Connection error: {e.reason}')
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        raise APIError('Server returned non-JSON response')
+    if str(data.get('status', '200')) not in ('200', '201'):
+        raise APIError(data.get('msg') or 'Unknown API error', data.get('status'))
+    return data
+
+
 # ── Cookie injection ──────────────────────────────────────────────────────────
 
 def _inject_cookie(jar, server_url, name, value):
@@ -646,16 +678,13 @@ def api_profile_get(opener, server, name):
 
 
 def api_profile_create(opener, server, fields):
-    qs = _encode_params(fields)
-    data = _do_get(opener, server.rstrip('/') + '/profiles/create?' + qs, timeout=30)
+    data = _do_post(opener, server.rstrip('/') + '/profiles/create', fields, timeout=30)
     return data.get('data')
 
 
 def api_profile_update(opener, server, name, fields):
-    qs = _encode_params(fields)
-    url = (server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='')
-           + '/update?' + qs)
-    data = _do_get(opener, url, timeout=30)
+    url = server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='') + '/update'
+    data = _do_post(opener, url, fields, timeout=30)
     return data.get('data')
 
 

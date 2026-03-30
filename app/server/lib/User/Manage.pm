@@ -176,6 +176,8 @@ sub createUser ($self, $args) {
       or die Exception->new( 'msg' => "username is required" );
    die Exception->new( 'msg' => "Invalid username: use only letters, digits, hyphens, underscores" )
       unless $username =~ /^[A-Za-z0-9_-]+$/;
+   die Exception->new( 'msg' => "Username '$username' is reserved" )
+      if $username eq 'new';
    die Exception->new( 'msg' => "User '$username' already exists" )
       if $User::USERS->{$username};
 
@@ -353,6 +355,8 @@ sub createRole ($self, $name, $args) {
       unless $self->has_permission('manageUsers');
    die Exception->new( 'msg' => "Invalid role name: use only letters, digits, hyphens, underscores" )
       unless $name =~ /^[A-Za-z0-9_-]+$/;
+   die Exception->new( 'msg' => "Role name '$name' is reserved" )
+      if $name eq 'new';
    die Exception->new( 'msg' => "Role '$name' already exists" )
       if $User::ROLES->{$name};
 

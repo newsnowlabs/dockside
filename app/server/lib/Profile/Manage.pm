@@ -19,7 +19,7 @@ my $CONFIG_PATH  = '/data/config';
 my $PROFILES_DIR = "$CONFIG_PATH/profiles";
 
 # Profile names that collide with route action words.
-my %RESERVED_NAMES = map { $_ => 1 } qw(create update remove rename);
+my %RESERVED_NAMES = map { $_ => 1 } qw(new create update remove rename);
 
 ################################################################################
 # PRIVATE HELPERS

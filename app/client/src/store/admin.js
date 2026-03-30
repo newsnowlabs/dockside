@@ -92,11 +92,9 @@ export default {
    actions: {
       async fetchAll({ dispatch }) {
          const p = window.dockside.user.permissions.actions;
-         const fetches = [dispatch('fetchProfiles'), dispatch('fetchResources')];
-         if (p.manageUsers) {
-            fetches.push(dispatch('fetchUsers'));
-            fetches.push(dispatch('fetchRoles'));
-         }
+         const fetches = [dispatch('fetchResources')];
+         if (p.manageUsers)    fetches.push(dispatch('fetchUsers'), dispatch('fetchRoles'));
+         if (p.manageProfiles) fetches.push(dispatch('fetchProfiles'));
          await Promise.all(fetches);
       },
 
