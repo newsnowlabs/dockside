@@ -82,7 +82,7 @@
          pruneURLBasedOnUserPermissions() {
             // If user can't develop and 'own' containers is their default view,
             // then remove this query param from the url.
-            if ((this.$route.query.cf === 'own') && !window.dockside.user.permissions.actions.developContainers) {
+            if ((this.$route.query.cf === 'own') && !this.user.permissions.actions.developContainers) {
                const query = Object.assign({}, this.$route.query);
                delete query.cf;
                this.$router.replace({ path: '/', query });

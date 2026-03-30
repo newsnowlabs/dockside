@@ -90,8 +90,8 @@ export default {
    },
 
    actions: {
-      async fetchAll({ dispatch }) {
-         const p = window.dockside.user.permissions.actions;
+      async fetchAll({ dispatch, rootState }) {
+         const p = rootState.currentUser.permissions.actions;
          const fetches = [dispatch('fetchResources')];
          if (p.manageUsers)    fetches.push(dispatch('fetchUsers'), dispatch('fetchRoles'));
          if (p.manageProfiles) fetches.push(dispatch('fetchProfiles'));
