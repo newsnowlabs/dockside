@@ -162,7 +162,9 @@ export default {
                name:        record.name,
                email:       record.email,
                role:        record.role,
-               permissions: record.permissions,
+               // Wrap to match bootstrap shape: permissions.actions.*
+               // (CRUD response returns flat { manageUsers: ... }, not { actions: { ... } })
+               permissions: { actions: record.permissions || {} },
             }, { root: true });
          }
          return record;
