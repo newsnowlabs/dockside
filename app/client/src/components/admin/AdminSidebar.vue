@@ -72,7 +72,7 @@
          ...mapGetters('admin', ['isEditMode']),
 
          visibleSections() {
-            const p = window.dockside.user.permissions.actions;
+            const p = this.$store.state.currentUser.permissions.actions;
             return SECTIONS.filter(s => {
                if (s.type === 'user' || s.type === 'role') return !!p.manageUsers;
                if (s.type === 'profile')                   return !!p.manageProfiles;

@@ -62,7 +62,7 @@
          },
 
          currentUsername() {
-            return window.dockside && window.dockside.user && window.dockside.user.username;
+            return this.$store.state.currentUser.username;
          },
       },
 

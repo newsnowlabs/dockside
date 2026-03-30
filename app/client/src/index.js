@@ -11,8 +11,12 @@ Vue.use(Vuex);
 Vue.use(BootstrapVue);
 Vue.use(IconsPlugin);
 
+// Create store before route guards so guards read live currentUser state
+// rather than the stale window.dockside.user bootstrap snapshot.
+const store = createStore();
+
 function adminTypeGuard(to, from, next) {
-   const p    = window.dockside.user.permissions.actions;
+   const p    = store.state.currentUser.permissions.actions;
    const type = to.params.type;
    const allowedTypes = [];
    if (p.manageUsers)    allowedTypes.push('users', 'roles');
@@ -31,7 +35,7 @@ function adminTypeGuard(to, from, next) {
 const routes = [
    { path: '/container/:name', name: 'container', component: App },
    { path: '/admin', beforeEnter(to, from, next) {
-      const p = window.dockside.user.permissions.actions;
+      const p = store.state.currentUser.permissions.actions;
       if (p.manageUsers)         next('/admin/users');
       else if (p.manageProfiles) next('/admin/profiles');
       else                       next('/');
@@ -58,5 +62,5 @@ const router = new VueRouter({
 
 new Vue({
    router,
-   store: createStore()
+   store,
 }).$mount('#app');
