@@ -157,6 +157,14 @@ export default {
          commit('setError', null);
          const record = await api.updateUser(username, data);
          commit('upsertUser', record);
+         if (record.username === window.dockside.user.username) {
+            commit('setCurrentUser', {
+               name:        record.name,
+               email:       record.email,
+               role:        record.role,
+               permissions: record.permissions,
+            }, { root: true });
+         }
          return record;
       },
 

@@ -616,16 +616,13 @@ def api_user_get(opener, server, username, sensitive=False):
 
 
 def api_user_create(opener, server, fields):
-    qs = _encode_params(fields)
-    data = _do_get(opener, server.rstrip('/') + '/users/create?' + qs, timeout=30)
+    data = _do_post(opener, server.rstrip('/') + '/users/create', fields, timeout=30)
     return data.get('data')
 
 
 def api_user_update(opener, server, username, fields):
-    qs = _encode_params(fields)
-    url = (server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='')
-           + '/update?' + qs)
-    data = _do_get(opener, url, timeout=30)
+    url = server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='') + '/update'
+    data = _do_post(opener, url, fields, timeout=30)
     return data.get('data')
 
 
