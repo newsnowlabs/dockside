@@ -67,9 +67,14 @@
                this.$store.dispatch('updateSelectedContainerName', route.params.name);
                this.$store.dispatch('updateContainersFilter', route.query.cf);
             } else if (this.isAdminRoute && route.params.type && route.params.id) {
+               const p = this.user.permissions.actions;
+               const allowedRouteTypes = [
+                  ...(p.manageUsers    ? ['users', 'roles']  : []),
+                  ...(p.manageProfiles ? ['profiles']        : []),
+               ];
                const typeMap = { users: 'user', roles: 'role', profiles: 'profile' };
                const type = typeMap[route.params.type];
-               if (type) {
+               if (type && allowedRouteTypes.includes(route.params.type)) {
                   this.$store.commit('admin/setSelected', { type, id: route.params.id, mode: 'view' });
                }
             }
