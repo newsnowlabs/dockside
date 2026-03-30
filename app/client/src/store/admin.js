@@ -153,11 +153,11 @@ export default {
          return record;
       },
 
-      async updateUser({ commit }, { username, data }) {
+      async updateUser({ commit, rootState }, { username, data }) {
          commit('setError', null);
          const record = await api.updateUser(username, data);
          commit('upsertUser', record);
-         if (record.username === window.dockside.user.username) {
+         if (record.username === rootState.currentUser.username) {
             commit('setCurrentUser', {
                name:        record.name,
                email:       record.email,

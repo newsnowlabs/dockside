@@ -208,7 +208,7 @@
          // shows real content instantly without waiting for getSelf().
          const initial = EMPTY_FORM();
          if (this.selfEdit) {
-            const u = window.dockside && window.dockside.user;
+            const u = this.$store.state.currentUser;
             if (u) {
                initial.username = u.username || '';
                initial.name     = u.name     || '';
@@ -241,8 +241,7 @@
          },
 
          canDelete() {
-            const currentUser = window.dockside && window.dockside.user && window.dockside.user.username;
-            return this.username && this.username !== currentUser;
+            return this.username && this.username !== this.$store.state.currentUser.username;
          },
 
          roleOptions() {
