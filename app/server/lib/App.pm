@@ -493,18 +493,18 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       # Account (self-service) — any authenticated user
       #
 
-      if( $route =~ m!^/account/?$! ) {
+      if( $route =~ m!^/me/?$! ) {
          my $record = $User->getSelf();
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
 
-      if( $route =~ m!^/account/update/?$! ) {
+      if( $route =~ m!^/me/update/?$! ) {
          my $args = get_args($r, $querystring);
          my $record = $User->updateSelf($args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
 
-      if( $route =~ m!^/account/profiles/?$! ) {
+      if( $route =~ m!^/me/profiles/?$! ) {
          return json($r, 200, { 'status' => '200', 'data' => $User->profiles() });
       }
 
