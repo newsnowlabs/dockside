@@ -165,15 +165,6 @@
    import ConfirmModal      from '@/components/shared/ConfirmModal';
    import { getSelf }       from '@/services/account';
 
-   const DEFAULT_RESOURCES = () => ({
-      profiles: ['*'],
-      runtimes: ['*'],
-      networks: ['*'],
-      auth:     ['*'],
-      images:   ['*'],
-      IDEs:     ['*'],
-   });
-
    const EMPTY_FORM = () => ({
       username:        '',
       name:            '',
@@ -184,7 +175,7 @@
       gh_token_is_set: false,     // true when server returned a masked token
       gh_token_masked: '',        // masked token value from server (e.g. ghp_****abcd)
       permissions:     {},
-      resources:       DEFAULT_RESOURCES(),
+      resources:       {},
       ssh:             {},
    });
 
