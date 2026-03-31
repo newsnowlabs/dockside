@@ -304,7 +304,7 @@
          ]),
          ...mapState({ profiles: state => state.account.launchProfiles }),
          profileNames() {
-            return Object.keys(this.profiles).sort();
+            return Object.keys(this.profiles || {}).sort();
          },
          runtimes() {
             return (this.profile && this.profile.runtimes) ? this.profile.runtimes : [];
