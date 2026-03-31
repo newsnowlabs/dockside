@@ -92,6 +92,8 @@
       watch: {
          $route(to) {
             this.updateStateFromRoute(to);
+            // Errors are scoped to the page that generated them; clear on navigation.
+            this.$store.commit('admin/setError', null);
             // Fetch admin data when entering admin routes for the first time
             if (to.path.startsWith('/admin') && this.canAccessAdmin &&
                 !this.$store.state.admin.hostResources) {
