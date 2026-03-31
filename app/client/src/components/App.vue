@@ -77,6 +77,10 @@
                if (type && allowedRouteTypes.includes(route.params.type)) {
                   this.$store.commit('admin/setSelected', { type, id: route.params.id, mode: 'view' });
                }
+            } else if (this.isAdminRoute && !route.params.id) {
+               // List route (e.g. /admin/users): clear any previously selected item so
+               // AdminMain shows the placeholder rather than a stale detail view.
+               this.$store.commit('admin/clearSelected');
             }
          },
          pruneURLBasedOnUserPermissions() {

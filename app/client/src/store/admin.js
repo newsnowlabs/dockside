@@ -184,10 +184,20 @@ export default {
          return record;
       },
 
-      async updateRole({ commit }, { name, data }) {
+      async updateRole({ commit, dispatch, rootState }, { name, data }) {
          commit('setError', null);
          const record = await api.updateRole(name, data);
          commit('upsertRole', record);
+         // If the current user's role was just edited, refresh derived account state
+         // (effective permissions, role_as_meta, and accessible launch profiles all
+         // derive from the role definition and may have changed).
+         if (rootState.account.currentUser.role === name) {
+            try {
+               await dispatch('account/fetchSelf', null, { root: true });
+            } catch (e) {
+               commit('setError', 'Role saved but session state could not be refreshed — please reload the page');
+            }
+         }
          return record;
       },
 
