@@ -3,14 +3,19 @@ package Data;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO invalidate_profile_cache);
+our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO invalidate_profile_cache
+   $CONFIG_PATH $USERS_FILE $ROLES_FILE $PASSWD_FILE $PROFILES_DIR);
 
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
 use Util qw(flog cacheReadWrite get_config call_socket_json_api);
 
-my $CONFIG_PATH = '/data/config';
+our $CONFIG_PATH  = '/data/config';
+our $USERS_FILE   = "$CONFIG_PATH/users.json";
+our $ROLES_FILE   = "$CONFIG_PATH/roles.json";
+our $PASSWD_FILE  = "$CONFIG_PATH/passwd";
+our $PROFILES_DIR = "$CONFIG_PATH/profiles";
 
 # Load in the container ID of this Dockside container and the inner-dockerd flag.
 # See entrypoint.sh for details

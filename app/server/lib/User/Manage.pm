@@ -10,11 +10,9 @@ our @EXPORT_OK = qw(
 );
 
 use JSON;
-use Data;
+use Data qw($USERS_FILE $ROLES_FILE $PASSWD_FILE);
 use Util qw(encrypt_password cacheReadWrite apply_args_to_record);
 use Exception;
-
-my $CONFIG_PATH = '/data/config';
 
 ################################################################################
 # PRIVATE HELPERS
@@ -142,7 +140,7 @@ sub createUser ($self, $args) {
       if $User::USERS->{$username};
 
    my $new_user;
-   cacheReadWrite( "$CONFIG_PATH/users.json", sub ($oldData) {
+   cacheReadWrite( $USERS_FILE, sub ($oldData) {
       my $users = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
 
       die Exception->new( 'msg' => "User '$username' already exists" )
@@ -176,7 +174,7 @@ sub createUser ($self, $args) {
 
    my @reload = ('users.json');
    if ( defined $args->{'password'} && length $args->{'password'} ) {
-      cacheReadWrite( "$CONFIG_PATH/passwd", sub ($oldData) {
+      cacheReadWrite( $PASSWD_FILE, sub ($oldData) {
          my %passwd = _parse_passwd_text($oldData);
          $passwd{$username} = encrypt_password( $args->{'password'} );
          return join( '', map { "$_:$passwd{$_}\n" } sort keys %passwd );
@@ -196,7 +194,7 @@ sub updateUser ($self, $username, $args) {
       unless $User::USERS->{$username};
 
    my $record;
-   cacheReadWrite( "$CONFIG_PATH/users.json", sub ($oldData) {
+   cacheReadWrite( $USERS_FILE, sub ($oldData) {
       my $users = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
       $record = $users->{$username}
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
@@ -211,7 +209,7 @@ sub updateUser ($self, $username, $args) {
 
    my @reload = ('users.json');
    if ( defined $args->{'password'} && length $args->{'password'} ) {
-      cacheReadWrite( "$CONFIG_PATH/passwd", sub ($oldData) {
+      cacheReadWrite( $PASSWD_FILE, sub ($oldData) {
          my %passwd = _parse_passwd_text($oldData);
          $passwd{$username} = encrypt_password( $args->{'password'} );
          return join( '', map { "$_:$passwd{$_}\n" } sort keys %passwd );
@@ -244,7 +242,7 @@ sub updateSelf ($self, $args) {
    }
 
    my $record;
-   cacheReadWrite( "$CONFIG_PATH/users.json", sub ($oldData) {
+   cacheReadWrite( $USERS_FILE, sub ($oldData) {
       my $users = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
       $record = $users->{$username}
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
@@ -270,7 +268,7 @@ sub removeUser ($self, $username, $args = {}) {
    die Exception->new( 'msg' => "Cannot remove your own account" )
       if $self->username eq $username;
 
-   cacheReadWrite( "$CONFIG_PATH/users.json", sub ($oldData) {
+   cacheReadWrite( $USERS_FILE, sub ($oldData) {
       my $users = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
       exists $users->{$username}
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
@@ -279,7 +277,7 @@ sub removeUser ($self, $username, $args = {}) {
    } );
 
    my $passwd_changed = 0;
-   cacheReadWrite( "$CONFIG_PATH/passwd", sub ($oldData) {
+   cacheReadWrite( $PASSWD_FILE, sub ($oldData) {
       my %passwd = _parse_passwd_text($oldData);
       return $oldData unless exists $passwd{$username};
       delete $passwd{$username};
@@ -321,7 +319,7 @@ sub createRole ($self, $name, $args) {
       if $User::ROLES->{$name};
 
    my $new_role;
-   cacheReadWrite( "$CONFIG_PATH/roles.json", sub ($oldData) {
+   cacheReadWrite( $ROLES_FILE, sub ($oldData) {
       my $roles = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
 
       die Exception->new( 'msg' => "Role '$name' already exists" )
@@ -345,7 +343,7 @@ sub updateRole ($self, $name, $args) {
       unless $User::ROLES->{$name};
 
    my $record;
-   cacheReadWrite( "$CONFIG_PATH/roles.json", sub ($oldData) {
+   cacheReadWrite( $ROLES_FILE, sub ($oldData) {
       my $roles = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
       $record = $roles->{$name}
          or die Exception->new( 'msg' => "Role '$name' not found in roles.json" );
@@ -371,7 +369,7 @@ sub removeRole ($self, $name) {
       'msg' => "Cannot remove role '$name': still assigned to: " . join( ', ', sort @users_with_role ) )
       if @users_with_role;
 
-   cacheReadWrite( "$CONFIG_PATH/roles.json", sub ($oldData) {
+   cacheReadWrite( $ROLES_FILE, sub ($oldData) {
       my $roles = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
       exists $roles->{$name}
          or die Exception->new( 'msg' => "Role '$name' not found in roles.json" );

@@ -10,13 +10,10 @@ our @EXPORT_OK = qw(
 
 use JSON;
 use Storable qw(dclone);
-use Data qw(invalidate_profile_cache);
+use Data qw(invalidate_profile_cache $PROFILES_DIR);
 use Profile;
 use Util qw(flog cacheReadWrite apply_args_to_record);
 use Exception;
-
-my $CONFIG_PATH  = '/data/config';
-my $PROFILES_DIR = "$CONFIG_PATH/profiles";
 
 # Profile names that collide with route action words.
 my %RESERVED_NAMES = map { $_ => 1 } qw(new create update remove rename);
