@@ -38,9 +38,11 @@ Returned by `GET /users/:name`, `GET /users`, and all mutation responses
   user — it does not reflect role-inherited permissions.
 - `resources` contains the user's specific resource constraints (may be
   empty `{}` meaning "inherit from role").
-- `gh_token` and SSH private keys are **masked by default**. The raw
-  values are only returned when the caller passes `sensitive=1` as a
-  query parameter. The CLI currently supports this; the web UI does not.
+- `gh_token` and SSH private keys are **masked in the response by
+  default**. The raw values are only returned when the caller passes
+  `sensitive=1` as a query parameter. The CLI currently supports this;
+  the web UI does not. Note: `sensitive` is an **output** flag only —
+  it does not affect what values the caller may write.
 
 ### Session / bootstrap shape (derived record)
 
@@ -65,8 +67,10 @@ Returned by `GET /me` (`getSelf`) and injected at page load as
   role permissions merged with user overrides, then resolved to true/false.
 - `role_as_meta` is derived from `role` as `"role:" + role` — used for
   container sharing filters.
-- `gh_token` and SSH private keys are **always masked** — `getSelf` and
-  `updateSelf` never accept or honour the `sensitive` flag.
+- `gh_token` and SSH private keys are **always masked in the response**
+  — `getSelf` does not accept the `sensitive` flag. `updateSelf` accepts
+  `gh_token` and SSH keys as writable input fields, but its response is
+  always masked regardless.
 - Consumers of this shape must never assume it matches the CRUD shape.
 
 ### Why they differ
