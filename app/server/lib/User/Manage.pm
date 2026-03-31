@@ -11,7 +11,7 @@ our @EXPORT_OK = qw(
 
 use JSON;
 use Data;
-use Util qw(encrypt_password cacheReadWrite);
+use Util qw(encrypt_password cacheReadWrite apply_args_to_record);
 use Exception;
 
 my $CONFIG_PATH = '/data/config';
@@ -31,51 +31,6 @@ sub _parse_passwd_text ($text) {
    return %passwd;
 }
 
-# Attempt JSON decode of a scalar value; pass through refs and undefs unchanged.
-# When the POST body is application/json, values may already be decoded data
-# structures (hashrefs, arrayrefs); we must not try to re-decode those.
-sub _decode_value ($val) {
-   return $val if !defined($val) || ref($val);
-   return $val unless length $val;
-   my $decoded = eval { decode_json($val) };
-   return $@ ? $val : $decoded;
-}
-
-# Apply flat args (possibly dotted-path keys, possibly JSON-encoded values) into
-# a record hashref in place. Shallower keys are applied first so deeper paths can
-# override them. Keys listed in @skip are ignored.
-sub _apply_args_to_record ($record, $args, @skip) {
-   my %skip = map { $_ => 1 } @skip;
-
-   for my $key ( sort { scalar( split /\./, $a ) <=> scalar( split /\./, $b ) } keys %$args ) {
-      next if $skip{$key};
-      next if $key eq '_unset';
-      next unless defined $args->{$key};
-
-      my $val   = _decode_value( $args->{$key} );
-      my @parts = split( /\./, $key );
-      my $ref   = $record;
-      for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
-         $ref->{$part} //= {};
-         $ref = $ref->{$part};
-      }
-      $ref->{ $parts[-1] } = $val;
-   }
-
-   # _unset: JSON array of dotted-path keys to delete from the record
-   if ( defined $args->{_unset} ) {
-      my $keys = eval { decode_json( $args->{_unset} ) } // [];
-      for my $key (@$keys) {
-         my @parts = split( /\./, $key );
-         my $ref   = $record;
-         for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
-            last unless ref $ref eq 'HASH' && exists $ref->{$part};
-            $ref = $ref->{$part};
-         }
-         delete $ref->{ $parts[-1] } if ref $ref eq 'HASH';
-      }
-   }
-}
 
 # Convert a loaded User object back to its canonical users.json record form.
 sub _user_to_record ($user) {
@@ -93,10 +48,10 @@ sub _user_to_record ($user) {
    };
 }
 
-# After _apply_args_to_record, restore any SSH keypair private keys that the
+# After apply_args_to_record, restore any SSH keypair private keys that the
 # client sent back as the '<redacted>' sentinel (returned by _sanitise_user_record).
 # Without this, a save would overwrite stored private key material with the
-# literal string '<redacted>'.  Captures must be taken BEFORE _apply_args_to_record.
+# literal string '<redacted>'.  Captures must be taken BEFORE apply_args_to_record.
 sub _restore_redacted_ssh ($record, $orig_keypairs) {
    my $kps = ( ( $record->{'ssh'} // {} )->{'keypairs'} // {} );
    for my $kp_name ( keys %$kps ) {
@@ -213,7 +168,7 @@ sub createUser ($self, $args) {
          'version'     => User::CURRENT_VERSION(),
       };
 
-      _apply_args_to_record( $new_user, $args, qw(username password sensitive id) );
+      apply_args_to_record( $new_user, $args, qw(username password sensitive id) );
 
       $users->{$username} = $new_user;
       return JSON->new->utf8->pretty->canonical->encode($users);
@@ -247,7 +202,7 @@ sub updateUser ($self, $username, $args) {
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
 
       my $orig_kps = { %{ ( $record->{'ssh'} // {} )->{'keypairs'} // {} } };
-      _apply_args_to_record( $record, $args, qw(username password sensitive) );
+      apply_args_to_record( $record, $args, qw(username password sensitive) );
       _restore_redacted_ssh( $record, $orig_kps );
 
       $users->{$username} = $record;
@@ -295,7 +250,7 @@ sub updateSelf ($self, $args) {
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
 
       my $orig_kps = { %{ ( $record->{'ssh'} // {} )->{'keypairs'} // {} } };
-      _apply_args_to_record( $record, $safe_args );
+      apply_args_to_record( $record, $safe_args );
       _restore_redacted_ssh( $record, $orig_kps );
 
       $users->{$username} = $record;
@@ -373,7 +328,7 @@ sub createRole ($self, $name, $args) {
          if $roles->{$name};
 
       $new_role = { 'permissions' => {}, 'resources' => {} };
-      _apply_args_to_record( $new_role, $args, qw(name) );
+      apply_args_to_record( $new_role, $args, qw(name) );
 
       $roles->{$name} = $new_role;
       return JSON->new->utf8->pretty->canonical->encode($roles);
@@ -395,7 +350,7 @@ sub updateRole ($self, $name, $args) {
       $record = $roles->{$name}
          or die Exception->new( 'msg' => "Role '$name' not found in roles.json" );
 
-      _apply_args_to_record( $record, $args, qw(name) );
+      apply_args_to_record( $record, $args, qw(name) );
 
       $roles->{$name} = $record;
       return JSON->new->utf8->pretty->canonical->encode($roles);

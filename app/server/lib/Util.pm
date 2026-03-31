@@ -14,6 +14,7 @@ our @EXPORT_OK = ( qw(
    cache cacheReadWrite cloneHash
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    unique
+   apply_args_to_record
    ));
 
 use POSIX qw(strftime);
@@ -468,6 +469,46 @@ sub validate_auth_cookie ($options, $name, $salt) { # cookie: <value>; protocol:
 sub unique (@values) {
    my %k = map { $_ => 1 } grep { defined($_) && $_ ne '' } @values;
    return keys %k;
+}
+
+# Apply args into a record hashref in place. All values in $args must already
+# be decoded Perl structures — see parse_body_args() in App.pm, which normalises
+# both application/json and form-encoded bodies to this shape before dispatch.
+#
+# Keys may use dot-notation (e.g. "permissions.actions.foo") for nested paths;
+# shallower keys are applied first so a parent key cannot clobber a child that
+# was set in the same call. Keys listed in @skip are silently ignored.
+#
+# The special key _unset, if present, must be an arrayref of dotted-path keys
+# to delete from the record after all set operations have been applied.
+sub apply_args_to_record ($record, $args, @skip) {
+   my %skip = map { $_ => 1 } @skip;
+
+   for my $key ( sort { scalar( split /\./, $a ) <=> scalar( split /\./, $b ) } keys %$args ) {
+      next if $skip{$key};
+      next if $key eq '_unset';
+      next unless defined $args->{$key};
+
+      my @parts = split( /\./, $key );
+      my $ref   = $record;
+      for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
+         $ref->{$part} //= {};
+         $ref = $ref->{$part};
+      }
+      $ref->{ $parts[-1] } = $args->{$key};
+   }
+
+   if ( ref $args->{_unset} eq 'ARRAY' ) {
+      for my $key ( @{ $args->{_unset} } ) {
+         my @parts = split( /\./, $key );
+         my $ref   = $record;
+         for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
+            last unless ref $ref eq 'HASH' && exists $ref->{$part};
+            $ref = $ref->{$part};
+         }
+         delete $ref->{ $parts[-1] } if ref $ref eq 'HASH';
+      }
+   }
 }
 
 1;

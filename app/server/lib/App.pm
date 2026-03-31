@@ -80,7 +80,10 @@ sub split_args ($queryString) {
 }
 
 # Parse a POST request body as JSON (if Content-Type is application/json) or
-# as form-encoded key=value pairs, returning a hashref.
+# as form-encoded key=value pairs, returning a hashref whose values are always
+# decoded Perl structures (never raw JSON strings).  This normalises both
+# content-types to the same shape so that apply_args_to_record() in Util never
+# needs to distinguish between them.
 sub parse_body_args ($r) {
    my $body = $r->request_body // '';
    my $ct   = $r->header_in('Content-Type') // '';
@@ -90,8 +93,27 @@ sub parse_body_args ($r) {
       return ref($decoded) eq 'HASH' ? $decoded : {};
    }
 
-   # Form-encoded fallback
-   return { map { uri_unescape($_) } split( /[=&]/, $body ) };
+   # Form-encoded fallback: split and URL-decode, then JSON-decode each value
+   # so the result has the same shape as the application/json path above.
+   # _unset is decoded to an arrayref; other values are decoded if valid JSON,
+   # otherwise kept as plain strings.
+   my %flat = map { uri_unescape($_) } split( /[=&]/, $body );
+   my %decoded;
+   for my $key ( keys %flat ) {
+      my $v = $flat{$key};
+      if ( $key eq '_unset' ) {
+         my $list = eval { decode_json($v) };
+         $decoded{$key} = ( ref $list eq 'ARRAY' ) ? $list : [];
+      }
+      elsif ( defined $v && length $v ) {
+         my $d = eval { decode_json($v) };
+         $decoded{$key} = $@ ? $v : $d;
+      }
+      else {
+         $decoded{$key} = $v;
+      }
+   }
+   return \%decoded;
 }
 
 # Return merged args: for POST requests, the body (JSON or form-encoded) is

@@ -12,7 +12,7 @@ use JSON;
 use Storable qw(dclone);
 use Data qw(invalidate_profile_cache);
 use Profile;
-use Util qw(flog cacheReadWrite);
+use Util qw(flog cacheReadWrite apply_args_to_record);
 use Exception;
 
 my $CONFIG_PATH  = '/data/config';
@@ -47,49 +47,6 @@ sub _read_raw ($name) {
    return $data;
 }
 
-# Apply flat args (possibly dotted-path keys, possibly JSON-encoded values)
-# into a record hashref in place.  Shallower keys are applied first so deeper
-# paths can override them.  Keys in @skip are ignored.
-sub _apply_args_to_record ($record, $args, @skip) {
-   my %skip = map { $_ => 1 } @skip;
-
-   for my $key ( sort { scalar( split /\./, $a ) <=> scalar( split /\./, $b ) } keys %$args ) {
-      next if $skip{$key};
-      next if $key eq '_unset';
-      next unless defined $args->{$key};
-
-      my $val = do {
-         my $v = $args->{$key};
-         if ( defined $v && length $v ) {
-            my $d = eval { decode_json($v) };
-            $@ ? $v : $d;
-         }
-         else { $v }
-      };
-
-      my @parts = split( /\./, $key );
-      my $ref   = $record;
-      for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
-         $ref->{$part} //= {};
-         $ref = $ref->{$part};
-      }
-      $ref->{ $parts[-1] } = $val;
-   }
-
-   # _unset: JSON array of dotted-path keys to delete from the record
-   if ( defined $args->{'_unset'} ) {
-      my $keys = eval { decode_json( $args->{'_unset'} ) } // [];
-      for my $key (@$keys) {
-         my @parts = split( /\./, $key );
-         my $ref   = $record;
-         for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
-            last unless ref $ref eq 'HASH' && exists $ref->{$part};
-            $ref = $ref->{$part};
-         }
-         delete $ref->{ $parts[-1] } if ref $ref eq 'HASH';
-      }
-   }
-}
 
 # Validate a profile record by instantiating a temporary Profile object and
 # running the structural validator.  Dies with a descriptive error if the
@@ -169,7 +126,7 @@ sub createProfile ($self, $name, $args) {
       };
    }
 
-   _apply_args_to_record( $record, $args, qw(id _json) );
+   apply_args_to_record( $record, $args, qw(id _json) );
 
    # Default the JSON 'name' display field to the profile id if not provided.
    $record->{'name'} //= $name;
@@ -210,7 +167,7 @@ sub updateProfile ($self, $name, $args) {
          $record = $base;
       }
 
-      _apply_args_to_record( $record, $args, qw(id _json) );
+      apply_args_to_record( $record, $args, qw(id _json) );
 
       # Coerce 'active' to a proper JSON boolean (validator requires boolean type).
       if ( exists $record->{'active'} ) {
