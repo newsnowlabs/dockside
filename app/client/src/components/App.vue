@@ -92,6 +92,11 @@
       watch: {
          $route(to) {
             this.updateStateFromRoute(to);
+            // Clear stale admin errors when entering /account so only errors
+            // generated on that page (e.g. fetchSelf failure) are shown there.
+            if (to.path === '/account') {
+               this.$store.commit('admin/setError', null);
+            }
             // Fetch admin data when entering admin routes for the first time
             if (to.path.startsWith('/admin') && this.canAccessAdmin &&
                 !this.$store.state.admin.hostResources) {
