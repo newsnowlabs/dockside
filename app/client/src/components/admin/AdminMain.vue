@@ -1,9 +1,14 @@
 <template>
    <b-col md="9" lg="10" offset-md="3" offset-lg="2" class="admin-main">
 
-      <div v-if="error" class="alert alert-danger mb-3">
+      <div v-if="error && !isAccountRoute" class="alert alert-danger mb-3">
          {{ error }}
          <b-button variant="link" size="sm" class="float-right p-0" @click="clearError">✕</b-button>
+      </div>
+
+      <div v-if="accountError && isAccountRoute" class="alert alert-danger mb-3">
+         {{ accountError }}
+         <b-button variant="link" size="sm" class="float-right p-0" @click="clearAccountError">✕</b-button>
       </div>
 
       <!-- User detail -->
@@ -55,7 +60,7 @@
       components: { UserDetail, RoleDetail, ProfileDetail },
 
       computed: {
-         ...mapState('admin', ['selected', 'error']),
+         ...mapState('admin', ['selected', 'error', 'accountError']),
 
          isAccountRoute() {
             return this.$route.path === '/account';
@@ -69,6 +74,9 @@
       methods: {
          clearError() {
             this.$store.commit('admin/setError', null);
+         },
+         clearAccountError() {
+            this.$store.commit('admin/setAccountError', null);
          },
       },
    };

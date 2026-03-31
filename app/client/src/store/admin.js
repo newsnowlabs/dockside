@@ -8,8 +8,9 @@ const createState = () => ({
    hostResources: null, // { runtimes, networks, IDEs, authModes } — loaded once
    // type: 'user' | 'role' | 'profile' | null; id: string | null; mode: 'view' | 'edit'
    selected: { type: null, id: null, mode: 'view' },
-   loading:  false,
-   error:    null,
+   loading:       false,
+   error:         null,  // admin-list fetch/mutation errors (shown on admin routes)
+   accountError:  null,  // self-edit refresh errors (shown on /account only)
 });
 
 export default {
@@ -39,8 +40,9 @@ export default {
    },
 
    mutations: {
-      setLoading(state, v)  { state.loading = v; },
-      setError(state, v)    { state.error   = v; },
+      setLoading(state, v)       { state.loading       = v; },
+      setError(state, v)         { state.error         = v; },
+      setAccountError(state, v)  { state.accountError  = v; },
 
       setUsers(state, list)          { state.users         = list; },
       setRoles(state, list)          { state.roles         = list; },
@@ -174,12 +176,13 @@ export default {
 
       async updateSelf({ commit, dispatch }, data) {
          commit('setError', null);
+         commit('setAccountError', null);
          const record = await api.updateSelf(data);
          commit('upsertUser', record);
          try {
             await dispatch('fetchSelf');
          } catch (e) {
-            commit('setError', 'Save succeeded but session state could not be refreshed — please reload the page');
+            commit('setAccountError', 'Save succeeded but session state could not be refreshed — please reload the page');
          }
          return record;
       },
