@@ -154,12 +154,8 @@ export default {
       },
 
       async fetchSelf({ commit }) {
-         try {
-            const record = await api.getSelf();
-            commit('setCurrentUser', record, { root: true });
-         } catch (e) {
-            // Non-fatal — currentUser retains its previous state
-         }
+         const record = await api.getSelf();
+         commit('setCurrentUser', record, { root: true });
       },
 
       async updateUser({ commit, dispatch, rootState }, { username, data }) {
@@ -167,7 +163,11 @@ export default {
          const record = await api.updateUser(username, data);
          commit('upsertUser', record);
          if (record.username === rootState.currentUser.username) {
-            await dispatch('fetchSelf');
+            try {
+               await dispatch('fetchSelf');
+            } catch (e) {
+               commit('setError', 'Save succeeded but session state could not be refreshed — please reload the page');
+            }
          }
          return record;
       },
@@ -176,7 +176,11 @@ export default {
          commit('setError', null);
          const record = await api.updateSelf(data);
          commit('upsertUser', record);
-         await dispatch('fetchSelf');
+         try {
+            await dispatch('fetchSelf');
+         } catch (e) {
+            commit('setError', 'Save succeeded but session state could not be refreshed — please reload the page');
+         }
          return record;
       },
 
