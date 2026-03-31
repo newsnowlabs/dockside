@@ -40,9 +40,7 @@ Returned by `GET /users/:name`, `GET /users`, and all mutation responses
   empty `{}` meaning "inherit from role").
 - `gh_token` and SSH private keys are **masked by default**. The raw
   values are only returned when the caller passes `sensitive=1` as a
-  query parameter — this is intentional for the CLI, which needs the
-  real values for operations like cloning with SSH. The web UI does not
-  (and should not) pass `sensitive=1`.
+  query parameter. The CLI currently supports this; the web UI does not.
 
 ### Session / bootstrap shape (derived record)
 
@@ -73,7 +71,7 @@ Returned by `GET /me` (`getSelf`) and injected at page load as
 
 ### Why they differ
 
-`getSelf` calls `_user_to_record` + `_sanitise_user_record` (CRUD shape),
+`getSelf` calls `_user_to_record` + `_sanitise_user_record(<CRUD shape>)`,
 then **overrides** `permissions` and adds `role_as_meta`:
 
 ```perl
