@@ -1,7 +1,7 @@
 <template>
    <b-col md="9" lg="10" offset-md="3" offset-lg="2" class="admin-main">
 
-      <div v-if="error && !isAccountRoute" class="alert alert-danger mb-3">
+      <div v-if="error" class="alert alert-danger mb-3">
          {{ error }}
          <b-button variant="link" size="sm" class="float-right p-0" @click="clearError">✕</b-button>
       </div>
