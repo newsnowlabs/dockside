@@ -25,7 +25,11 @@ Returned by `GET /users/:name`, `GET /users`, and all mutation responses
   "resources":   { "profiles": ["*"], "runtimes": ["runc"], "IDEs": ["*"] },
   "name":        "Alice Example",
   "email":       "alice@example.com",
-  "gh_token":    "ghp_****cdef"
+  "gh_token":    "ghp_****cdef",
+  "ssh": {
+    "authorized_keys": [],
+    "keypairs": { "my-key": { "public": "ssh-ed25519 AAAA...", "private": "<redacted>" } }
+  }
 }
 ```
 
@@ -34,7 +38,11 @@ Returned by `GET /users/:name`, `GET /users`, and all mutation responses
   user — it does not reflect role-inherited permissions.
 - `resources` contains the user's specific resource constraints (may be
   empty `{}` meaning "inherit from role").
-- `gh_token` is **masked** (`prefix****suffix`) — never the raw secret.
+- `gh_token` and SSH private keys are **masked by default**. The raw
+  values are only returned when the caller passes `sensitive=1` as a
+  query parameter — this is intentional for the CLI, which needs the
+  real values for operations like cloning with SSH. The web UI does not
+  (and should not) pass `sensitive=1`.
 
 ### Session / bootstrap shape (derived record)
 
@@ -43,13 +51,14 @@ Returned by `GET /me` (`getSelf`) and injected at page load as
 
 ```json
 {
-  "username":    "alice",
-  "role":        "developer",
+  "username":     "alice",
+  "role":         "developer",
   "role_as_meta": "role:developer",
-  "permissions": { "actions": { "createContainerReservation": true, "viewAllContainers": false, ... } },
-  "name":        "Alice Example",
-  "email":       "alice@example.com",
-  "gh_token":    "ghp_****cdef"
+  "permissions":  { "actions": { "createContainerReservation": true, "viewAllContainers": false, ... } },
+  "resources":    { "profiles": ["*"], "runtimes": ["runc"], "IDEs": ["*"] },
+  "name":         "Alice Example",
+  "email":        "alice@example.com",
+  "gh_token":     "ghp_****cdef"
 }
 ```
 
@@ -58,6 +67,8 @@ Returned by `GET /me` (`getSelf`) and injected at page load as
   role permissions merged with user overrides, then resolved to true/false.
 - `role_as_meta` is derived from `role` as `"role:" + role` — used for
   container sharing filters.
+- `gh_token` and SSH private keys are **always masked** — `getSelf` and
+  `updateSelf` never accept or honour the `sensitive` flag.
 - Consumers of this shape must never assume it matches the CRUD shape.
 
 ### Why they differ
@@ -86,24 +97,45 @@ never reimplement it.
 |--------|-------|---------|
 | GET    | `/users`                    | All users, verbatim CRUD shape |
 | GET    | `/users/:name`              | One user, verbatim CRUD shape |
-| POST   | `/users/create`             | Created user, verbatim CRUD shape |
-| POST   | `/users/:name/update`       | Updated user, verbatim CRUD shape |
-| GET    | `/users/:name/remove`       | Confirmation |
-| GET    | `/roles`                    | All roles |
+| POST   | `/users/create`             | Create user, verbatim CRUD shape |
+| POST   | `/users/:name/update`       | Update user, verbatim CRUD shape |
+| GET    | `/users/:name/remove`       | Remove user (see note on GET mutations below) |
+| GET    | `/roles`                    | All roles, verbatim |
+| GET    | `/roles/:name`              | One role, verbatim |
+| POST   | `/roles/create`             | Create role, verbatim |
+| POST   | `/roles/:name/update`       | Update role, verbatim |
+| GET    | `/roles/:name/remove`       | Remove role |
 | GET    | `/profiles`                 | All profiles, verbatim |
-| POST   | `/profiles/create`          | Created profile |
-| POST   | `/profiles/:id/update`      | Updated profile |
-| GET    | `/resources`                | Host runtimes, networks, IDEs, auth modes |
+| GET    | `/profiles/:name`           | One profile, verbatim |
+| POST   | `/profiles/create`          | Create profile, verbatim |
+| POST   | `/profiles/:name/update`    | Update profile, verbatim |
+| GET    | `/profiles/:name/remove`    | Remove profile |
+| GET    | `/profiles/:name/rename`    | Rename profile |
+| GET    | `/resources`                | Host runtimes, networks, IDEs, auth modes, verbatim |
+
+**Note on GET for remove/rename:** These endpoints are currently
+implemented as GETs for historical simplicity. This violates HTTP
+semantics — mutations should use POST (or DELETE). They should be
+migrated to POST when the opportunity arises; until then, callers must
+not assume they are idempotent or cacheable.
 
 ### Self-service account API — any authenticated user
 
 | Method | Route | Returns |
 |--------|-------|---------|
-| GET    | `/me`             | Session user, **derived/bootstrap shape** |
-| POST   | `/me/update`      | Updated user, derived/bootstrap shape |
+| GET    | `/me`             | Session user, derived/bootstrap shape |
+| POST   | `/me/update`      | Session user after update, derived/bootstrap shape |
 | GET    | `/me/profiles`    | Profiles accessible to session user (launch cache) |
 
-`/me` returns the same shape as `window.dockside.user`. After any
+`POST /me/update` accepts only the user's **own editable fields**: `name`,
+`email`, `gh_token`, `ssh`. It does not accept `role`, `permissions`, or
+`resources` — those are admin-only writes via `/users/:name/update`. The
+response is in the derived/bootstrap shape: `permissions.actions` reflects
+the user's effective permissions after the edit, but the editable fields
+themselves are not derived — only the response _format_ matches the
+bootstrap shape.
+
+`GET /me` returns the same shape as `window.dockside.user`. After any
 self-edit, always re-read identity via `GET /me`, never from the admin
 CRUD response — they have different shapes and the admin response does
 not include derived permissions.
@@ -211,20 +243,33 @@ parameters. Query strings appear in:
 - Shell history (when using curl/CLI)
 
 All mutation endpoints (`/users/create`, `/users/:name/update`,
-`/profiles/create`, `/profiles/:id/update`) accept `application/x-www-form-urlencoded`
-POST bodies via `get_args($r, $querystring)`. The CLI uses `_do_post()`
-for all mutation calls; the client uses `axios.post()`.
+`/profiles/create`, `/profiles/:name/update`) accept
+`application/x-www-form-urlencoded` POST bodies via
+`get_args($r, $querystring)`. The CLI uses `_do_post()` for all mutation
+calls; the web client uses `axios.post()`.
 
 ---
 
 ## 8. Reserved identifiers
 
-`"new"` is the UI sentinel for the create-form route (`/admin/users/new`,
-`/admin/profiles/new`, etc.). The server must reject creation of any user,
-role, or profile with that identifier, otherwise clicking the real record
-in the sidebar opens the create form instead.
+`"new"` is the current UI sentinel for the create-form route
+(`/admin/users/new`, `/admin/profiles/new`, etc.). The server rejects
+creation of any user, role, or profile with that exact identifier,
+otherwise clicking the real record in the sidebar opens the create form
+instead.
 
 Reserved at server level:
 - Users: `createUser` rejects `username eq 'new'`
 - Roles: `createRole` rejects `name eq 'new'`
 - Profiles: `%RESERVED_NAMES` includes `'new'`
+
+**Recommendation:** Consider replacing `"new"` with a sentinel that
+contains a character not permitted in entity names, such as `:new`. A
+leading colon is valid in a URL path segment but would never appear in a
+legitimate username, role name, or profile name under any reasonable
+naming convention. This would eliminate the need to reserve a common
+English word server-side, and future entity names like `"news"` or
+`"newuser"` would not risk confusion (they are already fine — only the
+exact string `"new"` is reserved — but the principle still applies as
+the set of reserved words grows). A non-alphanumeric sentinel removes the
+ambiguity entirely.
