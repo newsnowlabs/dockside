@@ -92,9 +92,7 @@
       watch: {
          $route(to) {
             this.updateStateFromRoute(to);
-            // Bump generation so in-flight fetch actions from the previous page
-            // discard their results/errors rather than committing to the new page.
-            this.$store.commit('admin/bumpGeneration');
+            // Errors are scoped to the page that generated them; clear on navigation.
             this.$store.commit('admin/setError', null);
             // Fetch admin data when entering admin routes for the first time
             if (to.path.startsWith('/admin') && this.canAccessAdmin &&

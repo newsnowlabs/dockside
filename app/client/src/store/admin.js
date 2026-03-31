@@ -9,7 +9,6 @@ const createState = () => ({
    // type: 'user' | 'role' | 'profile' | null; id: string | null; mode: 'view' | 'edit'
    selected: { type: null, id: null, mode: 'view' },
    loading:       false,
-   generation:    0,     // incremented on route change; fetch actions check it before committing
    error:         null,  // admin-list fetch/mutation errors (shown on admin routes)
    accountError:  null,  // self-edit refresh errors (shown on /account only)
 });
@@ -42,7 +41,6 @@ export default {
 
    mutations: {
       setLoading(state, v)       { state.loading       = v; },
-      bumpGeneration(state)      { state.generation++; },
       setError(state, v)         { state.error         = v; },
       setAccountError(state, v)  { state.accountError  = v; },
 
@@ -102,45 +100,36 @@ export default {
          await Promise.all(fetches);
       },
 
-      async fetchUsers({ commit, state }) {
-         const gen = state.generation;
+      async fetchUsers({ commit }) {
          commit('setLoading', true);
          try {
             const list = await api.listUsers();
-            if (state.generation !== gen) return;
             commit('setUsers', list);
          } catch (e) {
-            if (state.generation !== gen) return;
             commit('setError', e.message || 'Failed to load users');
          } finally {
             commit('setLoading', false);
          }
       },
 
-      async fetchRoles({ commit, state }) {
-         const gen = state.generation;
+      async fetchRoles({ commit }) {
          commit('setLoading', true);
          try {
             const list = await api.listRoles();
-            if (state.generation !== gen) return;
             commit('setRoles', list);
          } catch (e) {
-            if (state.generation !== gen) return;
             commit('setError', e.message || 'Failed to load roles');
          } finally {
             commit('setLoading', false);
          }
       },
 
-      async fetchProfiles({ commit, state }) {
-         const gen = state.generation;
+      async fetchProfiles({ commit }) {
          commit('setLoading', true);
          try {
             const list = await api.listProfiles();
-            if (state.generation !== gen) return;
             commit('setProfiles', list);
          } catch (e) {
-            if (state.generation !== gen) return;
             commit('setError', e.message || 'Failed to load profiles');
          } finally {
             commit('setLoading', false);
