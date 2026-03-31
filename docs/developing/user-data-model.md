@@ -95,25 +95,25 @@ never reimplement it.
 
 ### Admin API — requires `manageUsers` or `manageProfiles`
 
-| Method | Route | Returns |
-|--------|-------|---------|
-| GET    | `/users`                    | All users, verbatim CRUD shape |
-| GET    | `/users/:name`              | One user, verbatim CRUD shape |
-| POST   | `/users/create`             | Create user, verbatim CRUD shape |
-| POST   | `/users/:name/update`       | Update user, verbatim CRUD shape |
-| GET    | `/users/:name/remove`       | Remove user (see note on GET mutations below) |
-| GET    | `/roles`                    | All roles, verbatim |
-| GET    | `/roles/:name`              | One role, verbatim |
-| POST   | `/roles/create`             | Create role, verbatim |
-| POST   | `/roles/:name/update`       | Update role, verbatim |
-| GET    | `/roles/:name/remove`       | Remove role |
-| GET    | `/profiles`                 | All profiles, verbatim |
-| GET    | `/profiles/:name`           | One profile, verbatim |
-| POST   | `/profiles/create`          | Create profile, verbatim |
-| POST   | `/profiles/:name/update`    | Update profile, verbatim |
-| GET    | `/profiles/:name/remove`    | Remove profile |
-| GET    | `/profiles/:name/rename`    | Rename profile |
-| GET    | `/resources`                | Host runtimes, networks, IDEs, auth modes, verbatim |
+| Method | Route | Response |
+|--------|-------|----------|
+| GET    | `/users`                    | Array of all user records, CRUD/verbatim shape, masked by default (`sensitive=1` for raw secrets) |
+| GET    | `/users/:name`              | Single user record, CRUD/verbatim shape, masked by default (`sensitive=1` for raw secrets) |
+| POST   | `/users/create`             | Full created user record, CRUD/verbatim shape, masked by default (`sensitive=1` for raw secrets) |
+| POST   | `/users/:name/update`       | Full updated user record, CRUD/verbatim shape, masked by default (`sensitive=1` for raw secrets) |
+| GET    | `/users/:name/remove`       | `{ "username": "..." }` — identifier only (see note on GET mutations below) |
+| GET    | `/roles`                    | Array of all role records, each with a `name` field prepended |
+| GET    | `/roles/:name`              | Single role record `{ "name": "...", "permissions": {...} }` |
+| POST   | `/roles/create`             | Full created role record `{ "name": "...", ...fields }` |
+| POST   | `/roles/:name/update`       | Full updated role record `{ "name": "...", ...fields }` |
+| GET    | `/roles/:name/remove`       | `{ "name": "..." }` — identifier only |
+| GET    | `/profiles`                 | Array of all profile records, each with an `id` field |
+| GET    | `/profiles/:name`           | Single profile record with `id` field |
+| POST   | `/profiles/create`          | Full created profile record `{ "id": "...", ...fields }` |
+| POST   | `/profiles/:name/update`    | Full updated profile record `{ "id": "...", ...fields }` |
+| GET    | `/profiles/:name/remove`    | `{ "id": "..." }` — identifier only |
+| GET    | `/profiles/:name/rename`    | `{ "id": "<new_name>", "old_id": "<old_name>" }` |
+| GET    | `/resources`                | Host runtimes, networks, IDEs, auth modes — verbatim object |
 
 **Note on GET for remove/rename:** These endpoints are currently
 implemented as GETs for historical simplicity. This violates HTTP
@@ -123,24 +123,24 @@ not assume they are idempotent or cacheable.
 
 ### Self-service account API — any authenticated user
 
-| Method | Route | Returns |
-|--------|-------|---------|
-| GET    | `/me`             | Session user, derived/bootstrap shape |
-| POST   | `/me/update`      | Session user after update, derived/bootstrap shape |
-| GET    | `/me/profiles`    | Profiles accessible to session user (launch cache) |
+| Method | Route | Response |
+|--------|-------|----------|
+| GET    | `/me`             | Session user record, derived/bootstrap shape (with `permissions.actions` booleans and `role_as_meta`), always masked |
+| POST   | `/me/update`      | Full updated user record, **CRUD/verbatim shape**, always masked — same format as the admin user endpoints, not the bootstrap shape; `permissions.actions` is absent |
+| GET    | `/me/profiles`    | Array of launch profile records accessible to the session user |
 
 `POST /me/update` accepts only the user's **own editable fields**: `name`,
 `email`, `gh_token`, `ssh`. It does not accept `role`, `permissions`, or
-`resources` — those are admin-only writes via `/users/:name/update`. The
-response is in the derived/bootstrap shape: `permissions.actions` reflects
-the user's effective permissions after the edit, but the editable fields
-themselves are not derived — only the response _format_ matches the
-bootstrap shape.
+`resources` — those are admin-only writes via `/users/:name/update`.
 
-`GET /me` returns the same shape as `window.dockside.user`. After any
-self-edit, always re-read identity via `GET /me`, never from the admin
-CRUD response — they have different shapes and the admin response does
-not include derived permissions.
+`POST /me/update` returns the CRUD/verbatim shape (not the bootstrap shape)
+— it is the easiest way to confirm exactly which fields were written, but
+**it must not be used to refresh client identity**: `permissions.actions` and
+`role_as_meta` are absent. After any self-edit, always re-read identity via
+`GET /me`; the client-side `account/updateSelf` action does this automatically
+by dispatching `fetchSelf` after a successful update.
+
+`GET /me` returns the same shape as `window.dockside.user`.
 
 ### URL routing note
 
