@@ -16,7 +16,7 @@ Vue.use(IconsPlugin);
 const store = createStore();
 
 function adminTypeGuard(to, from, next) {
-   const p    = store.state.currentUser.permissions.actions;
+   const p    = store.state.account.currentUser.permissions.actions;
    const type = to.params.type;
    const allowedTypes = [];
    if (p.manageUsers)    allowedTypes.push('users', 'roles');
@@ -35,7 +35,7 @@ function adminTypeGuard(to, from, next) {
 const routes = [
    { path: '/container/:name', name: 'container', component: App },
    { path: '/admin', beforeEnter(to, from, next) {
-      const p = store.state.currentUser.permissions.actions;
+      const p = store.state.account.currentUser.permissions.actions;
       if (p.manageUsers)         next('/admin/users');
       else if (p.manageProfiles) next('/admin/profiles');
       else                       next('/');

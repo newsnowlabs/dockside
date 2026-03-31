@@ -32,18 +32,6 @@ export function removeUser(username) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-service account (no manageUsers permission required)
-// ---------------------------------------------------------------------------
-
-export function getSelf() {
-   return axios.get('/users/me').then(r => r.data.data);
-}
-
-export function updateSelf(data) {
-   return axios.post('/users/me/update', data).then(r => r.data.data);
-}
-
-// ---------------------------------------------------------------------------
 // Roles
 // ---------------------------------------------------------------------------
 

@@ -292,7 +292,7 @@
       },
       created() {
          if(this.isPrelaunchMode) {
-            this.$store.dispatch('fetchProfiles');
+            this.$store.dispatch('account/fetchLaunchProfiles');
             this.initialiseForm();
          }
       },
@@ -302,7 +302,7 @@
             'isEditMode',
             'isPrelaunchMode'
          ]),
-         ...mapState(['profiles']),
+         ...mapState({ profiles: state => state.account.launchProfiles }),
          profileNames() {
             return Object.keys(this.profiles).sort();
          },

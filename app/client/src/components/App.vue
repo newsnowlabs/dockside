@@ -40,7 +40,7 @@
       },
       computed: {
          user() {
-            return this.$store.state.currentUser;
+            return this.$store.state.account.currentUser;
          },
          isAdminRoute() {
             return this.$route.path.startsWith('/admin');

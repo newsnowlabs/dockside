@@ -60,14 +60,18 @@
       components: { UserDetail, RoleDetail, ProfileDetail },
 
       computed: {
-         ...mapState('admin', ['selected', 'error', 'accountError']),
+         ...mapState('admin', ['selected', 'error']),
+
+         accountError() {
+            return this.$store.state.account.accountError;
+         },
 
          isAccountRoute() {
             return this.$route.path === '/account';
          },
 
          currentUsername() {
-            return this.$store.state.currentUser.username;
+            return this.$store.state.account.currentUser.username;
          },
       },
 
@@ -76,7 +80,7 @@
             this.$store.commit('admin/setError', null);
          },
          clearAccountError() {
-            this.$store.commit('admin/setAccountError', null);
+            this.$store.commit('account/setAccountError', null);
          },
       },
    };

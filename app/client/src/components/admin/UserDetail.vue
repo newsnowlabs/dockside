@@ -163,7 +163,7 @@
    import ResourcesEditor   from '@/components/admin/ResourcesEditor';
    import SshEditor         from '@/components/admin/SshEditor';
    import ConfirmModal      from '@/components/shared/ConfirmModal';
-   import { getSelf }       from '@/services/admin';
+   import { getSelf }       from '@/services/account';
 
    const DEFAULT_RESOURCES = () => ({
       profiles: ['*'],
@@ -208,7 +208,7 @@
          // shows real content instantly without waiting for getSelf().
          const initial = EMPTY_FORM();
          if (this.selfEdit) {
-            const u = this.$store.state.currentUser;
+            const u = this.$store.state.account.currentUser;
             if (u) {
                initial.username = u.username || '';
                initial.name     = u.name     || '';
@@ -241,7 +241,7 @@
          },
 
          canDelete() {
-            return this.username && this.username !== this.$store.state.currentUser.username;
+            return this.username && this.username !== this.$store.state.account.currentUser.username;
          },
 
          roleOptions() {
@@ -254,6 +254,9 @@
          },
 
          currentUserRecord() {
+            // For self-edit, use account.currentUser so the form re-syncs after
+            // account/fetchSelf completes (admin.users may be empty for non-admins).
+            if (this.selfEdit) return this.$store.state.account.currentUser || null;
             return this.users.find(u => u.username === this.username) || null;
          },
 
@@ -373,7 +376,7 @@
                }
 
                if (this.selfEdit) {
-                  await this.$store.dispatch('admin/updateSelf', payload);
+                  await this.$store.dispatch('account/updateSelf', payload);
                   this.savedForm     = null;
                   this.localEditMode = false;
                   // currentUserRecord watcher fires after store update and re-populates form.

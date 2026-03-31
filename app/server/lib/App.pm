@@ -490,24 +490,31 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       }
 
       ######################################
+      # Account (self-service) — any authenticated user
+      #
+
+      if( $route =~ m!^/account/?$! ) {
+         my $record = $User->getSelf();
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/account/update/?$! ) {
+         my $args = get_args($r, $querystring);
+         my $record = $User->updateSelf($args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/account/profiles/?$! ) {
+         return json($r, 200, { 'status' => '200', 'data' => $User->profiles() });
+      }
+
+      ######################################
       # User management
       #
 
       if( $route =~ m!^/users/?$! ) {
          my $args = split_args($querystring);
          return json($r, 200, { 'status' => '200', 'data' => $User->listUsers($args) });
-      }
-
-      # Self-service: any authenticated user can view and update their own personal fields.
-      if( $route =~ m!^/users/me/?$! ) {
-         my $record = $User->getSelf();
-         return json($r, 200, { 'status' => '200', 'data' => $record });
-      }
-
-      if( $route =~ m!^/users/me/update/?$! ) {
-         my $args = get_args($r, $querystring);
-         my $record = $User->updateSelf($args);
-         return json($r, 200, { 'status' => '200', 'data' => $record });
       }
 
       if( $route =~ m!^/users/create/?$! ) {
@@ -579,12 +586,6 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       if( $route =~ m!^/profiles/?$! ) {
          my $args = split_args($querystring);
          return json($r, 200, { 'status' => '200', 'data' => $User->listProfiles($args) });
-      }
-
-      # Returns the calling user's accessible profiles in the same format as the
-      # page-bootstrap window.dockside.profiles object — usable by any authenticated user.
-      if( $route =~ m!^/profiles/mine/?$! ) {
-         return json($r, 200, { 'status' => '200', 'data' => $User->profiles() });
       }
 
       if( $route =~ m!^/profiles/create/?$! ) {

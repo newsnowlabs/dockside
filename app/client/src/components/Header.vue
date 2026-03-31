@@ -43,7 +43,7 @@
       computed: {
          ...mapGetters(['isSelected', 'isPrelaunchMode']),
          user() {
-            return this.$store.state.currentUser;
+            return this.$store.state.account.currentUser;
          },
          displayName() {
             const { name, email, username } = this.user;

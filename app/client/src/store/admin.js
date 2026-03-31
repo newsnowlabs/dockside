@@ -10,7 +10,6 @@ const createState = () => ({
    selected: { type: null, id: null, mode: 'view' },
    loading:       false,
    error:         null,  // admin-list fetch/mutation errors (shown on admin routes)
-   accountError:  null,  // self-edit refresh errors (shown on /account only)
 });
 
 export default {
@@ -40,9 +39,8 @@ export default {
    },
 
    mutations: {
-      setLoading(state, v)       { state.loading       = v; },
-      setError(state, v)         { state.error         = v; },
-      setAccountError(state, v)  { state.accountError  = v; },
+      setLoading(state, v)  { state.loading = v; },
+      setError(state, v)    { state.error   = v; },
 
       setUsers(state, list)          { state.users         = list; },
       setRoles(state, list)          { state.roles         = list; },
@@ -93,7 +91,7 @@ export default {
 
    actions: {
       async fetchAll({ dispatch, rootState }) {
-         const p = rootState.currentUser.permissions.actions;
+         const p = rootState.account.currentUser.permissions.actions;
          const fetches = [dispatch('fetchResources')];
          if (p.manageUsers)    fetches.push(dispatch('fetchUsers'), dispatch('fetchRoles'));
          if (p.manageProfiles) fetches.push(dispatch('fetchProfiles'));
@@ -155,34 +153,17 @@ export default {
          return record;
       },
 
-      async fetchSelf({ commit }) {
-         const record = await api.getSelf();
-         commit('setCurrentUser', record, { root: true });
-      },
-
       async updateUser({ commit, dispatch, rootState }, { username, data }) {
          commit('setError', null);
          const record = await api.updateUser(username, data);
          commit('upsertUser', record);
-         if (record.username === rootState.currentUser.username) {
+         // If the edited user is the current session user, refresh account identity.
+         if (record.username === rootState.account.currentUser.username) {
             try {
-               await dispatch('fetchSelf');
+               await dispatch('account/fetchSelf', null, { root: true });
             } catch (e) {
                commit('setError', 'Save succeeded but session state could not be refreshed — please reload the page');
             }
-         }
-         return record;
-      },
-
-      async updateSelf({ commit, dispatch }, data) {
-         commit('setError', null);
-         commit('setAccountError', null);
-         const record = await api.updateSelf(data);
-         commit('upsertUser', record);
-         try {
-            await dispatch('fetchSelf');
-         } catch (e) {
-            commit('setAccountError', 'Save succeeded but session state could not be refreshed — please reload the page');
          }
          return record;
       },
@@ -218,12 +199,14 @@ export default {
 
       // -----------------------------------------------------------------------
       // Profile CRUD
+      // After each mutation, refresh the account launch-profile cache since the
+      // set of profiles the session user may launch could have changed.
       // -----------------------------------------------------------------------
       async createProfile({ commit, dispatch }, data) {
          commit('setError', null);
          const record = await api.createProfile(data);
          commit('upsertProfile', record);
-         dispatch('fetchProfiles', null, { root: true });
+         dispatch('account/fetchLaunchProfiles', null, { root: true });
          return record;
       },
 
@@ -231,7 +214,7 @@ export default {
          commit('setError', null);
          const record = await api.updateProfile(id, data);
          commit('upsertProfile', record);
-         dispatch('fetchProfiles', null, { root: true });
+         dispatch('account/fetchLaunchProfiles', null, { root: true });
          return record;
       },
 
@@ -239,14 +222,14 @@ export default {
          commit('setError', null);
          await api.removeProfile(id);
          commit('removeProfile', id);
-         dispatch('fetchProfiles', null, { root: true });
+         dispatch('account/fetchLaunchProfiles', null, { root: true });
       },
 
       async renameProfile({ commit, dispatch }, { id, newName }) {
          commit('setError', null);
          const result = await api.renameProfile(id, newName);
          commit('renameProfile', { oldId: id, newId: result.id });
-         dispatch('fetchProfiles', null, { root: true });
+         dispatch('account/fetchLaunchProfiles', null, { root: true });
          return result;
       },
    },

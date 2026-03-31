@@ -1,21 +1,20 @@
 import Vuex from 'vuex';
-import axios from 'axios';
 import { getContainers } from '@/services/container';
-import adminModule from '@/store/admin';
+import adminModule   from '@/store/admin';
+import accountModule from '@/store/account';
 
 const welcomeTextStatusLocalStorageKey = '/dockside/welcomeTextStatus';
 
 const createStore = () => new Vuex.Store({
    strict: process.env.NODE_ENV !== 'production',
    modules: {
-      admin: adminModule,
+      admin:   adminModule,
+      account: accountModule,
    },
    state: {
-      currentUser: { ...window.dockside.user },
       selectedContainer: { name: undefined, mode: 'view' },
       containersFilter: 'shared',
       containers: window.dockside.containers,
-      profiles: window.dockside.profiles,
       welcomeTextStatus: localStorage.getItem(welcomeTextStatusLocalStorageKey) !== null ?
          parseInt(localStorage.getItem(welcomeTextStatusLocalStorageKey)) : 0
    },
@@ -30,14 +29,6 @@ const createStore = () => new Vuex.Store({
       isPrelaunchMode: (state, getters) => getters.isSelected && state.selectedContainer.name === "new",
    },
    mutations: {
-      setCurrentUser(state, patch) {
-         const merged = { ...state.currentUser, ...patch };
-         // Keep role_as_meta derived from role so it never goes stale.
-         if (patch.role !== undefined) {
-            merged.role_as_meta = patch.role ? ('role:' + patch.role) : undefined;
-         }
-         state.currentUser = merged;
-      },
       updateWelcomeTextStatus(state, status) {
          state.welcomeTextStatus = status;
          localStorage.setItem(welcomeTextStatusLocalStorageKey, status);
@@ -53,9 +44,6 @@ const createStore = () => new Vuex.Store({
       },
       updateContainers(state, containers) {
          state.containers = containers;
-      },
-      updateProfiles(state, profiles) {
-         state.profiles = profiles;
       },
       addContainer(state, container) {
          state.containers = state.containers.filter(c => c.id !== container.id).concat(container);
@@ -94,11 +82,6 @@ const createStore = () => new Vuex.Store({
       },
       addContainer(context, container) {
          context.commit('addContainer', container);
-      },
-      fetchProfiles({ commit }) {
-         return axios.get('/profiles/mine')
-            .then(r => { commit('updateProfiles', r.data.data); })
-            .catch(() => {});   // non-fatal — stale profiles still work
       },
    }
 });

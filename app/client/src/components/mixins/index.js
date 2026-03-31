@@ -12,12 +12,12 @@ const filteredContainers = {
          switch (this.$store.state.containersFilter) {
             case 'own':
                return this.$store.state.containers
-                  .filter(container => container.meta.owner === this.$store.state.currentUser.username);
+                  .filter(container => container.meta.owner === this.$store.state.account.currentUser.username);
             case 'shared':
                // Display containers for which:
                return this.$store.state.containers
                   .filter(container => {
-                     const { username, role_as_meta } = this.$store.state.currentUser;
+                     const { username, role_as_meta } = this.$store.state.account.currentUser;
                      //  the user is the owner
                      return (container.meta.owner === username) ||
                      // the devtainer's developers list includes the user, or the user's role
