@@ -304,6 +304,11 @@
          ]),
          ...mapState({ profiles: state => state.account.launchProfiles }),
          profileNames() {
+            // Guard against launchProfiles being null/undefined.  This can happen
+            // transiently if the server returns a non-data response (e.g. a 302
+            // redirect during a restart) and assertDataObject in account.js throws,
+            // leaving the store's launchProfiles at its last known-good value or the
+            // bootstrap value.  The || {} prevents Object.keys from throwing.
             return Object.keys(this.profiles || {}).sort();
          },
          runtimes() {

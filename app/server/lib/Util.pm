@@ -471,27 +471,43 @@ sub unique (@values) {
    return keys %k;
 }
 
-# Apply args into a record hashref in place. All values in $args must already
-# be decoded Perl structures — see parse_body_args() in App.pm, which normalises
-# both application/json and form-encoded bodies to this shape before dispatch.
+# Apply args into a record hashref in place.
 #
-# Keys may use dot-notation (e.g. "permissions.actions.foo") for nested paths;
-# shallower keys are applied first so a parent key cannot clobber a child that
-# was set in the same call. Keys listed in @skip are silently ignored.
+# All values in $args must already be decoded Perl structures (not raw JSON
+# strings) — parse_body_args() in App.pm normalises both application/json and
+# form-encoded request bodies to this shape before dispatch reaches here.
 #
-# The special key _unset, if present, must be an arrayref of dotted-path keys
-# to delete from the record after all set operations have been applied.
+# Keys support dot-notation for nested paths (e.g. "permissions.actions.foo").
+# Keys in @skip (e.g. 'username', 'password') are silently ignored, allowing
+# callers to pass the full $args without allowing modification of protected fields.
+# Keys with undef values are also skipped (defensive against malformed input).
+# The special key '_unset' is reserved for the delete pass and never written.
+#
+# Processing order: keys are sorted shallowest-first (fewest dots first) so
+# that a bulk-replace of a parent (e.g. permissions={...}) is applied before
+# any dotted children of that parent.  This prevents a top-level key from
+# silently clobbering a deeper key set in the same call.
+#
+# Intermediate nodes that don't exist are created as empty hashrefs so a dotted
+# path like "a.b.c" works even when "a" or "a.b" is absent from $record.
+#
+# _unset pass: after all set operations, each key listed in $args->{_unset}
+# (an arrayref of dotted-path strings) is deleted from the record.  Traversal
+# stops safely if any intermediate node is missing or not a hashref, leaving
+# the record unchanged for that path — the final delete is guarded by
+# 'if ref $ref eq 'HASH'' to prevent errors when traversal stopped early.
 sub apply_args_to_record ($record, $args, @skip) {
    my %skip = map { $_ => 1 } @skip;
 
    for my $key ( sort { scalar( split /\./, $a ) <=> scalar( split /\./, $b ) } keys %$args ) {
       next if $skip{$key};
       next if $key eq '_unset';
-      next unless defined $args->{$key};
+      next unless defined $args->{$key};   # skip undef values (see parse_body_args edge case)
 
       my @parts = split( /\./, $key );
       my $ref   = $record;
       for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
+         # Auto-vivify intermediate nodes so dotted paths work on sparse records.
          $ref->{$part} //= {};
          $ref = $ref->{$part};
       }
@@ -503,6 +519,10 @@ sub apply_args_to_record ($record, $args, @skip) {
          my @parts = split( /\./, $key );
          my $ref   = $record;
          for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
+            # Stop traversal if any intermediate node is absent or not a hashref.
+            # $ref is left pointing to the last successfully traversed hashref.
+            # The final 'if ref $ref eq HASH' guard makes the delete a no-op when
+            # traversal stopped before reaching the deepest-level hash.
             last unless ref $ref eq 'HASH' && exists $ref->{$part};
             $ref = $ref->{$part};
          }

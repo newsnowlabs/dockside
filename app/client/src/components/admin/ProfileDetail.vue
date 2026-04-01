@@ -144,7 +144,9 @@
    import JsonEditor   from '@/components/shared/JsonEditor';
    import ConfirmModal from '@/components/shared/ConfirmModal';
 
-   // These keys are managed as structured fields; everything else goes in the JSON editor.
+   // Keys that are surfaced as individual form fields (id, name, description, active,
+   // version).  All other keys from the profile record are passed to the JSON editor
+   // as the 'body' so the admin can edit them in a structured tree view.
    const STRUCTURED_KEYS = ['id', 'name', 'description', 'active', 'version'];
 
    const RESERVED_NAMES = new Set(['create', 'update', 'remove', 'rename']);
@@ -211,6 +213,8 @@
 
       computed: {
          ...mapState('admin', ['profiles', 'selected']),
+         // NOTE: the mapGetters spread for 'isEditMode' is shadowed by the local
+         // isEditMode computed below and should be removed (same issue as RoleDetail).
          ...mapGetters('admin', ['isEditMode']),
 
          isNew() {
@@ -294,19 +298,26 @@
          },
 
          buildPayload() {
-            // Merge structured fields into the body for the _json parameter
+            // Build the JSON blob (_json) by merging structured fields back into
+            // the body.  The server's createProfile/updateProfile will decode _json
+            // as the authoritative profile body, so it must be complete.
             const fullProfile = {
                ...this.profileBody,
                name:        this.form.name,
                description: this.form.description,
-               active:      this.form.active,
+               active:      this.form.active,  // boolean (JS) → JSON boolean in _json
             };
             if (this.form.version) fullProfile.version = this.form.version;
             return {
-               id:    this.form.id || this.profileId,
-               name:  this.form.name,
+               id:     this.form.id || this.profileId,
+               name:   this.form.name,
+               // 'active' is also sent as a top-level scalar ('1'/'0') alongside
+               // _json.  On the server, apply_args_to_record overwrites the value
+               // from _json with this string, which is then coerced to a JSON boolean.
+               // The net result is the same either way; this redundancy is harmless
+               // but could be simplified by removing the top-level 'active' key.
                active: this.form.active ? '1' : '0',
-               _json: JSON.stringify(fullProfile),
+               _json:  JSON.stringify(fullProfile),
             };
          },
 

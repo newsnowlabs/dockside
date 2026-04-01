@@ -113,12 +113,17 @@
 
       computed: {
          ...mapState('admin', ['roles', 'users', 'selected']),
+         // NOTE: the mapGetters spread for 'isEditMode' is shadowed by the local
+         // isEditMode computed below and should be removed to avoid a Vue console
+         // warning about duplicate computed properties.
          ...mapGetters('admin', ['isEditMode']),
 
          isNew() {
             return !this.roleName;
          },
 
+         // Override the Vuex getter: a role is always in edit mode when it is new
+         // (no roleName prop), regardless of the stored admin/selected.mode value.
          isEditMode() {
             return this.$store.getters['admin/isEditMode'] || this.isNew;
          },
@@ -132,6 +137,9 @@
             return this.roles.find(r => r.name === this.roleName) || null;
          },
 
+         // Mirror the server-side guard: prevent deletion of a role that is still
+         // assigned to at least one user.  Disabling the button in the UI avoids
+         // an error round-trip; the server enforces this independently.
          deleteDisabled() {
             return this.users.some(u => u.role === this.roleName);
          },

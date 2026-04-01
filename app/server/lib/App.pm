@@ -79,45 +79,70 @@ sub split_args ($queryString) {
    return { map { $_ // '' } %hash };
 }
 
-# Parse a POST request body as JSON (if Content-Type is application/json) or
-# as form-encoded key=value pairs, returning a hashref whose values are always
-# decoded Perl structures (never raw JSON strings).  This normalises both
-# content-types to the same shape so that apply_args_to_record() in Util never
-# needs to distinguish between them.
+# Parse a POST request body into a normalised hashref whose values are always
+# decoded Perl structures (numbers, booleans, hashrefs, arrayrefs) — never raw
+# JSON strings.  This single normalisation point means apply_args_to_record()
+# in Util.pm never needs to distinguish between content types.
+#
+# Two content-type paths:
+#   application/json  — decode the whole body as a JSON object directly.
+#                       Returns {} if the body is not a JSON object.
+#   form-encoded      — split key=value pairs, URL-unescape each token, then
+#                       JSON-decode each individual value so the result matches
+#                       the shape of the JSON path.  This preserves CLI support:
+#                       the CLI sends form-encoded bodies whose values are
+#                       JSON-stringified (e.g. permissions='{"actions":{...}}').
+#                       Plain string values that are not valid JSON are kept as-is.
+#
+# Edge case: a key without a value in form-encoded input (e.g. "key1&key2=v")
+# produces a hash entry with an undef value.  apply_args_to_record() skips
+# undef-valued keys, so this is handled safely downstream.
+#
+# Special key '_unset': must be a JSON array of dotted-path keys to delete from
+# the record.  If decoding fails or yields a non-array, it defaults to [].
 sub parse_body_args ($r) {
    my $body = $r->request_body // '';
    my $ct   = $r->header_in('Content-Type') // '';
 
    if ( $ct =~ m{application/json}i && length $body ) {
       my $decoded = eval { JSON::XS->new->utf8->decode($body) };
+      # Guard: only accept a JSON object at the top level.  A non-object body
+      # (array, scalar, malformed JSON) is treated as an empty argument set.
       return ref($decoded) eq 'HASH' ? $decoded : {};
    }
 
-   # Form-encoded fallback: split and URL-decode, then JSON-decode each value
-   # so the result has the same shape as the application/json path above.
-   # _unset is decoded to an arrayref; other values are decoded if valid JSON,
-   # otherwise kept as plain strings.
+   # Form-encoded fallback: split on '=' and '&', URL-decode each token, then
+   # JSON-decode each value so the result has the same shape as the JSON path.
    my %flat = map { uri_unescape($_) } split( /[=&]/, $body );
    my %decoded;
    for my $key ( keys %flat ) {
       my $v = $flat{$key};
       if ( $key eq '_unset' ) {
+         # _unset must be a JSON array of dotted-path keys; treat decode failure
+         # or a non-array result as an empty list so callers see a safe value.
          my $list = eval { decode_json($v) };
          $decoded{$key} = ( ref $list eq 'ARRAY' ) ? $list : [];
       }
       elsif ( defined $v && length $v ) {
+         # Attempt JSON decode; fall back to plain string if $v is not valid JSON.
+         # This covers both simple scalars ("alice") and structured values
+         # ('{"actions":{"manageUsers":true}}') sent by the CLI.
          my $d = eval { decode_json($v) };
          $decoded{$key} = $@ ? $v : $d;
       }
       else {
+         # Empty or undef value: pass through as-is.
          $decoded{$key} = $v;
       }
    }
    return \%decoded;
 }
 
-# Return merged args: for POST requests, the body (JSON or form-encoded) is
-# merged with query-string args; query-string values take precedence.
+# Return a merged args hashref for the request.
+# For POST requests the body is parsed (via parse_body_args) and merged with
+# any query-string args; query-string values take precedence on collision so
+# that routing parameters cannot be silently overridden by a crafted body.
+# For non-POST requests only the query-string is used.
 sub get_args ($r, $querystring) {
    if ( $r->request_method eq 'POST' ) {
       my $body_args = parse_body_args($r);

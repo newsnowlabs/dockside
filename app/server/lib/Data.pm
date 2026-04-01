@@ -11,6 +11,10 @@ use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
 use Util qw(flog cacheReadWrite get_config call_socket_json_api);
 
+# Single source of truth for all persistent config storage paths.
+# Exported so that User::Manage and Profile::Manage can reference these
+# constants directly rather than each independently hard-coding '/data/config'.
+# Any future relocation of the config root requires only a change here.
 our $CONFIG_PATH  = '/data/config';
 our $USERS_FILE   = "$CONFIG_PATH/users.json";
 our $ROLES_FILE   = "$CONFIG_PATH/roles.json";

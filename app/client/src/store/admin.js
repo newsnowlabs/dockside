@@ -1,4 +1,7 @@
-// Vuex admin module (namespaced) — state for users, roles, profiles.
+// Vuex admin module (namespaced: 'admin') — manages server-side users, roles,
+// and profiles for admin CRUD operations.  State is kept separate from the
+// account module (which holds the session user's own identity) so that
+// admin operations on other users don't interfere with the session user's state.
 import * as api from '@/services/admin';
 
 const createState = () => ({
@@ -47,6 +50,8 @@ export default {
       setProfiles(state, list)       { state.profiles      = list; },
       setHostResources(state, data)  { state.hostResources = data; },
 
+      // splice() is used rather than [...list] replacement to trigger Vue 2
+      // reactivity on the array element (Vue 2 can't detect direct index writes).
       upsertUser(state, user) {
          const idx = state.users.findIndex(u => u.username === user.username);
          if (idx >= 0) state.users.splice(idx, 1, user);
@@ -73,17 +78,23 @@ export default {
       removeProfile(state, id) {
          state.profiles = state.profiles.filter(p => p.id !== id);
       },
+      // Update the in-memory profile id after a server-side rename.  The profile
+      // body (name, active, etc.) is unchanged; only the 'id' field is mutated.
       renameProfile(state, { oldId, newId }) {
          const p = state.profiles.find(p => p.id === oldId);
          if (p) p.id = newId;
       },
 
+      // setSelected drives AdminMain's detail-pane rendering (which component to show).
+      // mode: 'view' | 'edit' — detail components read this via the isEditMode getter.
       setSelected(state, { type, id, mode = 'view' }) {
          state.selected = { type, id, mode };
       },
       setSelectedMode(state, mode) {
          state.selected = { ...state.selected, mode };
       },
+      // clearSelected hides the detail pane and shows the AdminMain placeholder.
+      // Called when navigating to a list route (no :id param) or after item deletion.
       clearSelected(state) {
          state.selected = { type: null, id: null, mode: 'view' };
       },
@@ -157,7 +168,10 @@ export default {
          commit('setError', null);
          const record = await api.updateUser(username, data);
          commit('upsertUser', record);
-         // If the edited user is the current session user, refresh account identity.
+         // If the admin just edited their own user record, refresh the account module
+         // so the header and other session-derived UI reflect the updated name/email.
+         // Failure is non-fatal (save already succeeded) but surfaced so the user
+         // knows to reload if the UI looks stale.
          if (record.username === rootState.account.currentUser.username) {
             try {
                await dispatch('account/fetchSelf', null, { root: true });
@@ -188,9 +202,11 @@ export default {
          commit('setError', null);
          const record = await api.updateRole(name, data);
          commit('upsertRole', record);
-         // If the current user's role was just edited, refresh derived account state
-         // (effective permissions, role_as_meta, and accessible launch profiles all
-         // derive from the role definition and may have changed).
+         // If the current session user's role was just edited, their effective
+         // permissions and role_as_meta may have changed.  Re-fetch the account
+         // module's currentUser so any permission-gated UI updates immediately
+         // (e.g. nav items, admin sections) rather than requiring a page reload.
+         // Failure is non-fatal; the role save already succeeded.
          if (rootState.account.currentUser.role === name) {
             try {
                await dispatch('account/fetchSelf', null, { root: true });
@@ -209,8 +225,10 @@ export default {
 
       // -----------------------------------------------------------------------
       // Profile CRUD
-      // After each mutation, refresh the account launch-profile cache since the
-      // set of profiles the session user may launch could have changed.
+      // After each mutation, dispatch account/fetchLaunchProfiles so the
+      // Container.vue launch form immediately reflects the new profile set.
+      // This dispatch is intentionally not awaited — the launch form works fine
+      // with stale data and the refresh is best-effort.
       // -----------------------------------------------------------------------
       async createProfile({ commit, dispatch }, data) {
          commit('setError', null);

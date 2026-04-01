@@ -42,6 +42,9 @@
          user() {
             return this.$store.state.account.currentUser;
          },
+         // Controls which layout branch is rendered in the template:
+         // admin/account routes use AdminSidebar + AdminMain; all others use
+         // the existing Sidebar + Main (container list view).
          isAdminRoute() {
             return this.$route.path.startsWith('/admin');
          },
@@ -54,6 +57,8 @@
          },
       },
       created() {
+         // Sync Vuex state with the current URL on initial load (e.g. deep-linked
+         // direct navigation to /admin/users/alice).
          this.updateStateFromRoute(this.$route);
          this.pruneURLBasedOnUserPermissions();
          this.$store.dispatch('updateContainers');
@@ -62,11 +67,25 @@
          }
       },
       methods: {
+         // Translate the current URL into Vuex state.  Called once on mount and
+         // again on every route change via the $route watcher.
+         //
+         // Note: this method references this.isAdminRoute / this.isAccountRoute
+         // (computed from this.$route.path) while also accepting a `route`
+         // parameter whose .params and .query are used for the payload values.
+         // In the $route watcher, Vue has already updated this.$route before the
+         // watcher fires, so this.isAdminRoute reflects the new route when the
+         // method runs — the two sources are therefore always consistent.
          updateStateFromRoute(route) {
             if (!this.isAdminRoute && !this.isAccountRoute) {
+               // Standard container route: drive the container list's selection state.
                this.$store.dispatch('updateSelectedContainerName', route.params.name);
                this.$store.dispatch('updateContainersFilter', route.query.cf);
             } else if (this.isAdminRoute && route.params.type && route.params.id) {
+               // Detail route (e.g. /admin/users/alice): set the selected item so
+               // AdminMain renders the correct detail component.
+               // Permission check: only allow types the current user has access to,
+               // preventing a URL-crafted route from rendering a forbidden view.
                const p = this.user.permissions.actions;
                const allowedRouteTypes = [
                   ...(p.manageUsers    ? ['users', 'roles']  : []),
@@ -78,10 +97,13 @@
                   this.$store.commit('admin/setSelected', { type, id: route.params.id, mode: 'view' });
                }
             } else if (this.isAdminRoute && !route.params.id) {
-               // List route (e.g. /admin/users): clear any previously selected item so
-               // AdminMain shows the placeholder rather than a stale detail view.
+               // List route (e.g. /admin/users, or bare /admin): clear any previously
+               // selected item so AdminMain shows the placeholder rather than a
+               // stale detail view from the previous navigation.
                this.$store.commit('admin/clearSelected');
             }
+            // isAccountRoute with no further action: AdminMain renders the account
+            // self-edit view unconditionally when isAccountRoute is true.
          },
          pruneURLBasedOnUserPermissions() {
             // If user can't develop and 'own' containers is their default view,
@@ -96,9 +118,11 @@
       watch: {
          $route(to) {
             this.updateStateFromRoute(to);
-            // Errors are scoped to the page that generated them; clear on navigation.
+            // Admin errors are scoped to the page that generated them; clear on
+            // any navigation so a stale error from a previous action isn't shown.
             this.$store.commit('admin/setError', null);
-            // Fetch admin data when entering admin routes for the first time
+            // Lazy-load admin data: fetch only when first entering an admin route,
+            // using hostResources as the sentinel for "already fetched".
             if (to.path.startsWith('/admin') && this.canAccessAdmin &&
                 !this.$store.state.admin.hostResources) {
                this.$store.dispatch('admin/fetchAll');

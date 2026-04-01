@@ -55,6 +55,10 @@
    import RoleDetail    from '@/components/admin/RoleDetail';
    import ProfileDetail from '@/components/admin/ProfileDetail';
 
+   // AdminMain is the right-hand content pane for all /admin/* and /account routes.
+   // It renders the appropriate detail component based on admin.selected (set by
+   // App.vue's updateStateFromRoute and AdminSidebar's selectItem), or the account
+   // self-edit form when on /account, or a placeholder when nothing is selected.
    export default {
       name: 'AdminMain',
       components: { UserDetail, RoleDetail, ProfileDetail },

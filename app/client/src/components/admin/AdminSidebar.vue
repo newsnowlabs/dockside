@@ -71,6 +71,9 @@
 
          ...mapGetters('admin', ['isEditMode']),
 
+         // Filter the SECTIONS list down to only those the current user has
+         // permission to manage.  A user with only manageProfiles sees no Users
+         // or Roles sections; a user with only manageUsers sees no Profiles section.
          visibleSections() {
             const p = this.$store.state.account.currentUser.permissions.actions;
             return SECTIONS.filter(s => {
@@ -82,6 +85,8 @@
       },
 
       methods: {
+         // Map a section type to the list items it should show in the sidebar.
+         // Profile items carry an 'active' flag to drive the coloured dot indicator.
          itemsFor(type) {
             if (type === 'user')    return this.users.map(u => ({ id: u.username, label: u.username }));
             if (type === 'role')    return this.roles.map(r => ({ id: r.name,     label: r.name }));
@@ -93,6 +98,10 @@
             return this.selected.type === type && this.selected.id === id;
          },
 
+         // Select an item: commit the selection to Vuex AND push the corresponding
+         // route so the URL is bookmarkable and the browser back button works.
+         // App.vue's $route watcher will also call setSelected via updateStateFromRoute,
+         // but that is idempotent (same value, mode: 'view') so the duplicate is harmless.
          selectItem(type, id) {
             this.$store.commit('admin/setSelected', { type, id, mode: 'view' });
             const typeToRoute = { user: 'users', role: 'roles', profile: 'profiles' };

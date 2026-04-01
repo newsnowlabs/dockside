@@ -1,4 +1,6 @@
 # Sub-package providing user and role management (CRUD) to User::.
+# Storage paths are imported from Data.pm ($USERS_FILE, $ROLES_FILE, $PASSWD_FILE)
+# so Data.pm is the single source of truth for all config file locations.
 package User::Manage;
 
 use v5.36;
@@ -17,7 +19,9 @@ use Exception;
 ################################################################################
 # PRIVATE HELPERS
 
-# Parse raw passwd file text into a hash of username => encrypted_password.
+# Parse the raw text content of the passwd file (colon-separated username:hash
+# lines, with blank lines and #-comments ignored) into a plain hash of
+# username => encrypted_password.  Returns an empty hash for empty/undef input.
 sub _parse_passwd_text ($text) {
    my %passwd;
    for my $line ( split( /\n/, $text // '' ) ) {
@@ -30,7 +34,10 @@ sub _parse_passwd_text ($text) {
 }
 
 
-# Convert a loaded User object back to its canonical users.json record form.
+# Convert a loaded User object (a blessed hashref with derived/computed fields)
+# back to the flat record shape stored in users.json.  The _permissions and
+# _resources private fields hold overrides only (not role-inherited values);
+# the caller receives them under the public 'permissions' / 'resources' keys.
 sub _user_to_record ($user) {
    return {
       'username'    => $user->username,
@@ -46,10 +53,17 @@ sub _user_to_record ($user) {
    };
 }
 
-# After apply_args_to_record, restore any SSH keypair private keys that the
-# client sent back as the '<redacted>' sentinel (returned by _sanitise_user_record).
-# Without this, a save would overwrite stored private key material with the
-# literal string '<redacted>'.  Captures must be taken BEFORE apply_args_to_record.
+# Restore SSH keypair private keys that were redacted for API output.
+#
+# _sanitise_user_record replaces each private key with the literal sentinel
+# '<redacted>' before sending it to the client.  When the client POSTs the
+# record back the sentinel arrives unchanged; if we wrote it to disk, the real
+# private key would be destroyed.  This sub replaces '<redacted>' with the
+# original key material (or deletes the private field if none was stored).
+#
+# $orig_keypairs — shallow copy of record->ssh->keypairs taken BEFORE
+#                  apply_args_to_record, so the live record can be mutated
+#                  in place without losing the originals.
 sub _restore_redacted_ssh ($record, $orig_keypairs) {
    my $kps = ( ( $record->{'ssh'} // {} )->{'keypairs'} // {} );
    for my $kp_name ( keys %$kps ) {
@@ -63,7 +77,16 @@ sub _restore_redacted_ssh ($record, $orig_keypairs) {
    }
 }
 
-# Sanitise a user record for API output: strip sensitive fields unless requested.
+# Sanitise a user record for API output.
+# When $sensitive is false (default), two classes of data are redacted:
+#   gh_token   — masked to first-4/last-4 visible characters to confirm
+#                it is set without exposing the token value.
+#   ssh.keypairs.*.private — replaced with the sentinel '<redacted>' so the
+#                client knows a key exists, and _restore_redacted_ssh can
+#                recover it if the same record is POSTed back unchanged.
+# When $sensitive is true (e.g. for internal reloads), the record is returned
+# as a shallow copy with no masking.
+# Always returns a new hashref; the original $record is not modified.
 sub _sanitise_user_record ($record, $sensitive = 0) {
    my $out = {%$record};
    unless ($sensitive) {
@@ -90,6 +113,12 @@ sub _sanitise_user_record ($record, $sensitive = 0) {
 
 ################################################################################
 # USER CRUD
+# All mutating subs follow the same pattern:
+#   1. Permission and pre-condition checks (die on failure).
+#   2. cacheReadWrite — exclusive-lock, read, modify, write the JSON file.
+#   3. Optionally cacheReadWrite the passwd file for password changes.
+#   4. Data::load to reload the in-memory $User::USERS / $User::ROLES caches.
+#   5. Return a sanitised record.
 
 sub listUsers ($self, $args = {}) {
    die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
@@ -111,9 +140,9 @@ sub getUser ($self, $username, $args = {}) {
 }
 
 # Self-service read: any authenticated user may read their own record.
-# Returns bootstrap-equivalent format: derived permissions (role-inherited +
-# user overrides) and role_as_meta, matching what window.dockside.user provides.
-# No manageUsers permission is required.
+# Returns the bootstrap-equivalent format used for window.dockside.user:
+# derived (role-inherited + user-override) permissions.actions, role_as_meta,
+# and masked sensitive fields.  No manageUsers permission is required.
 sub getSelf ($self, $args = {}) {
    my $username = $self->username;
    die Exception->new( 'msg' => "Not authenticated" ) unless $username;
@@ -134,8 +163,12 @@ sub createUser ($self, $args) {
       or die Exception->new( 'msg' => "username is required" );
    die Exception->new( 'msg' => "Invalid username: use only letters, digits, hyphens, underscores" )
       unless $username =~ /^[A-Za-z0-9_-]+$/;
+   # 'new' is reserved because it is used as a route token (GET /users/new);
+   # without this check a user named 'new' would be unreachable via the API.
    die Exception->new( 'msg' => "Username '$username' is reserved" )
       if $username eq 'new';
+   # Fast pre-check against the in-memory cache; the definitive check inside
+   # cacheReadWrite holds the file lock and therefore eliminates the TOCTOU race.
    die Exception->new( 'msg' => "User '$username' already exists" )
       if $User::USERS->{$username};
 
@@ -143,10 +176,13 @@ sub createUser ($self, $args) {
    cacheReadWrite( $USERS_FILE, sub ($oldData) {
       my $users = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
 
+      # Definitive duplicate check under the exclusive file lock.
       die Exception->new( 'msg' => "User '$username' already exists" )
          if $users->{$username};
 
-      # Auto-assign id if not provided or non-numeric.
+      # Auto-assign a numeric id if not provided or non-numeric: scan existing
+      # users for the highest id and increment.  Numeric ids are used to map
+      # Dockside users to POSIX UIDs inside containers.
       my $id = $args->{'id'};
       unless ( defined $id && $id =~ /^\d+$/ ) {
          my $max_id = 0;
@@ -157,7 +193,7 @@ sub createUser ($self, $args) {
       }
 
       $new_user = {
-         'id'          => $id + 0,
+         'id'          => $id + 0,    # +0 coerces to numeric for JSON encoding
          'email'       => '',
          'name'        => '',
          'role'        => 'user',
@@ -166,12 +202,17 @@ sub createUser ($self, $args) {
          'version'     => User::CURRENT_VERSION(),
       };
 
+      # Overlay caller-supplied args onto defaults.  'username' is stored as the
+      # hash key, not in the record body; 'password' is written to the separate
+      # passwd file; 'sensitive' and 'id' are control params, not record fields.
       apply_args_to_record( $new_user, $args, qw(username password sensitive id) );
 
       $users->{$username} = $new_user;
       return JSON->new->utf8->pretty->canonical->encode($users);
    } );
 
+   # Reload users.json; if a password was also written, reload passwd first so
+   # auth is consistent with the new user record.
    my @reload = ('users.json');
    if ( defined $args->{'password'} && length $args->{'password'} ) {
       cacheReadWrite( $PASSWD_FILE, sub ($oldData) {
@@ -199,6 +240,8 @@ sub updateUser ($self, $username, $args) {
       $record = $users->{$username}
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
 
+      # Snapshot keypairs BEFORE apply_args_to_record so _restore_redacted_ssh
+      # can recover original private key material from the pre-update record.
       my $orig_kps = { %{ ( $record->{'ssh'} // {} )->{'keypairs'} // {} } };
       apply_args_to_record( $record, $args, qw(username password sensitive) );
       _restore_redacted_ssh( $record, $orig_kps );
@@ -223,15 +266,18 @@ sub updateUser ($self, $username, $args) {
 }
 
 # Self-service update: any authenticated user may update their own name, email,
-# gh_token, and ssh fields without requiring the manageUsers permission.
-# All other fields in $args are silently ignored.
+# gh_token, and ssh fields.  All other fields in $args are silently discarded,
+# preventing privilege escalation (no manageUsers permission required).
 sub updateSelf ($self, $args) {
    my $username = $self->username;
    die Exception->new( 'msg' => "Not authenticated" ) unless $username;
    die Exception->new( 'msg' => "User '$username' not found" )
       unless $User::USERS->{$username};
 
-   # Whitelist: only personal fields may be updated via this method
+   # Build a whitelist-filtered copy of $args containing only the personal fields
+   # a user is allowed to self-edit.  Flat keys (e.g. 'name') are included
+   # directly; dotted-path keys are included if their top-level segment is in the
+   # whitelist (e.g. 'ssh.keypairs.mykey' is allowed because 'ssh' is allowed).
    my %allowed = map { $_ => 1 } qw(name email gh_token ssh);
    my $safe_args = { map { $_ => $args->{$_} } grep { $allowed{$_} } keys %$args };
 
@@ -265,6 +311,8 @@ sub removeUser ($self, $username, $args = {}) {
       unless $self->has_permission('manageUsers');
    die Exception->new( 'msg' => "User '$username' not found" )
       unless $User::USERS->{$username};
+   # Prevent self-deletion: an admin who deletes their own account would lose
+   # access and could leave no admin behind to recover.
    die Exception->new( 'msg' => "Cannot remove your own account" )
       if $self->username eq $username;
 
@@ -276,6 +324,9 @@ sub removeUser ($self, $username, $args = {}) {
       return JSON->new->utf8->pretty->canonical->encode($users);
    } );
 
+   # Remove the password entry if one exists.  We always attempt the passwd
+   # update but only reload it if it actually changed, to avoid an unnecessary
+   # Data::load of a file we didn't modify.
    my $passwd_changed = 0;
    cacheReadWrite( $PASSWD_FILE, sub ($oldData) {
       my %passwd = _parse_passwd_text($oldData);
@@ -291,6 +342,9 @@ sub removeUser ($self, $username, $args = {}) {
 
 ################################################################################
 # ROLE CRUD
+# Roles define the default permissions and resources for all users assigned to
+# them.  After any role mutation, both roles.json AND users.json are reloaded
+# because user permission resolution depends on the current role definitions.
 
 sub listRoles ($self) {
    die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
@@ -313,6 +367,7 @@ sub createRole ($self, $name, $args) {
       unless $self->has_permission('manageUsers');
    die Exception->new( 'msg' => "Invalid role name: use only letters, digits, hyphens, underscores" )
       unless $name =~ /^[A-Za-z0-9_-]+$/;
+   # 'new' is reserved as a route token (GET /roles/new) — same reason as users.
    die Exception->new( 'msg' => "Role name '$name' is reserved" )
       if $name eq 'new';
    die Exception->new( 'msg' => "Role '$name' already exists" )
@@ -364,6 +419,8 @@ sub removeRole ($self, $name) {
    die Exception->new( 'msg' => "Role '$name' not found" )
       unless $User::ROLES->{$name};
 
+   # Refuse deletion if any user is currently assigned this role; deleting it
+   # would leave those users with a dangling role reference and undefined permissions.
    my @users_with_role = grep { ( $User::USERS->{$_}{'role'} // '' ) eq $name } keys %$User::USERS;
    die Exception->new(
       'msg' => "Cannot remove role '$name': still assigned to: " . join( ', ', sort @users_with_role ) )

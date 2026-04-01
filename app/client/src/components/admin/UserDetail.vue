@@ -165,15 +165,17 @@
    import ConfirmModal      from '@/components/shared/ConfirmModal';
    import { getSelf }       from '@/services/account';
 
+   // EMPTY_FORM is a factory (not a static object) so each component instance
+   // gets its own independent form state with no shared reference.
    const EMPTY_FORM = () => ({
       username:        '',
       name:            '',
       email:           '',
       role:            'user',
       password:        '',
-      gh_token:        '',        // new token value (empty = not changing)
-      gh_token_is_set: false,     // true when server returned a masked token
-      gh_token_masked: '',        // masked token value from server (e.g. ghp_****abcd)
+      gh_token:        '',        // new token value typed by user (empty = don't change)
+      gh_token_is_set: false,     // true when server returned a masked token (token exists on server)
+      gh_token_masked: '',        // the server-masked value (e.g. "ghp_****abcd"), for display
       permissions:     {},
       resources:       {},
       ssh:             {},
@@ -225,12 +227,18 @@
             return !this.username;
          },
 
-         // selfEdit uses local state; admin view uses Vuex mode + isNew.
+         // Two edit-mode mechanisms coexist:
+         //   selfEdit — uses local component state (localEditMode) because the
+         //              /account route has no admin/selected Vuex state to drive mode.
+         //   admin    — uses the admin/isEditMode Vuex getter (set via setSelectedMode);
+         //              new items are always in edit mode regardless of Vuex state.
          isEditMode() {
             if (this.selfEdit) return this.localEditMode;
             return this.$store.getters['admin/isEditMode'] || this.isNew;
          },
 
+         // Prevent a user from deleting their own account; the server also enforces
+         // this, but blocking it in the UI avoids a confusing error response.
          canDelete() {
             return this.username && this.username !== this.$store.state.account.currentUser.username;
          },
@@ -245,8 +253,10 @@
          },
 
          currentUserRecord() {
-            // For self-edit, use account.currentUser so the form re-syncs after
-            // account/fetchSelf completes (admin.users may be empty for non-admins).
+            // For self-edit, source from account.currentUser rather than admin.users
+            // because a user without manageUsers permission has no admin.users list.
+            // account.currentUser is always populated from the bootstrap data and
+            // refreshed via account/fetchSelf after saves.
             if (this.selfEdit) return this.$store.state.account.currentUser || null;
             return this.users.find(u => u.username === this.username) || null;
          },
@@ -256,8 +266,10 @@
             return (role && role.permissions) || {};
          },
 
-         // Effective default for permissions not explicitly set by the user's role.
-         // Admin role grants everything by default; other roles deny by default.
+         // Effective default for permissions not explicitly set in the user's role
+         // definition.  'admin' roles grant all permissions by default; all other
+         // roles deny by default.  The PermissionsEditor uses this as the baseline
+         // so inherited (unset) permissions are shown with the correct default indicator.
          rolePermDefault() {
             return this.form.role === 'admin' ? '1' : '0';
          },
@@ -270,9 +282,17 @@
 
       created() {
          if (this.selfEdit) {
-            // Populate from store synchronously (no flash) if data is already loaded.
+            // Populate synchronously from the store first so there is no blank flash
+            // while the network fetch below is in-flight.
             if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
-            // Always refresh from server — may include sensitive fields (gh_token, ssh).
+            // Then fetch from the server directly (bypassing the Vuex store) to get
+            // sensitive fields (gh_token, ssh.keypairs) that the bootstrap data does
+            // not include.  This is a raw service call, not a store dispatch, because
+            // we only need the sensitive data for the local form — we do not want to
+            // write private key material into the Vuex store.
+            // The catch is intentionally silent: if the fetch fails (e.g. server
+            // restart), the user sees the stale bootstrap data rather than an error,
+            // which is acceptable for a read operation on the account page.
             getSelf().then(record => {
                if (!this.localEditMode) this.populateForm(record);
             }).catch(() => {});
@@ -352,9 +372,11 @@
                   name:  this.form.name,
                   email: this.form.email,
                };
-               // Include SSH when creating a user, when the existing SSH block was
-               // fetched, or when the editor contains newly added SSH data.
-               // This still avoids wiping unknown SSH data after a failed fetch.
+               // Only include SSH in the payload when we can be sure we have a
+               // complete picture of the user's SSH state.  If the getSelf() fetch
+               // failed and the user hasn't made any SSH changes, omitting ssh from
+               // the payload prevents a partial (bootstrap-only) ssh block from
+               // overwriting keys the server has but the client never received.
                if (this.isNew || this.sshLoaded || this.hasSshChanges) payload.ssh = this.form.ssh;
                // Only send gh_token when the user has typed a new value.
                if (this.form.gh_token) payload.gh_token = this.form.gh_token;
