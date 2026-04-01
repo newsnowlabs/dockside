@@ -81,7 +81,7 @@
 </template>
 
 <script>
-   import { mapState, mapGetters } from 'vuex';
+   import { mapState } from 'vuex';
    import PermissionsEditor from '@/components/admin/PermissionsEditor';
    import ResourcesEditor   from '@/components/admin/ResourcesEditor';
    import ConfirmModal      from '@/components/shared/ConfirmModal';
@@ -113,10 +113,6 @@
 
       computed: {
          ...mapState('admin', ['roles', 'users', 'selected']),
-         // NOTE: the mapGetters spread for 'isEditMode' is shadowed by the local
-         // isEditMode computed below and should be removed to avoid a Vue console
-         // warning about duplicate computed properties.
-         ...mapGetters('admin', ['isEditMode']),
 
          isNew() {
             return !this.roleName;
