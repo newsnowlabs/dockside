@@ -212,7 +212,7 @@ class AccessAndHttpTests(TestCase):
 
     def _nginx_status(self, client, router='www'):
         """Return HTTP status code for the nginx container's www service."""
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
+        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             status, _ = client.check_service(NGINX_CONTAINER, router_prefix=router,
                                               parent_fqdn=parent_fqdn)
@@ -246,30 +246,22 @@ class AccessAndHttpTests(TestCase):
             self.admin.update(NGINX_CONTAINER, access='{"www":"developer"}')
         except APIError:
             pass
-        # Use viewer client with no cookies (simulate unauth by checking a service
-        # that requires auth — 400 = not authenticated)
-        from dockside_test import DocksideClient
         # We test by hitting service URL with no cookies at all
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
-        if self.admin._host_header:
-            parts = self.admin._host_header.split('.', 1)
-            suffix = parts[1] if len(parts) > 1 else self.admin._host_header
-            service_host = f'www-{NGINX_CONTAINER}.{suffix}'
-            import urllib.parse as _up
-            parsed = _up.urlparse(self.admin._server)
-            port = parsed.port
-            connect_url = f'https://localhost:{port}/' if port and port != 443 else 'https://localhost/'
-        else:
-            connect_url = f'https://www-{NGINX_CONTAINER}{parent_fqdn}/'
-            service_host = None
-
         from dockside_test import http_check
-        code, _ = http_check(
-            connect_url,
-            host_header=service_host,
-            cookies=None,
-            verify_ssl=self.admin._verify_ssl,
-        )
+        import urllib.parse as _up
+        if self.admin._connect_to:
+            parsed = _up.urlparse(self.admin._server)
+            host_parts = parsed.hostname.split('.', 1)
+            suffix = host_parts[1] if len(host_parts) > 1 else parsed.hostname
+            service_host = f'www-{NGINX_CONTAINER}.{suffix}'
+            port = parsed.port
+            service_url = f'https://{service_host}:{port}/' if port and port != 443 else f'https://{service_host}/'
+            code, _ = http_check(service_url, connect_to=self.admin._connect_to,
+                                 cookies=None, verify_ssl=self.admin._verify_ssl)
+        else:
+            parent_fqdn = self._get_parent_fqdn()
+            service_url = f'https://www-{NGINX_CONTAINER}{parent_fqdn}/'
+            code, _ = http_check(service_url, cookies=None, verify_ssl=self.admin._verify_ssl)
         self.assert_http_status(code, 400, f'unauth got {code} instead of 400 in developer mode')
 
     def test_23_public_mode_unauth_gets_200(self):
@@ -279,21 +271,21 @@ class AccessAndHttpTests(TestCase):
             self.admin.update(NGINX_CONTAINER, access='{"www":"public"}')
         except APIError as e:
             self.skip(f'Cannot set public mode: {e}')
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
-        if self.admin._host_header:
-            parts = self.admin._host_header.split('.', 1)
-            suffix = parts[1] if len(parts) > 1 else self.admin._host_header
-            service_host = f'www-{NGINX_CONTAINER}.{suffix}'
-            import urllib.parse as _up
-            parsed = _up.urlparse(self.admin._server)
-            port = parsed.port
-            connect_url = f'https://localhost:{port}/' if port and port != 443 else 'https://localhost/'
-        else:
-            connect_url = f'https://www-{NGINX_CONTAINER}{parent_fqdn}/'
-            service_host = None
         from dockside_test import http_check
-        code, _ = http_check(connect_url, host_header=service_host,
-                              verify_ssl=self.admin._verify_ssl)
+        import urllib.parse as _up
+        if self.admin._connect_to:
+            parsed = _up.urlparse(self.admin._server)
+            host_parts = parsed.hostname.split('.', 1)
+            suffix = host_parts[1] if len(host_parts) > 1 else parsed.hostname
+            service_host = f'www-{NGINX_CONTAINER}.{suffix}'
+            port = parsed.port
+            service_url = f'https://{service_host}:{port}/' if port and port != 443 else f'https://{service_host}/'
+            code, _ = http_check(service_url, connect_to=self.admin._connect_to,
+                                 verify_ssl=self.admin._verify_ssl)
+        else:
+            parent_fqdn = self._get_parent_fqdn()
+            service_url = f'https://www-{NGINX_CONTAINER}{parent_fqdn}/'
+            code, _ = http_check(service_url, verify_ssl=self.admin._verify_ssl)
         self.assert_http_status(code, 200, f'unauth got {code} instead of 200 in public mode')
 
     def test_24_public_mode_viewer_gets_200(self):
@@ -316,21 +308,21 @@ class AccessAndHttpTests(TestCase):
             self.admin.update(NGINX_CONTAINER, access='{"www":"user"}')
         except APIError as e:
             self.skip(f'Cannot set user mode: {e}')
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
-        if self.admin._host_header:
-            parts = self.admin._host_header.split('.', 1)
-            suffix = parts[1] if len(parts) > 1 else self.admin._host_header
-            service_host = f'www-{NGINX_CONTAINER}.{suffix}'
-            import urllib.parse as _up
-            parsed = _up.urlparse(self.admin._server)
-            port = parsed.port
-            connect_url = f'https://localhost:{port}/' if port and port != 443 else 'https://localhost/'
-        else:
-            connect_url = f'https://www-{NGINX_CONTAINER}{parent_fqdn}/'
-            service_host = None
         from dockside_test import http_check
-        code, _ = http_check(connect_url, host_header=service_host,
-                              verify_ssl=self.admin._verify_ssl)
+        import urllib.parse as _up
+        if self.admin._connect_to:
+            parsed = _up.urlparse(self.admin._server)
+            host_parts = parsed.hostname.split('.', 1)
+            suffix = host_parts[1] if len(host_parts) > 1 else parsed.hostname
+            service_host = f'www-{NGINX_CONTAINER}.{suffix}'
+            port = parsed.port
+            service_url = f'https://{service_host}:{port}/' if port and port != 443 else f'https://{service_host}/'
+            code, _ = http_check(service_url, connect_to=self.admin._connect_to,
+                                 verify_ssl=self.admin._verify_ssl)
+        else:
+            parent_fqdn = self._get_parent_fqdn()
+            service_url = f'https://www-{NGINX_CONTAINER}{parent_fqdn}/'
+            code, _ = http_check(service_url, verify_ssl=self.admin._verify_ssl)
         self.assert_http_status(code, 400, f'unauth got {code} in user mode')
 
     def test_26_user_mode_authenticated_gets_200(self):

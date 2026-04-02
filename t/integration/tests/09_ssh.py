@@ -108,13 +108,13 @@ class SshTests(TestCase):
         For local/harness: 'ssh-inttest-ssh-01.<suffix>' and 'wss://localhost:<port>'
         For remote: 'ssh-inttest-ssh-01.<parent_fqdn_suffix>'
         """
-        if self.dev1._host_header:
+        if self.dev1._connect_to:
             # local or harness mode
-            parts = self.dev1._host_header.split('.', 1)
-            suffix = parts[1] if len(parts) > 1 else self.dev1._host_header
-            ssh_hostname = f'ssh-{SSH_CONTAINER}.{suffix}'
             import urllib.parse as _up
             parsed = _up.urlparse(self.dev1._server)
+            host_parts = parsed.hostname.split('.', 1)
+            suffix = host_parts[1] if len(host_parts) > 1 else parsed.hostname
+            ssh_hostname = f'ssh-{SSH_CONTAINER}.{suffix}'
             port = parsed.port or 443
             wss_url = f'wss://localhost:{port}'
             return ssh_hostname, wss_url
@@ -171,7 +171,7 @@ class SshTests(TestCase):
         except APIError:
             pass
 
-        parent_fqdn = None if self.dev1._host_header else self._get_parent_fqdn()
+        parent_fqdn = None if self.dev1._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
                 SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
@@ -230,7 +230,7 @@ class SshTests(TestCase):
         self.dev1.update(SSH_CONTAINER, developers='')
         time.sleep(1)
 
-        parent_fqdn = None if self.dev1._host_header else self._get_parent_fqdn()
+        parent_fqdn = None if self.dev1._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
                 SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn

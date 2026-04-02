@@ -82,7 +82,7 @@ fi
 if [[ "$MODE" == "harness" ]]; then
     # shellcheck source=harness.sh
     source "${INTEGRATION_DIR}/harness.sh"
-    # harness.sh exports DOCKSIDE_TEST_SERVER_URL, DOCKSIDE_TEST_HOST_HEADER, etc.
+    # harness.sh exports DOCKSIDE_TEST_SERVER_URL, DOCKSIDE_TEST_CONNECT_TO, etc.
 fi
 
 # ── Connection parameters by mode ─────────────────────────────────────────────
@@ -90,12 +90,12 @@ case "$MODE" in
     remote)
         HOST="${DOCKSIDE_TEST_HOST:?DOCKSIDE_TEST_HOST required for remote mode}"
         export DOCKSIDE_TEST_SERVER_URL="https://${HOST}"
-        export DOCKSIDE_TEST_HOST_HEADER=""   # no override needed
+        export DOCKSIDE_TEST_CONNECT_TO=""    # no override needed
         ;;
     local)
         HOST="${DOCKSIDE_TEST_HOST:?DOCKSIDE_TEST_HOST required for local mode}"
-        export DOCKSIDE_TEST_SERVER_URL="https://localhost"
-        export DOCKSIDE_TEST_HOST_HEADER="${HOST}"
+        export DOCKSIDE_TEST_SERVER_URL="https://${HOST}"
+        export DOCKSIDE_TEST_CONNECT_TO="localhost"
         ;;
     harness)
         # Already set by harness.sh
@@ -122,7 +122,7 @@ trap cleanup EXIT INT TERM
 echo "# Dockside Integration Tests"
 echo "# Mode: ${MODE}"
 echo "# Server: ${DOCKSIDE_TEST_SERVER_URL}"
-[[ -n "${DOCKSIDE_TEST_HOST_HEADER:-}" ]] && echo "# Host header: ${DOCKSIDE_TEST_HOST_HEADER}"
+[[ -n "${DOCKSIDE_TEST_CONNECT_TO:-}" ]] && echo "# Connect-to: ${DOCKSIDE_TEST_CONNECT_TO}"
 [[ -n "${ONLY_PREFIX}" ]] && echo "# Filter: ${ONLY_PREFIX}"
 echo "#"
 

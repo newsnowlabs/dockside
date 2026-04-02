@@ -187,6 +187,6 @@ When working inside a Dockside devtainer:
 
 - **In CI / fully isolated**: use **harness mode** with `DOCKSIDE_TEST_IMAGE`.
 
-Note: in harness and local modes the tests connect to `https://localhost` and
-inject the correct `Host` header via the `--host-header` CLI flag (added as
-part of this integration test suite).
+Note: in harness and local modes the tests use the canonical hostname as the
+server URL (e.g. `https://www.localhost:PORT`) and redirect the TCP connection
+to `localhost` via the `--connect-to` CLI flag.

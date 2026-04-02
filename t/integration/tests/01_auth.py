@@ -40,7 +40,7 @@ class AuthTests(TestCase):
             server_url=self.admin._server,
             username='nobody',
             password='wrongpass',
-            host_header=self.admin._host_header,
+            connect_to=self.admin._connect_to,
             verify_ssl=self.admin._verify_ssl,
         )
         self.assert_api_error(bad.list_containers)
@@ -53,7 +53,7 @@ class AuthTests(TestCase):
             server_url=self.admin._server,
             username='nobody',
             password='wrongpass',
-            host_header=self.admin._host_header,
+            connect_to=self.admin._connect_to,
             verify_ssl=self.admin._verify_ssl,
         )
         self.assert_api_error(

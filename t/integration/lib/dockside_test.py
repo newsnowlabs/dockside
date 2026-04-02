@@ -8,6 +8,7 @@ Python 3.6+ required. Zero external dependencies.
 """
 
 import atexit
+import http.client
 import http.cookiejar
 import json
 import os
@@ -60,11 +61,63 @@ def _fields_to_args(fields):
     return args
 
 
-def http_check(url, host_header=None, cookies=None, verify_ssl=False, timeout=10):
+class _ConnectToHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that TCP-connects to a forced address while preserving
+    the original hostname for TLS SNI (and therefore for the Host header)."""
+    _force_host = None
+    _force_port = None
+
+    def connect(self):
+        port = self._force_port if self._force_port is not None else (self.port or 443)
+        self.sock = self._create_connection(
+            (self._force_host, port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+            server_hostname = self._tunnel_host
+        else:
+            server_hostname = self.host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class _ConnectToHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler that TCP-connects to a forced address while preserving
+    the original hostname for TLS SNI and the HTTP Host header."""
+
+    def __init__(self, connect_to, context):
+        super().__init__(context=context)
+        if ':' in connect_to:
+            host, _, port = connect_to.rpartition(':')
+            self._force_host = host
+            self._force_port = int(port)
+        else:
+            self._force_host = connect_to
+            self._force_port = None
+
+    def https_open(self, req):
+        force_host = self._force_host
+        force_port = self._force_port
+        ctx = self._context
+
+        def conn_factory(host, **kwargs):
+            kwargs['context'] = ctx
+            conn = _ConnectToHTTPSConnection(host, **kwargs)
+            conn._force_host = force_host
+            conn._force_port = force_port
+            return conn
+
+        return self.do_open(conn_factory, req)
+
+
+def http_check(url, connect_to=None, cookies=None, verify_ssl=False, timeout=10):
     """
     HTTP GET to url; return (status_code, body_bytes).
     Does not follow 4xx/5xx redirects (but does follow 3xx).
     cookies: dict of {name: value} or http.cookiejar.CookieJar instance.
+    connect_to: 'host[:port]' — redirect TCP to this address while preserving
+                the URL hostname for TLS SNI and the HTTP Host header.
     """
     ctx = ssl.create_default_context()
     if not verify_ssl:
@@ -79,14 +132,16 @@ def http_check(url, host_header=None, cookies=None, verify_ssl=False, timeout=10
         for name, value in cookies.items():
             _inject_simple_cookie(jar, url, name, value)
 
-    opener = urllib.request.build_opener(
+    handlers = [
         urllib.request.HTTPCookieProcessor(jar),
-        urllib.request.HTTPSHandler(context=ctx),
         _NoRedirectHandler(),
-    )
+    ]
+    if connect_to:
+        handlers.append(_ConnectToHTTPSHandler(connect_to, ctx))
+    else:
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+    opener = urllib.request.build_opener(*handlers)
     req = urllib.request.Request(url)
-    if host_header:
-        req.add_unredirected_header('Host', host_header)
     try:
         with opener.open(req, timeout=timeout) as resp:
             return resp.status, resp.read()
@@ -138,12 +193,12 @@ class DocksideClient:
     """
 
     def __init__(self, cli_path, server_url, username, password,
-                 host_header=None, verify_ssl=False, config_dir=None):
+                 connect_to=None, verify_ssl=False, config_dir=None):
         self._cli = cli_path
         self._server = server_url
         self._username = username
         self._password = password
-        self._host_header = host_header
+        self._connect_to = connect_to
         self._verify_ssl = verify_ssl
         self._config_dir = config_dir or tempfile.mkdtemp(prefix='dockside-test-')
         self._cookie_jar = None  # loaded lazily after first _run
@@ -157,8 +212,8 @@ class DocksideClient:
         ]
         if not self._verify_ssl:
             args.append('--no-verify')
-        if self._host_header:
-            args.extend(['--host-header', self._host_header])
+        if self._connect_to:
+            args.extend(['--connect-to', self._connect_to])
         return args
 
     def _run(self, *cmd_args):
@@ -258,24 +313,23 @@ class DocksideClient:
         Returns (status_code, body_bytes).
 
         URL construction:
-          local/harness: https://localhost[:<port>] with Host: <prefix>-<name>.<suffix>
+          local/harness: https://<prefix>-<name>.<suffix>[:<port>] with TCP redirected via connect_to
           remote:        https://<prefix>-<name>.<parent_fqdn>
         """
-        if self._host_header:
-            # local or harness mode: strip first label from host_header to get suffix
-            parts = self._host_header.split('.', 1)
-            suffix = parts[1] if len(parts) > 1 else self._host_header
-            service_host = f'{router_prefix}-{container_name}.{suffix}'
-            # Extract port from server URL if present
+        if self._connect_to:
+            # local or harness mode: derive suffix from server URL hostname
             parsed = urllib.parse.urlparse(self._server)
+            host_parts = parsed.hostname.split('.', 1)
+            suffix = host_parts[1] if len(host_parts) > 1 else parsed.hostname
+            service_host = f'{router_prefix}-{container_name}.{suffix}'
             port = parsed.port
             if port and port != 443:
-                connect_url = f'https://localhost:{port}/'
+                service_url = f'https://{service_host}:{port}/'
             else:
-                connect_url = 'https://localhost/'
+                service_url = f'https://{service_host}/'
             return http_check(
-                connect_url,
-                host_header=service_host,
+                service_url,
+                connect_to=self._connect_to,
                 cookies=self._cookie_jar,
                 verify_ssl=self._verify_ssl,
                 timeout=timeout,
@@ -450,13 +504,13 @@ class TestRunner:
     Discovers and runs TestCase subclasses, emitting TAP-compatible output.
     """
 
-    def __init__(self, cli_path, server_url, credentials, host_header=None,
+    def __init__(self, cli_path, server_url, credentials, connect_to=None,
                  verify_ssl=False, test_mode='remote', harness_container_id=None,
                  allow_network_modify=None):
         self._cli_path = cli_path
         self._server_url = server_url
         self._credentials = credentials  # dict: role -> (username, password)
-        self._host_header = host_header
+        self._connect_to = connect_to
         self._verify_ssl = verify_ssl
         self._test_mode = test_mode
         self._harness_container_id = harness_container_id
@@ -479,7 +533,7 @@ class TestRunner:
             server_url=self._server_url,
             username=username,
             password=password,
-            host_header=self._host_header,
+            connect_to=self._connect_to,
             verify_ssl=self._verify_ssl,
         )
 

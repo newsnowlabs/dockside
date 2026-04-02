@@ -8,7 +8,7 @@ Environment variables (set by run_tests.sh / harness.sh):
   DOCKSIDE_TEST_MODE         local|remote|harness
   DOCKSIDE_TEST_HOST         Public FQDN (e.g. www.local.dockside.dev)
   DOCKSIDE_TEST_SERVER_URL   Full https URL (set by run_tests.sh)
-  DOCKSIDE_TEST_HOST_HEADER  Host header override (set for local/harness modes)
+  DOCKSIDE_TEST_CONNECT_TO   TCP connection override host[:port] (set for local/harness modes)
   DOCKSIDE_TEST_ADMIN        username:password
   DOCKSIDE_TEST_DEV1         username:password (default: testdev1:testpass123)
   DOCKSIDE_TEST_DEV2         username:password (default: testdev2:testpass123)
@@ -59,7 +59,7 @@ def main():
         sys.exit(1)
 
     server_url = os.environ.get('DOCKSIDE_TEST_SERVER_URL', '')
-    host_header = os.environ.get('DOCKSIDE_TEST_HOST_HEADER', '') or None
+    connect_to = os.environ.get('DOCKSIDE_TEST_CONNECT_TO', '') or None
     test_mode = os.environ.get('DOCKSIDE_TEST_MODE', 'remote')
     verify_ssl = os.environ.get('DOCKSIDE_TEST_VERIFY_SSL', '0') == '1'
     only_prefix = os.environ.get('DOCKSIDE_TEST_ONLY', '').strip()
@@ -93,7 +93,7 @@ def main():
         cli_path=cli_path,
         server_url=server_url,
         credentials=credentials,
-        host_header=host_header,
+        connect_to=connect_to,
         verify_ssl=verify_ssl,
         test_mode=test_mode,
         harness_container_id=harness_id,

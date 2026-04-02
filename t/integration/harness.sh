@@ -4,8 +4,8 @@
 #
 # Sets and exports:
 #   DOCKSIDE_TEST_HOST         www.localhost
-#   DOCKSIDE_TEST_SERVER_URL   https://localhost:<port>
-#   DOCKSIDE_TEST_HOST_HEADER  www.localhost
+#   DOCKSIDE_TEST_SERVER_URL   https://www.localhost:<port>
+#   DOCKSIDE_TEST_CONNECT_TO   localhost:<port>
 #   DOCKSIDE_TEST_ADMIN        admin:<password>
 #   DOCKSIDE_TEST_MODE         harness
 #   DOCKSIDE_TEST_HARNESS_ID   <container id>
@@ -73,8 +73,8 @@ echo "# Waiting for HTTPS readiness..." >&2
 deadline=$((SECONDS + 60))
 while [[ $SECONDS -lt $deadline ]]; do
     if curl --silent --insecure --max-time 3 \
-            --header "Host: www.localhost" \
-            "https://localhost:${HOST_PORT}/" >/dev/null 2>&1; then
+            --connect-to "www.localhost:${HOST_PORT}:localhost:${HOST_PORT}" \
+            "https://www.localhost:${HOST_PORT}/" >/dev/null 2>&1; then
         break
     fi
     sleep 2
@@ -97,9 +97,9 @@ docker exec "${HARNESS_ID}" bash -c '
 ' 2>/dev/null || true
 
 export DOCKSIDE_TEST_HOST="www.localhost"
-export DOCKSIDE_TEST_SERVER_URL="https://localhost:${HOST_PORT}"
-export DOCKSIDE_TEST_HOST_HEADER="www.localhost"
+export DOCKSIDE_TEST_SERVER_URL="https://www.localhost:${HOST_PORT}"
+export DOCKSIDE_TEST_CONNECT_TO="localhost:${HOST_PORT}"
 export DOCKSIDE_TEST_ADMIN="admin:${ADMIN_PASSWORD}"
 export DOCKSIDE_TEST_MODE="harness"
 
-echo "# Harness ready: ${DOCKSIDE_TEST_SERVER_URL} (Host: ${DOCKSIDE_TEST_HOST_HEADER})" >&2
+echo "# Harness ready: ${DOCKSIDE_TEST_SERVER_URL} (connect-to: ${DOCKSIDE_TEST_CONNECT_TO})" >&2
