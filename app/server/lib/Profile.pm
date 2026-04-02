@@ -246,7 +246,7 @@ sub validate ($self) {
          mountIDE=b
          routers=@
          runtimes=@
-         networks=@!
+         networks=@
          images=@!
          unixusers=@
          imagePathsFilter=@

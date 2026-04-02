@@ -1,15 +1,28 @@
+# DOCKSIDE SYSTEMD UNIT
+# =====================
+#
+# Install instructions:
+# - Copy this systemd unit to /usr/local/lib/systemd/system
+# - Copy and customise dockside-network-firewall.sh to /usr/local/lib/
+# - Run `systemctl daemon-reload && systemctl enable dockside && systemctl start dockside`
+
 [Unit]
 Description=Dockside container stack
 Requires=docker.service
 After=docker.service
 
 [Service]
-Type=oneshot
-ExecReload=/usr/local/lib/dockside/dockside-network-firewall.sh
-ExecStartPre=/usr/local/lib/dockside/dockside-network-firewall.sh
-ExecStart=/usr/bin/docker compose -f /usr/local/lib/dockside/docker-compose.yml up -d
+Type=notify
+NotifyAccess=main
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300
+ExecStart=/usr/local/lib/dockside/dockside-network-firewall.py --daemon
+ExecStartPost=/usr/bin/docker compose -f /usr/local/lib/dockside/docker-compose.yml up -d
 ExecStop=/usr/bin/docker compose -f /usr/local/lib/dockside/docker-compose.yml down
-RemainAfterExit=yes
+ExecReload=/bin/kill -USR1 $MAINPID
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target

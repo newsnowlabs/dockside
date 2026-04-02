@@ -111,6 +111,9 @@ build_env() {
   DOCKER_OPTS+=("--label=com.newsnow.dockside.build.date=$TAG_DATE")
   DOCKER_OPTS+=("--build-arg=OPT_PATH=/opt/dockside")
 
+  DOCKSIDE_VERSION="${DOCKSIDE_VERSION:-$(git -C "$DIR" describe --tags 2>/dev/null | sed 's/^v//')}"
+  [ -n "$DOCKSIDE_VERSION" ] && DOCKER_OPTS+=("--build-arg=DOCKSIDE_VERSION=$DOCKSIDE_VERSION")
+
   [ -n "$NO_CACHE" ] && DOCKER_OPTS+=("--no-cache")
   [ -n "$FORCE_RM" ] && DOCKER_OPTS+=("--force-rm")
   [ -n "$PULL" ] && DOCKER_OPTS+=("--pull")
