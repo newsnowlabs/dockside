@@ -1,0 +1,45 @@
+services:
+  dockside:
+    container_name: ${NAME:-dockside}
+    image: ${IMAGE:-newsnowlabs/dockside:test}
+    restart: unless-stopped
+    attach: false
+    command: ["--ssl-selfsupplied", "--ssl-zone", "staging.newsnow.co.uk", "--lxcfs-available"]
+    ports:
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ${HOME}/.dockside:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dockside-hostdata:/opt/dockside/host
+      - /home/newsnow/dehydrated+wildcards/certs/staging.newsnow.co.uk/:/data/certs
+    security_opt:
+      - apparmor:unconfined
+    networks:
+      ds-priv:
+        mac_address: "02:00:00:00:00:01"
+        ipv4_address: 172.18.0.2
+        gw_priority: 100
+      ds-prod:
+        mac_address: "02:00:00:00:00:01"
+        ipv4_address: 172.16.0.2
+        gw_priority: 102
+      ds-clone:
+        mac_address: "02:00:00:00:00:01"
+        ipv4_address: 172.17.0.2
+        gw_priority: 101
+      dockside:
+        gw_priority: 1000
+
+volumes:
+  dockside-hostdata:
+
+networks:
+  dockside:
+    external: true
+  ds-priv:
+    external: true
+  ds-prod:
+    external: true
+  ds-clone:
+    external: true
