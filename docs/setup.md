@@ -44,6 +44,8 @@ A team admin is expected to preconfigure the available profiles to meet the need
 
 A profile allows the specification of the available user choices for the following Docker container properties: images, bind-mounts, volume-mounts and tmpfs-mounts, networks, runtimes, launch commands.
 
+> N.B. The available choices when a user launches/creates/edits a devtainer are always subject to the choices allowed that user in their user record. The available operations are always subject to the permissions granted to that user in their user record.
+
 A profile also allow the specification of Dockside _routers_, which dictate how external HTTP(S) requests are mapped to internal HTTP(S) requests to devtainer services launched from the profile, and what access level(s) a user (who may or may not be a Dockside user) must have in order to access the service.
 
 For insight into the profile object structure, examine the example profiles provided withing `config/profiles/`. To modify the available profiles, simply modify or add to the `.json` files within `config/profiles/`.
@@ -57,19 +59,40 @@ The currently-supported root properties within a profile are:
 | description | currently for informational use only, may be displayed within UI at later date | optional | `""` | `"Dockside devtainer with built-in IDE"`
 | active | must be set to `true` or the profile will be ignored | mandatory | `false` | `true` |
 | [routers](#profile-routers) | [array] preconfigured services | optional | `[]` | `[{"name": "dockside", "prefixes": [ "www" ], "domains": [ "*" ], "auth": [ "developer", "owner", "viewer", "user", "public" ], "https": { "protocol": "https", "port": 443 } }]`
-| networks | allowed docker networks | mandatory | N/A | `["bridge"]`
-| runtimes | allowed docker runtimes | optional | `["runc"]` | `["runc", "sysbox-runc", "runcvm"]`
+| networks | allowed docker networks | optional | `["*"]` (allow any networks connected to the Dockside container) | `["bridge"]` or `["*"]`
+| runtimes | allowed docker runtimes | optional | `["*"]` (allow any runtimes available on the host's Docker daemon) | `["runc", "sysbox-runc", "io.containerd.runc.v2", "runcvm"]` or `["*"]`
 | images | allowed docker images (a wildcard may be used to allow the user to specify an arbitrary element of the image string) | mandatory | N/A | `["alpine:latest","i386/alpine:latest"]` |
 | unixusers | array of the unix user account for which to run the IDE | optional | `["dockside"]` | `["john","jim"]`
 | mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{ "tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}], "bind": [{"src": "/source/path", "dst": "/dest/path", "readonly": true}] }`
+| gitURLs | allowed git repository URLs that may be cloned on launch; use `["*"]` to allow any URL | optional | `[]` | `["https://github.com/myorg/*"]` or `["*"]`
+| IDEs | allowed IDE installations for the devtainer; use `["*"]` to allow all IDEs available in the Dockside image (under `/opt/dockside/ide/`) | optional | `["*"]` | `["theia/latest", "openvscode/latest"]`
+| options | dynamic user-input fields displayed in the launch form; each entry has `name`, `label`, `type`, `default`, and `placeholder` sub-fields; values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables or via `entrypoint` or `command` placeholders of form `{option.<NAME>}` | optional | `[]` | `[{"name": "branch", "label": "Branch", "type": "text", "default": "", "placeholder": "e.g. main"}]`
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
 | lxcfs | whether to mount [lxcfs](extensions/lxcfs.md) | optional | as specified in `config.json` | `true` |
 | security | `docker run` security options | optional | as specified in `config.json` | `{ "apparmor": "unconfined", "seccomp": "unconfined" }` |
-| command | [array] command to run on devtainer launch | mandatory if image does not specify a long-running entrypoint or command | `[]` | `["/bin/sh", "-c", "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); sleep infinity"]`
+| command | [array] command to run on devtainer launch | mandatory if image does not specify a long-running entrypoint or command | `[]` | `["/bin/sh", "-c", "[ -x \"$(which sudo)\" ] \|\| (apk update && apk add sudo;); sleep infinity"]`
 | entrypoint | [array] command with which to override image entrypoint | optional | `[]` | `["/my-entrypoint.sh"]` |
-| mountIDE | disable mounting the Dockside IDE volume (strictly for use with images, such as the Dockside image, that embed their own IDE volume) | optional | `false` | `true` |
+| mountIDE | mount the Dockside IDE volume (disable this only for images that either (a) embed their own IDE volume, such as the Dockside image itself, or (b) do not need an IDE or any Dockside configuration) | optional | `true` | `false` |
 | ssh | whether to enable ssh access | optional | as specified in `config.json` | `true` |
+
+#### Autodetection of networks, runtimes and IDEs
+
+Profiles using `["*"]` for `networks`, `runtimes`, or `IDEs` will present only those values actually available on the host at launch time:
+
+- **Networks** are discovered by inspecting the Docker networks currently connected to the Dockside container.
+- **Runtimes** are discovered by querying the host's Docker daemon.
+- **IDEs** are discovered by scanning the `/opt/dockside/ide/` directory for installed IDE versions (e.g. `theia/latest`, `openvscode/latest`).
+
+This means profiles using `["*"]` require no updates when new runtimes, networks, or IDEs become available (subject always to the resources the user is granted access to in `users.json` and `roles.json`).
+
+#### Network name format
+
+Docker network names may contain letters, digits, hyphens, underscores (`_`), and dots (`.`).
+
+#### Git URL format
+
+Values in `gitURLs`, and the `gitURL` field supplied at launch, may optionally end with `.git` (e.g. `https://github.com/org/repo.git` is equivalent to `https://github.com/org/repo`). Both HTTPS (e.g. `https://github.com/newsnowlabs/dockside.git`) and SSH (e.g. `git@github.com:newsnowlabs/dockside.git`) URLs are supported.
 
 ### Profile routers
 
@@ -117,18 +140,24 @@ The **active access mode** per router is stored in `meta.access.{routerName}` on
 
 ### Viewer vs Developer roles on a devtainer
 
-A devtainer can be shared with other users by listing them in `meta.viewers` or `meta.developers`.
+A devtainer can be shared with other users by listing them in the Viewers list or Developers list.
 
-**Named viewers** (`meta.viewers`):
-- Can view and list the devtainer in the Dockside UI
-- Can access services whose active mode is `viewer`, `user`, or `public`
+**Named developers**:
+- Can view the devtainer in the UI (or list the devtainer via the CLI)
+- Can access the IDE and SSH router (subject to the router's active mode being `developer` or `owner`)
+- Can access routers whose active mode is `developer` (Devtainer developers only), `viewer` (Devtainer developers and viewers only), `user` (Dockside users), or `public` (unauthenticated users)
+- Can edit: description, viewers list, developers list, IDE, access modes, and network
+
+**Named viewers**:
+- Can view and list the devtainer 
+- Can access routers whose active mode is `viewer`, `user`, or `public`
 - **Cannot** access the IDE or SSH router — these are always restricted to `owner`/`developer`
 - **Cannot** edit any container properties (description, viewers, developers, access mode, network, IDE)
 
-**Named developers** (`meta.developers`):
-- Can view and list the devtainer
-- Can access the IDE and SSH router (subject to the router's active mode being `developer` or `owner`)
-- Can edit: description, viewers list, developers list, IDE, access modes, and network
+**Other users**:
+- Cannot view or list the devtainer
+- Can access routers whose active mode is `user`, or `public` only
+- **Cannot** access anything else
 
 **Admin users** (role with `viewAllContainers` permission, or the `admin` role):
 - Can see all containers regardless of sharing
@@ -136,7 +165,7 @@ A devtainer can be shared with other users by listing them in `meta.viewers` or 
 
 ### Router visibility in list and get responses
 
-When listing containers (`GET /containers`) or fetching a specific container, Dockside filters each container's `profileObject.routers` to only those routers the requesting user can access at the current `meta.access` setting. For example, a viewer will see an empty routers list for a container whose services are all set to `developer` mode.
+When listing devtainers or fetching details of a specific devtainers, Dockside filters each devtainer's routers to only those the requesting user can access at the current access setting. For example, a viewer will see an empty routers list for a container whose routers are all set to `developer` mode.
 
 ### IDE and SSH routers
 
@@ -155,14 +184,48 @@ A user record specifies:
 - `permissions`: specific [permissions](#permissions) that should be enabled or disabled, in customisation of those conferred from the user's role (object)
 - `resources`: host and Dockside [resources](#resources) to which the user should or should not have access, of the following types:
     - `profiles`: profiles the user is permitted to deploy (object or array)
-    - `networks`: Docker networks the user's devtainers are permitted to join, subject also to the profile (object or array)
+    - `networks`: Docker networks the user's devtainers are permitted to join, subject also to the profile (object or array) and detected networks connected to the Dockside container; defaults to `["*"]`
+    - `runtimes`: Docker runtimes the user is permitted to use using, subject also to the profile (object or array) and detected runtimes available on the Docker daemon; defaults to `["*"]`
+    - `IDEs`: IDE installations the user is permitted to select (e.g. `["theia/latest"]`, `["*"]`); defaults to `["*"]` (all available IDEs) for all users (object or array)
     - `images`: Docker images the user is permitted to launch, subject also to the profile (object or array)
-    - `runtimes`: Docker runtimes the user is permitted to use using, subject also to the profile (object or array)
     - `auth`: the auth/access levels the user is permitted to specify for a devtainer's router, subject also to the devtainer's profile (object or array)
 - `ssh`:
-    - `authorized_keys`: an array of standard ssh authorized keys strings that will be automatically written to devtainers' `~/.ssh/authorized_keys` files for devtainers owned by, or shared with, the user (as 'developer')
+    - `publicKeys`: a map of named ssh public key strings (e.g. `{ "laptop": "ssh-rsa ..." }`) that will be automatically written to devtainers' `~/.ssh/authorized_keys` files for devtainers owned by, or shared with, the user (as 'developer'); individual keys can be added/removed via the CLI with `--set ssh.publicKeys.keyname="ssh-rsa ..."` and `--set ssh.publicKeys.keyname=`
+    - `keypairs`: an object representing named keypair objects; currently only one keypair per user, with the name `*`, is supported; the keypair object must have two properties, named `public` and `private` with appropriate values (e.g. `{"*": {{"public": "ssh-rsa AAAAAskjha... myname@myteam.com", "private": "-----BEGIN OPENSSH PRIVATE KEY-----\nhsgjhga...\n-----END OPENSSH PRIVATE KEY-----\n"}}}`)
+- `gh_token`: an optional GitHub Personal Access Token (string); when set, the token is passed as the `GH_TOKEN` environment variable into every container launched by or shared with the user, enabling the bundled `gh` CLI to authenticate automatically (e.g. for `gh pr checkout`)
 
 You should add one record to `users.json`, and one record to [`passwd`](#passwords), for each registered user in your team.
+
+### Managing users with the CLI
+
+Users can be created and managed using the `dockside` CLI (requires `manageUsers` permission), avoiding manual edits to `users.json` and `passwd`:
+
+```sh
+# List all users
+dockside user list
+
+# Create a user and set their password in one step
+dockside user create alice --email alice@example.com --role developer --user-password s3cret
+
+# Inspect a user record
+dockside user get alice
+
+# Add an SSH public key from file (auto-provisioned into the user's devtainers)
+dockside user edit alice --set ssh.publicKeys.laptop=@~/.ssh/id_ed25519.pub
+
+# Add a keypair for outbound SSH/git operations (e.g. git push to GitHub)
+dockside user edit alice --set ssh.keypairs.*.public=@~/.ssh/id_ed25519.pub
+dockside user edit alice --set ssh.keypairs.*.private=@~/.ssh/id_ed25519
+
+# Set a GitHub Personal Access Token (enables automatic gh CLI authentication)
+dockside user edit alice --gh-token github_pat_xxx
+
+# Grant access to specific profiles
+dockside user edit alice --set resources.profiles='["myprofile","ci"]'
+
+# Remove a user
+dockside user remove alice --force
+```
 
 ### Permissions
 
@@ -194,11 +257,12 @@ In the `permissions` object, properties are permission names and their values ar
 
 Available resource names are:
 
-- `profiles`: choose from available profile filenames
-- `networks`: choose from available Docker networks
-- `images`: choose from available Docker images
-- `runtimes`: choose from available Docker runtimes
-- `auth`: choose from the hardcoded [auth/access levels](#router-auth%2Faccess-levels)
+- `profiles`: specify allowed profile filenames
+- `networks`: specify allowed Docker networks
+- `runtimes`: specify allowed Docker runtimes
+- `IDEs`: specify allowed IDE installations (e.g. `theia/latest`, `openvscode/latest`, or `openvscode/1.109.5`)
+- `images`: specify allowed Docker images
+- `auth`: specify allowed [auth/access levels](#router-auth%2Faccess-levels)
 
 #### Resources syntax
 
@@ -225,6 +289,13 @@ The `passwd` file is a text file (in essentially standard Unix format) containin
 docker exec -it dockside password [--check] <username>
 ```
 
+The CLI can also set or update a password without direct host access:
+
+```sh
+dockside user create alice --user-password s3cret    # set on creation
+dockside user edit   alice --user-password newpass   # update existing user
+```
+
 ### Revoking a user's access to Dockside
 
 > **After deleting a user, or modifying `users.json`, `roles.json` or `passwd` in such a way that a user's access to a running devtainer should be revoked, it is necessary to [restart the Dockside Server](#dockside-server) to ensure any open HTTP(S) or websocket connections made by that user are closed and the user's access completely revoked.**
@@ -234,6 +305,25 @@ docker exec -it dockside password [--check] <username>
 The syntax for `roles.json` mirrors that for `users.json`, except top-level object properties declare arbitrarily-named roles representing useful collections of permissions and resources that may be assigned to multiple users via the user's `role` property.
 
 N.B. The `admin` role is special: a user with the `admin` role is granted all permissions and access to all available resources, unless explicitly denied either in the `admin` role definition, or in the user's record.
+
+### Managing roles with the CLI
+
+```sh
+# List and inspect roles
+dockside role list
+dockside role get developer
+
+# Create a role that allows launching devtainers from any profile
+dockside role create developer \
+    --set permissions.createContainerReservation=1 \
+    --set resources.profiles='["*"]'
+
+# Update a role
+dockside role edit developer --set permissions.stopContainer=1
+
+# Remove a role
+dockside role remove developer --force
+```
 
 ## config.json
 

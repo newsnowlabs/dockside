@@ -1,5 +1,20 @@
 #!/opt/dockside/system/latest/bin/sh
 
+# Purpose:
+# - Called by docker-event-daemon, via `docker exec`, to launch needed portable binary components
+#   e.g. useradd, git, ssh-agent, chosen IDE, in the development container context.
+#
+# Input environment:
+# - IDE_PATH: (awaiting rename)
+#    - references a path to system binaries
+#     /opt/dockside/system/current, /opt/dockside/system/latest or /opt/dockside/system/<version>
+#   - resolves any symlink to an actual directory, so that symlink updates on upgrades remain safe;
+#   - fallback: look for a suitable subdir of /opt/dockside/system
+# - IDE_USER:
+#   - the user account with which to launch non-root-capable components e.g. git, ssh-agent, the IDE
+# - PATH:
+#   - the PATH environment variables, normally determined by docker per the container's image
+
 DOCKSIDE_ROOT="/opt/dockside"
 
 log() {
@@ -20,7 +35,10 @@ debug() {
 }
 
 # Create busybox shortcut for certain commands
-for a in id chown chmod date find grep mkdir mv sed sort tr xargs; do eval "$a() { busybox $a \"\$@\"; }"; done
+for a in id chown chmod date find grep head mkdir mv readlink sed sort tail tr xargs
+do
+  eval "$a() { busybox $a \"\$@\"; }"
+done
 
 # Assumes getent can be found in PATH
 create_user() {
@@ -113,24 +131,18 @@ update_ssh_authorized_keys() {
 create_git_config() {
    local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
 
-   if [ -f "$HOME/.gitconfig" ]; then
-      log "Leaving be existing ~/.gitconfig"
-      return
-   fi
-
    if [ -z "$GIT_COMMITTER_NAME" ] && [ -z "$GIT_COMMITTER_EMAIL" ]; then
       GIT_COMMITTER_NAME=$(echo "$OWNER_DETAILS" | jq -re '.name')
       GIT_COMMITTER_EMAIL=$(echo "$OWNER_DETAILS" | jq -re '.email')
    fi
 
    if [ -n "$GIT_COMMITTER_NAME" ] && [ -n "$GIT_COMMITTER_EMAIL" ]; then
-      log "Creating ~/.gitconfig for $IDE_USER"
-      busybox cat >$HOME/.gitconfig <<_EOE_ && busybox chown $IDE_USER:$IDE_USER $HOME/.gitconfig
-[user]
-name = $GIT_COMMITTER_NAME
-email = $GIT_COMMITTER_EMAIL
-_EOE_
-    fi
+      log "Updating ~/.gitconfig with user.name = $GIT_COMMITTER_NAME"
+      $IDE_PATH/bin/git config -f $HOME/.gitconfig --replace-all user.name "$GIT_COMMITTER_NAME"
+      log "Updating ~/.gitconfig with user.email = $GIT_COMMITTER_EMAIL"
+      $IDE_PATH/bin/git config -f $HOME/.gitconfig --replace-all user.email "$GIT_COMMITTER_EMAIL"
+      busybox chown $IDE_USER:$IDE_USER $HOME/.gitconfig
+   fi
 }
 
 launch_sshd() {
@@ -483,8 +495,25 @@ launch_nonroot() {
 }
 
 launch_theia() {
-   IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/theia/* | tail -n 1)"
-   
+   # Resolve IIDE_PATH:
+   # - use IDE if provided and exists; else
+   # - use the 'current' or 'latest' symlink (if they resolve to a directory), in that order; else
+   # - try and find a suitable subdir
+   if [ -n "$IDE" ] && [ -d "$DOCKSIDE_ROOT/ide/$IDE" ]; then
+      IIDE_PATH="$DOCKSIDE_ROOT/ide/$IDE"
+   elif [ -d "$DOCKSIDE_ROOT/ide/theia/current" ]; then
+      IIDE_PATH="$DOCKSIDE_ROOT/ide/theia/current"
+   elif [ -d "$DOCKSIDE_ROOT/ide/theia/latest" ]; then
+      IIDE_PATH="$DOCKSIDE_ROOT/ide/theia/latest"
+   else
+      # Fallback: look for the alphanumerically-latest subdirectory of /opt/dockside/ide/theia
+      # N.B. Assumes `find`, `sort` and `head` in the PATH
+      IIDE_PATH="$(find $DOCKSIDE_ROOT/ide/theia/  -mindepth 1 -maxdepth 1 -type d | sort -r | head -1)"
+   fi
+
+   # Remove dependency on symlink going forwards
+   IIDE_PATH="$(readlink -f "$IIDE_PATH")"
+
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    while true
    do
@@ -504,7 +533,24 @@ launch_theia() {
 }
 
 launch_openvscode() {
-   IIDE_PATH="$(ls -d $DOCKSIDE_ROOT/ide/openvscode/* | tail -n 1)"
+   # Resolve IIDE_PATH:
+   # - use IDE if provided and exists; else
+   # - use the 'current' or 'latest' symlink if they resolve to a directory), in that order; else
+   # - try and find a suitable subdir.
+   if [ -n "$IDE" ] && [ -d "$DOCKSIDE_ROOT/ide/$IDE" ]; then
+      IIDE_PATH="$DOCKSIDE_ROOT/ide/$IDE"
+   elif [ -d "$DOCKSIDE_ROOT/ide/openvscode/current" ]; then
+      IIDE_PATH="$DOCKSIDE_ROOT/ide/openvscode/current"
+   elif [ -d "$DOCKSIDE_ROOT/ide/openvscode/latest" ]; then
+      IIDE_PATH="$DOCKSIDE_ROOT/ide/openvscode/latest"
+   else
+      # Fallback: look for the alphanumerically-latest subdirectory of /opt/dockside/ide/openvscode
+      # N.B. Assumes `find`, `sort` and `head` in the PATH
+      IIDE_PATH="$(find $DOCKSIDE_ROOT/ide/openvscode/  -mindepth 1 -maxdepth 1 -type d | sort -r | head -1)"
+   fi
+
+   # Remove dependency on symlink going forwards
+   IIDE_PATH="$(readlink -f "$IIDE_PATH")"
 
    # WARNING: DON'T BACKGROUND THESE WHILE LOOPS, OR SYSBOX RUNTIME WILL FAIL TO RUN CORRECTLY.
    while true
@@ -571,18 +617,33 @@ launch_ide() {
 }
 
 init() {
-   # Use IDE_PATH if specified and directory exists; otherwise look for the
-   # alphanumerically latest subsubdirectory of /opt/dockside/ide.
-   #
-   # N.B. Assume we can find ls and tail in the PATH
-   if [ -z "$IDE_PATH" ] || ! [ -d "$IDE_PATH" ]; then
-      IDE_PATH="$(ls -d $DOCKSIDE_ROOT/system/* | tail -n 1)"
+   # Use IDE_PATH, if provided and it exists; if not, use the 'current' or 'latest' symlink
+   # Resolve IDE_PATH:
+   # - use IDE_PATH if provided and exists; else
+   # - use the 'current' or 'latest' symlink (if they resolve to a directory), in that order; else
+   # - try and find a suitable subdir.
+   if [ -z "$IDE_PATH" ] || [ -d "$IDE_PATH" ]; then
+      if [ -d "$DOCKSIDE_ROOT/system/current" ]; then
+        IDE_PATH="$DOCKSIDE_ROOT/system/current"
+      elif [ -d "$DOCKSIDE_ROOT/system/latest" ]; then
+        IDE_PATH="$DOCKSIDE_ROOT/system/latest"
+      else
+         # Fallback: look for the alphanumerically-latest subdirectory of /opt/dockside/system
+         # N.B. Assumes `find`, `sort` and `head` in the original non-Dockside PATH
+         IDE_PATH="$(find $DOCKSIDE_ROOT/system/ -mindepth 1 -maxdepth 1 -type d | sort -r | head -1)"
+      fi
    fi
 
-   [ -n "$IDE_USER" ] || IDE_USER="root"
-
+   # Save PATH
    export _PATH="$PATH"
-   PATH="$IDE_PATH/bin:$PATH"
+   PATH="$IDE_PATH/bin:$_PATH"
+
+   # Remove dependency on symlink going forwards and reset PATH
+   IDE_PATH="$(readlink -f "$IDE_PATH")"
+   PATH="$IDE_PATH/bin:$_PATH"
+
+   # Set default IDE_USER
+   [ -n "$IDE_USER" ] || IDE_USER="root"
 
    LOG_PATH=/tmp/dockside
    LOG=$LOG_PATH/launch-$(id -u).log
@@ -593,13 +654,16 @@ init() {
    exec 1>>$LOG
    exec 2>>$LOG
 
-   if [ -z "$DEBUG" ]; then
-      log "Executing '$*' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH:"
-   else
-      log "Executing '$*' with IDE_USER=$IDE_USER, IDE_PATH=$IDE_PATH and environment:"
+   log "Executing '$*' with:"
+   log "- PATH=$PATH"
+   log "- IDE_USER=$IDE_USER"
+   log "- IDE_PATH=$IDE_PATH"
+   if [ -n "$DEBUG" ]; then
+      log "- Environment:"
       busybox env | busybox sed 's/^/=> /'}
    fi
 }
 
 [ "$1" = "nop" ] && shift || init "$@"
 eval "$@"
+

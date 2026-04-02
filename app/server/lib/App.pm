@@ -419,6 +419,77 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       ######################################
+      # User management
+      #
+
+      if( $route =~ m!^/users/?$! ) {
+         my $args = split_args($querystring);
+         return json($r, 200, { 'status' => '200', 'data' => $User->listUsers($args) });
+      }
+
+      if( $route =~ m!^/users/create/?$! ) {
+         my $args = split_args($querystring);
+         my $record = $User->createUser($args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/users/([^/]+)/?$! && $r->request_method eq 'GET' ) {
+         my $username = $1;
+         my $args = split_args($querystring);
+         my $record = $User->getUser($username, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/users/([^/]+)/update/?$! ) {
+         my $username = $1;
+         my $args = split_args($querystring);
+         my $record = $User->updateUser($username, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/users/([^/]+)/remove/?$! ) {
+         my $username = $1;
+         my $args = split_args($querystring);
+         my $result = $User->removeUser($username, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
+      ######################################
+      # Role management
+      #
+
+      if( $route =~ m!^/roles/?$! ) {
+         return json($r, 200, { 'status' => '200', 'data' => $User->listRoles() });
+      }
+
+      if( $route =~ m!^/roles/create/?$! ) {
+         my $args = split_args($querystring);
+         my $name = $args->{'name'}
+            or die Exception->new( 'msg' => "name is required" );
+         my $record = $User->createRole($name, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/roles/([^/]+)/?$! && $r->request_method eq 'GET' ) {
+         my $name = $1;
+         my $record = $User->getRole($name);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/roles/([^/]+)/update/?$! ) {
+         my $name = $1;
+         my $args = split_args($querystring);
+         my $record = $User->updateRole($name, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/roles/([^/]+)/remove/?$! ) {
+         my $name = $1;
+         my $result = $User->removeRole($name);
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
+      ######################################
       # Load Reservations and container data
       #
       if( $route =~ m!^/getAuthCookies/?$! ) {

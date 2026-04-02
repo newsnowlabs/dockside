@@ -29,3 +29,6 @@ __pycache__/
 # Project-local generated/config files
 depot.json
 app/server/nginx/html/docs
+
+# Claude *.local.* files
+.claude/*.local.*

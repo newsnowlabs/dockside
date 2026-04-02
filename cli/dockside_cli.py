@@ -15,6 +15,7 @@ import ssl
 import sys
 import tempfile
 import time
+import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -355,7 +356,57 @@ class _HostOverrideHandler(urllib.request.BaseHandler):
     http_request = https_request
 
 
-def _build_opener(cookie_file, verify_ssl, host_header=None):
+class _ConnectToHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that TCP-connects to a forced address while preserving
+    the original hostname for TLS SNI (and therefore for the Host header)."""
+    _force_host = None   # injected by _ConnectToHandler
+    _force_port = None   # injected by _ConnectToHandler (None → use URL port)
+
+    def connect(self):
+        port = self._force_port if self._force_port is not None else (self.port or 443)
+        self.sock = self._create_connection(
+            (self._force_host, port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+            server_hostname = self._tunnel_host
+        else:
+            server_hostname = self.host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class _ConnectToHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler that TCP-connects to a forced address while preserving
+    the original hostname for TLS SNI and the HTTP Host header."""
+
+    def __init__(self, connect_to, context):
+        super().__init__(context=context)
+        if ':' in connect_to:
+            host, _, port = connect_to.rpartition(':')
+            self._force_host = host
+            self._force_port = int(port)
+        else:
+            self._force_host = connect_to
+            self._force_port = None
+
+    def https_open(self, req):
+        force_host = self._force_host
+        force_port = self._force_port
+        ctx        = self._context
+
+        def conn_factory(host, **kwargs):
+            kwargs['context'] = ctx
+            conn = _ConnectToHTTPSConnection(host, **kwargs)
+            conn._force_host = force_host
+            conn._force_port = force_port
+            return conn
+
+        return self.do_open(conn_factory, req)
+
+
+def _build_opener(cookie_file, verify_ssl, host_header=None, connect_to=None):
     """Create a urllib opener with cookie jar and SSL settings."""
     jar = http.cookiejar.MozillaCookieJar(cookie_file)
     # Only load cookies from a real file (not a symlink)
@@ -370,9 +421,12 @@ def _build_opener(cookie_file, verify_ssl, host_header=None):
         ctx.verify_mode = ssl.CERT_NONE
     handlers = [
         urllib.request.HTTPCookieProcessor(jar),
-        urllib.request.HTTPSHandler(context=ctx),
         urllib.request.HTTPRedirectHandler(),
     ]
+    if connect_to:
+        handlers.append(_ConnectToHandler(connect_to, ctx))
+    else:
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
     if host_header:
         handlers.append(_HostOverrideHandler(host_header))
     opener = urllib.request.build_opener(*handlers)
@@ -435,7 +489,7 @@ def _inject_cookie(jar, server_url, name, value):
 # ── Authentication ────────────────────────────────────────────────────────────
 
 def login(server, username, password, verify_ssl=True,
-          extra_cookies=None, cookie_file=None, host_header=None):
+          extra_cookies=None, cookie_file=None, host_header=None, connect_to=None):
     """
     POST credentials to Dockside, return the authenticated opener.
     extra_cookies: dict of {name: value} injected before the POST.
@@ -443,7 +497,8 @@ def login(server, username, password, verify_ssl=True,
     """
     if cookie_file is None:
         cookie_file = os.path.join(CONFIG_DIR, 'cookies.txt')
-    opener = _build_opener(cookie_file, verify_ssl, host_header=host_header)
+    opener = _build_opener(cookie_file, verify_ssl,
+                           host_header=host_header, connect_to=connect_to)
     if extra_cookies:
         for cname, cval in extra_cookies.items():
             _inject_cookie(opener._jar, server, cname, cval)
@@ -468,7 +523,7 @@ def login(server, username, password, verify_ssl=True,
 
 def get_authenticated_opener(server, server_entry, username, password,
                               verify_ssl=True, transient=False,
-                              extra_cookies=None, host_header=None):
+                              extra_cookies=None, host_header=None, connect_to=None):
     """
     Return an authenticated opener.
 
@@ -476,10 +531,11 @@ def get_authenticated_opener(server, server_entry, username, password,
     persists the session.  Otherwise loads stored cookies for this server.
     """
     cookie_file = _cookie_file_for(server_entry)
+    connect_to = connect_to or server_entry.get('connect_to')
     if username and password:
         opener = login(server, username, password, verify_ssl=verify_ssl,
                        extra_cookies=extra_cookies, cookie_file=cookie_file,
-                       host_header=host_header)
+                       host_header=host_header, connect_to=connect_to)
         if not transient:
             _ensure_config_dir()
             _save_cookie_jar(opener._jar, cookie_file)
@@ -491,7 +547,8 @@ def get_authenticated_opener(server, server_entry, username, password,
             f"Not logged in to {ref!r}. Run 'dockside login' first, "
             "or supply --username / --password (or DOCKSIDE_USER / DOCKSIDE_PASSWORD)."
         )
-    return _build_opener(cookie_file, verify_ssl, host_header=host_header)
+    return _build_opener(cookie_file, verify_ssl,
+                         host_header=host_header, connect_to=connect_to)
 
 
 # ── Container resolution ──────────────────────────────────────────────────────
@@ -524,16 +581,19 @@ def resolve(containers, identifier):
 
 # ── API calls ─────────────────────────────────────────────────────────────────
 
-def _encode_params(**kwargs):
+def _encode_params(p):
     """
     Build a URL query string suitable for the Dockside API.
 
+    Keys may contain dots (dotted-path notation for nested fields).
     Booleans → 0/1; dicts/lists → compact JSON strings; rest → str.
+    None values are skipped; empty strings are included as-is (signals
+    delete to the server).
     Uses quote() (not quote_plus()) so spaces become %20, not +.
     Perl's uri_unescape() only decodes %XX sequences, not + signs.
     """
     params = {}
-    for k, v in kwargs.items():
+    for k, v in p.items():
         if v is None:
             continue
         if isinstance(v, bool):
@@ -546,13 +606,13 @@ def _encode_params(**kwargs):
 
 
 def api_create(opener, server, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     data = _do_get(opener, server.rstrip('/') + '/containers/create?' + qs, timeout=30)
     return data.get('reservation')
 
 
 def api_update(opener, server, res_id, fields):
-    qs = _encode_params(**fields)
+    qs = _encode_params(fields)
     url = (server.rstrip('/') +
            f'/containers/{urllib.parse.quote(res_id)}/update?' + qs)
     data = _do_get(opener, url, timeout=30)
@@ -565,6 +625,70 @@ def api_control(opener, server, res_id, cmd):
            f'/containers/{urllib.parse.quote(res_id)}/{urllib.parse.quote(cmd)}')
     data = _do_get(opener, url, timeout=30)
     return data.get('data') or []
+
+
+def api_user_list(opener, server, sensitive=False):
+    qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
+    data = _do_get(opener, server.rstrip('/') + '/users' + qs)
+    return data.get('data') or []
+
+
+def api_user_get(opener, server, username, sensitive=False):
+    qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
+    url = server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='') + qs
+    data = _do_get(opener, url)
+    return data.get('data')
+
+
+def api_user_create(opener, server, fields):
+    qs = _encode_params(fields)
+    data = _do_get(opener, server.rstrip('/') + '/users/create?' + qs, timeout=30)
+    return data.get('data')
+
+
+def api_user_update(opener, server, username, fields):
+    qs = _encode_params(fields)
+    url = (server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='')
+           + '/update?' + qs)
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
+
+
+def api_user_remove(opener, server, username):
+    url = (server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='') + '/remove')
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
+
+
+def api_role_list(opener, server):
+    data = _do_get(opener, server.rstrip('/') + '/roles')
+    return data.get('data') or []
+
+
+def api_role_get(opener, server, name):
+    url = server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='')
+    data = _do_get(opener, url)
+    return data.get('data')
+
+
+def api_role_create(opener, server, fields):
+    qs = _encode_params(fields)
+    data = _do_get(opener, server.rstrip('/') + '/roles/create?' + qs, timeout=30)
+    return data.get('data')
+
+
+def api_role_update(opener, server, name, fields):
+    qs = _encode_params(fields)
+    url = (server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='')
+           + '/update?' + qs)
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
+
+
+def api_role_remove(opener, server, name):
+    url = server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='') + '/remove'
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
 
 
 def api_logs(opener, server, res_id):
@@ -839,6 +963,12 @@ def _add_global_flags(p):
         '--host-header', dest='host_header', metavar='HOST',
         help='Override HTTP Host header sent with every request  [env: DOCKSIDE_HOST_HEADER]',
     )
+    p.add_argument(
+        '--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
+        help='Override TCP connection target (host/IP, optional :port). '
+             'The server URL hostname is still used for TLS SNI and the Host header.  '
+             '[env: DOCKSIDE_CONNECT_TO]',
+    )
 
 
 def _add_wait_flags(p, verb='operation to complete'):
@@ -873,6 +1003,58 @@ def _add_create_fields(p):
                    help='Read all creation parameters from a JSON file '
                         '(use - for stdin); command-line flags take precedence')
     _add_shared_fields(p)
+
+
+def _add_user_fields(p, create=False):
+    """Fields for user create/edit."""
+    p.add_argument('--email', metavar='EMAIL', help='Email address')
+    p.add_argument('--role', metavar='ROLE', help='Role name (e.g. admin, developer)')
+    p.add_argument('--name', metavar='DISPLAY_NAME', help='Display name')
+    p.add_argument('--user-password', dest='user_password', metavar='PASS',
+                   help="Set the user's login password (stored hashed in passwd file)")
+    p.add_argument('--gh-token', dest='gh_token', metavar='TOKEN',
+                   help='GitHub Personal Access Token passed as GH_TOKEN to containers')
+    p.add_argument('--permissions', metavar='JSON',
+                   help="Full permissions object as JSON, "
+                        "e.g. '{\"createContainerReservation\":1}'")
+    p.add_argument('--resources', metavar='JSON',
+                   help="Full resources object as JSON, "
+                        "e.g. '{\"profiles\":[\"*\"]}'")
+    p.add_argument('--ssh', metavar='JSON',
+                   help='Full ssh object as JSON')
+    p.add_argument('--set', metavar='KEY=VALUE', action='append',
+                   help='Set a nested property via dot-notation key (repeatable), e.g. '
+                        "--set resources.profiles='[\"*\"]' or "
+                        '--set permissions.createContainerReservation=1 ; '
+                        'use --set KEY=@file to read the value from a file '
+                        '(.json files are parsed as JSON, others as a string)')
+    p.add_argument('--unset', metavar='KEY', action='append',
+                   help='Delete a nested property via dot-notation key (repeatable), '
+                        'e.g. --unset ssh.xyzzy')
+    p.add_argument('--from-json', metavar='FILE|-',
+                   help='Read base record from a JSON file (use - for stdin); '
+                        'other flags take precedence')
+
+
+def _add_role_fields(p):
+    """Fields for role create/edit."""
+    p.add_argument('--permissions', metavar='JSON',
+                   help="Full permissions object as JSON, "
+                        "e.g. '{\"createContainerReservation\":1}'")
+    p.add_argument('--resources', metavar='JSON',
+                   help="Full resources object as JSON, "
+                        "e.g. '{\"networks\":{\"*\":1}}'")
+    p.add_argument('--set', metavar='KEY=VALUE', action='append',
+                   help='Set a nested property via dot-notation key (repeatable), e.g. '
+                        '--set permissions.createContainerReservation=1 ; '
+                        'use --set KEY=@file to read the value from a file '
+                        '(.json files are parsed as JSON, others as a string)')
+    p.add_argument('--unset', metavar='KEY', action='append',
+                   help='Delete a nested property via dot-notation key (repeatable), '
+                        'e.g. --unset permissions.createContainerReservation')
+    p.add_argument('--from-json', metavar='FILE|-',
+                   help='Read base record from a JSON file (use - for stdin); '
+                        'other flags take precedence')
 
 
 def _add_shared_fields(p):
@@ -951,12 +1133,15 @@ def _client(args):
     verify = not getattr(args, 'no_verify', False)
     host_header = (getattr(args, 'host_header', None)
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
+    connect_to = (getattr(args, 'connect_to', None)
+                  or os.environ.get('DOCKSIDE_CONNECT_TO'))
     try:
         opener = get_authenticated_opener(
             server_url, server_entry, username, password,
             verify_ssl=verify,
             transient=(username is not None),
             host_header=host_header,
+            connect_to=connect_to,
         )
     except APIError as e:
         die(str(e))
@@ -990,16 +1175,23 @@ def _parse_extra_cookies(cookie_args):
 def cmd_login(args):
     cfg = load_config()
 
+    current_entry = _current_server(cfg)
     server = (getattr(args, 'server', None)
               or os.environ.get('DOCKSIDE_SERVER')
+              or (current_entry or {}).get('url', '')
               or (cfg.get('servers') or [{}])[0].get('url', '')
               or '')
     if not server:
         server = input('Server URL: ').strip()
     server = _normalise_server_url(server)
+    # Re-resolve current_entry in case server was overridden or typed
+    if not current_entry or current_entry.get('url') != server:
+        current_entry = _find_server(cfg, server)
 
-    # Nickname: from flag, or prompt interactively
-    nickname = getattr(args, 'nickname', None) or ''
+    # Nickname: from flag, then stored config entry, then prompt
+    nickname = (getattr(args, 'nickname', None) or '').strip()
+    if not nickname and current_entry:
+        nickname = (current_entry.get('nickname') or '').strip()
     if not nickname and sys.stdin.isatty():
         parsed   = urllib.parse.urlparse(server)
         default  = parsed.hostname or server
@@ -1007,6 +1199,9 @@ def cmd_login(args):
         nickname = prompted or default
     if nickname:
         nickname = nickname.strip()
+
+    display_ref = nickname if nickname else urllib.parse.urlparse(server).hostname or server
+    print(f'Logging in to [{display_ref}]')
 
     username = (getattr(args, 'username', None)
                 or os.environ.get('DOCKSIDE_USER')
@@ -1037,12 +1232,17 @@ def cmd_login(args):
 
     host_header = (getattr(args, 'host_header', None)
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
+    connect_to = (getattr(args, 'connect_to', None)
+                  or os.environ.get('DOCKSIDE_CONNECT_TO')
+                  or (current_entry or {}).get('connect_to')
+                  or None)
     try:
         opener = login(server, username, password,
                        verify_ssl=not getattr(args, 'no_verify', False),
                        extra_cookies=extra_cookies or None,
                        cookie_file=cookie_file,
-                       host_header=host_header)
+                       host_header=host_header,
+                       connect_to=connect_to)
     except APIError as e:
         die(str(e))
 
@@ -1050,7 +1250,8 @@ def cmd_login(args):
     _save_cookie_jar(opener._jar, cookie_file)
 
     _upsert_server(cfg, server, nickname=nickname or None,
-                   cookie_file=cookie_file_override)
+                   cookie_file=cookie_file_override,
+                   connect_to=connect_to)
     cfg['current'] = nickname if nickname else server
     out_fmt = getattr(args, 'output', None)
     if out_fmt:
@@ -1249,6 +1450,117 @@ def _collect_edit_fields(args):
     return fields
 
 
+def _parse_set_args(set_args):
+    """
+    Parse --set KEY=VALUE args into a flat dict.
+
+    Keys use dot notation and are passed as-is to the server, which handles
+    dotted-path merging in _apply_args_to_record.
+    VALUE is JSON-decoded when possible; otherwise treated as a plain string.
+    An empty VALUE (--set KEY=) sets the key to an empty string.
+
+    If VALUE starts with '@', the remainder is treated as a file path:
+    .json files are parsed as JSON; all other files are read as a string.
+    """
+    result = {}
+    for item in (set_args or []):
+        if '=' not in item:
+            die(f'--set must be in KEY=VALUE format, got: {item!r}')
+        key, _, raw_val = item.partition('=')
+        key = key.strip()
+        if not key:
+            die(f'--set key is empty in: {item!r}')
+        if raw_val.startswith('@'):
+            path = raw_val[1:]
+            try:
+                with open(path, 'r') as fh:
+                    content = fh.read()
+            except OSError as e:
+                die(f'--set {key}: cannot read file {path!r}: {e}')
+            if path.endswith('.json'):
+                try:
+                    result[key] = json.loads(content)
+                except (json.JSONDecodeError, ValueError) as e:
+                    die(f'--set {key}: {path!r} is not valid JSON: {e}')
+            else:
+                result[key] = content
+        elif raw_val == '':
+            result[key] = ''
+        else:
+            try:
+                result[key] = json.loads(raw_val)
+            except (json.JSONDecodeError, ValueError):
+                result[key] = raw_val
+    return result
+
+
+def _collect_user_fields(args, create=False):
+    """Build the fields dict for a user create/edit API call."""
+    fields = {}
+    from_json = getattr(args, 'from_json', None)
+    if from_json:
+        fields = _load_json_input(from_json)
+
+    def _set(k, attr):
+        v = getattr(args, attr, None)
+        if v is not None:
+            fields[k] = v
+
+    _set('email',    'email')
+    _set('role',     'role')
+    _set('name',     'name')
+    _set('password', 'user_password')
+    _set('gh_token', 'gh_token')
+
+    for flag in ('permissions', 'resources', 'ssh'):
+        raw = getattr(args, flag, None)
+        if raw is not None:
+            try:
+                fields[flag] = json.loads(raw)
+            except (json.JSONDecodeError, ValueError) as e:
+                die(f'--{flag} is not valid JSON: {e}')
+
+    fields.update(_parse_set_args(getattr(args, 'set', None) or []))
+
+    unset = getattr(args, 'unset', None) or []
+    if unset:
+        fields['_unset'] = unset
+
+    if getattr(args, 'sensitive', False):
+        fields['sensitive'] = 1
+
+    return fields
+
+
+def _collect_role_fields(args, create=False):
+    """Build the fields dict for a role create/edit API call."""
+    fields = {}
+    from_json = getattr(args, 'from_json', None)
+    if from_json:
+        fields = _load_json_input(from_json)
+
+    if create:
+        name = getattr(args, 'role_name', None)
+        if name:
+            fields['name'] = name
+
+    for flag in ('permissions', 'resources'):
+        raw = getattr(args, flag, None)
+        if raw is not None:
+            try:
+                fields[flag] = json.loads(raw)
+            except (json.JSONDecodeError, ValueError) as e:
+                die(f'--{flag} is not valid JSON: {e}')
+
+    fields.update(_parse_set_args(getattr(args, 'set', None) or []))
+
+    unset = getattr(args, 'unset', None) or []
+    if unset:
+        fields['_unset'] = unset
+
+    return fields
+
+
 def cmd_create(args):
     opener, server = _client(args)
     fields = _collect_create_fields(args)
@@ -1434,6 +1746,173 @@ def cmd_logs(args):
     sys.stdout.write(logs)
 
 
+# ── User command implementations ──────────────────────────────────────────────
+
+def cmd_user_list(args):
+    opener, server = _client(args)
+    try:
+        users = api_user_list(opener, server,
+                              sensitive=getattr(args, 'sensitive', False))
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(users, args._fmt)
+        return
+    if not users:
+        print('No users found.')
+        return
+    for u in users:
+        uname = u.get('username', '')
+        role  = u.get('role', '')
+        name  = u.get('name', '') or ''
+        email = u.get('email', '') or ''
+        print(f'{uname:<20}  role={role:<16}  name={name!r:<24}  email={email}')
+
+
+def cmd_user_get(args):
+    opener, server = _client(args)
+    try:
+        record = api_user_get(opener, server, args.username,
+                              sensitive=getattr(args, 'sensitive', False))
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_user_create(args):
+    opener, server = _client(args)
+    fields = _collect_user_fields(args, create=True)
+    fields['username'] = args.username
+    try:
+        record = api_user_create(opener, server, fields)
+    except APIError as e:
+        die(str(e))
+    uname = (record or {}).get('username') or fields.get('username')
+    print(f'User created: {uname!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_user_edit(args):
+    opener, server = _client(args)
+    fields = _collect_user_fields(args, create=False)
+    if not fields:
+        die('Nothing to update – specify at least one flag or --set KEY=VALUE')
+    try:
+        record = api_user_update(opener, server, args.username, fields)
+    except APIError as e:
+        die(str(e))
+    print(f'User updated: {args.username!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_user_remove(args):
+    opener, server = _client(args)
+    if not getattr(args, 'force', False):
+        try:
+            confirm = input(f'Remove user {args.username!r}? [y/N] ').strip().lower()
+        except EOFError:
+            confirm = ''
+        if confirm not in ('y', 'yes'):
+            print('Aborted.')
+            return
+    try:
+        api_user_remove(opener, server, args.username)
+    except APIError as e:
+        die(str(e))
+    print(f'User {args.username!r} removed.')
+
+
+# ── Role command implementations ──────────────────────────────────────────────
+
+def cmd_role_list(args):
+    opener, server = _client(args)
+    try:
+        roles = api_role_list(opener, server)
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(roles, args._fmt)
+        return
+    if not roles:
+        print('No roles found.')
+        return
+    for r in roles:
+        name  = r.get('name', '')
+        perms = ', '.join(
+            k for k, v in (r.get('permissions') or {}).items() if v
+        ) or '(none)'
+        print(f'{name:<20}  permissions: {perms}')
+
+
+def cmd_role_get(args):
+    opener, server = _client(args)
+    try:
+        record = api_role_get(opener, server, args.role_name)
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_role_create(args):
+    opener, server = _client(args)
+    fields = _collect_role_fields(args, create=True)
+    fields['name'] = args.role_name
+    try:
+        record = api_role_create(opener, server, fields)
+    except APIError as e:
+        die(str(e))
+    print(f'Role created: {args.role_name!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_role_edit(args):
+    opener, server = _client(args)
+    fields = _collect_role_fields(args, create=False)
+    if not fields:
+        die('Nothing to update – specify at least one flag or --set KEY=VALUE')
+    try:
+        record = api_role_update(opener, server, args.role_name, fields)
+    except APIError as e:
+        die(str(e))
+    print(f'Role updated: {args.role_name!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_role_remove(args):
+    opener, server = _client(args)
+    if not getattr(args, 'force', False):
+        try:
+            confirm = input(f'Remove role {args.role_name!r}? [y/N] ').strip().lower()
+        except EOFError:
+            confirm = ''
+        if confirm not in ('y', 'yes'):
+            print('Aborted.')
+            return
+    try:
+        api_role_remove(opener, server, args.role_name)
+    except APIError as e:
+        die(str(e))
+    print(f'Role {args.role_name!r} removed.')
+
+
 # ── Argument parser ───────────────────────────────────────────────────────────
 
 EPILOG = """\
@@ -1518,6 +1997,12 @@ def build_parser():
                     help='Default output format to store in config for this server')
     sp.add_argument('--no-verify', action='store_true',
                     help='Skip SSL certificate verification')
+    sp.add_argument('--host-header', dest='host_header', metavar='HOST',
+                    help='Override HTTP Host header sent with every request  '
+                         '[env: DOCKSIDE_HOST_HEADER]')
+    sp.add_argument('--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
+                    help='Override TCP connection target while keeping URL hostname for '
+                         'TLS SNI and the Host header  [env: DOCKSIDE_CONNECT_TO]')
     sp.set_defaults(func=cmd_login)
 
     # ── logout ─────────────────────────────────────────────────────────────────
@@ -1627,6 +2112,117 @@ def build_parser():
                     help='Output logs without stripping ANSI escape sequences '
                          'and control characters (use only in trusted contexts)')
     sp.set_defaults(func=cmd_logs)
+
+    # ── user ───────────────────────────────────────────────────────────────────
+    user_p = sub.add_parser('user', help='Manage Dockside users (requires manageUsers permission)')
+    user_sub = user_p.add_subparsers(dest='user_command', metavar='SUBCOMMAND')
+    user_sub.required = True
+
+    sp = user_sub.add_parser('list', aliases=['ls'], help='List all users')
+    _add_global_flags(sp)
+    sp.add_argument('--sensitive', action='store_true',
+                    help='Include ssh private keys and gh_token in output')
+    sp.set_defaults(func=cmd_user_list)
+
+    sp = user_sub.add_parser('get', help='Show details of a specific user')
+    _add_global_flags(sp)
+    sp.add_argument('username', metavar='USERNAME')
+    sp.add_argument('--sensitive', action='store_true',
+                    help='Include ssh private keys and gh_token in output')
+    sp.set_defaults(func=cmd_user_get)
+
+    sp = user_sub.add_parser(
+        'create',
+        help='Create a new user',
+        description=(
+            'Create a new Dockside user.\n\n'
+            'Simple fields may be given as individual flags.  For nested\n'
+            'properties use --set KEY=VALUE with dot-notation, e.g.:\n'
+            "  --set resources.profiles='[\"*\"]'\n"
+            '  --set permissions.createContainerReservation=1\n\n'
+            'A complete record may also be supplied via --from-json.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('username', metavar='USERNAME', help='New username (must be unique)')
+    _add_user_fields(sp, create=True)
+    sp.set_defaults(func=cmd_user_create)
+
+    sp = user_sub.add_parser(
+        'edit',
+        help='Edit an existing user',
+        description=(
+            'Edit a Dockside user record.\n\n'
+            'Simple fields may be given as individual flags.  For nested\n'
+            'properties use --set KEY=VALUE with dot-notation.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('username', metavar='USERNAME')
+    _add_user_fields(sp, create=False)
+    sp.add_argument('--sensitive', action='store_true',
+                    help='Include ssh private keys and gh_token in output')
+    sp.set_defaults(func=cmd_user_edit)
+
+    sp = user_sub.add_parser('remove', aliases=['rm', 'delete'], help='Remove a user')
+    _add_global_flags(sp)
+    sp.add_argument('username', metavar='USERNAME')
+    sp.add_argument('--force', '-f', action='store_true',
+                    help='Skip confirmation prompt')
+    sp.set_defaults(func=cmd_user_remove)
+
+    # ── role ───────────────────────────────────────────────────────────────────
+    role_p = sub.add_parser('role', help='Manage Dockside roles (requires manageUsers permission)')
+    role_sub = role_p.add_subparsers(dest='role_command', metavar='SUBCOMMAND')
+    role_sub.required = True
+
+    sp = role_sub.add_parser('list', aliases=['ls'], help='List all roles')
+    _add_global_flags(sp)
+    sp.set_defaults(func=cmd_role_list)
+
+    sp = role_sub.add_parser('get', help='Show details of a specific role')
+    _add_global_flags(sp)
+    sp.add_argument('role_name', metavar='ROLE')
+    sp.set_defaults(func=cmd_role_get)
+
+    sp = role_sub.add_parser(
+        'create',
+        help='Create a new role',
+        description=(
+            'Create a new Dockside role.\n\n'
+            'Use --set KEY=VALUE for nested properties, e.g.:\n'
+            '  --set permissions.createContainerReservation=1\n'
+            "  --set resources.networks='{\"*\":1}'"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('role_name', metavar='ROLE', help='Role name')
+    _add_role_fields(sp)
+    sp.set_defaults(func=cmd_role_create)
+
+    sp = role_sub.add_parser(
+        'edit',
+        help='Edit an existing role',
+        description=(
+            'Edit a Dockside role.\n\n'
+            'Use --set KEY=VALUE for nested properties.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('role_name', metavar='ROLE', help='Role name')
+    _add_role_fields(sp)
+    sp.set_defaults(func=cmd_role_edit)
+
+    sp = role_sub.add_parser('remove', aliases=['rm', 'delete'], help='Remove a role')
+    _add_global_flags(sp)
+    sp.add_argument('role_name', metavar='ROLE', help='Role name')
+    sp.add_argument('--force', '-f', action='store_true',
+                    help='Skip confirmation prompt')
+    sp.set_defaults(func=cmd_role_remove)
 
     return p
 

@@ -2,42 +2,80 @@
     <img alt="//Dockside" src="https://user-images.githubusercontent.com/354555/145203965-b573f43b-757a-4471-a39c-d2e53b1acb41.png" width="75%"/>
 </p>
 
+<p align="center">
+  <a href="https://github.com/newsnowlabs/dockside"><img alt="GitHub stars" src="https://img.shields.io/github/stars/newsnowlabs/dockside?style=flat-square&logo=github"></a>
+  <a href="https://hub.docker.com/r/newsnowlabs/dockside"><img alt="Docker Pulls" src="https://img.shields.io/docker/pulls/newsnowlabs/dockside?style=flat-square&logo=docker"></a>
+  <a href="https://github.com/newsnowlabs/dockside/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/licence-Apache%202.0-blue?style=flat-square"></a>
+  <img alt="AI-ready" src="https://img.shields.io/badge/AI--ready-Claude%20%7C%20Codex%20%7C%20Copilot-8A2BE2?style=flat-square">
+</p>
+
 # Introduction
 
-Dockside is a tool for provisioning lightweight access-controlled IDEs, staging environments and sandboxes - aka _devtainers_ - on local machine, self-hosted on-premises on bare metal or VM, or in the cloud.
+Dockside is a self-hosted platform for teams who want a devcontainer for every branch — isolated, browser-accessible, HTTPS-secured, and ready in seconds, on your own infrastructure.
 
-By provisioning a devtainer for every fork and branch, Dockside allows collaborative software and product development teams to take lean and iterative development and testing to a highly parallelised extreme.
+Each devcontainer (or _devtainer_, as we call them) is automatically provisioned with a browser IDE, SSH access, and a dedicated HTTPS reverse proxy with per-service subdomains. No per-project configuration required. Spin one up per branch, per task, per developer — or per AI agent session.
+
+> **Note on terminology:** Dockside's _devtainers_ are development containers in the general sense. They predate and differ from the [VS Code devcontainer spec](https://containers.dev/) (`.devcontainer/devcontainer.json`), though they serve the same core purpose: a reproducible, isolated environment for each piece of work.
+
+**Running AI coding tools?** Dockside devcontainers are natural sandboxes for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://openai.com/codex), GitHub Copilot and similar. The Claude and Codex CLIs — and their VS Code extensions — run natively inside Dockside's integrated IDEs. Each AI session is isolated in its own container. And coming soon: built-in network firewall management to define exactly what AI agents can reach, reproducing purpose-built AI devcontainer security without elevated capabilities or weakened isolation.
 
 <h3 align="center">Our sponsors</h3>
 <p align="center">
 <a title="NewsNow is hiring: work on Dockside and other existing projects" href="https://www.newsnow.co.uk/careers/?utm_source=GitHub&utm_medium=cpc&utm_campaign=2021-10-21-Developer-Roles&utm_content=SponsoredHiringAd" target="_blank"><img alt="Dockside sponsor NewsNow is hiring" src="https://user-images.githubusercontent.com/354555/144637598-5cc14a58-6918-4170-8b47-bbd26cb84062.png"></a>
 </p>
 
+## AI-assisted development
+
+AI coding tools work best when they have their own isolated environment to operate in — somewhere they can install dependencies, run tests, edit files, and make mistakes, without affecting anything else. Dockside devcontainers are a natural fit.
+
+- **Claude Code and OpenAI Codex CLIs** run natively inside Dockside's integrated IDEs (OpenVSCode Server and Theia), as do their VS Code extensions. Point an AI agent at a fresh devcontainer, let it work, then review the result — all contained.
+- **Per-session isolation**: each AI coding session gets its own devcontainer. Unintended side-effects — runaway processes, unexpected file changes, dependency conflicts — stay within that container's blast radius and don't touch your host or other devcontainers.
+- **Network firewall management** _(coming soon)_: configurable outbound firewall rules per Docker custom network, letting you define exactly what AI agents can and cannot reach. Assign a devcontainer to a restricted network and Dockside enforces the rules — without requiring elevated container capabilities or weakening isolation.
+
+## Why Dockside?
+| | Dockside | GitHub Codespaces | Gitpod | Coder |
+|---|---|---|---|---|
+| **Self-hosted / private cloud** | ✅ | ❌ | ✅ | ✅ |
+| **No per-seat cloud fees** | ✅ | ❌ | ❌ | ✅ |
+| **Your data stays on your infra** | ✅ | ❌ | ❌ | ✅ |
+| **Full root in containers** | ✅ | ❌ | ❌ | Partial |
+| **AI CLI tools run natively in IDE** | ✅ | Partial | Partial | Partial |
+| **Per-network outbound firewall for AI** | ✅ soon | ❌ | ❌ | ❌ |
+| **Browser IDE + SSH + VS Code + JetBrains** | ✅ | Partial | ✅ | ✅ |
+| **Integrated access-controlled HTTPS staging server** | ✅ | ❌ | ❌ | ❌ |
+| **Works on your laptop** | ✅ | ❌ | Partial | ❌ |
+| **Open source** | ✅ Apache 2.0 | ❌ | Partial | ✅ AGPL |
+
+Dockside's sweet spot: teams that want **Codespaces-style devcontainers without the cloud lock-in**, and teams that want to run AI coding agents **safely and privately** on their own infrastructure.
+
 ## Features
 
 Core features:
 
-- Instantly launch and clone an almost infinite multiplicity of disposable devtainers - one for each task, bug, feature or design iteration.
-- Powerful VS Code-compatible IDE.
-- HTTPS automatically provisioned for every devtainer.
-- SSH server and access automatically provisioned for every devtainer.
-- User authentication and access control to running devtainers and their web services.
-- Fine-grained user and role-based access control to devtainer functionality and underlying system resources.
-- Launch devtainers from stock Docker images, or from your own.
-- Root access within devtainers, so developers can upgrade their devtainers and install operating system packages when and how they need.
+- Instantly launch disposable devcontainers: one per task, bug, feature, design iteration, or AI agent session.
+- Powerful IDE bundle including [OpenVSCode Server](https://github.com/gitpod-io/openvscode-server) and [Theia](https://theia-ide.org/), plus first-class SSH and support for [VS Code Remote Development using SSH](https://code.visualstudio.com/docs/remote/ssh) or [JetBrains development over SSH](https://www.jetbrains.com/remote-development/).
+- AI-ready devcontainers: Claude Code, OpenAI Codex, GitHub Copilot and other AI tools and CLIs run natively inside every devcontainer's integrated IDE. Isolate each AI agent session in its own container for safe, auditable agentic development.
+- An access-controlled HTTPS reverse proxy automatically provisioned for every devcontainer, with separately configurable domain name prefixes for each subservice.
+- SSH server with automated `authorized_keys` provision for every devcontainer.
+- User authentication and access control to running devcontainers and their web services.
+- Fine-grained user and role-based access control to devcontainer functionality and underlying system resources.
+- Launch devcontainers from stock Docker images, or from your own.
+- Root access within devcontainers, so developers can upgrade their environment and install operating system packages when and how they need.
+- Bundled GitHub CLI (`gh`) with per-user token support for seamless `gh pr checkout` and other GitHub operations.
 
 Benefits for developers:
 
 - Code in a clone of your production environment, avoiding troublesome deploy-time errors and bugfixing.
-- Switch between and hand over tasks instantly. No more laborious branch switching, or committing code before it’s ready. ‘git stash’ will be a thing of the past.
-- Work from anywhere. All you need is a browser.
-- Unifying on an IDE within a team can deliver great productivity benefits for collaborative teams through improved knowledge-share, better choices and configuration of plugins and other tooling.
+- Switch between and hand over tasks instantly. No more laborious branch switching, or committing code before it’s ready. `git stash` will be a thing of the past.
+- Work from anywhere. All you need is a browser. Or connect with VS Code, JetBrains, or any other IDE capable of remote development over SSH. Or SSH in directly and use your favourite terminal editor or toolchain. You choose.
+- Run AI coding agents — Claude Code, Codex, GitHub Copilot — safely inside isolated devcontainers. Each agent session is self-contained, and coming-soon firewall controls let you define exactly what AI tools can reach on the network.
+- Unifying on an IDE within a team can deliver great productivity benefits through improved knowledge-share and better choices of plugins and tooling.
 - SSH access facilitates use of any terminal editor or command line tool and seamless [VS Code remote development](https://code.visualstudio.com/docs/remote/ssh) via the [Remote SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh) extension.
 - Develop against production databases (or production database clones) when necessary.
 
 Benefits for code reviewers:
 
-- Access your colleagues’ devtainers directly for code review.
+- Access your colleagues’ devcontainers directly for code review.
 - No more staring at code wondering what it does, or time-consuming setup, when their code is already running.
 - Annotate their code directly with your comments as to points they should address.
 - To save time, when you know best, apply and test your own fixes directly to their code.
@@ -45,22 +83,25 @@ Benefits for code reviewers:
 Benefits for product managers and senior management:
 
 - High visibility of product development progress. Access always-on application revisions and works-in-progress, wherever you are in the world.
-- Devs can be sometimes be fussy about their choice of IDE, but unifying on an IDE can deliver productivity benefits for collaborative teams through improved knowledge-share and tooling.
+- Every feature branch can have its own running environment — share a link with stakeholders to review work in progress without waiting for a dedicated staging deployment.
 
 Advanced features:
 
-- Runtime agnostic: use runC (Docker's default), [sysbox](https://github.com/nestybox/sysbox), [gvisor](https://gvisor.dev/), or others.
+- Runtime agnostic: use runC (Docker's default), [Sysbox](https://github.com/nestybox/sysbox) (for Docker-in-Dockside devtainers), [gVisor](https://gvisor.dev/) (for sandboxed kernel isolation), or [RunCVM](https://github.com/newsnowlabs/runcvm) (for full KVM VMs on amd64); see [Alternative runtimes](extensions/runtimes.md).
 - Apply Docker system resource limits to devtainers, and communicate available system resources to devtainers using [LXCFS](extensions/lxcfs.md).
 - Support for launching [multi-architecture devtainers](extensions/multiarch.md) using [qemu-user-static](https://github.com/multiarch/qemu-user-static).
-- Support for launching KVM VMs on amd64 hardware using [RunCVM](https://github.com/newsnowlabs/runcvm)
-- Firewall or redirect outgoing devtainer traffic using custom Docker networks.
+- Firewall or redirect outgoing devcontainer traffic using custom Docker networks — useful for isolating AI agent network access or mirroring production network topologies.
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications.
+- Command-line interface (`dockside` CLI) for scripting, automation, and CI/CD integration.
+- Autodetection of available runtimes, networks and IDEs from the host environment.
 
 ## Video walkthrough
 
 <p align="center">
 <a title="Click to view video in HD on YouTube" href="https://www.youtube.com/embed/buAefREyngQ" target="_blank"><img src="https://user-images.githubusercontent.com/354555/135777679-67fd1424-f01f-4072-ac3e-ed910c8711af.gif" alt="Dockside Walkthrough Video" width="70%"></a>
 </p>
+
+> _Recorded in 2021 — the core workflow remains the same, though the UI has evolved since then._
 
 ## Host requirements
 
@@ -82,149 +123,141 @@ Dockside requires a host with a minimum of 1GB memory.
 >    Dockside is designed to be installed using [Docker](https://www.docker.com/).
 >    To install Docker for your platform, go to [https://www.docker.com/](https://www.docker.com/)
 
-Dockside needs an SSL certificate to run. For temporary/trial usage, Dockside may be launched with a built-in or self-signed SSL certificate.
+### Quick Start — Launch locally with integrated SSL certificate
 
-For production usage on an Internet-connected server, Dockside should be launched on a dedicated public domain name (or sub-domain name) with a genuine _wildcard_ SSL certificate for that domain.
+The fastest way to get started with Dockside is to run it on your local machine. This is ideal for solo developers working on multiple web projects simultaneously — spin up a devcontainer per branch, per project, per experiment, or per AI agent session, all accessible from your browser.
 
-Choose from the following options:
+Using `docker compose` (recommended):
 
-1. [Launch locally with built-in SSL cert](#launch-locally-with-built-in-ssl-cert)
-2. [Launch anywhere with self-signed SSL cert](#launch-anywhere-with-self-signed-ssl-cert)
-3. [Launch in production with self-supplied SSL certificate](#launch-in-production-with-self-supplied-ssl-certificate)
-4. [Launch in production with auto-generated LetsEncrypt public SSL certificate](#launch-in-production-with-auto-generated-letsencrypt-public-ssl-certificate)
+```sh
+curl -o docker-compose.yml https://raw.githubusercontent.com/newsnowlabs/dockside/refs/heads/main/docker-compose.yml && \
+mkdir -p ~/.dockside && \
+docker compose up -d
 
-### Launch locally with built-in SSL cert
+# Read off autogenerated 'admin' user credentials
+docker compose logs 2>&1 | grep 'Sign in'
+```
 
-1. Launch Dockside on a local machine, with a temporary and convenient built-in SSL certificate
+Using `docker run`:
+
 ```sh
 mkdir -p ~/.dockside && \
-docker run -it --name dockside \
+docker run -d --name dockside \
   -v ~/.dockside:/data \
-  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
+  --mount=type=volume,src=dockside_ide,dst=/opt/dockside \
+  --mount=type=volume,src=dockside_hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
   --security-opt=apparmor=unconfined \
   newsnowlabs/dockside --ssl-builtin
+
+# Read off autogenerated 'admin' user credentials
+docker logs dockside 2>&1 | grep 'Sign in'
 ```
 
-2. In your browser, navigate to the Dockside homescreen at [https://www.local.dockside.dev/](https://www.local.dockside.dev). Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
+> **Note:**
+> - While AppArmor must be disabled for the Dockside container (unless a customised profile exists), Dockside does **NOT** disable AppArmor for devcontainers it manages, unless your profiles specifically configure that.
+> - The built-in SSL certificate covers `*.local.dockside.dev` which resolves to 127.0.0.1 and is intended for local use only.
 
-3. You can now [detach](https://docs.docker.com/engine/reference/commandline/attach/) from the Dockside container running back in your terminal by typing `CTRL+P` `CTRL+Q`. Alternatively you can instead launch with `docker run -d` instead of `docker run -it`; if you do this, run `docker logs dockside` to display the terminal output and auto-generated admin password.
+**Once Dockside is running:**
 
-> WARNING: The default Dockside installation embeds a non-secret SSL certificate, for `*.local.dockside.dev` resolving to 127.0.0.1, which should not be used for production usage.
+1. In your browser, navigate to [https://www.local.dockside.dev/](https://www.local.dockside.dev). Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
+2. **Authenticate the CLI** (optional — for CI/CD and management via terminal): install from the Dockside repository and log in to your local instance:
+   ```sh
+   dockside login --server https://www.local.dockside.dev --nickname local
+   ```
+   Enter your `admin` credentials when prompted. Your session is saved to `~/.config/dockside/` and reused by subsequent `dockside` commands. See the [Dockside CLI README](../cli/README.md) for full installation options and available commands.
+3. In the Dockside UI, click **Launch**, and pick an example profile (e.g. `Dockside.io`) to launch your first trial devcontainer — this confirms everything is working.
+4. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects. See [**Setup**](#setup) below for a guided overview and [**read full details of the config files here**](setup.md).
 
-### Launch anywhere with self-signed SSL cert
+### Launch on a public domain with auto-generated SSL
 
-1. Launch Dockside on a local machine, on-premises server, VM or cloud instance, with a temporary and convenient self-signed SSL certificate, where `<my-domain>` is the domain name:
-```sh
-mkdir -p ~/.dockside && \
-docker run -it --name dockside \
-  -v ~/.dockside:/data \
-  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -p 443:443 -p 80:80 \
-  --security-opt=apparmor=unconfined \
-  newsnowlabs/dockside --ssl-selfsigned --ssl-zone <my-domain>
-```
+To share devtainers with your team — or access them from anywhere — deploy Dockside on an internet-connected server with a public domain name and a LetsEncrypt wildcard SSL certificate generated automatically on startup.
 
-2. In your browser, navigate to the Dockside homescreen at the hostname for your machine/VM in your browser. This must be `https://www.<my-domain>/` so you must configure your DNS or `/etc/hosts` file accordingly. Sign in with the username `admin` and the auto-generated password output to the terminal, then follow the instructions displayed on-screen.
- 
-3. You can now [detach](https://docs.docker.com/engine/reference/commandline/attach/) from the Dockside container running back in your terminal by typing `CTRL+P` `CTRL+Q`. Alternatively you can instead launch with `docker run -d` instead of `docker run -it`; if you do this, run `docker logs dockside` to display the terminal output and auto-generated admin password.
+In order for Dockside to auto-generate a public SSL certificate using LetsEncrypt, the server must be delegated responsibility for handling public internet DNS requests for your chosen domain, and must accept UDP requests on port 53. So:
 
-### Launch in production with self-supplied SSL certificate
-
-1. Assuming your self-supplied `fullchain.pem` and `privkey.pem` files for the wildcard SSL certificate for your domain `<my-domain>` are located in `<certsdir>` then launch Dockside as follows:
-```sh
-mkdir -p ~/.dockside && \
-docker run -d --name dockside \
-  -v ~/.dockside:/data \
-  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
-  -v <certsdir>:/data/certs \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -p 443:443 -p 80:80 \
-  --security-opt=apparmor=unconfined \
-  newsnowlabs/dockside --ssl-selfsupplied
-```
-
-2. In your browser, navigate to the Dockside homescreen at `https://www.<my-domain>/`. To view the launch logs and obtain the auto-generated `admin` user password, run `docker logs dockside`. Sign in with the username `admin` and the displayed password, then follow the instructions displayed on-screen.
-
-> N.B. Should you update your certificates run `docker exec dockside s6-svc -t /etc/service/nginx` to tell Dockside to reload them.
-
-### Launch in production with auto-generated LetsEncrypt public SSL certificate
-
-In order for Dockside to auto-generate a public SSL certificate using LetsEncrypt, it must first be delegated responsibility for handling public internet DNS requests for your chosen domain and you must also configure the server (or VM or instance) on which you will run Dockside to accept UDP requests on port 53. So:
-
-1. Delegate the domain to the server running Dockside by installing the following two domain name records for `<my-domain>`:
+1. Delegate the domain to the server running Dockside by installing the following two DNS records for `<my-domain>`:
 ```
 <my-domain> A <my-server-ip>
 <my-domain> NS <my-domain>
 ```
-These records are needed to tell the public DNS infrastructure that DNS requests for `<my-domain>` should be forwarded to `<my-server-IP>`.
+These records tell the public DNS infrastructure that DNS requests for `<my-domain>` should be forwarded to `<my-server-ip>`.
 
-2. Launch Dockside as follows:
-```sh
-mkdir -p ~/.dockside && \
-docker run -d --name dockside \
-  -v ~/.dockside:/data \
-  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -p 443:443 -p 80:80 -p 53:53/udp \
-  --security-opt=apparmor=unconfined \
-  newsnowlabs/dockside --ssl-letsencrypt --ssl-zone <my-domain>
-```
-Assuming you have provisioned <my-domain> correctly, Dockside will use LetsEncrypt to generate a public SSL certificate on startup and to regenerate the certificate periodically to ensure it remains current.
+2. Launch Dockside as per Quick Start above, except modify the `docker-compose.yml` file (or `docker run`) `command` from `--ssl-builtin` to `--ssl-letsencrypt --ssl-zone <my-domain>`
 
-3. In your browser, navigate to the Dockside homescreen at `https://www.<my-domain>/`. To view the launch logs and obtain the auto-generated `admin` user password, run `docker logs dockside`. Sign in with the username `admin` and the displayed password, then follow the instructions displayed on-screen.
+Assuming you have provisioned `<my-domain>` correctly, Dockside will use LetsEncrypt to generate a public SSL certificate on startup and to regenerate the certificate periodically to ensure it remains current.
 
-> **Launch using Google Cloud Deployment Manager**
->
-> An implementation of the above procedure within [Google Deployment Manager](https://console.cloud.google.com/dm/deployments) is available [here](https://github.com/newsnowlabs/dockside/tree/main/examples/cloud/google-deployment-manager). To use it, you must first configure a managed zone within [Google Cloud DNS](https://console.cloud.google.com/net-services/dns/zones).
->
-> Then sign into Cloud Shell, and run:
-> ```sh
-> git clone https://github.com/newsnowlabs/dockside.git
-> cd dockside/examples/cloud/google-deployment-manager/
-> ./launch.sh --managed-zone <managed-zone> --dns-name <managed-zone-fully-qualified-subdomain>
-> ```
-> For example, if your managed zone is called `myzone`, the zone DNS name is `myzone.org`, and your chosen subdomain is `dockside` then run `./launch.sh --managed-zone myzone --dns-name dockside.myzone.org`.
->
-> For full `launch.sh` usage, including options for configuring cloud machine type, machine zone, and disk size, run `./launch.sh --help`.
+3. In your browser, navigate to `https://www.<my-domain>/`. To view the launch logs and obtain the auto-generated `admin` user password, run `docker logs dockside`. Sign in with the username `admin` and the displayed password, then follow the instructions displayed on-screen.
 
-## Usage
+### Advanced Launch Options
 
-Refer to [Usage](usage.md) for how to use the Dockside UI and IDE.
+Dockside is designed to support multiple custom networks, each with their own firewall rules and security profile. Dockside then makes it easy to assign the right network to the right dev containers for the project under development. See [multi network docker compose examples](../install/docker-compose/).
+
+For self-signed, self-supplied SSL, Google Cloud Deployment Manager, and Terraform launch configurations, see [Advanced Launch Options](advanced-launch-options.md).
 
 ## Setup
 
-See [Configuring and administering Dockside](setup.md)
+Dockside configuration lives under `~/.dockside/config/` on the host (mounted at `/data/config/` inside the container). Config files are plain JSON (with `//` comments allowed) and are auto-reloaded on change — most settings take effect immediately without restarting Dockside.
 
-## Upgrading
+Getting set up involves three main steps:
 
-See [Upgrading Dockside](upgrading.md) for strategies for upgrading Dockside, or Dockside components such as the Dockside Theia IDE.
+- **[Profiles](setup.md#profiles)**: define the types of devcontainer your team can launch — which Docker images, networks, runtimes, and IDE options are available. Dockside ships several example profiles (`alpine.json`, `debian.json`, `dockside.json`, and others) to get you started. Edit them or add new ones to match your own projects and images.
+- **[Users and Roles](setup.md#users)**: register each team member in `users.json` and `passwd`. Assign a role (`admin` or a custom role from `roles.json`) to control what each user can do and which profiles they can deploy.
+- **[SSH keys](extensions/ssh.md)**: add each user's SSH public key to their `users.json` record so Dockside auto-populates `~/.ssh/authorized_keys` in every devcontainer they own or are shared on. Users then follow the one-click **SSH Setup** instructions in the Dockside UI to configure their `~/.ssh/config` and install the [wstunnel](https://github.com/erebe/wstunnel) helper. After that, SSHing into any devcontainer — and using VS Code Remote SSH or JetBrains Remote Development — works seamlessly with no extra steps.
+
+For the full configuration reference see [Configuring and administering Dockside](setup.md), including [config.json](setup.md#configjson), [Roles](setup.md#roles), [Profile routers](setup.md#profile-routers) and [Access control](setup.md#access-control-model).
+
+## Usage
+
+The Dockside UI is intentionally simple: click **Launch** to create a new devcontainer from a profile, configure it, and you're running in seconds. The rest of the workflow — opening an IDE, starting an SSH session, sharing a devcontainer with a colleague, setting access modes on its exposed services — is a click or two away.
+
+Key workflow points:
+
+- **[Launching a devcontainer](usage.md#launching-a-devtainer)**: choose a profile, select a Docker image, set your network and runtime, optionally specify a git branch or other profile options, then click **Launch**.
+- **[Using the IDE](usage.md#using-the-dockside-ide)**: open Theia or OpenVSCode Server directly in your browser. AI coding tools (Claude Code, Codex, Copilot) run natively inside the IDE. The bundled `gh` CLI authenticates automatically when you have a `gh_token` configured in your user profile.
+- **[SSH access](extensions/ssh.md#integrated-ssh-server-support)**: one-click SSH from the Dockside UI, or SSH in directly from any terminal. Works with VS Code Remote SSH and JetBrains Remote Development out of the box once SSH client setup is complete.
+- **[Outbound SSH for git operations](extensions/ssh.md#adding-ssh-keys-to-a-users-profile)**: add a user's keypair to their `users.json` record and Dockside automatically loads it into the integrated `ssh-agent` on every devcontainer launch — enabling `git push` / `git pull` to GitHub, GitLab, or any SSH remote from the IDE or terminal, with no manual `ssh-add` required.
+- **[Sharing and access control](setup.md#router-authaccess-levels)**: share a devcontainer with teammates as developers or viewers, and set per-service access levels (owner-only, team, or public URL).
+
+For the full UI and CLI reference see [Usage](usage.md).
+
+## CLI
+
+The `dockside` CLI is a zero-dependency Python 3.6+ command-line interface for managing devtainers programmatically, suitable for scripting and CI/CD pipelines. See the [Dockside CLI README](../cli/README.md) for full documentation.
 
 ## Security
 
 See [Securing profiles and devtainers](securing.md)
 
+## Upgrading
+
+Dockside upgrades the system binaries and IDEs available to devcontainers automatically, whenever a newer version of Dockside is launched (assuming the v4.0.0+ `docker run` or `docker-compose.yml` syntax that features a named `/opt/dockside` volume mount).
+
+See [Upgrading Dockside](upgrading.md) for advanced upgrade strategies.
+
 ## Extensions
 
 - [LXCFS](extensions/lxcfs.md) -- allows processes within devtainers to correctly report their own cpu, memory, and disk available resources and usage
 - [Multi-architecture devtainers](extensions/multiarch.md) -- support for devtainers running non-amd64 processor architectures
-- [Docker-in-Dockside devtainers](extensions/runtimes/sysbox.md#sysbox-docker-in-dockside-devtainers) -- support for running devtainers using the sysbox runtime
-- [Self-contained Docker-in-Dockside](extensions/runtimes/sysbox.md#self-contained-docker-in-dockside) -- support for running Dockside using the sysbox runtime
+- [Alternative runtimes](extensions/runtimes.md) -- Sysbox (Docker-in-Dockside devtainers), RunCVM (KVM VMs on amd64), gVisor (sandboxed kernel isolation)
 - [Backups](extensions/backups.md) -- strategies for backing up devtainers
 - [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support) -- allows seamless one-click SSH access to devtainers from the command line and accessing devtainers using VS Code
-- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality of the Theia IDE (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within the Theia IDE UI or terminal
+- [Local ssh-agent support](extensions/ssh.md#local-ssh-agent-support) -- to allow use of `git` functionality across Dockside IDEs (like `Git: Push` and `Git: Pull`) or other `SSH`-based commands accessible within their UIs or terminals
 
-## Case-study: Dockside in production at NewsNow
+## Case study: Dockside in production at NewsNow
 
-Read the [case study of how Dockside is used in production](case-studies/NewsNow.md) for all aspects of web application and back-end development and staging (including acceptance testing) of the websites [https://www.newsnow.co.uk/](https://www.newsnow.co.uk/) and [https://www.newsnow.com/](https://www.newsnow.com/).
+Dockside was built at [NewsNow](https://www.newsnow.co.uk/about/) and has been the daily development platform for the entire NewsNow engineering team for years. Read [how it's used in production](case-studies/NewsNow.md) across all aspects of web application and back-end development, staging, and acceptance testing for [newsnow.co.uk](https://www.newsnow.co.uk/) and [newsnow.com](https://www.newsnow.com/) — a real-world, high-traffic platform built and maintained entirely inside Dockside devcontainers.
 
 ## Roadmap
 
-Where are we taking Dockside? As Dockside today satisfactorily serves the needs of the NewsNow development team, its roadmap currently remains highly flexible. We have a list of features we think could be great to add, but we now want to hear from you what you would most value to see added to Dockside.
+Near-term priorities include:
 
-For our current ideas/plans, see our [draft roadmap](roadmap.md).
+- **Network firewall management**: per-Docker-network configurable outbound firewall rules, enabling safe AI agent sandboxing without elevated container capabilities — assign a devcontainer to a restricted network to define exactly what AI tools can reach.
+- **Terraform launch support**: first-class infrastructure-as-code deployment for teams managing Dockside at scale.
+
+Beyond that, the roadmap is shaped by what our users most need. We'd love to hear from you — tell us what would be most valuable to add next.
+
+For the full picture, see our [draft roadmap](roadmap.md).
 
 ## Developing
 
@@ -272,7 +305,7 @@ The Dockside multiarch build is built thanks to [Depot](https://depot.dev) and w
 ## Licence and legals
 
 This project (known as "Dockside"), comprising the files in this Git repository,
-is copyright 2017-2021 NewsNow Publishing Limited and contributors.
+is copyright 2017-2026 NewsNow Publishing Limited and contributors.
 
 Dockside is an open-source project licensed under the Apache License, Version 2.0 (the "License");
 you may not use Dockside or its constituent files except in compliance with the License.

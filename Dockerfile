@@ -15,6 +15,7 @@ FROM alpine:${SYSTEM_ALPINE_VERSION} AS base
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
+ARG DOCKSIDE_VERSION
 
 # Create:
 # - a BASH_ENV script targeting the desired versions of IDE for the platform,
@@ -73,7 +74,8 @@ export OPENVSCODE_VERSION="$OPENVSCODE_VERSION"
 export OPENVSCODE_BINARY="$OPENVSCODE_BINARY"
 export OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="$OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES"
 
-export DS_PATH=$OPT_PATH/system/latest
+export DOCKSIDE_VERSION="$DOCKSIDE_VERSION"
+export DS_PATH=$OPT_PATH/system/$DOCKSIDE_VERSION
 
 echo "Running command with environment:" >&2
 echo "- TARGETPLATFORM=\$TARGETPLATFORM" >&2
@@ -274,16 +276,15 @@ _EOE_
 # Patch all binaries and dynamic libraries for full portability.
 FROM base AS system
 
+ARG DOCKSIDE_VERSION
+
 # The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
-# COPY --from=base /tmp/dockside /tmp/dockside
 ENV BASH_ENV=/tmp/dockside/bash-env
 SHELL ["/bin/bash", "-c"]
 
 RUN apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq git openssh-client-default github-cli
 
 ADD build/development/make-bundelf-bundle.sh /tmp
-
-RUN cat /tmp/dockside/bash-env
 
 RUN export \
         BUNDELF_BINARIES="bash busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan gh" \
@@ -308,6 +309,9 @@ RUN cd $DS_PATH/bin && \
     mv gh gh.orig && \
     echo -e "#!$DS_PATH/bin/sh\nexport SSL_CERT_FILE=$DS_PATH/certs/ca-certificates.crt\nexec gh.orig \"\$@\"\n" >gh && \
     chmod 755 gh
+
+# Create system/latest symlink pointing to the versioned directory
+RUN cd $DS_PATH/.. && ln -sf $DOCKSIDE_VERSION latest
 
 ################################################################################
 # BUILD OPENVSCODE IDE BINARY BUNDLE
@@ -359,6 +363,20 @@ COPY build/development/install-vsix.sh /root/install-vsix.sh
 RUN apk update && \
     apk add --no-cache curl && \
     /root/install-vsix.sh
+
+################################################################################
+# DOCKSIDE REPO CLEAN BUILD
+#
+FROM alpine/git AS dockside-repo
+
+COPY . /git/dockside
+RUN cd /git/dockside && \
+    current=$(git rev-parse --abbrev-ref HEAD) && \
+    remote=$(git remote get-url origin) && \
+    git remote remove origin && \
+    git remote add origin "$remote" && \
+    git branch | grep -v '^\* ' | xargs -r git branch -D && \
+    git gc
 
 ################################################################################
 # MAIN DOCKSIDE BUILD
@@ -463,7 +481,7 @@ COPY --from=openvscode-ide $VSCODE_PATH $VSCODE_PATH/
 # ---------------------------------------------
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
 #
-COPY --chown=$USER:$USER . $HOME/$APP/
+COPY --from=dockside-repo --chown=$USER:$USER /git/dockside $HOME/$APP/
 
 # -----------------------------
 # Last things for dockside user
@@ -511,6 +529,13 @@ RUN apt-get update && \
 #
 # (disabled as there are currently no VSIX extensions needing to be embedded in the image)
 # COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
+
+# -----------------------------------------------
+# Relocate /opt/dockside content to /opt/dockside.img so the entrypoint
+# can copy it into the named volume at /opt/dockside on container start.
+# This enables safe in-place upgrades: launch a new container against the
+# same named volume and  it will be brought up to date automatically.
+RUN mv $OPT_PATH $OPT_PATH.img && mkdir -p $OPT_PATH
 
 # -----------------------------------------------
 # Cause the creation of a volume at /opt/dockside
