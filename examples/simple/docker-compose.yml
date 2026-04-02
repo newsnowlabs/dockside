@@ -1,0 +1,22 @@
+services:
+  dockside:
+    container_name: ${NAME:-dockside}
+    image: ${IMAGE:-newsnowlabs/dockside:prerelease}
+    restart: unless-stopped
+    attach: false
+    command: ["--ssl-builtin"]
+    ports:
+      - "${HTTPS_PORT:-443}:443"
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ~/.dockside:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dockside-hostdata:/opt/dockside/host
+      - dockside-ide:/opt/dockside
+    security_opt:
+      - apparmor:unconfined
+    network_mode: "bridge"
+
+volumes:
+  dockside-hostdata:
+  dockside-ide:

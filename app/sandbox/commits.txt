@@ -1,0 +1,521 @@
+Squashed commit of the following:
+
+commit 38cb0ce6fdcb65bedb7241973e67ced2080ca8a0
+Merge: 51e85eed 826ed611
+Author: Struan Bartlett <struan.bartlett@NewsNow.co.uk>
+Date:   Wed Mar 25 23:29:57 2026 +0000
+
+    Merge remote-tracking branch 'origin/main' into claude/security-review-firewall-fixes-YgXxW
+
+commit 51e85eedcaa598e49613813f7d4859de91f746fe
+Author: Claude <noreply@anthropic.com>
+Date:   Wed Mar 25 15:17:53 2026 +0000
+
+    security: harden firewall daemon against config injection and socket auth bypass
+    
+    Issue 1 (High) — strict input validation before iptables-restore:
+    - Add validator functions (_val_identifier, _val_iface, _val_ip, _val_cidr,
+      _val_mac, _val_proto, _val_port, _val_comment, _val_icmp_type,
+      _val_host_entry) using allow-lists and stdlib ipaddress module.
+    - Call validators in EgressRule, NatRule, and NetworkSpec constructors, and
+      in Config.from_dicts() for ipset names and host entries.
+    - Any invalid value raises ValueError before kernel mutation is attempted.
+    
+    Issue 2 (Medium/High) — management socket peer credential verification:
+    - Read SO_PEERCRED on each accepted connection (pid, uid, gid).
+    - Require UID 0 (root) for all mutating actions (apply, reload, set-network,
+      remove-network, set-ipset, remove-ipset, reconcile).
+    - Read-only actions (status, refresh) remain open to any group member.
+    - Log peer pid/uid/gid and action for every request (audit trail).
+    
+    https://claude.ai/code/session_016QwTdAvrMgYdfJuycgobHc
+
+commit f01f679dc9e4c45909a37efb46f7208a435fe618
+Author: Struan Bartlett <struan.bartlett@NewsNow.co.uk>
+Date:   Wed Mar 25 14:48:12 2026 +0000
+
+    Add security review for dockside network firewall daemon
+
+commit d72163f92f20159dc1b64bc9dbbc064fece6be91
+Author: Claude <noreply@anthropic.com>
+Date:   Wed Mar 25 00:24:44 2026 +0000
+
+    firewall: macOS FORWARD-DROP workaround and non-fatal network create
+    
+    Issue 1 — macOS Docker Desktop FORWARD policy:
+    - Rename ensure_forward_drop() → ensure_forward_policy(forward_policy)
+      which now detects the current FORWARD policy before acting.
+      On Linux, Docker pre-sets FORWARD to DROP so the method is a no-op.
+      On macOS Docker Desktop (FORWARD starts as ACCEPT), it sets DROP and
+      returns True to signal that the conntrack workaround is needed.
+    - Add ensure_conntrack_accept(): inserts
+        iptables -I DOCKER-USER 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      at position 1 of DOCKER-USER, i.e. before the -j DOCKSIDE-DISPATCH jump,
+      so that docker exec sessions are not interrupted by the FORWARD DROP policy.
+      The rule is idempotent (guarded by -C) and is removed by teardown().
+    - Add --forward-policy={drop,allow-accept} CLI option.
+      'drop' (default): always enforce FORWARD DROP, applying the conntrack
+      workaround when changing from ACCEPT.
+      'allow-accept': leave an existing ACCEPT policy unchanged (FAOD: never
+      actively sets the policy to ACCEPT).
+    - Thread forward_policy through FirewallDaemon.__init__ and _apply_full.
+    
+    Issue 2 — docker socket unavailable when networks pre-exist:
+    - Make docker network create non-fatal (allow_fail=True).
+      If creation fails (e.g. socket not bind-mounted on macOS), a warning is
+      logged and the daemon proceeds to apply iptables rules.  Rules reference
+      bridge interface names and take effect automatically once the network is
+      created externally.  No security risk: a container cannot join a
+      non-existent network.
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit 7f81c15de2f1d07fb5b62f686c3f64df10219e72
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 19:31:04 2026 +0000
+
+    Fix dockside-iptables sidecar: drop volume, depends_on; add docker socket
+    
+    - Remove unnecessary /data volume mount
+    - Remove depends_on: dockside — firewall daemon manages iptables
+      independently and doesn't require dockside to be running first
+    - Add /var/run/docker.sock so the daemon can run docker network
+      inspect/create via DockerNetworkManager.ensure_networks()
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit c8d5d9ffe2ce5f6bdccbde3cab6973b6f3d91c4f
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 19:12:24 2026 +0000
+
+    Add docker-compose examples and update network-config.json
+    
+    - docker-compose.yml: main dockside service with four networks
+      (dockside, ds-priv, ds-clone, ds-prod) using MAC 02:00:00:00:00:02
+    - docker-compose-with-firewall-sidecar.yml: same plus dockside-iptables
+      sidecar that runs the firewall daemon via nsenter into host netns
+    - network-config.json: updated subnets to /24, removed dockside_ip from
+      the first three networks (MAC-based matching only), updated MACs to
+      02:00:00:00:00:02; ds-prod retains dockside_ip for IP-based matching
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit 145c85b67613402945d8656b1c8532a7093b1d05
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 18:59:45 2026 +0000
+
+    Improve iptables comment text for DISPATCH and ING chain rules
+    
+    - DISPATCH ING jump: "ingress to devcontainers from dockside container"
+    - DISPATCH OUT jump: "egress from devcontainers"
+    - ING RETURN (MAC): "Allow ingress from dockside container"
+    - ING RETURN (IP):  "Allow ingress from dockside container"
+    - ING DROP:         "Drop all other ingress to devcontainers"
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit 8556b1705c053b6c46f08a7e893445aa1b56d509
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 18:52:14 2026 +0000
+
+    Three improvements to iptables rule generation
+    
+    1. Remove redundant DISPATCH exemption rules (section 3b)
+       The dockside container's MAC/IP were already excluded from the OUT
+       chain jump by _dispatch_out_match (!--mac-source / !-s filters), so
+       the subsequent MAC/IP-matched RETURN rules in section 3b were
+       unreachable.  Remove them.
+    
+    2. Add iptables comments to DOCKSIDE-DISPATCH rules
+       All three DISPATCH rule types now carry a -m comment --comment "..."
+       annotation so they are self-describing in iptables -L output:
+       - intra-network ING jump: "intra:<dev>"
+       - egress OUT jump:        "egress:<dev>"
+       - terminal pass-through:  "pass-through"
+    
+    3. Transfer firewall-config "comment" fields to iptables comments
+       EgressRule now parses the optional "comment" key from each rule's
+       JSON object and emits it as -m comment --comment "..." on every
+       iptables rule that rule generates, making per-rule intent visible
+       in iptables -L alongside the match criteria.
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit db14e6134111b42a9d36d86f3ff8779cb27408c7
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 18:21:35 2026 +0000
+
+    Fix CIDR drop rules to only block NEW connections
+    
+    The targeted-CIDR drop rule was emitting a bare `-j DROP` with no
+    conntrack state filter, which killed ESTABLISHED/RELATED packets for
+    flows that earlier RETURN rules had already permitted (e.g. a
+    DNAT-redirected MySQL connection allowed on port 13306 before a
+    `{ "action": "drop", "cidr": "192.168.0.0/16" }` rule).
+    
+    The rest of the OUT chain is designed around the invariant that all
+    rules only act on NEW connections; ESTABLISHED/RELATED packets fall
+    through to Docker's FORWARD ESTABLISHED ACCEPT rule.  Align the CIDR
+    drop with that invariant by adding `--ctstate NEW` to both the TCP
+    REJECT and the non-TCP DROP lines, regardless of whether a destination
+    filter is present.
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit 9f0897f0f71f55b157e7180b49b882278a57d1b1
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 16:20:21 2026 +0000
+
+    Introduce dockside_ip/dockside_mac; retire overloaded gateway_ip role
+    
+    gateway_ip served two purposes: Docker network gateway (conventionally
+    .1) and dockside container source IP (.2). This conflation forced
+    operators to set gateway_ip to .2, silently overriding Docker's gateway
+    address. gateway_mac was similarly misnamed — it identifies the dockside
+    container's interface, not the gateway.
+    
+    Changes:
+    - Add dockside_ip field: source IP of the dockside container on the
+      network, used for DOCKSIDE-DISPATCH rule matching (! -s / -s).
+    - Rename gateway_mac → dockside_mac throughout: the MAC address of the
+      dockside container's interface (--mac-source matching).
+    - gateway_ip is now exclusively used for docker network creation
+      (docker network create --gateway); defaults to .1 when absent.
+    - NetworkSpec.managed now depends on dockside_ip/dockside_mac (not
+      gateway_ip) since gateway_ip alone does not require firewall chains.
+    - Config files updated: gateway_ip/.2 entries removed (Docker gateway
+      now defaults to .1); gateway_mac → dockside_mac; dockside_ip added.
+    - Either dockside_ip or dockside_mac (or both) may be configured;
+      _dispatch_out_match already handles all three cases correctly.
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit efe0e6e6755a5c4bf43549ea4534e0ea1d584aa1
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 14:17:55 2026 +0000
+
+    feat: two-phase diff/cleanup, partial-update socket actions, disk persistence
+    
+    Addresses all previously identified lifecycle gaps in the firewall daemon:
+    
+    Two-phase apply (reload, apply, and all new partial-update actions)
+      Phase 1 (atomic): ensure_networks → ensure_ipsets → iptables-restore
+      Phase 2 (diff-driven): compare old_config vs new_config; flush and delete
+      orphaned chains for removed networks; deregister and destroy removed ipsets.
+      Ordering invariant: Phase 1 always completes before Phase 2 deletes anything,
+      so DOCKSIDE-DISPATCH never references non-existent chains or ipsets.
+    
+    Container safety
+      _network_has_containers() parses docker network inspect JSON to check the
+      Containers key. If containers are connected, chain deletion is deferred
+      (logged as a warning). Ipsets referenced by deferred networks are also
+      kept. The firewall is immediately correct regardless: DOCKSIDE-DISPATCH is
+      rebuilt without the removed network in Phase 1.
+    
+    New IpsetManager methods
+      deregister(name): removes entry from _sets so the refresh loop stops
+      processing it (previously orphaned entries were refreshed indefinitely).
+      registered_names(): exposes _sets keys for the reconcile action.
+    
+    New IptablesManager method
+      remove_network_chains(spec): flushes and deletes the -ING, -OUT (filter)
+      and -NAT (nat) chains for one removed network, removing the PREROUTING
+      jump before deleting the NAT chain (iptables rejects deleting referenced chains).
+    
+    Serialisation round-trip (EgressRule/NatRule/NetworkSpec/Config)
+      to_dict(), to_net_dict(), to_fw_dict(), to_net_data(), to_fw_data()
+      allow Config objects to be written back to network-config.json and
+      firewall-config.json without losing structure.
+    
+    Atomic disk persistence
+      _save_config(config): writes to a tempfile sibling then os.replace() for
+      atomic rename(2) so on-disk files are never partially written.
+    
+    New socket actions
+      set-network:    upsert a network (topology + firewall rules); saves to disk.
+      remove-network: remove a network; cleanup with container safety; saves to disk.
+      set-ipset:      upsert an ipset definition; saves to disk.
+      remove-ipset:   remove an ipset (rejected if still referenced by egress rules).
+      reconcile:      enumerate kernel chains/ipsets/docker-networks vs in-memory
+                      config; clean up orphaned objects; report docker orphans.
+    
+    Updated existing actions
+      reload: now calls _two_phase_apply (was purely additive).
+      apply:  now calls _two_phase_apply and saves to disk (was purely additive).
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit db7741ca514122d121b74c947be7e42ec5aa6e29
+Merge: 713a26af f55427b1
+Author: Struan Bartlett <struan.bartlett@NewsNow.co.uk>
+Date:   Tue Mar 24 14:05:38 2026 +0000
+
+    Merge remote-tracking branch 'origin/main' into claude/compare-docker-networks-jev8A
+
+commit 713a26afc3a79197a9b8cd8c8240399dd1af0b22
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 01:13:48 2026 +0000
+
+    docs: add README and example configs for dockside-network-firewall
+    
+    - README.md: full documentation of CLI modes, config file schema
+      (network-config.json and firewall-config.json), systemd integration,
+      management socket protocol with request/response examples for all four
+      actions (status, reload, apply, refresh), partial-config-update pattern,
+      ipset refresh mechanism, environment variables, iptables rule architecture,
+      and teardown
+    - config/examples/network-config.json: annotated example showing the
+      unmanaged dockside network plus prod, clone, and priv networks
+    - config/examples/firewall-config.json: annotated example with ipsets,
+      egress rules for prod (full internet) and priv (LAN-blocked, allowlisted),
+      and a clone network with DNAT redirect for a test database
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit 81b0a61520ec8a2f23a28bdfbe2d9c6285996b48
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 00:48:05 2026 +0000
+
+    fix: remove safety-net DROP from DOCKSIDE-DISPATCH that broke allowed egress
+    
+    Rule 5 (`-i <dev> -m conntrack --ctstate NEW -j DROP`) was unreachable
+    on the first pass for any packet — rules 1–4 exhaustively dispatch all
+    ds-prod traffic to ING, OUT, or RETURN for gateway packets. The only
+    way rule 5 was ever reached was on the *return* from DS-PROD-OUT, at
+    which point it dropped every NEW connection that the OUT chain had just
+    allowed. The stale-bridge rationale was speculative and inapplicable
+    since the ruleset is installed atomically via iptables-restore.
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit 82ab20e8592d1850f2a535a622059e39aeb745a7
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 00:20:46 2026 +0000
+
+    feat: support ip/host/ipset destination selectors in egress drop rules
+    
+    Drop rules previously only accepted a raw 'cidr' field. They now support
+    the same destination selectors as allow rules:
+      - to: cidr / raw cidr field → -d <cidr>
+      - to: ip                    → -d <ip>
+      - to: host                  → resolved at apply-time, skipped on failure
+      - to: ipset                 → -m set --match-set <name> dst
+    
+    Both the TCP REJECT and the non-TCP DROP lines use the new dst, and the
+    targeted-vs-terminal logic (all-ctstates vs NEW-only) is driven by whether
+    a destination filter is present, same as before.
+
+commit 6018aba48c41976c74e39af52877f4846400515c
+Author: Claude <noreply@anthropic.com>
+Date:   Tue Mar 24 00:10:27 2026 +0000
+
+    fix: pass correct chain name to _egress_to_iptables
+    
+    Egress rules were being appended to chain prefix (e.g. DOCKSIDE-MYNET)
+    instead of the OUT chain (e.g. DOCKSIDE-MYNET-OUT), which iptables-restore
+    would reject since no such chain is declared. Fix by passing f"{p}-OUT".
+
+commit 9e071436d2fe1c112868d9e7cc19f9bebd75a2ed
+Author: Claude <noreply@anthropic.com>
+Date:   Sat Mar 21 17:25:59 2026 +0000
+
+    chore: ignore Python __pycache__ directories and .pyc files
+
+commit ef6bcc0e06ca6105318fe838a9eb7d2c2044adf0
+Author: Claude <noreply@anthropic.com>
+Date:   Sat Mar 21 17:25:01 2026 +0000
+
+    docs: annotate ManagementSocket, FirewallDaemon, _socket_query and main
+    
+    Add docstrings and inline comments to the final four components:
+    
+    ManagementSocket: explains the AF_UNIX stream protocol (newline-terminated
+      JSON), 0o660 permissions, daemon thread model, 1 MiB runaway-client guard,
+      accept-loop exit via OSError on socket close, and best-effort error reply.
+    
+    FirewallDaemon: documents thread model (main, ipset-refresh, mgmt-socket,
+      config-reload), _lock serialisation, SIGUSR1 off-load pattern, _apply_full
+      ordering (sysctl → docker → FORWARD DROP → DISPATCH → ipsets → iptables),
+      _refresh_loop interruptible sleep via _stop.wait(timeout=…), _reload
+      error-isolation, _handle_request actions (reload/apply/refresh/status),
+      _get_status live-ipset snapshot, and intentional rule preservation on stop.
+    
+    _socket_query: explains newline framing and the finally-close guarantee.
+    
+    main: documents all four operating modes (--status, --teardown, --daemon,
+      one-shot), RESET=1 semantics, config-tolerant teardown, and the env-var
+      default for --socket.
+    
+    No functional changes.
+
+commit 6b9a0c13776baac5bb7794a4b245c881ac89d955
+Author: Claude <noreply@anthropic.com>
+Date:   Sat Mar 21 17:22:01 2026 +0000
+
+    docs: annotate DockerNetworkManager, IpsetManager and IptablesManager
+    
+    Add docstrings and inline comments to all three manager classes:
+    
+    DockerNetworkManager: explains bridge-name pinning, reset semantics and
+      the allow_fail probe for network existence.
+    
+    IpsetManager: documents the two-set design (live set + seen-set), the
+      delete-then-add TTL-reset pattern, the safety guard against empty
+      resolution, and the ipset list parser.
+    
+    IptablesManager: explains the FORWARD=DROP baseline, DOCKER-USER/-C
+      probe idiom, the --noflush atomic-replace strategy, _build_restore_input
+      structure (chain decls, flushes, rules, COMMIT), DISPATCH ING vs OUT
+      routing, gateway exemptions, safety-net DROP, ING lateral-movement
+      prevention, egress allow/drop rule generation (tcp-reset, targeted vs
+      terminal drop, multiport), NAT PREROUTING jump management, teardown
+      order, and _list_dockside_chains -N line parsing.
+    
+    No functional changes.
+
+commit cd47195c4e869374226b043e04863f59509533aa
+Author: Claude <noreply@anthropic.com>
+Date:   Sat Mar 21 17:16:24 2026 +0000
+
+    docs: annotate NatRule, NetworkSpec, Config, and helper functions
+    
+    Add docstrings and inline comments to the four data classes (NatRule,
+    NetworkSpec, Config and its two factory classmethods) and the three
+    standalone helpers (_subnet_to_gateway, _resolve_hostname,
+    _resolve_hostname_all).  Explains field semantics, property derivations,
+    the managed-network concept, the two-pass config merge, the .1 gateway
+    convention, AF_INET IPv4 restriction, and the seen-set deduplication
+    pattern.
+    
+    No functional changes.
+
+commit 46169e7df49563055c992011e8736419e31947d6
+Author: Claude <noreply@anthropic.com>
+Date:   Sat Mar 21 17:14:50 2026 +0000
+
+    docs: annotate constants, _run(), _systemd_notify() and EgressRule
+    
+    Add docstrings and inline comments to the top-level constants,
+    subprocess helper, systemd notify helper, and EgressRule data class.
+    Explains allow_fail semantics, IPSET_STALE_TTL / IPSET_REFRESH_INTERVAL
+    purpose, sd_notify usage, and per-field meaning of EgressRule attributes.
+    
+    No functional changes.
+
+commit 66e3bbd176e556948c72d17b3b20c591cfef05cf
+Author: Claude <noreply@anthropic.com>
+Date:   Fri Mar 20 21:58:22 2026 +0000
+
+    Add Python firewall daemon replacing dockside-network-firewall.sh
+    
+    Implements the design documented in PLAN-firewall-daemon-python.md:
+    
+    - dockside-network-firewall.py: single-file Python 3.6+ daemon (stdlib only)
+      - Atomic iptables apply via iptables-restore --noflush covering both
+        filter and nat tables in one kernel transaction; no open-firewall window
+      - DOCKSIDE-DISPATCH chain in DOCKER-USER; per-network ING/OUT chains for
+        ingress control and egress policy enforcement
+      - Gateway exemption rules prevent safety-net DROPs from blocking the
+        gateway's own new outbound connections
+      - Leaves all iptables/ipset state in place on SIGTERM; next startup applies
+        config atomically over inherited state (zero-disruption systemctl restart)
+      - SIGUSR1 triggers config reload + ipset refresh (maps to ExecReload=)
+      - Optional Unix domain socket (--socket PATH) for reload/apply/refresh/status
+      - --teardown mode for explicit full cleanup
+      - IpsetManager: stale-TTL logic matching the bash implementation; uses
+        per-set --seen companion (hash:ip,timeout) to track last-seen timestamps
+    
+    - install/etc/dockside/network-config.json: Docker network definitions
+      (dockside, ds-prod, ds-clone, ds-priv, ds-claude) matching current setup()
+    
+    - install/etc/dockside/firewall-config.json: per-network egress policies and
+      NAT rules matching current setup(); ds-clone reroute_mysql expressed as a
+      nat + host-resolved egress allow; ds-claude restricted to claude-allowlist ipset
+    
+    - dockside.service: ExecStart updated to .py --daemon; ExecReload changed
+      from spawning a child process to kill -USR1 $MAINPID
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit d1d89ac005b04680423f63d889f2193c9c0581b3
+Author: Claude <noreply@anthropic.com>
+Date:   Fri Mar 20 16:13:40 2026 +0000
+
+    Revise Python daemon plan per design decisions
+    
+    - Two separate config files confirmed: iptables rules and Docker networks
+      are independent entities that may exist without each other
+    - Socket path made fully configurable (--socket PATH / env var); no hardcoded
+      default; path choice depends on systemd vs docker compose launch context
+    - Remove config-file watching (inotify and mtime polling): config changes
+      take effect on daemon restart or via socket reload action; immediate
+      file-watching is too risky a pattern
+    - Confirm atomic nat+filter replacement via iptables-restore; document
+      the primary NAT use-case (redirecting container traffic to sandboxed clones)
+    - Change shutdown model: SIGTERM leaves iptables/ipset state in place so
+      systemctl restart is zero-disruption; add explicit --teardown mode for
+      permanent removal; ExecStop no longer calls teardown
+    - ExecReload now sends SIGUSR1 to daemon rather than spawning a child process
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit 844d653d1ff8e454101fe595f2872f6e088f3901
+Author: Claude <noreply@anthropic.com>
+Date:   Fri Mar 20 09:55:06 2026 +0000
+
+    Add Python daemon implementation plan for network firewall
+    
+    Drafts a plan to replace dockside-network-firewall.sh with a Python 3.6+
+    daemon that uses iptables-restore for atomic chain updates, a DOCKSIDE-DISPATCH
+    indirection layer to eliminate the open-firewall window on refresh, two-layer
+    FORWARD DROP safety, optional Unix socket for dynamic config, and admin-editable
+    JSON config files as a static alternative to the management socket.
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit 1d94302dea7672e22d54936e35c7511458656abe
+Author: Claude <noreply@anthropic.com>
+Date:   Fri Mar 20 01:38:34 2026 +0000
+
+    Switch dockside.service to daemon mode with sd_notify ordering
+    
+    - Type=notify so ExecStartPost (docker compose up) only fires after
+      setup() completes and networks/iptables chains are fully built
+    - ExecStart now runs --daemon (setup + ipset refresh loop)
+    - ExecStartPost runs docker compose up -d once readiness is signalled
+    - ExecReload uses --refresh (lightweight DNS refresh, no chain teardown)
+    - Add Restart=on-failure/RestartSec=5, TimeoutStartSec=300, journal logging
+    - Remove RemainAfterExit (not needed for long-running Type=notify service)
+    - Add systemd-notify --ready call in --daemon case after setup() completes
+    
+    https://claude.ai/code/session_01BFN7j9ppVBz6cr8zGfxeKi
+
+commit d9cab3dc6ebdca1735043cc8d5baf7fdc3eb378d
+Author: Struan Bartlett <struan.bartlett@NewsNow.co.uk>
+Date:   Thu Mar 19 09:26:17 2026 +0000
+
+    docker-compose.yml POC with integrated custom networks
+
+commit 14dacc144b8e84dcab8b1d7d6dedf9471b7d73e5
+Author: Struan Bartlett <struan.bartlett@NewsNow.co.uk>
+Date:   Thu Mar 19 09:17:18 2026 +0000
+
+    Dockside docker-compose.yml examples
+
+commit 1d11a442757d1cfe658d349faec1448699f49092
+Author: Struan Bartlett <struan.bartlett@NewsNow.co.uk>
+Date:   Thu Mar 19 09:16:59 2026 +0000
+
+    Docksidd SystemD unit POC
+
+commit 73ec6cfe214a5bdd7f30b283026e534f7c0369a7
+Author: Struan Bartlett <struan.bartlett@NewsNow.co.uk>
+Date:   Thu Mar 19 09:15:27 2026 +0000
+
+    Daemonised, ipset-supporting POC
+
+commit d09be0507aab7b4920a03450351ad3772e7687a1
+Author: Struan Bartlett <struan.bartlett@NewsNow.co.uk>
+Date:   Thu Mar 19 09:14:40 2026 +0000
+
+    dockside-network-firewall.sh POC

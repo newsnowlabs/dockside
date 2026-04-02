@@ -1,0 +1,71 @@
+{
+  "ipsets": {
+    "claude-allowlist": [
+      "api.anthropic.com",
+      "statsig.anthropic.com",
+      "statsig.ugc.statsigapi.net",
+      "sentry.io",
+      "registry.npmjs.org",
+      "github.com",
+      "api.github.com"
+    ]
+  },
+  "networks": {
+    "ds-prod": {
+      "egress": [
+        { "proto": "udp", "ports": [53],          "to": "all" },
+        { "proto": "tcp", "ports": [53, 80, 443], "to": "all" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.3" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.4" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "20.26.156.215" },
+        { "proto": "tcp", "ports": [25],           "to": "all" },
+        { "proto": "tcp", "ports": [3306], "to": "cidr", "cidr": "192.168.0.0/16" },
+        { "proto": "icmp", "type": "echo-request" },
+        { "action": "drop" }
+      ]
+    },
+    "ds-clone": {
+      "nat": [
+        {
+          "proto": "tcp",
+          "match_dport": 3306,
+          "to_host": "pascal.dc.lan",
+          "to_port": 13306
+        }
+      ],
+      "egress": [
+        { "proto": "udp", "ports": [53],          "to": "all" },
+        { "proto": "tcp", "ports": [53, 80, 443], "to": "all" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.3" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.4" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "20.26.156.215" },
+        { "proto": "tcp", "ports": [25],           "to": "all" },
+        { "proto": "tcp", "ports": [13306], "to": "host", "host": "pascal.dc.lan" },
+        { "proto": "icmp", "type": "echo-request" },
+        { "action": "drop" }
+      ]
+    },
+    "ds-priv": {
+      "egress": [
+        { "action": "drop", "cidr": "192.168.0.0/16" },
+        { "proto": "udp", "ports": [53],          "to": "all" },
+        { "proto": "tcp", "ports": [53, 80, 443], "to": "all" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.3" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.4" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "20.26.156.215" },
+        { "proto": "icmp", "type": "echo-request" },
+        { "action": "drop" }
+      ]
+    },
+    "ds-claude": {
+      "egress": [
+        { "proto": "udp", "ports": [53], "to": "all" },
+        { "proto": "tcp", "ports": [53], "to": "all" },
+        { "proto": "tcp", "ports": [443], "to": "ipset", "ipset": "claude-allowlist" },
+        { "proto": "tcp", "ports": [22],  "to": "ipset", "ipset": "claude-allowlist" },
+        { "proto": "icmp", "type": "echo-request" },
+        { "action": "drop" }
+      ]
+    }
+  }
+}

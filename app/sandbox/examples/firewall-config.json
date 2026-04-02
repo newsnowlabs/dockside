@@ -1,0 +1,99 @@
+{
+  "ipsets": {
+    "github-hosts": [
+      "github.com",
+      "api.github.com",
+      "codeload.github.com",
+      "objects.githubusercontent.com"
+    ],
+    "npm-hosts": [
+      "registry.npmjs.org"
+    ]
+  },
+
+  "networks": {
+
+    "ds-prod": {
+      "egress": [
+        { "comment": "DNS (UDP and TCP) to any resolver",
+          "proto": "udp", "ports": [53], "to": "all" },
+        { "proto": "tcp", "ports": [53], "to": "all" },
+
+        { "comment": "Standard web traffic",
+          "proto": "tcp", "ports": [80, 443], "to": "all" },
+
+        { "comment": "SSH to well-known GitHub IP ranges",
+          "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.3" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.4" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "20.26.156.215" },
+
+        { "comment": "SMTP outbound",
+          "proto": "tcp", "ports": [25, 587], "to": "all" },
+
+        { "comment": "MySQL to private LAN only",
+          "proto": "tcp", "ports": [3306], "to": "cidr", "cidr": "192.168.0.0/16" },
+
+        { "comment": "Ping for diagnostics",
+          "proto": "icmp", "type": "echo-request" },
+
+        { "comment": "Default deny — drop everything else",
+          "action": "drop" }
+      ]
+    },
+
+    "ds-clone": {
+      "nat": [
+        {
+          "comment": "Redirect MySQL connections to a separate clone database on port 13306",
+          "proto": "tcp",
+          "match_dport": 3306,
+          "to_host": "db.internal",
+          "to_port": 13306
+        }
+      ],
+      "egress": [
+        { "proto": "udp", "ports": [53], "to": "all" },
+        { "proto": "tcp", "ports": [53], "to": "all" },
+
+        { "proto": "tcp", "ports": [80, 443], "to": "all" },
+
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.3" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "140.82.121.4" },
+        { "proto": "tcp", "ports": [22], "to": "ip", "ip": "20.26.156.215" },
+
+        { "proto": "tcp", "ports": [25, 587], "to": "all" },
+
+        { "comment": "Allow access to the clone database (after DNAT above redirects it)",
+          "proto": "tcp", "ports": [13306], "to": "host", "host": "db.internal" },
+
+        { "proto": "icmp", "type": "echo-request" },
+
+        { "action": "drop" }
+      ]
+    },
+
+    "ds-priv": {
+      "egress": [
+        { "comment": "Block all LAN access first (before the internet allow rules below)",
+          "action": "drop", "cidr": "10.0.0.0/8" },
+        { "action": "drop", "cidr": "172.16.0.0/12" },
+        { "action": "drop", "cidr": "192.168.0.0/16" },
+
+        { "proto": "udp", "ports": [53], "to": "all" },
+        { "proto": "tcp", "ports": [53], "to": "all" },
+
+        { "comment": "HTTPS to GitHub via ipset (DNS-backed, refreshed every 60 s)",
+          "proto": "tcp", "ports": [443], "to": "ipset", "ipset": "github-hosts" },
+        { "proto": "tcp", "ports": [22],  "to": "ipset", "ipset": "github-hosts" },
+
+        { "comment": "npm registry",
+          "proto": "tcp", "ports": [443], "to": "ipset", "ipset": "npm-hosts" },
+
+        { "proto": "icmp", "type": "echo-request" },
+
+        { "action": "drop" }
+      ]
+    }
+
+  }
+}
