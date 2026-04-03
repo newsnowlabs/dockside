@@ -2,16 +2,16 @@
 # run_tests.sh — Dockside Integration Test Runner
 #
 # Usage:
-#   bash t/integration/run_tests.sh [--only <prefix>] [--verbose]
+#   bash t/integration/run_tests.sh [--only <prefix>] [--verbose] [--debug]
 #
 # Environment variables:
 #
 #   DOCKSIDE_TEST_MODE    local|remote|harness  (auto-detected if unset)
 #
-#   DOCKSIDE_TEST_HOST    Public FQDN of the Dockside instance, e.g.:
+#   DOCKSIDE_TEST_HOST    Public FQDN (or URL) of the Dockside instance, e.g.:
 #                           www.local.dockside.dev
-#                           www.myinstance.example.com
-#                         Always the www.* form. Protocol assumed https://.
+#                           https://www.myinstance.example.com/
+#                         Any https:// prefix and trailing slash are stripped.
 #                         - remote:  requests go directly to https://$DOCKSIDE_TEST_HOST
 #                         - local:   requests go to https://$DOCKSIDE_TEST_HOST with
 #                                    TCP routed to localhost via --connect-to
@@ -66,10 +66,12 @@ REPO_ROOT="$(cd "${INTEGRATION_DIR}/../.." && pwd)"
 # Parse flags
 ONLY_PREFIX=""
 VERBOSE=0
+DEBUG=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --only) ONLY_PREFIX="$2"; shift 2 ;;
         --verbose) VERBOSE=1; shift ;;
+        --debug) DEBUG=1; shift ;;
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
     esac
 done
@@ -92,6 +94,13 @@ if [[ "$MODE" == "harness" ]]; then
     # shellcheck source=harness.sh
     source "${INTEGRATION_DIR}/harness.sh"
     # harness.sh exports DOCKSIDE_TEST_SERVER_URL, DOCKSIDE_TEST_CONNECT_TO, etc.
+fi
+
+# ── Normalise DOCKSIDE_TEST_HOST (strip https:// prefix and trailing slash) ────
+if [[ -n "${DOCKSIDE_TEST_HOST:-}" ]]; then
+    DOCKSIDE_TEST_HOST="${DOCKSIDE_TEST_HOST#https://}"
+    DOCKSIDE_TEST_HOST="${DOCKSIDE_TEST_HOST#http://}"
+    DOCKSIDE_TEST_HOST="${DOCKSIDE_TEST_HOST%/}"
 fi
 
 # ── Connection parameters by mode ─────────────────────────────────────────────
@@ -118,6 +127,8 @@ esac
 export DOCKSIDE_TEST_MODE="${MODE}"
 export DOCKSIDE_TEST_ONLY="${ONLY_PREFIX}"
 export DOCKSIDE_TEST_HARNESS_ID="${DOCKSIDE_TEST_HARNESS_ID:-}"
+[[ "$VERBOSE" == "1" ]] && export DOCKSIDE_TEST_VERBOSE=1
+[[ "$DEBUG"   == "1" ]] && export DOCKSIDE_TEST_DEBUG=1
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
