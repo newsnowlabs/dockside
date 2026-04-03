@@ -27,8 +27,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
-PROFILE_NAME = '10-alpine'
-
 
 def _docker_networks():
     """Return list of docker network names visible on the host."""
@@ -61,10 +59,6 @@ class NetworkTests(TestCase):
         Returns list of network name strings, or None if unsupported.
         """
         try:
-            # The form endpoint or list endpoint may expose available networks.
-            # We probe by creating a container with a bogus network and parsing
-            # the error, or by looking at a successful container's network field.
-            # More robustly: get the first container we know about and note its network.
             containers = self.admin.list_containers()
             networks = set()
             for c in containers:
@@ -79,7 +73,7 @@ class NetworkTests(TestCase):
     def _create_and_cleanup(self, name, **kwargs):
         self.register_cleanup(name)
         return self.admin.create(
-            profile=PROFILE_NAME,
+            profile=self.test_profile_alpine,
             name=name,
             **kwargs
         )
@@ -97,7 +91,6 @@ class NetworkTests(TestCase):
 
     def test_02_create_on_discovered_network(self):
         """Create on a network currently known to Dockside (first available)."""
-        # Create a container first to discover available networks
         seed_name = 'inttest-net-seed'
         self._create_and_cleanup(seed_name)
         seed_data = self.admin.get_container(seed_name)
@@ -107,7 +100,6 @@ class NetworkTests(TestCase):
 
         name = 'inttest-net-explicit'
         self._create_and_cleanup(name)
-        # Re-edit to set network explicitly
         try:
             self.admin.update(name, network=network)
         except APIError as e:
@@ -133,13 +125,11 @@ class NetworkTests(TestCase):
         Switch network via edit (requires at least two available networks).
         Skips gracefully if only one network is available.
         """
-        # Discover available networks
         seed_name = 'inttest-net-switch-seed'
         self._create_and_cleanup(seed_name)
         seed_data = self.admin.get_container(seed_name)
         net_a = (seed_data.get('data') or {}).get('network') or seed_data.get('network')
 
-        # Look for a second network from existing containers
         all_containers = self.admin.list_containers()
         net_b = None
         for c in all_containers:
@@ -181,17 +171,15 @@ class NetworkTests(TestCase):
             self.skip('harness_container_id not set; cannot attach network to Dockside container')
 
         test_net = f'inttest-net-{uuid.uuid4().hex[:8]}'
-        created = False
+        created  = False
         attached = False
         try:
-            # Create the test network
             r = subprocess.run(['docker', 'network', 'create', test_net],
                                capture_output=True, timeout=15)
             if r.returncode != 0:
                 self.skip(f'docker network create failed: {r.stderr.decode()}')
             created = True
 
-            # Attach to Dockside container
             r = subprocess.run(
                 ['docker', 'network', 'connect', test_net, self.harness_container_id],
                 capture_output=True, timeout=15
@@ -200,12 +188,11 @@ class NetworkTests(TestCase):
                 self.skip(f'docker network connect failed: {r.stderr.decode()}')
             attached = True
 
-            # Verify it appears in available networks (create a test container to probe)
             probe_name = 'inttest-net-probe'
             self.register_cleanup(probe_name)
             try:
                 self.admin.create(
-                    profile=PROFILE_NAME,
+                    profile=self.test_profile_alpine,
                     name=probe_name,
                     network=test_net,
                 )
@@ -240,7 +227,7 @@ class NetworkTests(TestCase):
             self.skip('harness_container_id not set')
 
         test_net = f'inttest-net-{uuid.uuid4().hex[:8]}'
-        created = False
+        created  = False
         try:
             r = subprocess.run(['docker', 'network', 'create', test_net],
                                capture_output=True, timeout=15)
@@ -266,13 +253,10 @@ class NetworkTests(TestCase):
             self.register_cleanup(name)
             try:
                 self.admin.create(
-                    profile=PROFILE_NAME,
+                    profile=self.test_profile_alpine,
                     name=name,
                     network=test_net,
                 )
-                # If it succeeded, that's also acceptable (Dockside may not validate
-                # network at create time — it validates at start time)
-                # Just verify the name is in list
                 pass
             except APIError:
                 pass  # Expected: network no longer available

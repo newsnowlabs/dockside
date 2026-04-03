@@ -2,12 +2,14 @@
 Dockside Integration Test Framework
 ====================================
 Drives the Dockside CLI via subprocess with --output json for reliable parsing.
-HTTP service access checks use urllib directly with session cookies from CLI login.
+HTTP service access checks use the CLI's check-url command for all authenticated
+requests and urllib directly (with connect_to TCP override) for anonymous requests.
 
 Python 3.6+ required. Zero external dependencies.
 """
 
 import atexit
+import http.client
 import http.cookiejar
 import json
 import os
@@ -50,6 +52,57 @@ class _UnavailableClient:
         raise SkipTest(self._skip_msg)
 
 
+# ── TCP connect-to override (mirrors dockside_cli._ConnectToHandler) ──────────
+
+class _ConnectToHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that dials a forced host/port for the TCP leg while
+    keeping the original hostname for TLS SNI."""
+    _force_host = None
+    _force_port = None
+
+    def connect(self):
+        self.sock = self._create_connection(
+            (self._force_host or self.host, self._force_port or self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+            server_hostname = self._tunnel_host
+        else:
+            server_hostname = self.host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class _ConnectToHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler that TCP-connects to a forced address while preserving
+    the original hostname for TLS SNI and the HTTP Host header."""
+
+    def __init__(self, connect_to, context):
+        super().__init__(context=context)
+        if ':' in connect_to:
+            host, _, port = connect_to.rpartition(':')
+            self._force_host = host
+            self._force_port = int(port)
+        else:
+            self._force_host = connect_to
+            self._force_port = None
+
+    def https_open(self, req):
+        force_host = self._force_host
+        force_port = self._force_port
+        ctx        = self._context
+
+        def conn_factory(host, **kwargs):
+            kwargs['context'] = ctx
+            conn = _ConnectToHTTPSConnection(host, **kwargs)
+            conn._force_host = force_host
+            conn._force_port = force_port
+            return conn
+
+        return self.do_open(conn_factory, req)
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _fields_to_args(fields):
@@ -60,10 +113,16 @@ def _fields_to_args(fields):
     return args
 
 
-def http_check(url, host_header=None, cookies=None, verify_ssl=False, timeout=10):
+def http_check(url, connect_to=None, host_header=None, cookies=None,
+               verify_ssl=False, timeout=10):
     """
     HTTP GET to url; return (status_code, body_bytes).
-    Does not follow 4xx/5xx redirects (but does follow 3xx).
+    Does not follow redirects (returns 3xx as-is).
+
+    connect_to: 'host[:port]' — override TCP target while keeping URL hostname
+                for TLS SNI.  Use for local/harness mode anonymous checks.
+    host_header: legacy override (kept for backward compatibility; prefer
+                 constructing the canonical URL and using connect_to instead).
     cookies: dict of {name: value} or http.cookiejar.CookieJar instance.
     """
     ctx = ssl.create_default_context()
@@ -79,14 +138,25 @@ def http_check(url, host_header=None, cookies=None, verify_ssl=False, timeout=10
         for name, value in cookies.items():
             _inject_simple_cookie(jar, url, name, value)
 
-    opener = urllib.request.build_opener(
+    handlers = [
         urllib.request.HTTPCookieProcessor(jar),
-        urllib.request.HTTPSHandler(context=ctx),
         _NoRedirectHandler(),
-    )
-    req = urllib.request.Request(url)
+    ]
+    if connect_to:
+        handlers.append(_ConnectToHandler(connect_to, ctx))
+    else:
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
     if host_header:
-        req.add_unredirected_header('Host', host_header)
+        # Legacy: add a Host header override handler
+        class _HostOverride(urllib.request.BaseHandler):
+            def http_request(self, req):
+                req.add_unredirected_header('Host', host_header)
+                return req
+            https_request = http_request
+        handlers.append(_HostOverride())
+
+    opener = urllib.request.build_opener(*handlers)
+    req = urllib.request.Request(url)
     try:
         with opener.open(req, timeout=timeout) as resp:
             return resp.status, resp.read()
@@ -98,10 +168,9 @@ def http_check(url, host_header=None, cookies=None, verify_ssl=False, timeout=10
 
 def _inject_simple_cookie(jar, url, name, value):
     """Add a simple name=value cookie to a CookieJar for the given URL."""
-    import http.cookiejar as cj
     parsed = urllib.parse.urlparse(url)
     domain = parsed.hostname
-    cookie = cj.Cookie(
+    cookie = http.cookiejar.Cookie(
         version=0, name=name, value=value,
         port=None, port_specified=False,
         domain=domain, domain_specified=True, domain_initial_dot=False,
@@ -133,32 +202,46 @@ class DocksideClient:
     """
     Per-user Dockside client.
 
-    Calls 'dockside --output json ...' as a subprocess for all API operations.
-    Maintains a cookie jar (loaded from the CLI's cookie file) for direct HTTP checks.
+    Calls 'dockside --output json ...' as a subprocess for all API operations,
+    including HTTP service checks via the 'check-url' subcommand.
+
+    Parameters
+    ----------
+    session_only : bool
+        If True, no --username/--password are passed to the CLI and
+        DOCKSIDE_CONFIG_DIR is not overridden (uses the system config at
+        ~/.config/dockside/).  Use this when the CLI is already authenticated
+        via a prior 'dockside login'.
     """
 
-    def __init__(self, cli_path, server_url, username, password,
-                 host_header=None, verify_ssl=False, config_dir=None):
+    def __init__(self, cli_path, server_url, username=None, password=None,
+                 connect_to=None, verify_ssl=False, config_dir=None,
+                 session_only=False):
         self._cli = cli_path
         self._server = server_url
         self._username = username
         self._password = password
-        self._host_header = host_header
+        self._connect_to = connect_to
         self._verify_ssl = verify_ssl
-        self._config_dir = config_dir or tempfile.mkdtemp(prefix='dockside-test-')
+        self._session_only = session_only
+        if session_only:
+            self._config_dir = None   # use system config
+        else:
+            self._config_dir = config_dir or tempfile.mkdtemp(prefix='dockside-test-')
         self._cookie_jar = None  # loaded lazily after first _run
 
     def _base_args(self):
         args = [
             '--server', self._server,
             '--output', 'json',
-            '--username', self._username,
-            '--password', self._password,
         ]
+        if not self._session_only:
+            args.extend(['--username', self._username,
+                         '--password', self._password])
         if not self._verify_ssl:
             args.append('--no-verify')
-        if self._host_header:
-            args.extend(['--host-header', self._host_header])
+        if self._connect_to:
+            args.extend(['--connect-to', self._connect_to])
         return args
 
     def _run(self, *cmd_args):
@@ -168,7 +251,11 @@ class DocksideClient:
         # not on the top-level parser).
         cmd = [self._cli] + list(cmd_args[:1]) + self._base_args() + list(cmd_args[1:])
         env = os.environ.copy()
-        env['DOCKSIDE_CONFIG_DIR'] = self._config_dir
+        if self._config_dir:
+            env['DOCKSIDE_CONFIG_DIR'] = self._config_dir
+        else:
+            # session_only: use system config; do not override DOCKSIDE_CONFIG_DIR
+            env.pop('DOCKSIDE_CONFIG_DIR', None)
         debug = os.environ.get('DOCKSIDE_TEST_DEBUG', '').strip() == '1'
         if debug:
             print(f'# DEBUG cmd: {cmd}', file=sys.stderr)
@@ -190,6 +277,8 @@ class DocksideClient:
 
     def _reload_cookie_jar(self):
         """Load/reload the cookie file written by the CLI."""
+        if self._config_dir is None:
+            return
         cookie_file = os.path.join(self._config_dir, 'cookies.txt')
         if not os.path.isfile(cookie_file):
             return
@@ -251,54 +340,55 @@ class DocksideClient:
 
     # ── HTTP service checks ───────────────────────────────────────────────────
 
+    def check_url(self, url, timeout=30):
+        """
+        Fetch url using the CLI check-url command with this user's session cookies.
+        Cookies are injected for the target domain regardless of the server domain.
+        Returns (status_code, body_bytes).
+        """
+        result = self._run('check-url', '--no-redirect', '--timeout', str(timeout), url)
+        if result is None:
+            raise APIError('check-url returned no output')
+        status   = result.get('status')
+        body_str = result.get('body', '')
+        body     = body_str.encode('utf-8') if isinstance(body_str, str) else (body_str or b'')
+        return status, body
+
     def check_service(self, container_name, router_prefix='www',
-                      parent_fqdn=None, timeout=10):
+                      parent_fqdn=None, timeout=30):
         """
         HTTP GET to the container's router URL using this user's session cookies.
         Returns (status_code, body_bytes).
 
         URL construction:
-          local/harness: https://localhost[:<port>] with Host: <prefix>-<name>.<suffix>
-          remote:        https://<prefix>-<name>.<parent_fqdn>
+          local/harness: derives domain suffix from server URL hostname
+                         e.g. server https://www.dockside.test → suffix dockside.test
+                         → service URL https://www-<name>.dockside.test/
+          remote:        https://<prefix>-<name><parent_fqdn>/
+                         parent_fqdn must be supplied (e.g. '.myinstance.example.com')
         """
-        if self._host_header:
-            # local or harness mode: strip first label from host_header to get suffix
-            parts = self._host_header.split('.', 1)
-            suffix = parts[1] if len(parts) > 1 else self._host_header
-            service_host = f'{router_prefix}-{container_name}.{suffix}'
-            # Extract port from server URL if present
-            parsed = urllib.parse.urlparse(self._server)
-            port = parsed.port
-            if port and port != 443:
-                connect_url = f'https://localhost:{port}/'
-            else:
-                connect_url = 'https://localhost/'
-            return http_check(
-                connect_url,
-                host_header=service_host,
-                cookies=self._cookie_jar,
-                verify_ssl=self._verify_ssl,
-                timeout=timeout,
-            )
+        if self._connect_to:
+            # local or harness mode: derive suffix from canonical server hostname
+            parsed   = urllib.parse.urlparse(self._server)
+            hostname = parsed.hostname or ''
+            parts    = hostname.split('.', 1)
+            suffix   = parts[1] if len(parts) > 1 else hostname
+            url = f'https://{router_prefix}-{container_name}.{suffix}/'
         else:
             # remote mode
             if parent_fqdn is None:
                 raise APIError('parent_fqdn required in remote mode for check_service')
-            service_url = f'https://{router_prefix}-{container_name}{parent_fqdn}/'
-            return http_check(
-                service_url,
-                cookies=self._cookie_jar,
-                verify_ssl=self._verify_ssl,
-                timeout=timeout,
-            )
+            url = f'https://{router_prefix}-{container_name}{parent_fqdn}/'
+        return self.check_url(url, timeout=timeout)
 
     def cleanup(self):
         """Remove the temporary config directory."""
         import shutil
-        try:
-            shutil.rmtree(self._config_dir, ignore_errors=True)
-        except Exception:
-            pass
+        if self._config_dir:
+            try:
+                shutil.rmtree(self._config_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 # ── TestCase base class ────────────────────────────────────────────────────────
@@ -322,6 +412,16 @@ class TestCase:
     test_mode = 'remote'       # 'local', 'remote', 'harness'
     harness_container_id = None
     allow_network_modify = None  # None = use mode default; True/False = explicit override
+
+    # Dynamic test resource names (injected by TestRunner; may include suffix)
+    test_username_dev1    = 'inttest-dev1'
+    test_username_dev2    = 'inttest-dev2'
+    test_username_viewer  = 'inttest-viewer'
+    test_role_developer   = 'inttest-developer'
+    test_role_viewer      = 'inttest-viewer-role'
+    test_profile_alpine   = 'inttest-alpine'
+    test_profile_nginx    = 'inttest-nginx'
+    test_password_dev     = 'inttest-testpass'
 
     def setUp(self):
         self._cleanup_names = []
@@ -450,17 +550,18 @@ class TestRunner:
     Discovers and runs TestCase subclasses, emitting TAP-compatible output.
     """
 
-    def __init__(self, cli_path, server_url, credentials, host_header=None,
+    def __init__(self, cli_path, server_url, credentials, connect_to=None,
                  verify_ssl=False, test_mode='remote', harness_container_id=None,
-                 allow_network_modify=None):
+                 allow_network_modify=None, name_attrs=None):
         self._cli_path = cli_path
         self._server_url = server_url
-        self._credentials = credentials  # dict: role -> (username, password)
-        self._host_header = host_header
+        self._credentials = credentials  # dict: role -> (username, password) or (None, None)
+        self._connect_to = connect_to
         self._verify_ssl = verify_ssl
         self._test_mode = test_mode
         self._harness_container_id = harness_container_id
         self._allow_network_modify = allow_network_modify
+        self._name_attrs = name_attrs or {}
         self._clients = {}
         self._active_cases = []
         self._active_class_teardowns = []
@@ -471,16 +572,17 @@ class TestRunner:
         self._setup_clients()
         self._register_cleanup()
 
-    def _make_client(self, username, password):
-        if username is None:
+    def _make_client(self, username, password, session_only=False):
+        if not session_only and username is None:
             return None
         return DocksideClient(
             cli_path=self._cli_path,
             server_url=self._server_url,
             username=username,
             password=password,
-            host_header=self._host_header,
+            connect_to=self._connect_to,
             verify_ssl=self._verify_ssl,
+            session_only=session_only,
         )
 
     def _validate_client(self, client, role):
@@ -495,8 +597,11 @@ class TestRunner:
 
     def _setup_clients(self):
         creds = self._credentials
+        admin_creds = creds['admin']
+        # Admin client: session_only if credentials are (None, None)
+        session_only = (admin_creds[0] is None)
         self._clients = {
-            'admin':  self._make_client(*creds['admin']),
+            'admin':  self._make_client(*admin_creds, session_only=session_only),
             'dev1':   self._validate_client(self._make_client(*creds['dev1']), 'dev1'),
             'dev2':   self._validate_client(self._make_client(*creds['dev2']), 'dev2'),
             'viewer': self._validate_client(self._make_client(*creds['viewer']), 'viewer'),
@@ -536,6 +641,8 @@ class TestRunner:
         case.test_mode = self._test_mode
         case.harness_container_id = self._harness_container_id
         case.allow_network_modify = self._allow_network_modify
+        for attr, value in self._name_attrs.items():
+            setattr(case, attr, value)
 
     def run_module(self, module):
         """Discover and run all TestCase subclasses in module."""
@@ -554,7 +661,8 @@ class TestRunner:
             if name.startswith('test_') and callable(getattr(cls, name))
         )
 
-        # Inject clients as class attributes so setUpClass/tearDownClass can use them
+        # Inject clients and name attrs as class attributes so
+        # setUpClass/tearDownClass can use them
         cls.admin   = self._clients['admin']
         cls.dev1    = self._clients['dev1']
         cls.dev2    = self._clients['dev2']
@@ -563,6 +671,8 @@ class TestRunner:
         cls.test_mode            = self._test_mode
         cls.harness_container_id = self._harness_container_id
         cls.allow_network_modify = self._allow_network_modify
+        for attr, value in self._name_attrs.items():
+            setattr(cls, attr, value)
 
         # Class-level setup
         if hasattr(cls, 'setUpClass') and callable(getattr(cls, 'setUpClass')):

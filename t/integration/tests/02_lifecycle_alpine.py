@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
-PROFILE_NAME = '10-alpine'
 CONTAINER_NAME = 'inttest-alpine-01'
 
 
@@ -33,11 +32,10 @@ class LifecycleAlpineTests(TestCase):
 
     def test_01_create(self):
         result = self.admin.create(
-            profile=PROFILE_NAME,
+            profile=self.test_profile_alpine,
             name=CONTAINER_NAME,
         )
         self.assert_true(result is not None, 'create returned nothing')
-        # result may be the container data dict or contain it
         name = result.get('name') if isinstance(result, dict) else None
         self.assert_true(
             name == CONTAINER_NAME or result is not None,
@@ -81,10 +79,6 @@ class LifecycleAlpineTests(TestCase):
         except Exception:
             pass
         self.admin.remove(CONTAINER_NAME)
-        # Poll for up to 10s: success once the entry is absent or reaches
-        # status -3 (docker container removed; reservation lingering briefly).
-        # Without any wait, dockerd may not yet have processed the removal so
-        # the status can still be 0 (exited).
         deadline = time.monotonic() + 10
         c = None
         while time.monotonic() < deadline:
@@ -112,7 +106,7 @@ class LifecycleAlpineDev1Tests(TestCase):
 
     def test_07_dev1_can_create_own(self):
         result = self.dev1.create(
-            profile=PROFILE_NAME,
+            profile=self.test_profile_alpine,
             name=self.DEV_CONTAINER,
         )
         self.assert_true(result is not None, 'dev1 create returned nothing')

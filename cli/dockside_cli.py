@@ -2116,6 +2116,120 @@ def cmd_profile_rename(args):
         emit(result, args._fmt)
 
 
+def cmd_check_url(args):
+    """
+    Fetch a URL using the current session's cookies and report the HTTP status.
+
+    Session cookies (scoped to the server domain) are injected into the request
+    for the target URL regardless of domain — matching the browser behaviour
+    when accessing a devtainer sub-domain.  Use --connect-to to route the TCP
+    connection to a different address (e.g. localhost:<port> for local/harness
+    testing) while keeping the canonical hostname for TLS SNI and the Host header.
+    """
+    opener, _server = _client(args)
+    url     = args.url
+    timeout = getattr(args, 'timeout', 30)
+    verify  = not getattr(args, 'no_verify', False)
+    connect_to = (getattr(args, 'connect_to', None)
+                  or os.environ.get('DOCKSIDE_CONNECT_TO'))
+
+    # Build a cross-domain SSL context
+    ctx = ssl.create_default_context()
+    if not verify:
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+
+    # Re-inject server session cookies into a new jar scoped to the target host
+    target_host = urllib.parse.urlparse(url).hostname or ''
+    target_jar  = http.cookiejar.CookieJar()
+    for c in opener._jar:
+        rest = dict(getattr(c, '_rest', {}))
+        target_jar.set_cookie(http.cookiejar.Cookie(
+            version=c.version, name=c.name, value=c.value,
+            port=None, port_specified=False,
+            domain=target_host, domain_specified=True, domain_initial_dot=False,
+            path='/', path_specified=True,
+            secure=False, expires=c.expires, discard=c.discard,
+            comment=c.comment, comment_url=c.comment_url, rest=rest,
+        ))
+
+    handlers = [urllib.request.HTTPCookieProcessor(target_jar)]
+    if getattr(args, 'no_redirect', False):
+        class _NoRedir(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **kw):
+                return None
+            def http_error_301(self, req, fp, code, msg, hdrs):
+                raise urllib.error.HTTPError(req.full_url, code, msg, hdrs, fp)
+            def http_error_302(self, req, fp, code, msg, hdrs):
+                raise urllib.error.HTTPError(req.full_url, code, msg, hdrs, fp)
+            def http_error_303(self, req, fp, code, msg, hdrs):
+                raise urllib.error.HTTPError(req.full_url, code, msg, hdrs, fp)
+        handlers.append(_NoRedir())
+    else:
+        handlers.append(urllib.request.HTTPRedirectHandler())
+    if connect_to:
+        handlers.append(_ConnectToHandler(connect_to, ctx))
+    else:
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+
+    check_opener = urllib.request.build_opener(*handlers)
+    req = urllib.request.Request(url)
+    try:
+        with check_opener.open(req, timeout=timeout) as resp:
+            status      = resp.status
+            body        = resp.read()
+            resp_hdrs   = dict(resp.headers)
+    except urllib.error.HTTPError as e:
+        status    = e.code
+        body      = e.read()
+        resp_hdrs = dict(e.headers) if e.headers else {}
+    except urllib.error.URLError as e:
+        die(f'Connection error: {e.reason}')
+
+    result = {
+        'status':  status,
+        'url':     url,
+        'body':    body.decode('utf-8', errors='replace'),
+        'headers': resp_hdrs,
+    }
+
+    if args._fmt in ('json', 'yaml'):
+        emit(result, args._fmt)
+    else:
+        print(f'STATUS {status}')
+        for k, v in resp_hdrs.items():
+            print(f'{k}: {v}')
+        print()
+        sys.stdout.write(result['body'])
+
+
+def cmd_whoami(args):
+    """Show the authenticated user and their effective (server-merged) permissions."""
+    opener, server = _client(args)
+    try:
+        data = _do_get(opener, server.rstrip('/') + '/me/')
+    except APIError as e:
+        die(str(e))
+    record = data.get('data') or {}
+
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(f"username:  {record.get('username', '')}")
+        print(f"id:        {record.get('id', '')}")
+        print(f"role:      {record.get('role', '')}")
+        perms = (record.get('permissions') or {}).get('actions') or {}
+        if perms:
+            print('permissions:')
+            for k, v in sorted(perms.items()):
+                print(f'  {k}: {v}')
+        resources = record.get('resources') or {}
+        if resources:
+            print('resources:')
+            for k, v in sorted(resources.items()):
+                print(f'  {k}: {json.dumps(v)}')
+
+
 # ── Argument parser ───────────────────────────────────────────────────────────
 
 EPILOG = """\
@@ -2494,6 +2608,42 @@ def build_parser():
     sp.add_argument('profile_name', metavar='PROFILE', help='Current profile ID')
     sp.add_argument('new_name', metavar='NEW_PROFILE', help='New profile ID')
     sp.set_defaults(func=cmd_profile_rename)
+
+    # ── check-url ──────────────────────────────────────────────────────────────
+    sp = sub.add_parser(
+        'check-url',
+        help='Fetch a URL using the current session and report the HTTP status',
+        description=(
+            'Make an HTTP GET to URL using the current session cookies.\n\n'
+            'Cookies are injected for the target domain regardless of the server\n'
+            'domain — use this to check devtainer sub-domain URLs from scripts.\n\n'
+            'Use --connect-to to route TCP to a local port while keeping the\n'
+            'canonical hostname for TLS SNI (local/harness testing).'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('url', metavar='URL', help='HTTPS URL to fetch')
+    sp.add_argument('--no-redirect', dest='no_redirect', action='store_true',
+                    help='Do not follow HTTP redirects; return the 3xx status directly')
+    sp.add_argument('--timeout', type=int, default=30, metavar='SECS',
+                    help='Request timeout in seconds (default: 30)')
+    sp.set_defaults(func=cmd_check_url)
+
+    # ── whoami ─────────────────────────────────────────────────────────────────
+    sp = sub.add_parser(
+        'whoami',
+        help='Show the authenticated user and their effective permissions',
+        description=(
+            'Display the currently authenticated user and their effective\n'
+            '(role-merged) permissions and resources as returned by the server.\n\n'
+            'Useful for verifying that the stored session is valid and that\n'
+            'the user has the required permissions before running tests or scripts.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.set_defaults(func=cmd_whoami)
 
     return p
 

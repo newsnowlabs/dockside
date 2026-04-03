@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
-PROFILE_NAME = '11-debian'
+PROFILE_NAME  = '11-debian'
 IDE_CONTAINER = 'inttest-ide-01'
 
 
@@ -33,6 +33,10 @@ class IdeTests(TestCase):
         if data.get('status') != 1:
             self.admin.start(IDE_CONTAINER, wait=True, timeout=180)
 
+    def _get_parent_fqdn(self):
+        data = self.admin.get_container(IDE_CONTAINER)
+        return (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN')
+
     def test_01_create_no_ide_override(self):
         name = 'inttest-ide-noide'
         self.register_cleanup(name)
@@ -45,8 +49,7 @@ class IdeTests(TestCase):
     def test_02_create_with_ide_override(self):
         """Create with openvscode, start, and verify IDE URL is reachable."""
         self._ensure_created_and_started()
-        # Check IDE service is reachable (any response, including 302, counts)
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
+        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.admin.check_service(
                 IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
@@ -58,15 +61,11 @@ class IdeTests(TestCase):
         except APIError as e:
             self.skip(f'Could not reach IDE URL: {e}')
 
-    def _get_parent_fqdn(self):
-        data = self.admin.get_container(IDE_CONTAINER)
-        return (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN')
-
     def test_03_ide_not_accessible_to_viewer(self):
         """Viewer cannot access IDE (IDE is always owner/developer mode)."""
         self._ensure_created_and_started()
-        self.admin.update(IDE_CONTAINER, viewers='testviewer')
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
+        self.admin.update(IDE_CONTAINER, viewers=self.test_username_viewer)
+        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.viewer.check_service(
                 IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
@@ -76,10 +75,10 @@ class IdeTests(TestCase):
             self.skip(f'Could not reach IDE URL: {e}')
 
     def test_04_ide_accessible_to_named_developer(self):
-        """Named developer (testdev1) can access IDE."""
+        """Named developer (dev1) can access IDE."""
         self._ensure_created_and_started()
-        self.admin.update(IDE_CONTAINER, developers='testdev1')
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
+        self.admin.update(IDE_CONTAINER, developers=self.test_username_dev1)
+        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev1.check_service(
                 IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
@@ -92,10 +91,11 @@ class IdeTests(TestCase):
             self.skip(f'Could not reach IDE URL: {e}')
 
     def test_05_ide_accessible_to_dev2_when_added(self):
-        """After adding testdev2 as developer, testdev2 can access IDE."""
+        """After adding dev2 as developer, dev2 can access IDE."""
         self._ensure_created_and_started()
-        self.admin.update(IDE_CONTAINER, developers='testdev1,testdev2')
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
+        self.admin.update(IDE_CONTAINER,
+                          developers=f'{self.test_username_dev1},{self.test_username_dev2}')
+        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
                 IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
@@ -108,11 +108,12 @@ class IdeTests(TestCase):
             self.skip(f'Could not reach IDE URL: {e}')
 
     def test_06_ide_denied_after_dev2_removed(self):
-        """After removing testdev2 from developers, testdev2 gets 410 for IDE."""
+        """After removing dev2 from developers, dev2 gets 410 for IDE."""
         self._ensure_created_and_started()
-        self.admin.update(IDE_CONTAINER, developers='testdev1,testdev2')
-        self.admin.update(IDE_CONTAINER, developers='testdev1')
-        parent_fqdn = None if self.admin._host_header else self._get_parent_fqdn()
+        self.admin.update(IDE_CONTAINER,
+                          developers=f'{self.test_username_dev1},{self.test_username_dev2}')
+        self.admin.update(IDE_CONTAINER, developers=self.test_username_dev1)
+        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
                 IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
