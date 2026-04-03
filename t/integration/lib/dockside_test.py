@@ -246,19 +246,21 @@ class DocksideClient:
 
     def _run(self, *cmd_args):
         """Run CLI subcommand; return parsed JSON or raise APIError."""
-        # Subcommand must come before global flags so argparse routes to the
-        # correct subparser (global flags like --server are only defined there,
-        # not on the top-level parser).
-        cmd = [self._cli] + list(cmd_args[:1]) + self._base_args() + list(cmd_args[1:])
+        # All subcommand tokens must come before global flags so that nested
+        # sub-subcommand parsers (e.g. 'role create', 'user create') see their
+        # subcommand word before any --server / --output / ... flags.
+        # Global flags are appended at the end; argparse accepts them anywhere.
+        cmd = [self._cli] + list(cmd_args) + self._base_args()
         env = os.environ.copy()
         if self._config_dir:
             env['DOCKSIDE_CONFIG_DIR'] = self._config_dir
         else:
             # session_only: use system config; do not override DOCKSIDE_CONFIG_DIR
             env.pop('DOCKSIDE_CONFIG_DIR', None)
-        debug = os.environ.get('DOCKSIDE_TEST_DEBUG', '').strip() == '1'
-        if debug:
-            print(f'# DEBUG cmd: {cmd}', file=sys.stderr)
+        verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
+        debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
+        if verbose or debug:
+            print(f'# CMD: {" ".join(cmd)}', file=sys.stderr)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if debug:
             print(f'# DEBUG rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}',
