@@ -147,30 +147,25 @@ sub createProfile ($self, $name, $args) {
    die Exception->new( 'msg' => "Profile '$name' already exists" )
       if -f _profile_file($name);
 
-   my $record;
-   if ( defined $args->{'_json'} && length $args->{'_json'} ) {
-      $record = Data::parse_json( $args->{'_json'} );
-   }
-   else {
-      $record = {
-         'name'    => $name,
-         'version' => Profile::CURRENT_VERSION(),
-         'active'  => JSON::false,
-         'images'  => [],
-         'networks' => [],
-      };
-   }
+   # Start from minimal defaults and overlay every supplied arg.  When the
+   # caller posts a full profile body (--from-json / Vue editor), all fields
+   # are present in $args and completely replace the defaults.  When only a
+   # few fields are supplied (--set / --active), the defaults fill in the rest.
+   my $record = {
+      'version' => Profile::CURRENT_VERSION(),
+      'active'  => JSON::false,
+      'images'  => [],
+      'networks' => [],
+   };
 
-   # Overlay any additional scalar args onto the record.  'id' is the filename
-   # key (not stored in the body) and '_json' is already decoded above; both
-   # are excluded.
-   apply_args_to_record( $record, $args, qw(id _json) );
+   # 'id' is the filename key and is not stored in the record body.
+   apply_args_to_record( $record, $args, qw(id) );
 
    # Default the display name to the profile id when not supplied.
    $record->{'name'} //= $name;
 
-   # Coerce 'active' to a proper JSON boolean (the Profile validator requires
-   # this type; form-encoded input arrives as string '1' or '0').
+   # Coerce 'active' to a JSON boolean so it round-trips correctly through
+   # JSON serialisation regardless of how the caller encoded it.
    if ( exists $record->{'active'} ) {
       $record->{'active'} = $record->{'active'} ? JSON::true : JSON::false;
    }
@@ -187,11 +182,11 @@ sub createProfile ($self, $name, $args) {
    return { 'id' => $name, %$record };
 }
 
-# Update an existing profile.  Two update modes:
-#   _json present — the full new body is decoded from _json (full replacement),
-#                   then any additional scalar args are overlaid.
-#   _json absent  — the existing on-disk body is used as the base and only the
-#                   explicitly provided $args fields are updated (partial update).
+# Update an existing profile.  The existing on-disk record is the base; every
+# supplied arg is overlaid on top via apply_args_to_record.  When the caller
+# sends a full profile body (--from-json / Vue editor) all standard fields are
+# present in $args and effectively replace the existing values.  When only a
+# few fields are supplied (--set / --active) only those fields change.
 # The update runs inside a cacheReadWrite lock so that no concurrent write can
 # interleave between the read and the write.
 sub updateProfile ($self, $name, $args) {
@@ -203,18 +198,10 @@ sub updateProfile ($self, $name, $args) {
 
    my $record;
    cacheReadWrite( _profile_file($name), sub ($oldData) {
-      my $base = Data::parse_json($oldData);
+      $record = Data::parse_json($oldData);
 
-      if ( defined $args->{'_json'} && length $args->{'_json'} ) {
-         # Full replacement: decode _json as the new body.
-         $record = Data::parse_json( $args->{'_json'} );
-      }
-      else {
-         # Partial update: start from the existing on-disk record.
-         $record = $base;
-      }
-
-      apply_args_to_record( $record, $args, qw(id _json) );
+      # 'id' is the filename key and is not stored in the record body.
+      apply_args_to_record( $record, $args, qw(id) );
 
       # Coerce 'active' to a JSON boolean (see createProfile for rationale).
       if ( exists $record->{'active'} ) {

@@ -470,15 +470,20 @@ def _do_get_text(opener, url, timeout=60):
         raise APIError(f'Connection error: {e.reason}')
 
 
-def _do_post(opener, url, params, timeout=30):
-    """POST url with form-encoded params → parsed JSON, raising APIError on failure."""
-    payload = _encode_params(params).encode('utf-8')
+def _do_post(opener, url, params, timeout=30, as_json=False):
+    """POST url with form-encoded (default) or JSON params → parsed JSON, raising APIError on failure."""
+    if as_json:
+        payload = json.dumps(params).encode('utf-8')
+        content_type = 'application/json'
+    else:
+        payload = _encode_params(params).encode('utf-8')
+        content_type = 'application/x-www-form-urlencoded'
     req = urllib.request.Request(
         url,
         data=payload,
         headers={
             'Accept': 'application/json',
-            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Type': content_type,
         },
     )
     try:
@@ -732,13 +737,13 @@ def api_profile_get(opener, server, name):
 
 
 def api_profile_create(opener, server, fields):
-    data = _do_post(opener, server.rstrip('/') + '/profiles/create', fields, timeout=30)
+    data = _do_post(opener, server.rstrip('/') + '/profiles/create', fields, timeout=30, as_json=True)
     return data.get('data')
 
 
 def api_profile_update(opener, server, name, fields):
     url = server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='') + '/update'
-    data = _do_post(opener, url, fields, timeout=30)
+    data = _do_post(opener, url, fields, timeout=30, as_json=True)
     return data.get('data')
 
 
@@ -1147,16 +1152,10 @@ def _collect_profile_fields(args, create=False):
     from_json = getattr(args, 'from_json', None)
     if from_json:
         fields = _load_json_input(from_json)
-        # Wrap as _json so the backend uses it as a full-record replacement
-        # rather than applying individual top-level keys, which avoids losing
-        # complex nested structures (routers, mounts, etc.) that _encode_params
-        # would serialise as individual dot-path parameters.
-        fields = {'_json': json.dumps(fields)}
 
     active = getattr(args, 'active', None)
     if active is not None:
-        # Send as a JSON literal so the server stores a proper JSON boolean.
-        fields['active'] = json.dumps(active)
+        fields['active'] = active  # Python bool; preserved by JSON body encoding
 
     fields.update(_parse_set_args(getattr(args, 'set', None) or []))
 
