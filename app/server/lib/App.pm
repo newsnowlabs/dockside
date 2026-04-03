@@ -14,7 +14,8 @@ use URI::Escape;
 use Try::Tiny;
 use File::Path;
 use Util qw(flog wlog run run_pty YYYYMMDDHHMMSS);
-use Data qw($CONFIG $VERSION);
+use Data qw($CONFIG $VERSION $HOSTINFO $HOSTNAME);
+use Containers;
 use Profile;
 use Reservation;
 use Request;
@@ -76,6 +77,79 @@ sub split_args ($queryString) {
 
    # Map once more to eliminate any hash key mapping to undef
    return { map { $_ // '' } %hash };
+}
+
+# Parse a POST request body into a normalised hashref whose values are always
+# decoded Perl structures (numbers, booleans, hashrefs, arrayrefs) — never raw
+# JSON strings.  This single normalisation point means apply_args_to_record()
+# in Util.pm never needs to distinguish between content types.
+#
+# Two content-type paths:
+#   application/json  — decode the whole body as a JSON object directly.
+#                       Returns {} if the body is not a JSON object.
+#   form-encoded      — split key=value pairs, URL-unescape each token, then
+#                       JSON-decode each individual value so the result matches
+#                       the shape of the JSON path.  This preserves CLI support:
+#                       the CLI sends form-encoded bodies whose values are
+#                       JSON-stringified (e.g. permissions='{"actions":{...}}').
+#                       Plain string values that are not valid JSON are kept as-is.
+#
+# Edge case: a key without a value in form-encoded input (e.g. "key1&key2=v")
+# produces a hash entry with an undef value.  apply_args_to_record() skips
+# undef-valued keys, so this is handled safely downstream.
+#
+# Special key '_unset': must be a JSON array of dotted-path keys to delete from
+# the record.  If decoding fails or yields a non-array, it defaults to [].
+sub parse_body_args ($r) {
+   my $body = $r->request_body // '';
+   my $ct   = $r->header_in('Content-Type') // '';
+
+   if ( $ct =~ m{application/json}i && length $body ) {
+      my $decoded = eval { JSON::XS->new->utf8->decode($body) };
+      # Guard: only accept a JSON object at the top level.  A non-object body
+      # (array, scalar, malformed JSON) is treated as an empty argument set.
+      return ref($decoded) eq 'HASH' ? $decoded : {};
+   }
+
+   # Form-encoded fallback: split on '=' and '&', URL-decode each token, then
+   # JSON-decode each value so the result has the same shape as the JSON path.
+   my %flat = map { uri_unescape($_) } split( /[=&]/, $body );
+   my %decoded;
+   for my $key ( keys %flat ) {
+      my $v = $flat{$key};
+      if ( $key eq '_unset' ) {
+         # _unset must be a JSON array of dotted-path keys; treat decode failure
+         # or a non-array result as an empty list so callers see a safe value.
+         my $list = eval { decode_json($v) };
+         $decoded{$key} = ( ref $list eq 'ARRAY' ) ? $list : [];
+      }
+      elsif ( defined $v && length $v ) {
+         # Attempt JSON decode; fall back to plain string if $v is not valid JSON.
+         # This covers both simple scalars ("alice") and structured values
+         # ('{"actions":{"manageUsers":true}}') sent by the CLI.
+         my $d = eval { decode_json($v) };
+         $decoded{$key} = $@ ? $v : $d;
+      }
+      else {
+         # Empty or undef value: pass through as-is.
+         $decoded{$key} = $v;
+      }
+   }
+   return \%decoded;
+}
+
+# Return a merged args hashref for the request.
+# For POST requests the body is parsed (via parse_body_args) and merged with
+# any query-string args; query-string values take precedence on collision so
+# that routing parameters cannot be silently overridden by a crafted body.
+# For non-POST requests only the query-string is used.
+sub get_args ($r, $querystring) {
+   if ( $r->request_method eq 'POST' ) {
+      my $body_args = parse_body_args($r);
+      my $qs_args   = split_args($querystring);
+      return { %$body_args, %$qs_args };   # query-string wins on collision
+   }
+   return split_args($querystring);
 }
 
 sub json ($r, $code, $data) {
@@ -294,7 +368,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # Enable for verbose request logging:
    # flog("App: route=$route; User=" . $User->username);
 
-   if( $route eq '/' || $route =~ m!^/container/! ) {
+   if( $route eq '/' || $route =~ m!^/(container|admin|account)(/|$)! ) {
       ###############################
       # Display main page HTML
       #
@@ -311,7 +385,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
                         {
                            # FIXME: set 'user' => $User, after simply either (a) changing User object definition to make 'permissions' the derivedPermissions; or (b) the Vue app to check user.derivedPermissions.
                            'user'    => {
-                              'username' => $User->username,
+                              %{ $User->details() }, # username, name, email, id
                               'role' => $User->role, # User's role
                               'role_as_meta' => $User->role_as_meta, # User's role in metadata format
                               'permissions' => { 'actions' => $User->permissions() } # User's permissions
@@ -345,6 +419,28 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # AJAX SERVICES
    #
 
+   # For POST requests to API endpoints, the nginx Perl module requires the body
+   # to be read via has_request_body() before it is accessible via request_body().
+   # We capture $User and $parentFQDN in the closure so _api_handler can use them.
+   if ( $r->request_method eq 'POST' ) {
+      if ( $r->has_request_body(
+            sub { return _api_handler( $_[0], $User, $_[0]->args, $parentFQDN ) }
+         )) {
+         return nginx::OK;
+      }
+      return nginx::HTTP_BAD_REQUEST;
+   }
+
+   return _api_handler( $r, $User, $querystring, $parentFQDN );
+}
+
+# ---------------------------------------------------------------------------
+# _api_handler — dispatches all authenticated API requests.
+# Called directly for GET; called from within a has_request_body() callback
+# for POST (at which point $r->request_body is populated and get_args() works).
+# ---------------------------------------------------------------------------
+sub _api_handler ($r, $User, $querystring, $parentFQDN) {
+   my $route = $r->uri;
    my $type = 'json';
    try {
 
@@ -419,6 +515,47 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       ######################################
+      # Host resources — runtimes, networks, IDEs, auth modes
+      # Used by the admin UI to populate resource suggestion lists.
+      #
+
+      if( $route =~ m!^/resources/?$! ) {
+         die Exception->new( 'msg' => "You need the 'manageUsers' or 'manageProfiles' permission" )
+            unless $User->has_permission('manageUsers') || $User->has_permission('manageProfiles');
+         my @networks = sort { $a cmp $b } keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} };
+         my @runtimes = sort { $a cmp $b } keys %{ ($HOSTINFO->{'docker'} // {})->{'Runtimes'} // {} };
+         my @IDEs     = @{ $HOSTINFO->{'IDEs'} // [] };
+         return json($r, 200, {
+            'status' => '200',
+            'data'   => {
+               'runtimes'  => \@runtimes,
+               'networks'  => \@networks,
+               'IDEs'      => \@IDEs,
+               'authModes' => ['user', 'developer', 'public', 'viewer', 'owner'],
+            }
+         });
+      }
+
+      ######################################
+      # Account (self-service) — any authenticated user
+      #
+
+      if( $route =~ m!^/me/?$! ) {
+         my $record = $User->getSelf();
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/me/update/?$! ) {
+         my $args = get_args($r, $querystring);
+         my $record = $User->updateSelf($args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/me/profiles/?$! ) {
+         return json($r, 200, { 'status' => '200', 'data' => $User->profiles() });
+      }
+
+      ######################################
       # User management
       #
 
@@ -428,7 +565,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       if( $route =~ m!^/users/create/?$! ) {
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->createUser($args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
@@ -442,7 +579,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
 
       if( $route =~ m!^/users/([^/]+)/update/?$! ) {
          my $username = $1;
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->updateUser($username, $args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
@@ -463,7 +600,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       if( $route =~ m!^/roles/create/?$! ) {
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $name = $args->{'name'}
             or die Exception->new( 'msg' => "name is required" );
          my $record = $User->createRole($name, $args);
@@ -478,7 +615,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
 
       if( $route =~ m!^/roles/([^/]+)/update/?$! ) {
          my $name = $1;
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->updateRole($name, $args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
@@ -486,6 +623,51 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       if( $route =~ m!^/roles/([^/]+)/remove/?$! ) {
          my $name = $1;
          my $result = $User->removeRole($name);
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
+      ######################################
+      # Profile management
+      #
+
+      if( $route =~ m!^/profiles/?$! ) {
+         my $args = split_args($querystring);
+         return json($r, 200, { 'status' => '200', 'data' => $User->listProfiles($args) });
+      }
+
+      if( $route =~ m!^/profiles/create/?$! ) {
+         my $args = get_args($r, $querystring);
+         my $id = $args->{'id'}
+            or die Exception->new( 'msg' => "id is required" );
+         my $record = $User->createProfile($id, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/?$! && $r->request_method eq 'GET' ) {
+         my $name = $1;
+         my $args = split_args($querystring);
+         return json($r, 200, { 'status' => '200', 'data' => $User->getProfile($name, $args) });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/update/?$! ) {
+         my $name = $1;
+         my $args = get_args($r, $querystring);
+         my $record = $User->updateProfile($name, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/remove/?$! ) {
+         my $name = $1;
+         my $result = $User->removeProfile($name);
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/rename/?$! ) {
+         my $name = $1;
+         my $args = split_args($querystring);
+         my $new_name = $args->{'new_name'}
+            or die Exception->new( 'msg' => "new_name is required" );
+         my $result = $User->renameProfile($name, $new_name, $args);
          return json($r, 200, { 'status' => '200', 'data' => $result });
       }
 

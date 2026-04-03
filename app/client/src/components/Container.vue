@@ -284,19 +284,17 @@
          container: Object
       },
       data() {
-         let profiles = window.dockside.profiles;
-         let profileNames = Object.keys(profiles).sort();
-
          return {
             userName: (window.dockside.viewers.find(viewer => viewer.username === this.container.meta.owner) || []).name,
-            profiles: profiles,
-            profileNames: profileNames,
             form: {
             }
          };
       },
       created() {
-         if(this.isPrelaunchMode) this.initialiseForm();
+         if(this.isPrelaunchMode) {
+            this.$store.dispatch('account/fetchLaunchProfiles');
+            this.initialiseForm();
+         }
       },
       computed: {
          ...mapGetters([
@@ -304,8 +302,15 @@
             'isEditMode',
             'isPrelaunchMode'
          ]),
-         ...mapState([
-         ]),
+         ...mapState({ profiles: state => state.account.launchProfiles }),
+         profileNames() {
+            // Guard against launchProfiles being null/undefined.  This can happen
+            // transiently if the server returns a non-data response (e.g. a 302
+            // redirect during a restart) and assertDataObject in account.js throws,
+            // leaving the store's launchProfiles at its last known-good value or the
+            // bootstrap value.  The || {} prevents Object.keys from throwing.
+            return Object.keys(this.profiles || {}).sort();
+         },
          runtimes() {
             return (this.profile && this.profile.runtimes) ? this.profile.runtimes : [];
          },

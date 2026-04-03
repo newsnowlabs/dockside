@@ -13,6 +13,7 @@
     "@johmun/vue-tags-input": "^2.1.0",
     "@trevoreyre/autocomplete-vue": "^2.4.1",
     "axios": "^1.7.7",
+    "json-editor-vue": "^0.18.1",
     "bootstrap": "^4.6.2",
     "bootstrap-vue": "^2.23.1",
     "vue": "^2.7.16",

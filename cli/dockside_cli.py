@@ -470,6 +470,38 @@ def _do_get_text(opener, url, timeout=60):
         raise APIError(f'Connection error: {e.reason}')
 
 
+def _do_post(opener, url, params, timeout=30):
+    """POST url with form-encoded params → parsed JSON, raising APIError on failure."""
+    payload = _encode_params(params).encode('utf-8')
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+    )
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as e:
+        body = e.read()
+        try:
+            data = json.loads(body)
+            raise APIError(data.get('msg') or str(e), e.code)
+        except (json.JSONDecodeError, ValueError):
+            raise APIError(f'HTTP {e.code}: {e.reason}', e.code)
+    except urllib.error.URLError as e:
+        raise APIError(f'Connection error: {e.reason}')
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        raise APIError('Server returned non-JSON response')
+    if str(data.get('status', '200')) not in ('200', '201'):
+        raise APIError(data.get('msg') or 'Unknown API error', data.get('status'))
+    return data
+
+
 # ── Cookie injection ──────────────────────────────────────────────────────────
 
 def _inject_cookie(jar, server_url, name, value):
@@ -641,16 +673,13 @@ def api_user_get(opener, server, username, sensitive=False):
 
 
 def api_user_create(opener, server, fields):
-    qs = _encode_params(fields)
-    data = _do_get(opener, server.rstrip('/') + '/users/create?' + qs, timeout=30)
+    data = _do_post(opener, server.rstrip('/') + '/users/create', fields, timeout=30)
     return data.get('data')
 
 
 def api_user_update(opener, server, username, fields):
-    qs = _encode_params(fields)
-    url = (server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='')
-           + '/update?' + qs)
-    data = _do_get(opener, url, timeout=30)
+    url = server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='') + '/update'
+    data = _do_post(opener, url, fields, timeout=30)
     return data.get('data')
 
 
@@ -687,6 +716,42 @@ def api_role_update(opener, server, name, fields):
 
 def api_role_remove(opener, server, name):
     url = server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='') + '/remove'
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
+
+
+def api_profile_list(opener, server):
+    data = _do_get(opener, server.rstrip('/') + '/profiles')
+    return data.get('data') or []
+
+
+def api_profile_get(opener, server, name):
+    url = server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='')
+    data = _do_get(opener, url)
+    return data.get('data')
+
+
+def api_profile_create(opener, server, fields):
+    data = _do_post(opener, server.rstrip('/') + '/profiles/create', fields, timeout=30)
+    return data.get('data')
+
+
+def api_profile_update(opener, server, name, fields):
+    url = server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='') + '/update'
+    data = _do_post(opener, url, fields, timeout=30)
+    return data.get('data')
+
+
+def api_profile_remove(opener, server, name):
+    url = (server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='') + '/remove')
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data')
+
+
+def api_profile_rename(opener, server, name, new_name):
+    qs = _encode_params({'new_name': new_name})
+    url = (server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='')
+           + '/rename?' + qs)
     data = _do_get(opener, url, timeout=30)
     return data.get('data')
 
@@ -1055,6 +1120,51 @@ def _add_role_fields(p):
     p.add_argument('--from-json', metavar='FILE|-',
                    help='Read base record from a JSON file (use - for stdin); '
                         'other flags take precedence')
+
+
+def _add_profile_fields(p, create=False):
+    """Fields for profile create/edit."""
+    p.add_argument('--active', dest='active', action='store_true', default=None,
+                   help='Mark profile as active')
+    p.add_argument('--no-active', dest='active', action='store_false',
+                   help='Mark profile as inactive (draft/disabled)')
+    p.add_argument('--set', metavar='KEY=VALUE', action='append',
+                   help='Set a nested property via dot-notation (repeatable), e.g. '
+                        '--set name="My Profile" or '
+                        "--set images='[\"ubuntu:*\"]' ; "
+                        'use --set KEY=@file.json to read value from a JSON file')
+    p.add_argument('--unset', metavar='KEY', action='append',
+                   help='Delete a nested property via dot-notation key (repeatable), '
+                        'e.g. --unset security.apparmor')
+    p.add_argument('--from-json', metavar='FILE|-',
+                   help='Read full profile record from a JSON file (use - for stdin); '
+                        'other flags take precedence')
+
+
+def _collect_profile_fields(args, create=False):
+    """Build the fields dict for a profile create/edit API call."""
+    fields = {}
+    from_json = getattr(args, 'from_json', None)
+    if from_json:
+        fields = _load_json_input(from_json)
+        # Wrap as _json so the backend uses it as a full-record replacement
+        # rather than applying individual top-level keys, which avoids losing
+        # complex nested structures (routers, mounts, etc.) that _encode_params
+        # would serialise as individual dot-path parameters.
+        fields = {'_json': json.dumps(fields)}
+
+    active = getattr(args, 'active', None)
+    if active is not None:
+        # Send as a JSON literal so the server stores a proper JSON boolean.
+        fields['active'] = json.dumps(active)
+
+    fields.update(_parse_set_args(getattr(args, 'set', None) or []))
+
+    unset = getattr(args, 'unset', None) or []
+    if unset:
+        fields['_unset'] = unset
+
+    return fields
 
 
 def _add_shared_fields(p):
@@ -1913,6 +2023,99 @@ def cmd_role_remove(args):
     print(f'Role {args.role_name!r} removed.')
 
 
+# ── Profile command implementations ───────────────────────────────────────────
+
+def cmd_profile_list(args):
+    opener, server = _client(args)
+    try:
+        profiles = api_profile_list(opener, server)
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(profiles, args._fmt)
+        return
+    if not profiles:
+        print('No profiles found.')
+        return
+    for pr in profiles:
+        pid    = pr.get('id', '')
+        name   = pr.get('name', '') or ''
+        active = pr.get('active', False)
+        print(f'{pid:<30}  active={str(active):<5}  name={name!r}')
+
+
+def cmd_profile_get(args):
+    opener, server = _client(args)
+    try:
+        record = api_profile_get(opener, server, args.profile_name)
+    except APIError as e:
+        die(str(e))
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_profile_create(args):
+    opener, server = _client(args)
+    fields = _collect_profile_fields(args, create=True)
+    fields['id'] = args.profile_name
+    try:
+        record = api_profile_create(opener, server, fields)
+    except APIError as e:
+        die(str(e))
+    pid = (record or {}).get('id') or fields.get('id')
+    print(f'Profile created: {pid!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_profile_edit(args):
+    opener, server = _client(args)
+    fields = _collect_profile_fields(args, create=False)
+    if not fields:
+        die('Nothing to update – specify at least one flag, --set KEY=VALUE, or --from-json')
+    try:
+        record = api_profile_update(opener, server, args.profile_name, fields)
+    except APIError as e:
+        die(str(e))
+    print(f'Profile updated: {args.profile_name!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_profile_remove(args):
+    opener, server = _client(args)
+    if not getattr(args, 'force', False):
+        try:
+            confirm = input(f'Remove profile {args.profile_name!r}? [y/N] ').strip().lower()
+        except EOFError:
+            confirm = ''
+        if confirm not in ('y', 'yes'):
+            print('Aborted.')
+            return
+    try:
+        api_profile_remove(opener, server, args.profile_name)
+    except APIError as e:
+        die(str(e))
+    print(f'Profile {args.profile_name!r} removed.')
+
+
+def cmd_profile_rename(args):
+    opener, server = _client(args)
+    try:
+        result = api_profile_rename(opener, server, args.profile_name, args.new_name)
+    except APIError as e:
+        die(str(e))
+    print(f'Profile {args.profile_name!r} renamed to {args.new_name!r}.')
+    if args._fmt in ('json', 'yaml'):
+        emit(result, args._fmt)
+
+
 # ── Argument parser ───────────────────────────────────────────────────────────
 
 EPILOG = """\
@@ -2223,6 +2426,74 @@ def build_parser():
     sp.add_argument('--force', '-f', action='store_true',
                     help='Skip confirmation prompt')
     sp.set_defaults(func=cmd_role_remove)
+
+    # ── profile ────────────────────────────────────────────────────────────────
+    profile_p = sub.add_parser(
+        'profile',
+        help='Manage Dockside profiles (requires manageProfiles permission)',
+    )
+    profile_sub = profile_p.add_subparsers(dest='profile_command', metavar='SUBCOMMAND')
+    profile_sub.required = True
+
+    sp = profile_sub.add_parser('list', aliases=['ls'], help='List all profiles')
+    _add_global_flags(sp)
+    sp.set_defaults(func=cmd_profile_list)
+
+    sp = profile_sub.add_parser('get', help='Show the full record of a specific profile')
+    _add_global_flags(sp)
+    sp.add_argument('profile_name', metavar='PROFILE')
+    sp.set_defaults(func=cmd_profile_get)
+
+    sp = profile_sub.add_parser(
+        'create',
+        help='Create a new profile',
+        description=(
+            'Create a new Dockside profile.\n\n'
+            'The PROFILE argument is the unique file-stem ID used in container\n'
+            'create operations (e.g. "debian-dev", "01-myteam").\n\n'
+            'Supply the full JSON via --from-json, or build the record field-by-\n'
+            'field with --set KEY=VALUE (dot-notation).  The JSON "name" display\n'
+            'field defaults to the profile ID if not specified.\n\n'
+            'New profiles are created inactive (active=false) by default;\n'
+            'use --active to enable immediately or edit afterwards.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('profile_name', metavar='PROFILE',
+                    help='Profile ID (used as the filename stem, e.g. "debian-dev")')
+    _add_profile_fields(sp, create=True)
+    sp.set_defaults(func=cmd_profile_create)
+
+    sp = profile_sub.add_parser(
+        'edit',
+        help='Edit an existing profile',
+        description=(
+            'Edit a Dockside profile.\n\n'
+            'Use --from-json to replace the full record, or --set KEY=VALUE\n'
+            '(dot-notation) to update individual fields.  Use --active / --no-active\n'
+            'to toggle the profile on or off.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('profile_name', metavar='PROFILE')
+    _add_profile_fields(sp, create=False)
+    sp.set_defaults(func=cmd_profile_edit)
+
+    sp = profile_sub.add_parser('remove', aliases=['rm', 'delete'],
+                                 help='Remove a profile')
+    _add_global_flags(sp)
+    sp.add_argument('profile_name', metavar='PROFILE')
+    sp.add_argument('--force', '-f', action='store_true',
+                    help='Skip confirmation prompt')
+    sp.set_defaults(func=cmd_profile_remove)
+
+    sp = profile_sub.add_parser('rename', help='Rename a profile (changes the file-stem ID)')
+    _add_global_flags(sp)
+    sp.add_argument('profile_name', metavar='PROFILE', help='Current profile ID')
+    sp.add_argument('new_name', metavar='NEW_PROFILE', help='New profile ID')
+    sp.set_defaults(func=cmd_profile_rename)
 
     return p
 

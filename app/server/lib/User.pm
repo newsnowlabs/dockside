@@ -9,8 +9,11 @@ use Storable qw(dclone);
 use Data qw($CONFIG);
 use Util qw(flog wlog TO_JSON generate_auth_cookie_values encrypt_password cacheReadWrite);
 use User::Manage qw(
-   listUsers getUser createUser updateUser removeUser
+   listUsers getUser getSelf createUser updateUser updateSelf removeUser
    listRoles getRole createRole updateRole removeRole
+);
+use Profile::Manage qw(
+   listProfiles getProfile createProfile updateProfile removeProfile renameProfile
 );
 use Reservation;
 
@@ -56,7 +59,8 @@ my @GENERAL_PERMISSIONS = (
    'viewAllPrivateContainers', # Permission to view all containers including private containers
    'developContainers', # Permission to develop containers that one owns or is a named developer on
    'developAllContainers', # Permission to develop all containers irrespective of ownership or named developers
-   'manageUsers' # Permission to create/update/remove/list users and roles
+   'manageUsers',    # Permission to create/update/remove/list users and roles
+   'manageProfiles'  # Permission to create/update/remove/rename/list profiles
 );
 
 my @CONTAINER_PERMISSIONS = (
@@ -424,8 +428,9 @@ sub can_use_resource ($self, $resourceType, $resource) {
 
 sub profiles ($self) {
    my %userProfiles = map {
-      $self->can_use_resource('profiles', $_) ?
-         ($_ => Profile->load($_)->cloneWithConstraints($self->derivedResourceConstraints)->sanitise) :
+      my $p = Profile->load($_);
+      ($self->can_use_resource('profiles', $_) && $p->{'active'}) ?
+         ($_ => $p->cloneWithConstraints($self->derivedResourceConstraints)->sanitise) :
          ()
    } (Profile->names);
 
