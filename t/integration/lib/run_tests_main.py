@@ -273,8 +273,13 @@ class _EnvManager:
         if isinstance(actual, dict) and 'actions' in actual:
             actual = actual['actions']
         for k, v in expected_perms.items():
-            if actual.get(k) != v:
-                return False
+            # Server may return numeric values as strings ('1'/'0'); compare as int.
+            try:
+                if int(actual.get(k, -1)) != int(v):
+                    return False
+            except (TypeError, ValueError):
+                if actual.get(k) != v:
+                    return False
         return True
 
     # ── role management ───────────────────────────────────────────────────────
@@ -524,71 +529,74 @@ def main():
 
     # ── Dynamic environment setup ─────────────────────────────────────────────
     _env_manager = _EnvManager(admin_client, suffix, server_url)
-    _env_manager.setup()
+    ok = False
+    try:
+        _env_manager.setup()
 
-    # Resolved names
-    test_username_dev1   = _env_manager.user_dev1
-    test_username_dev2   = _env_manager.user_dev2
-    test_username_viewer = _env_manager.user_viewer
-    test_role_developer  = _env_manager.role_developer
-    test_role_viewer     = _env_manager.role_viewer
-    test_profile_alpine  = _env_manager.profile_alpine
-    test_profile_nginx   = _env_manager.profile_nginx
-    test_password_dev    = _env_manager.password_dev
+        # Resolved names
+        test_username_dev1   = _env_manager.user_dev1
+        test_username_dev2   = _env_manager.user_dev2
+        test_username_viewer = _env_manager.user_viewer
+        test_role_developer  = _env_manager.role_developer
+        test_role_viewer     = _env_manager.role_viewer
+        test_profile_alpine  = _env_manager.profile_alpine
+        test_profile_nginx   = _env_manager.profile_nginx
+        test_password_dev    = _env_manager.password_dev
 
-    name_attrs = {
-        'test_username_dev1':   test_username_dev1,
-        'test_username_dev2':   test_username_dev2,
-        'test_username_viewer': test_username_viewer,
-        'test_role_developer':  test_role_developer,
-        'test_role_viewer':     test_role_viewer,
-        'test_profile_alpine':  test_profile_alpine,
-        'test_profile_nginx':   test_profile_nginx,
-        'test_password_dev':    test_password_dev,
-    }
+        name_attrs = {
+            'test_username_dev1':   test_username_dev1,
+            'test_username_dev2':   test_username_dev2,
+            'test_username_viewer': test_username_viewer,
+            'test_role_developer':  test_role_developer,
+            'test_role_viewer':     test_role_viewer,
+            'test_profile_alpine':  test_profile_alpine,
+            'test_profile_nginx':   test_profile_nginx,
+            'test_password_dev':    test_password_dev,
+        }
 
-    # ── Credentials for dev/viewer test users ─────────────────────────────────
-    credentials = {
-        'admin':  admin_creds,
-        'dev1':   (test_username_dev1,   test_password_dev),
-        'dev2':   (test_username_dev2,   test_password_dev),
-        'viewer': (test_username_viewer, test_password_dev),
-    }
+        # ── Credentials for dev/viewer test users ─────────────────────────────
+        credentials = {
+            'admin':  admin_creds,
+            'dev1':   (test_username_dev1,   test_password_dev),
+            'dev2':   (test_username_dev2,   test_password_dev),
+            'viewer': (test_username_viewer, test_password_dev),
+        }
 
-    runner = TestRunner(
-        cli_path=cli_path,
-        server_url=server_url,
-        credentials=credentials,
-        connect_to=connect_to,
-        verify_ssl=verify_ssl,
-        test_mode=test_mode,
-        harness_container_id=harness_id,
-        allow_network_modify=allow_network_modify,
-        name_attrs=name_attrs,
-    )
+        runner = TestRunner(
+            cli_path=cli_path,
+            server_url=server_url,
+            credentials=credentials,
+            connect_to=connect_to,
+            verify_ssl=verify_ssl,
+            test_mode=test_mode,
+            harness_container_id=harness_id,
+            allow_network_modify=allow_network_modify,
+            name_attrs=name_attrs,
+        )
 
-    # ── Discover and run test modules ─────────────────────────────────────────
-    tests_dir  = os.path.join(INTEGRATION_DIR, 'tests')
-    test_files = sorted(
-        f for f in os.listdir(tests_dir)
-        if f.endswith('.py') and not f.startswith('_')
-        and (not only_prefix or f.startswith(only_prefix))
-    )
+        # ── Discover and run test modules ─────────────────────────────────────
+        tests_dir  = os.path.join(INTEGRATION_DIR, 'tests')
+        test_files = sorted(
+            f for f in os.listdir(tests_dir)
+            if f.endswith('.py') and not f.startswith('_')
+            and (not only_prefix or f.startswith(only_prefix))
+        )
 
-    print('TAP version 13')
-    for fname in test_files:
-        path = os.path.join(tests_dir, fname)
-        try:
-            mod = _load_module(path)
-        except Exception as e:
-            print(f'# ERROR loading {fname}: {e}', file=sys.stderr)
-            continue
-        runner.run_module(mod)
+        print('TAP version 13')
+        for fname in test_files:
+            path = os.path.join(tests_dir, fname)
+            try:
+                mod = _load_module(path)
+            except Exception as e:
+                print(f'# ERROR loading {fname}: {e}', file=sys.stderr)
+                continue
+            runner.run_module(mod)
 
-    ok = runner.print_summary()
+        ok = runner.print_summary()
+    finally:
+        # Always clean up resources created this run, even on setup failure.
+        _env_manager.cleanup()
 
-    # Cleanup env resources created this run
-    _env_manager.cleanup()
     sys.exit(0 if ok else 1)
 
 
