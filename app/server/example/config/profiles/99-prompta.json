@@ -1,0 +1,32 @@
+{
+   "version": 2,
+   "name": "Prompta - Production",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+         "publicURLs": [ "/pwa/manifest.webmanifest", "/favicon.png" ]
+      }
+   ],
+   "networks": [ "bridge" ],
+   "images": [ "newsnowlabs/dockside-debian-desktop:latest" ],
+   "unixusers": ["prompta"],
+   "runtimes": ["runc"],
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" },
+         { "dst": "/tmp" }
+      ],
+      "bind": [],
+      "volume": [
+         { "src": "prompta-db", "dst": "/data" }
+      ]
+   },
+   "lxcfs": false,
+   "dockerArgs": ["--memory=4G", "--pids-limit=4000"],
+   "runDockerInit": false
+}

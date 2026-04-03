@@ -431,7 +431,7 @@ sub validate_profile_mounts_bind ($self, $type, $data) {
    }
 
    for( my $i = 0; $i < @$data; $i++ ) {
-      $self->do_validate( "$type\[$i\]", $data->[$i], 
+      $self->do_validate( "$type\[$i\]", $data->[$i],
          qw( dst=s! src=s! readonly=b )
       );
    }
@@ -459,7 +459,7 @@ sub validate_profile_routers ($self, $type, $data) {
    }
 
    for( my $i = 0; $i < @$data; $i++ ) {
-      $self->do_validate( "$type\[$i\]", $data->[$i], qw( name=s type=s auth=@ prefixes=@! domains=@! http=% https=% ) );
+      $self->do_validate( "$type\[$i\]", $data->[$i], qw( name=s type=s auth=@ prefixes=@! domains=@! http=% https=% publicURLs ) );
    }
 }
 
