@@ -196,6 +196,37 @@ A user record specifies:
 
 You should add one record to `users.json`, and one record to [`passwd`](#passwords), for each registered user in your team.
 
+### Managing users with the CLI
+
+Users can be created and managed using the `dockside` CLI (requires `manageUsers` permission), avoiding manual edits to `users.json` and `passwd`:
+
+```sh
+# List all users
+dockside user list
+
+# Create a user and set their password in one step
+dockside user create alice --email alice@example.com --role developer --user-password s3cret
+
+# Inspect a user record
+dockside user get alice
+
+# Add an SSH public key from file (auto-provisioned into the user's devtainers)
+dockside user edit alice --set ssh.publicKeys.laptop=@~/.ssh/id_ed25519.pub
+
+# Add a keypair for outbound SSH/git operations (e.g. git push to GitHub)
+dockside user edit alice --set ssh.keypairs.*.public=@~/.ssh/id_ed25519.pub
+dockside user edit alice --set ssh.keypairs.*.private=@~/.ssh/id_ed25519
+
+# Set a GitHub Personal Access Token (enables automatic gh CLI authentication)
+dockside user edit alice --gh-token github_pat_xxx
+
+# Grant access to specific profiles
+dockside user edit alice --set resources.profiles='["myprofile","ci"]'
+
+# Remove a user
+dockside user remove alice --force
+```
+
 ### Permissions
 
 Generic permissions are:
@@ -258,6 +289,13 @@ The `passwd` file is a text file (in essentially standard Unix format) containin
 docker exec -it dockside password [--check] <username>
 ```
 
+The CLI can also set or update a password without direct host access:
+
+```sh
+dockside user create alice --user-password s3cret    # set on creation
+dockside user edit   alice --user-password newpass   # update existing user
+```
+
 ### Revoking a user's access to Dockside
 
 > **After deleting a user, or modifying `users.json`, `roles.json` or `passwd` in such a way that a user's access to a running devtainer should be revoked, it is necessary to [restart the Dockside Server](#dockside-server) to ensure any open HTTP(S) or websocket connections made by that user are closed and the user's access completely revoked.**
@@ -267,6 +305,25 @@ docker exec -it dockside password [--check] <username>
 The syntax for `roles.json` mirrors that for `users.json`, except top-level object properties declare arbitrarily-named roles representing useful collections of permissions and resources that may be assigned to multiple users via the user's `role` property.
 
 N.B. The `admin` role is special: a user with the `admin` role is granted all permissions and access to all available resources, unless explicitly denied either in the `admin` role definition, or in the user's record.
+
+### Managing roles with the CLI
+
+```sh
+# List and inspect roles
+dockside role list
+dockside role get developer
+
+# Create a role that allows launching devtainers from any profile
+dockside role create developer \
+    --set permissions.createContainerReservation=1 \
+    --set resources.profiles='["*"]'
+
+# Update a role
+dockside role edit developer --set permissions.stopContainer=1
+
+# Remove a role
+dockside role remove developer --force
+```
 
 ## config.json
 

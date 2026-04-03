@@ -15,6 +15,7 @@ import ssl
 import sys
 import tempfile
 import time
+import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -355,7 +356,57 @@ class _HostOverrideHandler(urllib.request.BaseHandler):
     http_request = https_request
 
 
-def _build_opener(cookie_file, verify_ssl, host_header=None):
+class _ConnectToHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that TCP-connects to a forced address while preserving
+    the original hostname for TLS SNI (and therefore for the Host header)."""
+    _force_host = None   # injected by _ConnectToHandler
+    _force_port = None   # injected by _ConnectToHandler (None → use URL port)
+
+    def connect(self):
+        port = self._force_port if self._force_port is not None else (self.port or 443)
+        self.sock = self._create_connection(
+            (self._force_host, port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+            server_hostname = self._tunnel_host
+        else:
+            server_hostname = self.host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class _ConnectToHandler(urllib.request.HTTPSHandler):
+    """HTTPS handler that TCP-connects to a forced address while preserving
+    the original hostname for TLS SNI and the HTTP Host header."""
+
+    def __init__(self, connect_to, context):
+        super().__init__(context=context)
+        if ':' in connect_to:
+            host, _, port = connect_to.rpartition(':')
+            self._force_host = host
+            self._force_port = int(port)
+        else:
+            self._force_host = connect_to
+            self._force_port = None
+
+    def https_open(self, req):
+        force_host = self._force_host
+        force_port = self._force_port
+        ctx        = self._context
+
+        def conn_factory(host, **kwargs):
+            kwargs['context'] = ctx
+            conn = _ConnectToHTTPSConnection(host, **kwargs)
+            conn._force_host = force_host
+            conn._force_port = force_port
+            return conn
+
+        return self.do_open(conn_factory, req)
+
+
+def _build_opener(cookie_file, verify_ssl, host_header=None, connect_to=None):
     """Create a urllib opener with cookie jar and SSL settings."""
     jar = http.cookiejar.MozillaCookieJar(cookie_file)
     # Only load cookies from a real file (not a symlink)
@@ -370,9 +421,12 @@ def _build_opener(cookie_file, verify_ssl, host_header=None):
         ctx.verify_mode = ssl.CERT_NONE
     handlers = [
         urllib.request.HTTPCookieProcessor(jar),
-        urllib.request.HTTPSHandler(context=ctx),
         urllib.request.HTTPRedirectHandler(),
     ]
+    if connect_to:
+        handlers.append(_ConnectToHandler(connect_to, ctx))
+    else:
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
     if host_header:
         handlers.append(_HostOverrideHandler(host_header))
     opener = urllib.request.build_opener(*handlers)
@@ -467,7 +521,7 @@ def _inject_cookie(jar, server_url, name, value):
 # ── Authentication ────────────────────────────────────────────────────────────
 
 def login(server, username, password, verify_ssl=True,
-          extra_cookies=None, cookie_file=None, host_header=None):
+          extra_cookies=None, cookie_file=None, host_header=None, connect_to=None):
     """
     POST credentials to Dockside, return the authenticated opener.
     extra_cookies: dict of {name: value} injected before the POST.
@@ -475,7 +529,8 @@ def login(server, username, password, verify_ssl=True,
     """
     if cookie_file is None:
         cookie_file = os.path.join(CONFIG_DIR, 'cookies.txt')
-    opener = _build_opener(cookie_file, verify_ssl, host_header=host_header)
+    opener = _build_opener(cookie_file, verify_ssl,
+                           host_header=host_header, connect_to=connect_to)
     if extra_cookies:
         for cname, cval in extra_cookies.items():
             _inject_cookie(opener._jar, server, cname, cval)
@@ -500,7 +555,7 @@ def login(server, username, password, verify_ssl=True,
 
 def get_authenticated_opener(server, server_entry, username, password,
                               verify_ssl=True, transient=False,
-                              extra_cookies=None, host_header=None):
+                              extra_cookies=None, host_header=None, connect_to=None):
     """
     Return an authenticated opener.
 
@@ -508,10 +563,11 @@ def get_authenticated_opener(server, server_entry, username, password,
     persists the session.  Otherwise loads stored cookies for this server.
     """
     cookie_file = _cookie_file_for(server_entry)
+    connect_to = connect_to or server_entry.get('connect_to')
     if username and password:
         opener = login(server, username, password, verify_ssl=verify_ssl,
                        extra_cookies=extra_cookies, cookie_file=cookie_file,
-                       host_header=host_header)
+                       host_header=host_header, connect_to=connect_to)
         if not transient:
             _ensure_config_dir()
             _save_cookie_jar(opener._jar, cookie_file)
@@ -523,7 +579,8 @@ def get_authenticated_opener(server, server_entry, username, password,
             f"Not logged in to {ref!r}. Run 'dockside login' first, "
             "or supply --username / --password (or DOCKSIDE_USER / DOCKSIDE_PASSWORD)."
         )
-    return _build_opener(cookie_file, verify_ssl, host_header=host_header)
+    return _build_opener(cookie_file, verify_ssl,
+                         host_header=host_header, connect_to=connect_to)
 
 
 # ── Container resolution ──────────────────────────────────────────────────────
@@ -971,6 +1028,12 @@ def _add_global_flags(p):
         '--host-header', dest='host_header', metavar='HOST',
         help='Override HTTP Host header sent with every request  [env: DOCKSIDE_HOST_HEADER]',
     )
+    p.add_argument(
+        '--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
+        help='Override TCP connection target (host/IP, optional :port). '
+             'The server URL hostname is still used for TLS SNI and the Host header.  '
+             '[env: DOCKSIDE_CONNECT_TO]',
+    )
 
 
 def _add_wait_flags(p, verb='operation to complete'):
@@ -1180,12 +1243,15 @@ def _client(args):
     verify = not getattr(args, 'no_verify', False)
     host_header = (getattr(args, 'host_header', None)
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
+    connect_to = (getattr(args, 'connect_to', None)
+                  or os.environ.get('DOCKSIDE_CONNECT_TO'))
     try:
         opener = get_authenticated_opener(
             server_url, server_entry, username, password,
             verify_ssl=verify,
             transient=(username is not None),
             host_header=host_header,
+            connect_to=connect_to,
         )
     except APIError as e:
         die(str(e))
@@ -1219,16 +1285,23 @@ def _parse_extra_cookies(cookie_args):
 def cmd_login(args):
     cfg = load_config()
 
+    current_entry = _current_server(cfg)
     server = (getattr(args, 'server', None)
               or os.environ.get('DOCKSIDE_SERVER')
+              or (current_entry or {}).get('url', '')
               or (cfg.get('servers') or [{}])[0].get('url', '')
               or '')
     if not server:
         server = input('Server URL: ').strip()
     server = _normalise_server_url(server)
+    # Re-resolve current_entry in case server was overridden or typed
+    if not current_entry or current_entry.get('url') != server:
+        current_entry = _find_server(cfg, server)
 
-    # Nickname: from flag, or prompt interactively
-    nickname = getattr(args, 'nickname', None) or ''
+    # Nickname: from flag, then stored config entry, then prompt
+    nickname = (getattr(args, 'nickname', None) or '').strip()
+    if not nickname and current_entry:
+        nickname = (current_entry.get('nickname') or '').strip()
     if not nickname and sys.stdin.isatty():
         parsed   = urllib.parse.urlparse(server)
         default  = parsed.hostname or server
@@ -1236,6 +1309,9 @@ def cmd_login(args):
         nickname = prompted or default
     if nickname:
         nickname = nickname.strip()
+
+    display_ref = nickname if nickname else urllib.parse.urlparse(server).hostname or server
+    print(f'Logging in to [{display_ref}]')
 
     username = (getattr(args, 'username', None)
                 or os.environ.get('DOCKSIDE_USER')
@@ -1266,12 +1342,17 @@ def cmd_login(args):
 
     host_header = (getattr(args, 'host_header', None)
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
+    connect_to = (getattr(args, 'connect_to', None)
+                  or os.environ.get('DOCKSIDE_CONNECT_TO')
+                  or (current_entry or {}).get('connect_to')
+                  or None)
     try:
         opener = login(server, username, password,
                        verify_ssl=not getattr(args, 'no_verify', False),
                        extra_cookies=extra_cookies or None,
                        cookie_file=cookie_file,
-                       host_header=host_header)
+                       host_header=host_header,
+                       connect_to=connect_to)
     except APIError as e:
         die(str(e))
 
@@ -1279,7 +1360,8 @@ def cmd_login(args):
     _save_cookie_jar(opener._jar, cookie_file)
 
     _upsert_server(cfg, server, nickname=nickname or None,
-                   cookie_file=cookie_file_override)
+                   cookie_file=cookie_file_override,
+                   connect_to=connect_to)
     cfg['current'] = nickname if nickname else server
     out_fmt = getattr(args, 'output', None)
     if out_fmt:
@@ -2118,6 +2200,12 @@ def build_parser():
                     help='Default output format to store in config for this server')
     sp.add_argument('--no-verify', action='store_true',
                     help='Skip SSL certificate verification')
+    sp.add_argument('--host-header', dest='host_header', metavar='HOST',
+                    help='Override HTTP Host header sent with every request  '
+                         '[env: DOCKSIDE_HOST_HEADER]')
+    sp.add_argument('--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
+                    help='Override TCP connection target while keeping URL hostname for '
+                         'TLS SNI and the Host header  [env: DOCKSIDE_CONNECT_TO]')
     sp.set_defaults(func=cmd_login)
 
     # ── logout ─────────────────────────────────────────────────────────────────
