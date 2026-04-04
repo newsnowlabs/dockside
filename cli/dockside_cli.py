@@ -1445,7 +1445,7 @@ def _client(args):
     if password and not username:
         die('--password requires --username (or DOCKSIDE_USER)')
 
-    verify = not getattr(args, 'no_verify', False)
+    verify = not (getattr(args, 'no_verify', False) or server_entry.get('no_verify', False))
     host_header = (getattr(args, 'host_header', None)
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
     connect_to = (getattr(args, 'connect_to', None)
@@ -1581,10 +1581,18 @@ def cmd_login(args):
     _save_cookie_jar(opener._jar, cookie_file)
 
     parent = (getattr(args, 'parent', None) or '').strip() or None
+    no_verify = getattr(args, 'no_verify', False)
     _upsert_server(cfg, server, nickname=nickname or None,
                    cookie_file=cookie_file_override,
                    connect_to=connect_to,
                    parent=parent)
+    # Persist --no-verify so future commands for this server skip SSL
+    # verification automatically without needing the flag each time.
+    entry = _find_server(cfg, server)
+    if no_verify:
+        entry['no_verify'] = True
+    else:
+        entry.pop('no_verify', None)
     cfg['current'] = nickname if nickname else server
     out_fmt = getattr(args, 'output', None)
     if out_fmt:
