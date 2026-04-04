@@ -631,11 +631,13 @@ def get_authenticated_opener(server, server_entry, username, password,
     connect_to = connect_to or server_entry.get('connect_to')
 
     if cookie_auth == 'ancestors-only':
-        # Empty in-memory jar for target; ancestor cookies merged from system config
+        # Empty in-memory jar for target; ancestor cookies merged after login.
+        # NOTE: ancestor cookies must NOT be in the jar during the login POST.
+        # The outer Dockside proxy allows unauthenticated POST / through to the
+        # inner (that is the login flow), but if an outer session cookie is
+        # already present it may reject the request with 400.
         jar = http.cookiejar.MozillaCookieJar()
         opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to)
-        if cfg:
-            _merge_ancestor_cookies(jar, cfg, server_entry)
         if username and password:
             url = server.rstrip('/') + '/'
             if extra_cookies:
@@ -655,6 +657,10 @@ def get_authenticated_opener(server, server_entry, username, password,
                     'Login failed – no session cookie received. '
                     'Check credentials and ensure the server URL is correct.'
                 )
+        # Merge ancestor cookies after login so subsequent requests carry both
+        # the inner session and the outer session (for the outer proxy).
+        if cfg:
+            _merge_ancestor_cookies(jar, cfg, server_entry)
         return opener
 
     cookie_file = session_cookie_file or _cookie_file_for(server_entry)
