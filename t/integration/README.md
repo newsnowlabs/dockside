@@ -90,16 +90,17 @@ requests and vice versa.
 `DocksideClient` accepts a `use_cli_admin_creds` parameter that controls how
 the admin client authenticates:
 
-- **`use_cli_admin_creds=True`** (required for harness mode, optional for
-  local/remote): explicit `--username`/`--password` flags are passed to the CLI
-  on every call; a per-client temporary cookie file isolates the session.
+- **`use_cli_admin_creds=False`** (default; required for harness mode, optional
+  for local/remote): explicit `--username`/`--password` flags are passed to the
+  CLI on every call; a per-client temporary cookie file isolates the session.
   `DOCKSIDE_TEST_ADMIN=user:pass` must be set.
 
-- **`use_cli_admin_creds=False`** (interactive dev use only): no credentials
-  are passed; the CLI reads its stored session from a prior `dockside login`.
-  `DOCKSIDE_TEST_ADMIN` must be unset. Cannot be used in harness mode.
+- **`use_cli_admin_creds=True`** (interactive dev use only): the CLI's
+  pre-existing stored session is used — no credentials are passed. Requires a
+  prior `dockside login`. `DOCKSIDE_TEST_ADMIN` must be unset. Cannot be used
+  in harness mode.
 
-All test-user clients (dev1, dev2, viewer) always use `use_cli_admin_creds=True`.
+All test-user clients (dev1, dev2, viewer) always use `use_cli_admin_creds=False`.
 
 ### Outer/inner cookie propagation (remote mode)
 

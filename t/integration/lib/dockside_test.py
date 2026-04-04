@@ -208,15 +208,16 @@ class DocksideClient:
     Parameters
     ----------
     use_cli_admin_creds : bool
-        If True, --username/--password are passed to the CLI on every call and
-        a per-client temporary cookie file is used (via --cookie-file) to keep
-        sessions isolated.  The system config (~/.config/dockside/) is still
-        used for the parent chain so ancestor cookies are merged automatically.
-        Required for harness mode and when explicit admin credentials are provided.
+        If True (interactive dev use), the CLI's pre-existing stored session is
+        used — no --username/--password are passed and DOCKSIDE_CONFIG_DIR is not
+        overridden.  Requires a prior 'dockside login'.  Cannot be used in harness
+        mode (no prior login available).
 
-        If False (interactive dev use), no --username/--password are passed and
-        DOCKSIDE_CONFIG_DIR is not overridden — the CLI uses its stored session
-        from a prior 'dockside login'.
+        If False (default), --username/--password are passed to the CLI on every
+        call and a per-client temporary cookie file is used (via --cookie-file) to
+        keep sessions isolated.  The system config (~/.config/dockside/) is still
+        consulted for the parent chain so ancestor cookies are merged automatically.
+        Required for harness mode; used for all test-user clients (dev1/dev2/viewer).
     """
 
     def __init__(self, cli_path, server_url, username=None, password=None,
@@ -229,14 +230,14 @@ class DocksideClient:
         self._connect_to = connect_to
         self._verify_ssl = verify_ssl
         self._use_cli_admin_creds = use_cli_admin_creds
-        if use_cli_admin_creds:
+        if not use_cli_admin_creds:
             # Create a per-client temp file; sessions are isolated here.
             # The system config's parent chain is still used for ancestor cookies.
             fd, path = tempfile.mkstemp(suffix='.txt', prefix='dockside-sess-')
             os.close(fd)
             self._session_cookie_file = path
         else:
-            self._session_cookie_file = None  # use system config session
+            self._session_cookie_file = None  # use system config stored session
         self._cookie_jar = None  # loaded lazily after first _run
 
     def _base_args(self):
@@ -244,7 +245,7 @@ class DocksideClient:
             '--server', self._server,
             '--output', 'json',
         ]
-        if self._use_cli_admin_creds:
+        if not self._use_cli_admin_creds:
             args.extend(['--username', self._username,
                          '--password', self._password])
             args.extend(['--cookie-file', self._session_cookie_file])
@@ -606,14 +607,16 @@ class TestRunner:
     def _setup_clients(self):
         creds = self._credentials
         admin_creds = creds['admin']
-        # Admin client: use_cli_admin_creds=False when credentials are (None, None),
+        # Admin: use_cli_admin_creds=True when no explicit credentials are provided,
         # meaning the developer has pre-authenticated via 'dockside login'.
-        use_cli_admin_creds = (admin_creds[0] is not None)
+        # use_cli_admin_creds=False when explicit credentials are supplied (harness mode).
+        use_cli_admin_creds = (admin_creds[0] is None)
         self._clients = {
             'admin':  self._make_client(*admin_creds, use_cli_admin_creds=use_cli_admin_creds),
-            'dev1':   self._validate_client(self._make_client(*creds['dev1'], use_cli_admin_creds=True), 'dev1'),
-            'dev2':   self._validate_client(self._make_client(*creds['dev2'], use_cli_admin_creds=True), 'dev2'),
-            'viewer': self._validate_client(self._make_client(*creds['viewer'], use_cli_admin_creds=True), 'viewer'),
+            # Test-user clients always supply explicit credentials (use_cli_admin_creds=False).
+            'dev1':   self._validate_client(self._make_client(*creds['dev1'], use_cli_admin_creds=False), 'dev1'),
+            'dev2':   self._validate_client(self._make_client(*creds['dev2'], use_cli_admin_creds=False), 'dev2'),
+            'viewer': self._validate_client(self._make_client(*creds['viewer'], use_cli_admin_creds=False), 'viewer'),
             'unauth': None,
         }
 

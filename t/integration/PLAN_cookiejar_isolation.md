@@ -184,9 +184,9 @@ The `cfg` object must be passed from `_client()` since `CONFIG_DIR` and `load_co
 
 #### `use_cli_admin_creds` and its relationship to test modes
 
-`DocksideClient` has two operating modes for admin, controlled by the `use_cli_admin_creds` flag (renamed from `session_only`). This flag does **not** apply to test-user clients (dev1, dev2, viewer), which always use explicit credentials:
+`DocksideClient` has two operating modes for admin, controlled by the `use_cli_admin_creds` flag (renamed from `session_only`). This flag does **not** apply to test-user clients (dev1, dev2, viewer), which always supply explicit credentials:
 
-**`use_cli_admin_creds=False`** — developer convenience mode for **local** and **remote** modes only:
+**`use_cli_admin_creds=True`** — developer convenience mode for **local** and **remote** modes only:
 - Admin has already run `dockside login` interactively before the test run.
 - No `--username`/`--password` are passed to the CLI; `DOCKSIDE_CONFIG_DIR` is not overridden.
 - The CLI reads `~/.config/dockside/config.json` and its stored admin session cookie.
@@ -194,16 +194,16 @@ The `cfg` object must be passed from `_client()` since `CONFIG_DIR` and `load_co
 - **Harness mode cannot use this** — it runs unattended in a container with no prior `dockside login`.
 - After Option 8: **unchanged**. Since the system config is already used, any `parent` entry already declared there means ancestor cookies are merged automatically.
 
-**`use_cli_admin_creds=True`** — explicit-credentials mode, **required** for harness mode, **optional** for local/remote:
+**`use_cli_admin_creds=False`** (default) — explicit-credentials mode, **required** for harness mode, **optional** for local/remote:
 - `DOCKSIDE_TEST_ADMIN=user:pass` is set; credentials are passed via `--username`/`--password` on every CLI call.
 - Currently: creates a temp dir; sets `DOCKSIDE_CONFIG_DIR` to it. The temp dir is empty — no `parent` chain, no ancestor cookies (Problem B is structurally impossible to solve in this model).
 - After Option 8: **no `DOCKSIDE_CONFIG_DIR` override**. A per-client **temp file** is created and passed as `--cookie-file <path>` on every call. The CLI uses the system config (`~/.config/dockside/`) for the `parent` chain, while the target's session is isolated to the temp file.
 
-All test-user clients (dev1, dev2, viewer) always use `use_cli_admin_creds=True` (they always have explicit credentials). This flag is a concept that only ever applies to the admin client.
+All test-user clients (dev1, dev2, viewer) always use `use_cli_admin_creds=False` (they always supply explicit credentials). This flag is a concept that only ever applies to the admin client.
 
 #### Sequence of events in the test run
 
-1. **`_env_manager.setup()`** uses `admin_client` to create test roles, user accounts (dev1, dev2, viewer), and profiles via `user create`, `role create`, etc. Admin authenticates to the target with its own credentials (or stored session if `session_only=True`); its session is isolated in admin's own temp file. This step does **not** involve dev1/dev2/viewer clients at all.
+1. **`_env_manager.setup()`** uses `admin_client` to create test roles, user accounts (dev1, dev2, viewer), and profiles via `user create`, `role create`, etc. Admin authenticates to the target with its own credentials (or stored session if `use_cli_admin_creds=True`); its session is isolated in admin's own temp file (or system config for `use_cli_admin_creds=True`). This step does **not** involve dev1/dev2/viewer clients at all.
 
 2. **`_setup_clients()`** creates separate `DocksideClient` instances for dev1, dev2, viewer. Each gets its own temp file (`tempfile.mkstemp()`). `_base_args()` appends `--cookie-file <tempfile>` on every call. `DOCKSIDE_CONFIG_DIR` is not set.
 
@@ -215,8 +215,8 @@ All test-user clients (dev1, dev2, viewer) always use `use_cli_admin_creds=True`
 
 #### Changes to `DocksideClient`
 
-- Replace `_config_dir = tempfile.mkdtemp(...)` with `_session_cookie_file = tempfile.mkstemp(suffix='.txt', prefix='dockside-sess-')[1]` (for `session_only=False`).
-- `_base_args()`: append `--cookie-file <_session_cookie_file>` when set.
+- Replace `_config_dir = tempfile.mkdtemp(...)` with `_session_cookie_file = tempfile.mkstemp(suffix='.txt', prefix='dockside-sess-')[1]` (for `use_cli_admin_creds=False` clients).
+- `_base_args()`: append `--cookie-file <_session_cookie_file>` when `not use_cli_admin_creds`.
 - `_run()`: remove `env['DOCKSIDE_CONFIG_DIR'] = self._config_dir`; always `env.pop('DOCKSIDE_CONFIG_DIR', None)`.
 - `_reload_cookie_jar()`: currently a bug — looks for `cookies.txt` in `_config_dir` but the CLI writes to `_config_dir/cookies/<slug>.txt`. With the new approach, reload from `_session_cookie_file` directly.
 - `cleanup()`: delete `_session_cookie_file` instead of `_config_dir`.
@@ -227,12 +227,12 @@ All test-user clients (dev1, dev2, viewer) always use `use_cli_admin_creds=True`
 
 | Mode | Admin `use_cli_admin_creds` | Outer/inner? | Admin client | Test-user client (dev1/dev2/viewer) | Result |
 |------|----------------------------|-------------|--------------|--------------------------------------|--------|
-| **Harness** | `True` (required; explicit creds always set) | No outer proxy | `--cookie-file <admin-tempfile>` + creds; system config used | `--cookie-file <user-tempfile>` + creds; system config used | Correct: each client isolated; no outer cookies needed |
-| **Local** | `False` (pre-authenticated) or `True` | No outer proxy | `False`: system stored session, no flags; `True`: `--cookie-file <tempfile>` + creds | `--cookie-file <user-tempfile>` + creds | Correct in both admin variants; no outer cookies needed |
-| **Remote, target = outer** | `False` or `True` | No inner | Same as local | `--cookie-file <user-tempfile>` + creds | Correct: single server, no parent chain |
-| **Remote, target = inner** | `False` or `True` | Outer proxy required | `False`: system config has `parent` declared → outer cookies merged automatically; `True`: same (system config used via temp-file path) | `--cookie-file <user-tempfile>` + creds; outer cookies merged from `parent` chain in system config | Correct: outer proxy satisfied; inner authenticates as test user |
+| **Harness** | `False` (required; explicit creds always set) | No outer proxy | `--cookie-file <admin-tempfile>` + creds; system config used | `--cookie-file <user-tempfile>` + creds; system config used | Correct: each client isolated; no outer cookies needed |
+| **Local** | `True` (pre-authenticated) or `False` | No outer proxy | `True`: system stored session, no flags; `False`: `--cookie-file <tempfile>` + creds | `--cookie-file <user-tempfile>` + creds | Correct in both admin variants; no outer cookies needed |
+| **Remote, target = outer** | `True` or `False` | No inner | Same as local | `--cookie-file <user-tempfile>` + creds | Correct: single server, no parent chain |
+| **Remote, target = inner** | `True` or `False` | Outer proxy required | `True`: system config has `parent` declared → outer cookies merged automatically; `False`: same (system config used via temp-file path) | `--cookie-file <user-tempfile>` + creds; outer cookies merged from `parent` chain in system config | Correct: outer proxy satisfied; inner authenticates as test user |
 
-Key: `use_cli_admin_creds=False` is only usable for admin in local/remote modes where the developer has pre-authenticated. Harness mode always uses `use_cli_admin_creds=True`. Test-user clients always use `use_cli_admin_creds=True`.
+Key: `use_cli_admin_creds=True` is only usable for admin in local/remote modes where the developer has pre-authenticated. Harness mode always uses `use_cli_admin_creds=False`. Test-user clients always use `use_cli_admin_creds=False`.
 
 ---
 
@@ -250,8 +250,8 @@ Copy this plan file to `t/integration/PLAN_cookiejar_isolation.md`, commit on br
 - Add `--parent` flag to `login` subcommand (so operators can declare the parent relationship when registering a server).
 
 #### Step 2 — Harness changes (`t/integration/lib/dockside_test.py`)
-- Rename `session_only` parameter/attribute to `use_cli_admin_creds` throughout. Rationale: the new name describes the observable behaviour — whether the admin client should pass explicit `--username`/`--password` flags to the CLI — rather than the indirect mechanism. `use_cli_admin_creds=False` means admin has pre-authenticated via `dockside login` (interactive dev use); `use_cli_admin_creds=True` means the harness supplies credentials on every call (harness mode and explicit-creds dev mode). Update all callers in `run_tests_main.py` and any other files that construct `DocksideClient` with this flag.
-- Replace `_config_dir = tempfile.mkdtemp(...)` with `_session_cookie_file = tempfile.mkstemp(...)[1]` for `use_cli_admin_creds=True` clients.
+- Rename `session_only` parameter/attribute to `use_cli_admin_creds` throughout. Rationale: the new name describes whether the CLI uses its pre-existing stored admin credentials. `use_cli_admin_creds=True` means admin has pre-authenticated via `dockside login` (interactive dev use, stored session); `use_cli_admin_creds=False` (default) means the harness supplies credentials explicitly on every call (harness mode and all test-user clients). Update all callers in `run_tests_main.py` and any other files that construct `DocksideClient` with this flag.
+- Replace `_config_dir = tempfile.mkdtemp(...)` with `_session_cookie_file = tempfile.mkstemp(...)[1]` for `use_cli_admin_creds=False` clients.
 - `_base_args()`: append `--cookie-file <_session_cookie_file>` when set.
 - `_run()`: always `env.pop('DOCKSIDE_CONFIG_DIR', None)`; remove `env['DOCKSIDE_CONFIG_DIR'] = ...` line.
 - `_reload_cookie_jar()`: read from `_session_cookie_file` instead of `_config_dir/cookies.txt`.
