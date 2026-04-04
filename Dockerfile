@@ -408,7 +408,7 @@ RUN apt-get update && \
     apt-get update && \
     apt-get -y --no-install-recommends --no-install-suggests install \
         sudo \
-        nginx-light libnginx-mod-http-perl \
+        nginx libnginx-mod-http-perl \
         wamerican \
         bind9 dnsutils \
         docker-ce docker-ce-cli docker-buildx-plugin containerd.io gcc- \
