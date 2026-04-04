@@ -478,12 +478,13 @@ def main():
         print(f'ERROR: CLI not found at {cli_path}', file=sys.stderr)
         sys.exit(1)
 
-    server_url  = os.environ.get('DOCKSIDE_TEST_SERVER_URL', '')
-    connect_to  = os.environ.get('DOCKSIDE_TEST_CONNECT_TO', '').strip() or None
-    test_mode   = os.environ.get('DOCKSIDE_TEST_MODE', 'remote')
-    verify_ssl  = os.environ.get('DOCKSIDE_TEST_VERIFY_SSL', '0') == '1'
-    only_prefix = os.environ.get('DOCKSIDE_TEST_ONLY', '').strip()
-    harness_id  = os.environ.get('DOCKSIDE_TEST_HARNESS_ID', '').strip() or None
+    server_url   = os.environ.get('DOCKSIDE_TEST_SERVER_URL', '')
+    connect_to   = os.environ.get('DOCKSIDE_TEST_CONNECT_TO', '').strip() or None
+    test_mode    = os.environ.get('DOCKSIDE_TEST_MODE', 'remote')
+    verify_ssl   = os.environ.get('DOCKSIDE_TEST_VERIFY_SSL', '0') == '1'
+    only_prefix  = os.environ.get('DOCKSIDE_TEST_ONLY', '').strip()
+    harness_id   = os.environ.get('DOCKSIDE_TEST_HARNESS_ID', '').strip() or None
+    skip_cleanup = os.environ.get('DOCKSIDE_TEST_SKIP_CLEANUP', '0') == '1'
 
     # Network modify override
     env_nm = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()
@@ -558,6 +559,7 @@ def main():
             'test_profile_alpine':  test_profile_alpine,
             'test_profile_nginx':   test_profile_nginx,
             'test_password_dev':    test_password_dev,
+            '_name_suffix':         suffix,
         }
 
         # ── Credentials for dev/viewer test users ─────────────────────────────
@@ -600,8 +602,10 @@ def main():
 
         ok = runner.print_summary()
     finally:
-        # Always clean up resources created this run, even on setup failure.
-        _env_manager.cleanup()
+        if skip_cleanup:
+            print('# Skipping environment cleanup (--skip-cleanup)', file=sys.stderr)
+        else:
+            _env_manager.cleanup()
 
     sys.exit(0 if ok else 1)
 
@@ -609,7 +613,7 @@ def main():
 if __name__ == '__main__':
     # When invoked as --cleanup by the bash EXIT/INT trap, run env cleanup only.
     if '--cleanup' in sys.argv:
-        if _env_manager is not None:
+        if _env_manager is not None and os.environ.get('DOCKSIDE_TEST_SKIP_CLEANUP', '0') != '1':
             _env_manager.cleanup()
         sys.exit(0)
     main()

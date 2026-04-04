@@ -67,11 +67,13 @@ REPO_ROOT="$(cd "${INTEGRATION_DIR}/../.." && pwd)"
 ONLY_PREFIX=""
 VERBOSE=0
 DEBUG=0
+SKIP_CLEANUP=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --only) ONLY_PREFIX="$2"; shift 2 ;;
         --verbose) VERBOSE=1; shift ;;
         --debug) DEBUG=1; shift ;;
+        --skip-cleanup) SKIP_CLEANUP=1; shift ;;
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
     esac
 done
@@ -127,13 +129,16 @@ esac
 export DOCKSIDE_TEST_MODE="${MODE}"
 export DOCKSIDE_TEST_ONLY="${ONLY_PREFIX}"
 export DOCKSIDE_TEST_HARNESS_ID="${DOCKSIDE_TEST_HARNESS_ID:-}"
-[[ "$VERBOSE" == "1" ]] && export DOCKSIDE_TEST_VERBOSE=1
-[[ "$DEBUG"   == "1" ]] && export DOCKSIDE_TEST_DEBUG=1
+[[ "$VERBOSE"      == "1" ]] && export DOCKSIDE_TEST_VERBOSE=1
+[[ "$DEBUG"        == "1" ]] && export DOCKSIDE_TEST_DEBUG=1
+[[ "$SKIP_CLEANUP" == "1" ]] && export DOCKSIDE_TEST_SKIP_CLEANUP=1
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
-    echo "# Running cleanup..." >&2
-    python3 "${INTEGRATION_DIR}/lib/run_tests_main.py" --cleanup 2>/dev/null || true
+    if [[ "${DOCKSIDE_TEST_SKIP_CLEANUP:-0}" != "1" ]]; then
+        echo "# Running cleanup..." >&2
+        python3 "${INTEGRATION_DIR}/lib/run_tests_main.py" --cleanup 2>/dev/null || true
+    fi
     # harness.sh's own trap handles container teardown
 }
 trap cleanup EXIT INT TERM

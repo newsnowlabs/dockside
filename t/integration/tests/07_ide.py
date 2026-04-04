@@ -8,37 +8,53 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
-PROFILE_NAME  = '11-debian'
-IDE_CONTAINER = 'inttest-ide-01'
+PROFILE_NAME        = '11-debian'
+_BASE_IDE_CONTAINER = 'inttest-ide-01'
 
 
 class IdeTests(TestCase):
-    """IDE access control: viewers cannot access IDE; named developers can."""
+    """IDE access control: viewers cannot access IDE; named developers can.
 
-    def setUp(self):
-        super().setUp()
-        self.register_cleanup(IDE_CONTAINER)
+    The main IDE container persists across all tests; setUpClass computes the
+    suffixed name, tearDownClass cleans up.  test_01 creates a separate
+    no-IDE container inline (its own register_cleanup).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.IDE_CONTAINER = cls._sfx(_BASE_IDE_CONTAINER)
+
+    @classmethod
+    def tearDownClass(cls):
+        for fn in (
+            lambda: cls.admin.stop(cls.IDE_CONTAINER, wait=False),
+            lambda: cls.admin.remove(cls.IDE_CONTAINER, wait=False),
+        ):
+            try:
+                fn()
+            except Exception:
+                pass
 
     def _ensure_created_and_started(self):
         try:
             self.admin.create(
                 profile=PROFILE_NAME,
-                name=IDE_CONTAINER,
+                name=self.IDE_CONTAINER,
                 ide='openvscode/latest',
             )
         except APIError as e:
             if 'already' not in str(e).lower() and 'exists' not in str(e).lower():
                 raise
-        data = self.admin.get_container(IDE_CONTAINER)
+        data = self.admin.get_container(self.IDE_CONTAINER)
         if data.get('status') != 1:
-            self.admin.start(IDE_CONTAINER, wait=True, timeout=180)
+            self.admin.start(self.IDE_CONTAINER, wait=True, timeout=180)
 
     def _get_parent_fqdn(self):
-        data = self.admin.get_container(IDE_CONTAINER)
+        data = self.admin.get_container(self.IDE_CONTAINER)
         return (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN')
 
     def test_01_create_no_ide_override(self):
-        name = 'inttest-ide-noide'
+        name = self._sfx('inttest-ide-noide')
         self.register_cleanup(name)
         result = self.admin.create(
             profile=PROFILE_NAME,
@@ -52,7 +68,7 @@ class IdeTests(TestCase):
         parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.admin.check_service(
-                IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
+                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
             )
             self.assert_true(
                 code in (200, 302, 301, 303),
@@ -64,11 +80,11 @@ class IdeTests(TestCase):
     def test_03_ide_not_accessible_to_viewer(self):
         """Viewer cannot access IDE (IDE is always owner/developer mode)."""
         self._ensure_created_and_started()
-        self.admin.update(IDE_CONTAINER, viewers=self.test_username_viewer)
+        self.admin.update(self.IDE_CONTAINER, viewers=self.test_username_viewer)
         parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.viewer.check_service(
-                IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
+                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
             )
             self.assert_http_status(code, 410, f'viewer got {code} for IDE (expected 410)')
         except APIError as e:
@@ -77,11 +93,11 @@ class IdeTests(TestCase):
     def test_04_ide_accessible_to_named_developer(self):
         """Named developer (dev1) can access IDE."""
         self._ensure_created_and_started()
-        self.admin.update(IDE_CONTAINER, developers=self.test_username_dev1)
+        self.admin.update(self.IDE_CONTAINER, developers=self.test_username_dev1)
         parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev1.check_service(
-                IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
+                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
             )
             self.assert_true(
                 code in (200, 302, 301, 303),
@@ -93,12 +109,12 @@ class IdeTests(TestCase):
     def test_05_ide_accessible_to_dev2_when_added(self):
         """After adding dev2 as developer, dev2 can access IDE."""
         self._ensure_created_and_started()
-        self.admin.update(IDE_CONTAINER,
+        self.admin.update(self.IDE_CONTAINER,
                           developers=f'{self.test_username_dev1},{self.test_username_dev2}')
         parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
-                IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
+                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
             )
             self.assert_true(
                 code in (200, 302, 301, 303),
@@ -110,13 +126,13 @@ class IdeTests(TestCase):
     def test_06_ide_denied_after_dev2_removed(self):
         """After removing dev2 from developers, dev2 gets 410 for IDE."""
         self._ensure_created_and_started()
-        self.admin.update(IDE_CONTAINER,
+        self.admin.update(self.IDE_CONTAINER,
                           developers=f'{self.test_username_dev1},{self.test_username_dev2}')
-        self.admin.update(IDE_CONTAINER, developers=self.test_username_dev1)
+        self.admin.update(self.IDE_CONTAINER, developers=self.test_username_dev1)
         parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
-                IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
+                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
             )
             self.assert_http_status(code, 410, f'dev2 got {code} after being removed (expected 410)')
         except APIError as e:

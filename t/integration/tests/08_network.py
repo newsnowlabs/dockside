@@ -82,7 +82,7 @@ class NetworkTests(TestCase):
 
     def test_01_create_default_network(self):
         """Create without --network; container should be assigned a network."""
-        name = 'inttest-net-default'
+        name = self._sfx('inttest-net-default')
         self._create_and_cleanup(name)
         data = self.admin.get_container(name)
         network = (data.get('data') or {}).get('network') or data.get('network')
@@ -91,14 +91,14 @@ class NetworkTests(TestCase):
 
     def test_02_create_on_discovered_network(self):
         """Create on a network currently known to Dockside (first available)."""
-        seed_name = 'inttest-net-seed'
+        seed_name = self._sfx('inttest-net-seed')
         self._create_and_cleanup(seed_name)
         seed_data = self.admin.get_container(seed_name)
         network = (seed_data.get('data') or {}).get('network') or seed_data.get('network')
         if not network:
             self.skip('Could not discover available network from existing container')
 
-        name = 'inttest-net-explicit'
+        name = self._sfx('inttest-net-explicit')
         self._create_and_cleanup(name)
         try:
             self.admin.update(name, network=network)
@@ -110,7 +110,7 @@ class NetworkTests(TestCase):
 
     def test_03_network_persists_after_edit(self):
         """Network field persists after an unrelated edit."""
-        name = 'inttest-net-persist'
+        name = self._sfx('inttest-net-persist')
         self._create_and_cleanup(name)
         data = self.admin.get_container(name)
         network = (data.get('data') or {}).get('network') or data.get('network')
@@ -125,7 +125,7 @@ class NetworkTests(TestCase):
         Switch network via edit (requires at least two available networks).
         Skips gracefully if only one network is available.
         """
-        seed_name = 'inttest-net-switch-seed'
+        seed_name = self._sfx('inttest-net-switch-seed')
         self._create_and_cleanup(seed_name)
         seed_data = self.admin.get_container(seed_name)
         net_a = (seed_data.get('data') or {}).get('network') or seed_data.get('network')
@@ -143,7 +143,7 @@ class NetworkTests(TestCase):
         if not net_b:
             self.skip('Only one network available; cannot test network switch')
 
-        name = 'inttest-net-switch'
+        name = self._sfx('inttest-net-switch')
         self._create_and_cleanup(name)
         try:
             self.admin.update(name, network=net_b)
@@ -188,7 +188,7 @@ class NetworkTests(TestCase):
                 self.skip(f'docker network connect failed: {r.stderr.decode()}')
             attached = True
 
-            probe_name = 'inttest-net-probe'
+            probe_name = self._sfx('inttest-net-probe')
             self.register_cleanup(probe_name)
             try:
                 self.admin.create(
@@ -249,7 +249,7 @@ class NetworkTests(TestCase):
             )
 
             # Now attempting to create a container on this network should fail
-            name = 'inttest-net-gone'
+            name = self._sfx('inttest-net-gone')
             self.register_cleanup(name)
             try:
                 self.admin.create(

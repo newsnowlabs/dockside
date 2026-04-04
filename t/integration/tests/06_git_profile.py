@@ -15,11 +15,8 @@ GIT_URL = 'https://github.com/newsnowlabs/dockside.git'
 class GitProfileTests(TestCase):
     """Test creating devtainers with git URL, branch, and PR options."""
 
-    def setUp(self):
-        super().setUp()
-
     def test_01_create_with_git_url(self):
-        name = 'inttest-git-01'
+        name = self._sfx('inttest-git-01')
         self.register_cleanup(name)
         result = self.admin.create(
             profile=PROFILE_NAME,
@@ -34,7 +31,7 @@ class GitProfileTests(TestCase):
         self.assert_true(git_url is not None, 'gitURL not stored in container data')
 
     def test_02_create_with_branch_option(self):
-        name = 'inttest-git-branch'
+        name = self._sfx('inttest-git-branch')
         self.register_cleanup(name)
         import json
         result = self.admin.create(
@@ -46,7 +43,7 @@ class GitProfileTests(TestCase):
         self.assert_true(result is not None)
 
     def test_03_create_with_pr_option(self):
-        name = 'inttest-git-pr'
+        name = self._sfx('inttest-git-pr')
         self.register_cleanup(name)
         import json
         result = self.admin.create(
@@ -58,7 +55,7 @@ class GitProfileTests(TestCase):
         self.assert_true(result is not None)
 
     def test_04_create_debian_with_git_url(self):
-        name = 'inttest-git-debian'
+        name = self._sfx('inttest-git-debian')
         self.register_cleanup(name)
         result = self.admin.create(
             profile=PROFILE_NAME,
@@ -69,7 +66,7 @@ class GitProfileTests(TestCase):
         self.assert_true(result is not None)
 
     def test_05_create_ubuntu_with_git_url(self):
-        name = 'inttest-git-ubuntu'
+        name = self._sfx('inttest-git-ubuntu')
         self.register_cleanup(name)
         result = self.admin.create(
             profile=PROFILE_NAME,
