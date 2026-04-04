@@ -2075,7 +2075,10 @@ def cmd_user_remove(args):
         api_user_remove(opener, server, args.username)
     except APIError as e:
         die(str(e))
-    print(f'User {args.username!r} removed.')
+    if args._fmt in ('json', 'yaml'):
+        emit({'ok': True}, args._fmt)
+    else:
+        print(f'User {args.username!r} removed.')
 
 
 # ── Role command implementations ──────────────────────────────────────────────
@@ -2157,7 +2160,10 @@ def cmd_role_remove(args):
         api_role_remove(opener, server, args.role_name)
     except APIError as e:
         die(str(e))
-    print(f'Role {args.role_name!r} removed.')
+    if args._fmt in ('json', 'yaml'):
+        emit({'ok': True}, args._fmt)
+    else:
+        print(f'Role {args.role_name!r} removed.')
 
 
 # ── Profile command implementations ───────────────────────────────────────────
@@ -2239,7 +2245,10 @@ def cmd_profile_remove(args):
         api_profile_remove(opener, server, args.profile_name)
     except APIError as e:
         die(str(e))
-    print(f'Profile {args.profile_name!r} removed.')
+    if args._fmt in ('json', 'yaml'):
+        emit({'ok': True}, args._fmt)
+    else:
+        print(f'Profile {args.profile_name!r} removed.')
 
 
 def cmd_profile_rename(args):
