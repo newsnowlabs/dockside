@@ -260,6 +260,34 @@ sub handle_login_form ($r, $parentFQDN) { # nginx request object # copy of $pare
    # Fallthrough: try return code will be returned here.
 }
 
+# ---------------------------------------------------------------------------
+# Named body-handler callbacks for has_request_body().
+#
+# nginx's XS binding for has_request_body() stores the callback's raw code
+# pointer (CV*) without calling SvREFCNT_inc.  When the callback is an
+# anonymous sub, its refcount drops to zero as soon as _handler() returns
+# nginx::OK, freeing the CV.  When nginx's event loop later invokes the
+# callback (after the request body has been read asynchronously), it holds a
+# dangling pointer → call_sv("") failed → HTTP 500.
+#
+# Named subs are always anchored in the package symbol table, so their CV is
+# never freed regardless of whether nginx increments the refcount.
+# ---------------------------------------------------------------------------
+
+sub _login_body_handler ($r) {
+   my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
+   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+   handle_login_form($r, $parentFQDN) || send_login_page($r);
+   return nginx::OK;
+}
+
+sub _api_body_handler ($r) {
+   my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
+   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+   my $User = Request->authenticate( { 'cookie' => $r->header_in("Cookie"), 'protocol' => 'https' } );
+   return _api_handler($r, $User, $r->args, $parentFQDN);
+}
+
 sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'https'
    # Create temporary path needed for cache and log files.
    if( ! -d $CONFIG->{'tmpPath'} ) {
@@ -353,11 +381,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       # POST request? Then handle login form, and on failure send login page again.
-      if( $r->has_request_body(
-            sub {
-               return handle_login_form($_[0], $parentFQDN) || send_login_page($r);
-            }
-         )) {
+      if( $r->has_request_body(\&_login_body_handler) ) {
          return nginx::OK;
       }
 
@@ -419,13 +443,8 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # AJAX SERVICES
    #
 
-   # For POST requests to API endpoints, the nginx Perl module requires the body
-   # to be read via has_request_body() before it is accessible via request_body().
-   # We capture $User and $parentFQDN in the closure so _api_handler can use them.
    if ( $r->request_method eq 'POST' ) {
-      if ( $r->has_request_body(
-            sub { return _api_handler( $_[0], $User, $_[0]->args, $parentFQDN ) }
-         )) {
+      if ( $r->has_request_body(\&_api_body_handler) ) {
          return nginx::OK;
       }
       return nginx::HTTP_BAD_REQUEST;

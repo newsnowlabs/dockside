@@ -22,6 +22,8 @@ import urllib.request
 
 __version__ = '0.2.0'
 
+_HTTP_DEBUG_LEVEL = 0   # set to 1 by --debug-http / _enable_debug_http()
+
 # ── Config directory validation ───────────────────────────────────────────────
 
 def _validate_config_dir(path):
@@ -356,6 +358,65 @@ class _HostOverrideHandler(urllib.request.BaseHandler):
     http_request = https_request
 
 
+class _NestLevelHandler(urllib.request.BaseHandler):
+    """Inject a precomputed X-Nest-Level header into every outgoing request.
+
+    Used when --connect-to bypasses the nginx proxy chain that would normally
+    accumulate this header via 'proxy_set_header X-Nest-Level 1-$http_x_nest_level'.
+    """
+    def __init__(self, nest_level):
+        self._nest_level = nest_level
+
+    def https_request(self, req):
+        req.add_unredirected_header('X-Nest-Level', self._nest_level)
+        return req
+
+    http_request = https_request
+
+
+def _compute_nest_level(server_url):
+    """Return the X-Nest-Level header value implied by the server URL's nesting depth.
+
+    A dockside URL encodes how many container hops deep this instance is:
+      www.domain           -> ''     (outermost, no header needed)
+      www-host.domain      -> '1-'   (1 level deep)
+      www-a--host.domain   -> '1-1-' (2 levels deep)
+
+    The value mirrors what nginx would have accumulated via
+    'proxy_set_header X-Nest-Level 1-$http_x_nest_level' across N proxy hops.
+    Only injected when --connect-to is used (direct connection bypassing nginx).
+    """
+    hostname = urllib.parse.urlparse(server_url).hostname or ''
+    first_label = hostname.split('.')[0]        # e.g. 'www-inner--dstest4'
+    segments = first_label.split('--')          # split on double-dash separator
+    # The first segment is 'service[-topHost]', e.g. 'www-dstest4' or 'www'.
+    # (Double-dash separates outer container hops; the service label comes first.)
+    m = re.match(r'^(?:.*-(?:wv|mb|webview|minibrowser)-)?[^-]+(-(.+))?$', segments[0])
+    has_top_host = bool(m and m.group(2))
+    nest_count = (len(segments) - 1) + (1 if has_top_host else 0)
+    return '1-' * nest_count
+
+
+def _enable_debug_http():
+    """Enable http.client request/response tracing to stderr.
+
+    Prints raw request/response headers (and more) for every HTTP/HTTPS
+    connection — useful for verifying that headers like X-Nest-Level are
+    actually being sent.
+
+    NOTE: urllib's AbstractHTTPHandler.do_open() calls h.set_debuglevel()
+    on each connection using the handler's own _debuglevel (set at handler
+    construction time), which would override any class-level setting.
+    _HTTP_DEBUG_LEVEL is therefore used to pass debuglevel=1 to each handler
+    when it is constructed in _build_opener() / _build_opener_from_jar().
+    """
+    global _HTTP_DEBUG_LEVEL
+    _HTTP_DEBUG_LEVEL = 1
+    import logging
+    logging.basicConfig(stream=sys.stderr)
+    logging.getLogger('urllib.request').setLevel(logging.DEBUG)
+
+
 class _ConnectToHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection that TCP-connects to a forced address while preserving
     the original hostname for TLS SNI (and therefore for the Host header)."""
@@ -381,8 +442,8 @@ class _ConnectToHandler(urllib.request.HTTPSHandler):
     """HTTPS handler that TCP-connects to a forced address while preserving
     the original hostname for TLS SNI and the HTTP Host header."""
 
-    def __init__(self, connect_to, context):
-        super().__init__(context=context)
+    def __init__(self, connect_to, context, debuglevel=0):
+        super().__init__(context=context, debuglevel=debuglevel)
         if ':' in connect_to:
             host, _, port = connect_to.rpartition(':')
             self._force_host = host
@@ -406,7 +467,7 @@ class _ConnectToHandler(urllib.request.HTTPSHandler):
         return self.do_open(conn_factory, req)
 
 
-def _build_opener(cookie_file, verify_ssl, host_header=None, connect_to=None):
+def _build_opener(cookie_file, verify_ssl, host_header=None, connect_to=None, nest_level=None):
     """Create a urllib opener with cookie jar and SSL settings."""
     jar = http.cookiejar.MozillaCookieJar(cookie_file)
     # Only load cookies from a real file (not a symlink)
@@ -424,17 +485,19 @@ def _build_opener(cookie_file, verify_ssl, host_header=None, connect_to=None):
         urllib.request.HTTPRedirectHandler(),
     ]
     if connect_to:
-        handlers.append(_ConnectToHandler(connect_to, ctx))
+        handlers.append(_ConnectToHandler(connect_to, ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     else:
-        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        handlers.append(urllib.request.HTTPSHandler(context=ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     if host_header:
         handlers.append(_HostOverrideHandler(host_header))
+    if nest_level:
+        handlers.append(_NestLevelHandler(nest_level))
     opener = urllib.request.build_opener(*handlers)
     opener._jar = jar
     return opener
 
 
-def _build_opener_from_jar(jar, verify_ssl, host_header=None, connect_to=None):
+def _build_opener_from_jar(jar, verify_ssl, host_header=None, connect_to=None, nest_level=None):
     """Create a urllib opener from a pre-built cookie jar."""
     ctx = ssl.create_default_context()
     if not verify_ssl:
@@ -445,11 +508,13 @@ def _build_opener_from_jar(jar, verify_ssl, host_header=None, connect_to=None):
         urllib.request.HTTPRedirectHandler(),
     ]
     if connect_to:
-        handlers.append(_ConnectToHandler(connect_to, ctx))
+        handlers.append(_ConnectToHandler(connect_to, ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     else:
-        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        handlers.append(urllib.request.HTTPSHandler(context=ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     if host_header:
         handlers.append(_HostOverrideHandler(host_header))
+    if nest_level:
+        handlers.append(_NestLevelHandler(nest_level))
     opener = urllib.request.build_opener(*handlers)
     opener._jar = jar
     return opener
@@ -590,7 +655,8 @@ def _inject_cookie(jar, server_url, name, value):
 # ── Authentication ────────────────────────────────────────────────────────────
 
 def login(server, username, password, verify_ssl=True,
-          extra_cookies=None, cookie_file=None, host_header=None, connect_to=None):
+          extra_cookies=None, cookie_file=None, host_header=None, connect_to=None,
+          nest_level=None):
     """
     POST credentials to Dockside, return the authenticated opener.
     extra_cookies: dict of {name: value} injected before the POST.
@@ -599,7 +665,8 @@ def login(server, username, password, verify_ssl=True,
     if cookie_file is None:
         cookie_file = os.path.join(CONFIG_DIR, 'cookies.txt')
     opener = _build_opener(cookie_file, verify_ssl,
-                           host_header=host_header, connect_to=connect_to)
+                           host_header=host_header, connect_to=connect_to,
+                           nest_level=nest_level)
     if extra_cookies:
         for cname, cval in extra_cookies.items():
             _inject_cookie(opener._jar, server, cname, cval)
@@ -643,12 +710,19 @@ def get_authenticated_opener(server, server_entry, username, password,
     """
     connect_to = connect_to or server_entry.get('connect_to')
 
+    # When connecting directly (bypassing the nginx proxy chain), compute the
+    # X-Nest-Level value from the server URL so the Perl handler sees the correct
+    # nesting depth.  For normal public-URL connections, outer nginx sets this
+    # header on each proxy_pass hop and we must not inject it ourselves.
+    nest_level = _compute_nest_level(server) if connect_to else None
+
     if cookie_auth == 'ancestors-only':
         # Empty in-memory jar for target; ancestor cookies injected first (with
         # the target server's domain) so the outer proxy receives and validates
         # them when the login POST passes through.
         jar = http.cookiejar.MozillaCookieJar()
-        opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to)
+        opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to,
+                                        nest_level=nest_level)
         if cfg:
             _merge_ancestor_cookies(jar, cfg, server_entry)
         if username and password:
@@ -677,7 +751,8 @@ def get_authenticated_opener(server, server_entry, username, password,
     if username and password:
         opener = login(server, username, password, verify_ssl=verify_ssl,
                        extra_cookies=extra_cookies, cookie_file=cookie_file,
-                       host_header=host_header, connect_to=connect_to)
+                       host_header=host_header, connect_to=connect_to,
+                       nest_level=nest_level)
         if not transient:
             _ensure_config_dir()
             _save_cookie_jar(opener._jar, cookie_file)
@@ -692,7 +767,8 @@ def get_authenticated_opener(server, server_entry, username, password,
             "or supply --username / --password (or DOCKSIDE_USER / DOCKSIDE_PASSWORD)."
         )
     opener = _build_opener(cookie_file, verify_ssl,
-                           host_header=host_header, connect_to=connect_to)
+                           host_header=host_header, connect_to=connect_to,
+                           nest_level=nest_level)
     if cfg:
         _merge_ancestor_cookies(opener._jar, cfg, server_entry)
     return opener
@@ -1165,6 +1241,10 @@ def _add_global_flags(p):
              '"ancestors-only" skips the target\'s stored session and uses only ancestor '
              'cookies merged in-memory (requires --username/--password).',
     )
+    p.add_argument(
+        '--debug-http', dest='debug_http', action='store_true',
+        help='Print raw HTTP request/response headers for debugging.',
+    )
 
 
 def _add_wait_flags(p, verb='operation to complete'):
@@ -1365,13 +1445,15 @@ def _client(args):
     if password and not username:
         die('--password requires --username (or DOCKSIDE_USER)')
 
-    verify = not getattr(args, 'no_verify', False)
+    verify = not (getattr(args, 'no_verify', False) or server_entry.get('no_verify', False))
     host_header = (getattr(args, 'host_header', None)
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
     connect_to = (getattr(args, 'connect_to', None)
                   or os.environ.get('DOCKSIDE_CONNECT_TO'))
     session_cookie_file = getattr(args, 'session_cookie_file', None) or None
     cookie_auth = getattr(args, 'cookie_auth', 'all') or 'all'
+    if getattr(args, 'debug_http', False):
+        _enable_debug_http()
     # transient: don't persist the session when using one-shot credentials,
     # unless --cookie-file was given (which provides a dedicated scratch space).
     transient = (username is not None
@@ -1481,13 +1563,17 @@ def cmd_login(args):
                   or os.environ.get('DOCKSIDE_CONNECT_TO')
                   or (current_entry or {}).get('connect_to')
                   or None)
+    nest_level = _compute_nest_level(server) if connect_to else None
+    if getattr(args, 'debug_http', False):
+        _enable_debug_http()
     try:
         opener = login(server, username, password,
                        verify_ssl=not getattr(args, 'no_verify', False),
                        extra_cookies=extra_cookies or None,
                        cookie_file=cookie_file,
                        host_header=host_header,
-                       connect_to=connect_to)
+                       connect_to=connect_to,
+                       nest_level=nest_level)
     except APIError as e:
         die(str(e))
 
@@ -1495,10 +1581,18 @@ def cmd_login(args):
     _save_cookie_jar(opener._jar, cookie_file)
 
     parent = (getattr(args, 'parent', None) or '').strip() or None
+    no_verify = getattr(args, 'no_verify', False)
     _upsert_server(cfg, server, nickname=nickname or None,
                    cookie_file=cookie_file_override,
                    connect_to=connect_to,
                    parent=parent)
+    # Persist --no-verify so future commands for this server skip SSL
+    # verification automatically without needing the flag each time.
+    entry = _find_server(cfg, server)
+    if no_verify:
+        entry['no_verify'] = True
+    else:
+        entry.pop('no_verify', None)
     cfg['current'] = nickname if nickname else server
     out_fmt = getattr(args, 'output', None)
     if out_fmt:
@@ -2462,6 +2556,8 @@ def build_parser():
     sp.add_argument('--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
                     help='Override TCP connection target while keeping URL hostname for '
                          'TLS SNI and the Host header  [env: DOCKSIDE_CONNECT_TO]')
+    sp.add_argument('--debug-http', dest='debug_http', action='store_true',
+                    help='Print raw HTTP request/response headers for debugging.')
     sp.set_defaults(func=cmd_login)
 
     # ── logout ─────────────────────────────────────────────────────────────────
