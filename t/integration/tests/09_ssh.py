@@ -31,7 +31,7 @@ _SSH_DIR = os.path.join(_INTEGRATION_DIR, 'config', 'ssh')
 _DEV1_KEY = os.path.join(_SSH_DIR, 'testdev1_ed25519')
 _DEV2_KEY = os.path.join(_SSH_DIR, 'testdev2_ed25519')
 
-SSH_CONTAINER = 'inttest-ssh-01'
+_BASE_SSH_CONTAINER = 'inttest-ssh-01'
 
 
 def _wstunnel_available():
@@ -79,25 +79,40 @@ def _write_ssh_config(tmpdir, host_pattern, proxy_command, hostname, identity_fi
 
 
 class SshTests(TestCase):
-    """SSH access: inbound via wstunnel, outbound via integrated ssh-agent."""
+    """SSH access: inbound via wstunnel, outbound via integrated ssh-agent.
 
-    def setUp(self):
-        super().setUp()
-        self.register_cleanup(SSH_CONTAINER)
+    The SSH container persists across all tests; setUpClass computes the
+    suffixed name, tearDownClass cleans up.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.SSH_CONTAINER = cls._sfx(_BASE_SSH_CONTAINER)
+
+    @classmethod
+    def tearDownClass(cls):
+        for fn in (
+            lambda: cls.dev1.stop(cls.SSH_CONTAINER, wait=False),
+            lambda: cls.dev1.remove(cls.SSH_CONTAINER, wait=False),
+        ):
+            try:
+                fn()
+            except Exception:
+                pass
 
     def _ensure_ssh_container(self):
         """Create and start the SSH test container (dev1 is owner)."""
         try:
             self.dev1.create(
                 profile=self.test_profile_alpine,
-                name=SSH_CONTAINER,
+                name=self.SSH_CONTAINER,
             )
         except APIError as e:
             if 'already' not in str(e).lower() and 'exists' not in str(e).lower():
                 raise
-        data = self.dev1.get_container(SSH_CONTAINER)
+        data = self.dev1.get_container(self.SSH_CONTAINER)
         if data.get('status') != 1:
-            self.dev1.start(SSH_CONTAINER, wait=True, timeout=120)
+            self.dev1.start(self.SSH_CONTAINER, wait=True, timeout=120)
             time.sleep(2)
 
     def _get_ssh_host_pattern(self):
@@ -113,9 +128,9 @@ class SshTests(TestCase):
 
         if self.dev1._connect_to:
             # local or harness mode
-            parts       = server_hostname.split('.', 1)
-            suffix      = parts[1] if len(parts) > 1 else server_hostname
-            ssh_hostname = f'ssh-{SSH_CONTAINER}.{suffix}'
+            parts        = server_hostname.split('.', 1)
+            domain_sfx   = parts[1] if len(parts) > 1 else server_hostname
+            ssh_hostname = f'ssh-{self.SSH_CONTAINER}.{domain_sfx}'
             # Extract port from connect_to (e.g. 'localhost:12345' or 'localhost')
             connect_to = self.dev1._connect_to
             if ':' in connect_to:
@@ -126,15 +141,15 @@ class SshTests(TestCase):
             wss_url = f'wss://localhost:{port}'
         else:
             # remote mode
-            data        = self.dev1.get_container(SSH_CONTAINER)
-            parent_fqdn = (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN') or ''
-            ssh_hostname = f'ssh-{SSH_CONTAINER}{parent_fqdn}'
+            data         = self.dev1.get_container(self.SSH_CONTAINER)
+            parent_fqdn  = (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN') or ''
+            ssh_hostname = f'ssh-{self.SSH_CONTAINER}{parent_fqdn}'
             wss_url      = f'wss://{server_hostname}'
 
         return ssh_hostname, wss_url
 
     def _get_parent_fqdn(self):
-        data = self.dev1.get_container(SSH_CONTAINER)
+        data = self.dev1.get_container(self.SSH_CONTAINER)
         return (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN')
 
     # ── Test A: Inbound SSH via wstunnel ──────────────────────────────────────
@@ -176,14 +191,14 @@ class SshTests(TestCase):
         """dev2 (not in developers) gets 410 from SSH router."""
         self._ensure_ssh_container()
         try:
-            self.dev1.update(SSH_CONTAINER, developers='')
+            self.dev1.update(self.SSH_CONTAINER, developers='')
         except APIError:
             pass
 
         parent_fqdn = None if self.dev1._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
-                SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
+                self.SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
             )
             self.assert_http_status(code, 410,
                                     f'dev2 got {code} for SSH when not in developers')
@@ -199,7 +214,7 @@ class SshTests(TestCase):
 
         self._ensure_ssh_container()
 
-        self.dev1.update(SSH_CONTAINER, developers=self.test_username_dev2)
+        self.dev1.update(self.SSH_CONTAINER, developers=self.test_username_dev2)
         # Dockside regenerates authorized_keys; give it a moment
         time.sleep(2)
 
@@ -230,14 +245,14 @@ class SshTests(TestCase):
     def test_04_remove_dev2_and_ssh_denied(self):
         """After removing dev2 from developers, SSH proxy returns 410."""
         self._ensure_ssh_container()
-        self.dev1.update(SSH_CONTAINER, developers=self.test_username_dev2)
-        self.dev1.update(SSH_CONTAINER, developers='')
+        self.dev1.update(self.SSH_CONTAINER, developers=self.test_username_dev2)
+        self.dev1.update(self.SSH_CONTAINER, developers='')
         time.sleep(1)
 
         parent_fqdn = None if self.dev1._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
-                SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
+                self.SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
             )
             self.assert_http_status(code, 410,
                                     f'dev2 got {code} after being removed from developers')
@@ -266,7 +281,7 @@ class SshTests(TestCase):
         self._ensure_ssh_container()
 
         # Find the devtainer's container ID
-        data = self.dev1.get_container(SSH_CONTAINER)
+        data = self.dev1.get_container(self.SSH_CONTAINER)
         devtainer_id = (data.get('data') or {}).get('id') or data.get('containerId')
         if not devtainer_id:
             self.skip('Could not determine devtainer container ID')

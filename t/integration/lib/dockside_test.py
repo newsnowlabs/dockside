@@ -436,6 +436,15 @@ class TestCase:
     test_profile_nginx    = 'inttest-nginx'
     test_password_dev     = 'inttest-testpass'
 
+    # Suffix for all test resource names (injected by TestRunner)
+    _name_suffix = ''
+
+    @classmethod
+    def _sfx(cls, name):
+        """Return name with the run-specific suffix appended, if any."""
+        s = getattr(cls, '_name_suffix', '') or ''
+        return f'{name}-{s}' if s else name
+
     def setUp(self):
         self._cleanup_names = []
 
