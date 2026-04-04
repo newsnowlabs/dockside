@@ -395,6 +395,20 @@ def _compute_nest_level(server_url):
     return '1-' * nest_count
 
 
+def _enable_debug_http():
+    """Enable http.client request/response tracing to stderr.
+
+    Prints raw request/response headers (and more) for every HTTP/HTTPS
+    connection — useful for verifying that headers like X-Nest-Level are
+    actually being sent.
+    """
+    import logging
+    http.client.HTTPConnection.debuglevel = 1
+    http.client.HTTPSConnection.debuglevel = 1
+    logging.basicConfig(stream=sys.stderr)
+    logging.getLogger('urllib.request').setLevel(logging.DEBUG)
+
+
 class _ConnectToHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection that TCP-connects to a forced address while preserving
     the original hostname for TLS SNI (and therefore for the Host header)."""
@@ -1219,6 +1233,10 @@ def _add_global_flags(p):
              '"ancestors-only" skips the target\'s stored session and uses only ancestor '
              'cookies merged in-memory (requires --username/--password).',
     )
+    p.add_argument(
+        '--debug-http', dest='debug_http', action='store_true',
+        help='Print raw HTTP request/response headers for debugging.',
+    )
 
 
 def _add_wait_flags(p, verb='operation to complete'):
@@ -1426,6 +1444,8 @@ def _client(args):
                   or os.environ.get('DOCKSIDE_CONNECT_TO'))
     session_cookie_file = getattr(args, 'session_cookie_file', None) or None
     cookie_auth = getattr(args, 'cookie_auth', 'all') or 'all'
+    if getattr(args, 'debug_http', False):
+        _enable_debug_http()
     # transient: don't persist the session when using one-shot credentials,
     # unless --cookie-file was given (which provides a dedicated scratch space).
     transient = (username is not None
@@ -1535,13 +1555,17 @@ def cmd_login(args):
                   or os.environ.get('DOCKSIDE_CONNECT_TO')
                   or (current_entry or {}).get('connect_to')
                   or None)
+    nest_level = _compute_nest_level(server) if connect_to else None
+    if getattr(args, 'debug_http', False):
+        _enable_debug_http()
     try:
         opener = login(server, username, password,
                        verify_ssl=not getattr(args, 'no_verify', False),
                        extra_cookies=extra_cookies or None,
                        cookie_file=cookie_file,
                        host_header=host_header,
-                       connect_to=connect_to)
+                       connect_to=connect_to,
+                       nest_level=nest_level)
     except APIError as e:
         die(str(e))
 
