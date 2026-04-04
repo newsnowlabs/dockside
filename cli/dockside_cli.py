@@ -22,6 +22,8 @@ import urllib.request
 
 __version__ = '0.2.0'
 
+_HTTP_DEBUG_LEVEL = 0   # set to 1 by --debug-http / _enable_debug_http()
+
 # ── Config directory validation ───────────────────────────────────────────────
 
 def _validate_config_dir(path):
@@ -401,10 +403,16 @@ def _enable_debug_http():
     Prints raw request/response headers (and more) for every HTTP/HTTPS
     connection — useful for verifying that headers like X-Nest-Level are
     actually being sent.
+
+    NOTE: urllib's AbstractHTTPHandler.do_open() calls h.set_debuglevel()
+    on each connection using the handler's own _debuglevel (set at handler
+    construction time), which would override any class-level setting.
+    _HTTP_DEBUG_LEVEL is therefore used to pass debuglevel=1 to each handler
+    when it is constructed in _build_opener() / _build_opener_from_jar().
     """
+    global _HTTP_DEBUG_LEVEL
+    _HTTP_DEBUG_LEVEL = 1
     import logging
-    http.client.HTTPConnection.debuglevel = 1
-    http.client.HTTPSConnection.debuglevel = 1
     logging.basicConfig(stream=sys.stderr)
     logging.getLogger('urllib.request').setLevel(logging.DEBUG)
 
@@ -434,8 +442,8 @@ class _ConnectToHandler(urllib.request.HTTPSHandler):
     """HTTPS handler that TCP-connects to a forced address while preserving
     the original hostname for TLS SNI and the HTTP Host header."""
 
-    def __init__(self, connect_to, context):
-        super().__init__(context=context)
+    def __init__(self, connect_to, context, debuglevel=0):
+        super().__init__(context=context, debuglevel=debuglevel)
         if ':' in connect_to:
             host, _, port = connect_to.rpartition(':')
             self._force_host = host
@@ -477,9 +485,9 @@ def _build_opener(cookie_file, verify_ssl, host_header=None, connect_to=None, ne
         urllib.request.HTTPRedirectHandler(),
     ]
     if connect_to:
-        handlers.append(_ConnectToHandler(connect_to, ctx))
+        handlers.append(_ConnectToHandler(connect_to, ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     else:
-        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        handlers.append(urllib.request.HTTPSHandler(context=ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     if host_header:
         handlers.append(_HostOverrideHandler(host_header))
     if nest_level:
@@ -500,9 +508,9 @@ def _build_opener_from_jar(jar, verify_ssl, host_header=None, connect_to=None, n
         urllib.request.HTTPRedirectHandler(),
     ]
     if connect_to:
-        handlers.append(_ConnectToHandler(connect_to, ctx))
+        handlers.append(_ConnectToHandler(connect_to, ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     else:
-        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        handlers.append(urllib.request.HTTPSHandler(context=ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     if host_header:
         handlers.append(_HostOverrideHandler(host_header))
     if nest_level:
@@ -2549,6 +2557,8 @@ def build_parser():
     sp.add_argument('--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
                     help='Override TCP connection target while keeping URL hostname for '
                          'TLS SNI and the Host header  [env: DOCKSIDE_CONNECT_TO]')
+    sp.add_argument('--debug-http', dest='debug_http', action='store_true',
+                    help='Print raw HTTP request/response headers for debugging.')
     sp.set_defaults(func=cmd_login)
 
     # ── logout ─────────────────────────────────────────────────────────────────
