@@ -24,7 +24,6 @@ import json
 import os
 import random
 import sys
-import tempfile
 
 SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
 INTEGRATION_DIR = os.path.dirname(SCRIPT_DIR)
@@ -506,7 +505,10 @@ def main():
               file=sys.stderr)
         admin_creds = (None, None)  # session_only mode
 
-    # Build admin client (used for pre-flight + env setup)
+    # Build admin client (used for pre-flight + env setup).
+    # use_cli_admin_creds=True when explicit credentials are provided;
+    # use_cli_admin_creds=False when the developer has pre-authenticated
+    # via 'dockside login' (interactive dev use only, not harness mode).
     admin_client = DocksideClient(
         cli_path=cli_path,
         server_url=server_url,
@@ -514,7 +516,7 @@ def main():
         password=admin_creds[1],
         connect_to=connect_to,
         verify_ssl=verify_ssl,
-        session_only=(admin_creds[0] is None),
+        use_cli_admin_creds=(admin_creds[0] is not None),
     )
 
     # Pre-flight: verify admin has required permissions (via dockside whoami)

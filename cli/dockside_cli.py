@@ -434,6 +434,57 @@ def _build_opener(cookie_file, verify_ssl, host_header=None, connect_to=None):
     return opener
 
 
+def _build_opener_from_jar(jar, verify_ssl, host_header=None, connect_to=None):
+    """Create a urllib opener from a pre-built cookie jar."""
+    ctx = ssl.create_default_context()
+    if not verify_ssl:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    handlers = [
+        urllib.request.HTTPCookieProcessor(jar),
+        urllib.request.HTTPRedirectHandler(),
+    ]
+    if connect_to:
+        handlers.append(_ConnectToHandler(connect_to, ctx))
+    else:
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+    if host_header:
+        handlers.append(_HostOverrideHandler(host_header))
+    opener = urllib.request.build_opener(*handlers)
+    opener._jar = jar
+    return opener
+
+
+def _merge_ancestor_cookies(jar, cfg, server_entry, _seen=None):
+    """
+    Recursively load ancestor cookies into jar (in-memory merge, not saved).
+
+    Follows the 'parent' chain declared in the server config entry.  Each
+    ancestor's cookie file is loaded into the given jar so that outer-proxy
+    session cookies are automatically included in requests to an inner server.
+    Ancestors are never written back to the target's cookie file.
+    """
+    if _seen is None:
+        _seen = {server_entry.get('url', '')}
+    parent_ref = (server_entry.get('parent') or '').strip()
+    if not parent_ref:
+        return
+    parent_entry = _find_server(cfg, parent_ref)
+    if not parent_entry or parent_entry.get('url', '') in _seen:
+        return  # not found or cycle
+    _seen.add(parent_entry.get('url', ''))
+    parent_file = _cookie_file_for(parent_entry)
+    if os.path.isfile(parent_file) and not os.path.islink(parent_file):
+        anc_jar = http.cookiejar.MozillaCookieJar(parent_file)
+        try:
+            anc_jar.load(ignore_discard=True, ignore_expires=True)
+            for c in anc_jar:
+                jar.set_cookie(c)
+        except Exception:
+            pass
+    _merge_ancestor_cookies(jar, cfg, parent_entry, _seen)
+
+
 def _do_get(opener, url, timeout=30):
     """GET url → parsed JSON, raising APIError on failure."""
     req = urllib.request.Request(url, headers={'Accept': 'application/json'})
@@ -560,15 +611,53 @@ def login(server, username, password, verify_ssl=True,
 
 def get_authenticated_opener(server, server_entry, username, password,
                               verify_ssl=True, transient=False,
-                              extra_cookies=None, host_header=None, connect_to=None):
+                              extra_cookies=None, host_header=None, connect_to=None,
+                              session_cookie_file=None, cookie_auth='all', cfg=None):
     """
     Return an authenticated opener.
 
     Performs a fresh login when username+password are given and optionally
     persists the session.  Otherwise loads stored cookies for this server.
+
+    session_cookie_file: if set, use this path for the target's session cookies
+        instead of the path derived from config.json.  Ancestor cookies are
+        still merged from their normal paths in the system config.
+    cookie_auth: 'all' (default) — load both target and ancestor cookies;
+        'ancestors-only' — skip the target's stored session entirely (in-memory
+        only); requires username+password; useful for per-invocation isolation.
+    cfg: loaded config dict, used to follow the 'parent' chain.  If None, no
+        ancestor cookies are merged.
     """
-    cookie_file = _cookie_file_for(server_entry)
     connect_to = connect_to or server_entry.get('connect_to')
+
+    if cookie_auth == 'ancestors-only':
+        # Empty in-memory jar for target; ancestor cookies merged from system config
+        jar = http.cookiejar.MozillaCookieJar()
+        opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to)
+        if cfg:
+            _merge_ancestor_cookies(jar, cfg, server_entry)
+        if username and password:
+            url = server.rstrip('/') + '/'
+            if extra_cookies:
+                for cname, cval in extra_cookies.items():
+                    _inject_cookie(jar, server, cname, cval)
+            payload = urllib.parse.urlencode(
+                {'username': username, 'password': password}
+            ).encode()
+            req = urllib.request.Request(url, data=payload, method='POST')
+            try:
+                with opener.open(req, timeout=15):
+                    pass
+            except urllib.error.URLError as e:
+                raise APIError(f'Login failed – connection error: {e.reason}')
+            if not list(jar):
+                raise APIError(
+                    'Login failed – no session cookie received. '
+                    'Check credentials and ensure the server URL is correct.'
+                )
+        return opener
+
+    cookie_file = session_cookie_file or _cookie_file_for(server_entry)
     if username and password:
         opener = login(server, username, password, verify_ssl=verify_ssl,
                        extra_cookies=extra_cookies, cookie_file=cookie_file,
@@ -576,6 +665,8 @@ def get_authenticated_opener(server, server_entry, username, password,
         if not transient:
             _ensure_config_dir()
             _save_cookie_jar(opener._jar, cookie_file)
+        if cfg:
+            _merge_ancestor_cookies(opener._jar, cfg, server_entry)
         return opener
     # Load stored cookies
     if not os.path.isfile(cookie_file):
@@ -584,8 +675,11 @@ def get_authenticated_opener(server, server_entry, username, password,
             f"Not logged in to {ref!r}. Run 'dockside login' first, "
             "or supply --username / --password (or DOCKSIDE_USER / DOCKSIDE_PASSWORD)."
         )
-    return _build_opener(cookie_file, verify_ssl,
-                         host_header=host_header, connect_to=connect_to)
+    opener = _build_opener(cookie_file, verify_ssl,
+                           host_header=host_header, connect_to=connect_to)
+    if cfg:
+        _merge_ancestor_cookies(opener._jar, cfg, server_entry)
+    return opener
 
 
 # ── Container resolution ──────────────────────────────────────────────────────
@@ -1039,6 +1133,22 @@ def _add_global_flags(p):
              'The server URL hostname is still used for TLS SNI and the Host header.  '
              '[env: DOCKSIDE_CONNECT_TO]',
     )
+    p.add_argument(
+        '--cookie-file', dest='session_cookie_file', metavar='PATH',
+        help='Full path to use as the session cookie file for the target server, '
+             'overriding the path derived from config.json. Ancestor cookies are '
+             'still loaded from their normal paths in the system config. '
+             'Useful for isolating sessions in test harnesses without affecting '
+             'the system cookie store.',
+    )
+    p.add_argument(
+        '--cookie-auth', dest='cookie_auth', metavar='MODE',
+        choices=['all', 'ancestors-only'],
+        default='all',
+        help='Cookie loading mode: "all" (default) loads target and ancestor cookies; '
+             '"ancestors-only" skips the target\'s stored session and uses only ancestor '
+             'cookies merged in-memory (requires --username/--password).',
+    )
 
 
 def _add_wait_flags(p, verb='operation to complete'):
@@ -1244,13 +1354,23 @@ def _client(args):
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
     connect_to = (getattr(args, 'connect_to', None)
                   or os.environ.get('DOCKSIDE_CONNECT_TO'))
+    session_cookie_file = getattr(args, 'session_cookie_file', None) or None
+    cookie_auth = getattr(args, 'cookie_auth', 'all') or 'all'
+    # transient: don't persist the session when using one-shot credentials,
+    # unless --cookie-file was given (which provides a dedicated scratch space).
+    transient = (username is not None
+                 and session_cookie_file is None
+                 and cookie_auth != 'ancestors-only')
     try:
         opener = get_authenticated_opener(
             server_url, server_entry, username, password,
             verify_ssl=verify,
-            transient=(username is not None),
+            transient=transient,
             host_header=host_header,
             connect_to=connect_to,
+            session_cookie_file=session_cookie_file,
+            cookie_auth=cookie_auth,
+            cfg=cfg,
         )
     except APIError as e:
         die(str(e))
@@ -1358,9 +1478,11 @@ def cmd_login(args):
     _ensure_config_dir()
     _save_cookie_jar(opener._jar, cookie_file)
 
+    parent = (getattr(args, 'parent', None) or '').strip() or None
     _upsert_server(cfg, server, nickname=nickname or None,
                    cookie_file=cookie_file_override,
-                   connect_to=connect_to)
+                   connect_to=connect_to,
+                   parent=parent)
     cfg['current'] = nickname if nickname else server
     out_fmt = getattr(args, 'output', None)
     if out_fmt:
@@ -2309,6 +2431,11 @@ def build_parser():
                          'Stored in config.json so subsequent commands reuse the same file. '
                          'Useful when an inner Dockside server must share cookies with an '
                          'outer server (specify the outer server\'s cookie filename here).')
+    sp.add_argument('--parent', metavar='URL_OR_NICKNAME',
+                    help='Declare a parent (outer) Dockside server for this entry. '
+                         'When making requests to this server, cookies from the parent\'s '
+                         'session file are automatically merged in-memory so that the outer '
+                         'proxy is satisfied. Stored in config.json.')
     sp.add_argument('--output', '-o', choices=['text', 'json', 'yaml'], default=None,
                     help='Default output format to store in config for this server')
     sp.add_argument('--no-verify', action='store_true',

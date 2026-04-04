@@ -56,15 +56,13 @@ bash test.sh --only integration
 |---|---|---|
 | `DOCKSIDE_TEST_MODE` | auto-detected | `local`, `remote`, or `harness` |
 | `DOCKSIDE_TEST_HOST` | — | Public FQDN, e.g. `www.local.dockside.dev` |
-| `DOCKSIDE_TEST_ADMIN` | — | `username:password` |
-| `DOCKSIDE_TEST_DEV1` | `testdev1:testpass123` | Developer 1 credentials |
-| `DOCKSIDE_TEST_DEV2` | `testdev2:testpass123` | Developer 2 credentials |
-| `DOCKSIDE_TEST_VIEWER` | `testviewer:testpass123` | Viewer credentials |
+| `DOCKSIDE_TEST_ADMIN` | — | `username:password` (if unset, uses stored CLI session) |
 | `DOCKSIDE_TEST_IMAGE` | — | Docker image for harness mode |
 | `DOCKSIDE_TEST_VERIFY_SSL` | `0` | Set `1` to verify SSL certificates |
 | `DOCKSIDE_TEST_CONTAINER_ID` | — | Running Dockside container ID (enables docker-exec SSH tests in non-harness modes) |
 | `DOCKSIDE_TEST_SSH_SERVER` | `git@github.com` | Outbound SSH server for test 09 B |
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
+| `DOCKSIDE_TEST_NAME_SUFFIX` | (none) | Suffix for test resource names; `auto` generates a random 6-char hex string |
 
 ## Running Subsets
 
@@ -79,20 +77,73 @@ DOCKSIDE_TEST_IMAGE=... bash t/integration/run_tests.sh --only 09
 DOCKSIDE_TEST_IMAGE=... DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1 bash t/integration/run_tests.sh --only 08
 ```
 
-## Prerequisites for Remote/Local Modes
+## Admin Credentials and Session Isolation
 
-The target Dockside instance must have the four test users configured with
-known passwords. Mount or copy `t/integration/config/users.json` and
-`t/integration/config/roles.json` to `/data/config/`, then set passwords:
+The harness creates separate `DocksideClient` instances for each test role
+(admin, dev1, dev2, viewer). Each client with explicit credentials gets its own
+temporary session cookie file (via `--cookie-file <tmpfile>`) so sessions are
+completely isolated — the admin's cookies never contaminate dev1/dev2/viewer
+requests and vice versa.
 
-```bash
-docker exec <dockside_container> bash -c '
-  APP=/home/dockside/dockside/app/server
-  HASH=$(perl -I "$APP/lib" -MUtil -e "print Util::encrypt_password(\"testpass123\")")
-  printf "testdev1:%s\ntestdev2:%s\ntestviewer:%s\n" "$HASH" "$HASH" "$HASH" \
-    >> /data/config/passwd
-'
+### `use_cli_admin_creds` flag
+
+`DocksideClient` accepts a `use_cli_admin_creds` parameter that controls how
+the admin client authenticates:
+
+- **`use_cli_admin_creds=True`** (required for harness mode, optional for
+  local/remote): explicit `--username`/`--password` flags are passed to the CLI
+  on every call; a per-client temporary cookie file isolates the session.
+  `DOCKSIDE_TEST_ADMIN=user:pass` must be set.
+
+- **`use_cli_admin_creds=False`** (interactive dev use only): no credentials
+  are passed; the CLI reads its stored session from a prior `dockside login`.
+  `DOCKSIDE_TEST_ADMIN` must be unset. Cannot be used in harness mode.
+
+All test-user clients (dev1, dev2, viewer) always use `use_cli_admin_creds=True`.
+
+### Outer/inner cookie propagation (remote mode)
+
+When the test target is an inner Dockside instance (running as a devcontainer
+inside an outer Dockside), every request must carry both an outer and an inner
+session cookie. The CLI handles this automatically when the server's config
+entry declares a `parent`:
+
+```json
+{
+  "servers": [
+    {"url": "https://www.local.dockside.dev", "nickname": "outer"},
+    {
+      "url": "https://www-ds-ai2.local.dockside.dev",
+      "nickname": "ai2",
+      "parent": "outer"
+    }
+  ]
+}
 ```
+
+Set this up with `dockside login --parent outer` when registering the inner
+server. With `--cookie-file <tmpfile>`, the target's session is isolated to the
+temp file while ancestor (outer) cookies are still loaded from the system config's
+parent chain automatically.
+
+## For AI Developers (Claude, etc.)
+
+When working inside a Dockside devtainer:
+
+- **Inside a devtainer** (profiles 00/01/91/92): the outer Dockside server is
+  accessible via its public FQDN. Use **remote mode**:
+  ```bash
+  DOCKSIDE_TEST_HOST="${DOCKSIDE_HOST:-www.local.dockside.dev}" \
+  DOCKSIDE_TEST_ADMIN=admin:pass \
+  bash t/integration/run_tests.sh
+  ```
+
+- **Inside the Dockside container itself** (via `docker exec`): use **local mode**.
+
+- **In CI / fully isolated**: use **harness mode** with `DOCKSIDE_TEST_IMAGE`.
+
+Note: in harness and local modes the tests connect to `https://localhost` and
+inject the correct `Host` header via the `--host-header` CLI flag.
 
 ## Access Control Model
 
@@ -171,22 +222,57 @@ unique Docker network, attach it to the Dockside container, verify it appears
 in available networks, then clean up. Safe to run against any Dockside
 instance you control — never deletes or modifies pre-existing networks.
 
-## For AI Developers (Claude, etc.)
+---
 
-When working inside a Dockside devtainer:
+## Appendix: Why the test harness uses the CLI
 
-- **Inside a devtainer** (profiles 00/01/91/92): the outer Dockside server is
-  accessible via its public FQDN. Use **remote mode**:
-  ```bash
-  DOCKSIDE_TEST_HOST="${DOCKSIDE_HOST:-www.local.dockside.dev}" \
-  DOCKSIDE_TEST_ADMIN=admin:pass \
-  bash t/integration/run_tests.sh
-  ```
+The harness drives all API operations and HTTP service checks via the Dockside
+CLI (`dockside --output json ...`) as a subprocess rather than making direct
+HTTP requests. This is a deliberate design choice.
 
-- **Inside the Dockside container itself** (via `docker exec`): use **local mode**.
+### Arguments for using the CLI
 
-- **In CI / fully isolated**: use **harness mode** with `DOCKSIDE_TEST_IMAGE`.
+**Tests the full user-facing interface.** Dockside ships the CLI as a
+first-class product. Every test invocation exercises CLI argument parsing,
+output serialisation, error handling, and cookie management alongside the
+server API. A broken CLI is a user-facing bug; these tests catch it.
 
-Note: in harness and local modes the tests connect to `https://localhost` and
-inject the correct `Host` header via the `--host-header` CLI flag (added as
-part of this integration test suite).
+**`check-url` specifically.** The `check-url` CLI command encapsulates
+non-trivial logic: TCP-override routing (`--connect-to`), cross-domain cookie
+injection, and JSON output. This logic cannot be exercised by direct urllib
+calls. Using `check-url` in harness tests is the only way to get integration
+coverage of it.
+
+**No duplicate HTTP client code.** Without the CLI the harness would need its
+own `_ConnectToHTTPSConnection`, `_ConnectToHandler`, and cookie-injection
+logic mirroring the CLI. The CLI-based approach collapses this into a single
+implementation.
+
+**Dogfooding.** The CLI is the tool operators actually use to interact with
+Dockside. Running tests via the CLI validates the experience operators will
+have, not just an internal API surface.
+
+### Tradeoffs
+
+**Test failure ambiguity.** When a test fails it is not immediately clear
+whether the server API or the CLI is at fault. CLI bugs present as distinctive
+error messages in captured stderr, which makes them diagnosable, but they can
+cause many tests to fail at once even when the server is healthy.
+
+**Subprocess overhead.** Each API call spawns a Python subprocess. For large
+test suites this adds up compared to in-process HTTP calls.
+
+**Cookie management complexity.** The session-isolation machinery (`--cookie-file`,
+`parent` chain, `use_cli_admin_creds`) exists because the harness delegates
+session management to the CLI. A direct HTTP harness would manage cookies
+entirely in-process with no such complexity.
+
+### Future option
+
+For local and harness modes (single Dockside instance, no outer/inner proxy),
+the CLI dependency for service checks could be made optional: `check_service()`
+could fall back to the harness's own `http_check()` function which already
+supports `connect_to` TCP overrides. This would reduce subprocess overhead
+without losing `check-url` coverage in remote/inner mode where it matters most.
+This optimisation is deferred; a single code path (always use `check-url`) is
+the right default for now.

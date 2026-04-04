@@ -207,27 +207,36 @@ class DocksideClient:
 
     Parameters
     ----------
-    session_only : bool
-        If True, no --username/--password are passed to the CLI and
-        DOCKSIDE_CONFIG_DIR is not overridden (uses the system config at
-        ~/.config/dockside/).  Use this when the CLI is already authenticated
-        via a prior 'dockside login'.
+    use_cli_admin_creds : bool
+        If True, --username/--password are passed to the CLI on every call and
+        a per-client temporary cookie file is used (via --cookie-file) to keep
+        sessions isolated.  The system config (~/.config/dockside/) is still
+        used for the parent chain so ancestor cookies are merged automatically.
+        Required for harness mode and when explicit admin credentials are provided.
+
+        If False (interactive dev use), no --username/--password are passed and
+        DOCKSIDE_CONFIG_DIR is not overridden — the CLI uses its stored session
+        from a prior 'dockside login'.
     """
 
     def __init__(self, cli_path, server_url, username=None, password=None,
-                 connect_to=None, verify_ssl=False, config_dir=None,
-                 session_only=False):
+                 connect_to=None, verify_ssl=False,
+                 use_cli_admin_creds=False):
         self._cli = cli_path
         self._server = server_url
         self._username = username
         self._password = password
         self._connect_to = connect_to
         self._verify_ssl = verify_ssl
-        self._session_only = session_only
-        if session_only:
-            self._config_dir = None   # use system config
+        self._use_cli_admin_creds = use_cli_admin_creds
+        if use_cli_admin_creds:
+            # Create a per-client temp file; sessions are isolated here.
+            # The system config's parent chain is still used for ancestor cookies.
+            fd, path = tempfile.mkstemp(suffix='.txt', prefix='dockside-sess-')
+            os.close(fd)
+            self._session_cookie_file = path
         else:
-            self._config_dir = config_dir or tempfile.mkdtemp(prefix='dockside-test-')
+            self._session_cookie_file = None  # use system config session
         self._cookie_jar = None  # loaded lazily after first _run
 
     def _base_args(self):
@@ -235,9 +244,10 @@ class DocksideClient:
             '--server', self._server,
             '--output', 'json',
         ]
-        if not self._session_only:
+        if self._use_cli_admin_creds:
             args.extend(['--username', self._username,
                          '--password', self._password])
+            args.extend(['--cookie-file', self._session_cookie_file])
         if not self._verify_ssl:
             args.append('--no-verify')
         if self._connect_to:
@@ -252,11 +262,9 @@ class DocksideClient:
         # Global flags are appended at the end; argparse accepts them anywhere.
         cmd = [self._cli] + list(cmd_args) + self._base_args()
         env = os.environ.copy()
-        if self._config_dir:
-            env['DOCKSIDE_CONFIG_DIR'] = self._config_dir
-        else:
-            # session_only: use system config; do not override DOCKSIDE_CONFIG_DIR
-            env.pop('DOCKSIDE_CONFIG_DIR', None)
+        # Always use the system config so the parent chain is available for
+        # ancestor cookie merging.  Session isolation is achieved via --cookie-file.
+        env.pop('DOCKSIDE_CONFIG_DIR', None)
         verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
         debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
         if verbose or debug:
@@ -278,13 +286,12 @@ class DocksideClient:
         return None
 
     def _reload_cookie_jar(self):
-        """Load/reload the cookie file written by the CLI."""
-        if self._config_dir is None:
+        """Load/reload the session cookie file written by the CLI."""
+        if self._session_cookie_file is None:
             return
-        cookie_file = os.path.join(self._config_dir, 'cookies.txt')
-        if not os.path.isfile(cookie_file):
+        if not os.path.isfile(self._session_cookie_file):
             return
-        jar = http.cookiejar.MozillaCookieJar(cookie_file)
+        jar = http.cookiejar.MozillaCookieJar(self._session_cookie_file)
         try:
             jar.load(ignore_discard=True, ignore_expires=True)
         except Exception:
@@ -384,12 +391,11 @@ class DocksideClient:
         return self.check_url(url, timeout=timeout)
 
     def cleanup(self):
-        """Remove the temporary config directory."""
-        import shutil
-        if self._config_dir:
+        """Remove the temporary session cookie file."""
+        if self._session_cookie_file:
             try:
-                shutil.rmtree(self._config_dir, ignore_errors=True)
-            except Exception:
+                os.unlink(self._session_cookie_file)
+            except OSError:
                 pass
 
 
@@ -574,8 +580,8 @@ class TestRunner:
         self._setup_clients()
         self._register_cleanup()
 
-    def _make_client(self, username, password, session_only=False):
-        if not session_only and username is None:
+    def _make_client(self, username, password, use_cli_admin_creds=False):
+        if not use_cli_admin_creds and username is None:
             return None
         return DocksideClient(
             cli_path=self._cli_path,
@@ -584,7 +590,7 @@ class TestRunner:
             password=password,
             connect_to=self._connect_to,
             verify_ssl=self._verify_ssl,
-            session_only=session_only,
+            use_cli_admin_creds=use_cli_admin_creds,
         )
 
     def _validate_client(self, client, role):
@@ -600,13 +606,14 @@ class TestRunner:
     def _setup_clients(self):
         creds = self._credentials
         admin_creds = creds['admin']
-        # Admin client: session_only if credentials are (None, None)
-        session_only = (admin_creds[0] is None)
+        # Admin client: use_cli_admin_creds=False when credentials are (None, None),
+        # meaning the developer has pre-authenticated via 'dockside login'.
+        use_cli_admin_creds = (admin_creds[0] is not None)
         self._clients = {
-            'admin':  self._make_client(*admin_creds, session_only=session_only),
-            'dev1':   self._validate_client(self._make_client(*creds['dev1']), 'dev1'),
-            'dev2':   self._validate_client(self._make_client(*creds['dev2']), 'dev2'),
-            'viewer': self._validate_client(self._make_client(*creds['viewer']), 'viewer'),
+            'admin':  self._make_client(*admin_creds, use_cli_admin_creds=use_cli_admin_creds),
+            'dev1':   self._validate_client(self._make_client(*creds['dev1'], use_cli_admin_creds=True), 'dev1'),
+            'dev2':   self._validate_client(self._make_client(*creds['dev2'], use_cli_admin_creds=True), 'dev2'),
+            'viewer': self._validate_client(self._make_client(*creds['viewer'], use_cli_admin_creds=True), 'viewer'),
             'unauth': None,
         }
 
