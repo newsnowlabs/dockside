@@ -249,6 +249,10 @@ class DocksideClient:
             args.extend(['--username', self._username,
                          '--password', self._password])
             args.extend(['--cookie-file', self._session_cookie_file])
+            # ancestors-only: inject ancestor cookies BEFORE the login POST so
+            # that any outer proxy can validate them.  Safe when there is no
+            # parent chain (merges nothing, falls through to a normal login).
+            args.extend(['--cookie-auth', 'ancestors-only'])
         if not self._verify_ssl:
             args.append('--no-verify')
         if self._connect_to:
