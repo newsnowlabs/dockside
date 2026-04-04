@@ -10,11 +10,16 @@
 #
 # The admin password is written to /tmp/dockside-passwd on every fresh start.
 # Re-read it with: cat /tmp/dockside-passwd
+#
+# The CLI needs www.local.dockside.dev excluded from any HTTP proxy. This script
+# writes the required env to /tmp/dockside-env; source it before using the CLI:
+#   source /tmp/dockside-env
 
 set -e
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASSWD_FILE=/tmp/dockside-passwd
+ENV_FILE=/tmp/dockside-env
 
 # Parse --reset from our own args before forwarding the rest to entrypoint.
 EXTRA_ARGS=()
@@ -49,11 +54,18 @@ mkdir -p /data
 # 7. Optionally reset config (forces fresh credential generation on next start).
 [ -n "$RESET" ] && rm -rf /data/config && echo "run-local: /data/config cleared"
 
-# 8. Kill any manually-started dockerd; s6 will manage it via --run-dockerd.
+# 8. Ensure www.local.dockside.dev bypasses any HTTP proxy, then write an env file
+#    that CLI callers can source to get the same setting.
+export no_proxy="${no_proxy:+${no_proxy},}www.local.dockside.dev"
+export NO_PROXY="${NO_PROXY:+${NO_PROXY},}www.local.dockside.dev"
+printf 'export no_proxy="%s"\nexport NO_PROXY="%s"\n' "$no_proxy" "$NO_PROXY" > "$ENV_FILE"
+echo "run-local: CLI env written to $ENV_FILE (source it before using ./cli/dockside)"
+
+# 9. Kill any manually-started dockerd; s6 will manage it via --run-dockerd.
 pkill -x dockerd 2>/dev/null || true
 sleep 1
 
-# 9. Launch. --run-dockerd skips the docker socket check and container ID detection,
+# 10. Launch. --run-dockerd skips the docker socket check and container ID detection,
 #    and adds dockerd as an s6-supervised service (ulimit failure is now handled gracefully).
 #    --ssl-builtin uses the built-in local.dockside.dev cert; the server will expect
 #    Host: www.local.dockside.dev (https://www.local.dockside.dev/).
