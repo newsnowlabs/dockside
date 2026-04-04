@@ -32,7 +32,7 @@ cgroupfs_mount() {
 
 cgroupfs_mount
 
-ulimit -u unlimited
+ulimit -u unlimited 2>/dev/null || true
 
 mkdir -p /var/log/docker
 DOCKER_LOGFILE=/var/log/docker/docker.log
