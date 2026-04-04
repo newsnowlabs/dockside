@@ -397,6 +397,7 @@ SHELL ["/bin/bash", "-c"]
 # DOCKER INSTALL DEPENDENCIES
 # (See https://docs.docker.com/install/linux/docker-ce/debian/)
 #
+COPY build/development/install-dev-dependencies.sh /tmp/install-dev-dependencies.sh
 RUN apt-get update && \
     apt-get -y upgrade && \
     apt-get -y --no-install-recommends --no-install-suggests install \
@@ -406,21 +407,9 @@ RUN apt-get update && \
     curl -fsSL https://download.docker.com/linux/debian/gpg | apt-key add - && \
     echo "deb https://download.docker.com/linux/debian $(cat /etc/os-release | grep VERSION_CODENAME | cut -d '=' -f2) stable" >/etc/apt/sources.list.d/docker.list && \
     apt-get update && \
+    /tmp/install-dev-dependencies.sh && \
     apt-get -y --no-install-recommends --no-install-suggests install \
-        sudo \
-        nginx libnginx-mod-http-perl \
-        wamerican \
-        bind9 dnsutils \
-        docker-ce docker-ce-cli docker-buildx-plugin containerd.io gcc- \
-        perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
-        libyaml-libyaml-perl \
-        libio-async-perl \
-        python3-venv \
-        acl \
-        s6 \
-        jq \
-        kmod \
-        logrotate cron- bcron- exim4-
+        docker-ce docker-ce-cli docker-buildx-plugin containerd.io gcc-
 
 # -----------------------------------------
 # CREATE USER, AND HOME AND LOG DIRECTORIES
