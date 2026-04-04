@@ -319,6 +319,9 @@ class _EnvManager:
             # Check role matches; be lenient about resources (just require presence)
             existing_role = existing.get('role', '')
             if existing_role == role_name:
+                # Always (re-)set the password so that a user created without one
+                # (e.g. by a previous buggy run) gets a usable passwd entry.
+                self._admin._run('user', 'edit', name, '--user-password', self.password_dev)
                 print(f'# User {name!r}: reusing existing (role matches)', file=sys.stderr)
                 return name
             else:
@@ -330,8 +333,8 @@ class _EnvManager:
 
         # Build create args
         create_args = [
-            '--role',     role_name,
-            '--password', self.password_dev,
+            '--role',          role_name,
+            '--user-password', self.password_dev,
         ]
         for res_key, res_val in resources.items():
             create_args.extend(['--set', f'resources.{res_key}={json.dumps(res_val)}'])
