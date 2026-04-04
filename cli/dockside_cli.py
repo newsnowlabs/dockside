@@ -455,15 +455,26 @@ def _build_opener_from_jar(jar, verify_ssl, host_header=None, connect_to=None):
     return opener
 
 
-def _merge_ancestor_cookies(jar, cfg, server_entry, _seen=None):
+def _merge_ancestor_cookies(jar, cfg, server_entry, _seen=None, _target_url=None):
     """
-    Recursively load ancestor cookies into jar (in-memory merge, not saved).
+    Recursively inject ancestor session cookies into jar, scoped to the target URL.
 
     Follows the 'parent' chain declared in the server config entry.  Each
-    ancestor's cookie file is loaded into the given jar so that outer-proxy
-    session cookies are automatically included in requests to an inner server.
+    ancestor's session cookies are re-injected into jar with the TARGET
+    server's hostname as the cookie domain — NOT the ancestor's own domain.
+
+    This is necessary because urllib's HTTPCookieProcessor only sends a cookie
+    when the cookie's domain attribute matches the request URL's hostname.  The
+    ancestor's cookies carry the ancestor's hostname as domain (e.g. the outer
+    proxy's own URL), which does not match the target server URL.  Re-injecting
+    with the target hostname ensures the outer proxy's session cookie IS included
+    in every request sent to the inner server, so the outer proxy can read and
+    validate it from the incoming Cookie header.
+
     Ancestors are never written back to the target's cookie file.
     """
+    if _target_url is None:
+        _target_url = server_entry.get('url', '')
     if _seen is None:
         _seen = {server_entry.get('url', '')}
     parent_ref = (server_entry.get('parent') or '').strip()
@@ -479,10 +490,12 @@ def _merge_ancestor_cookies(jar, cfg, server_entry, _seen=None):
         try:
             anc_jar.load(ignore_discard=True, ignore_expires=True)
             for c in anc_jar:
-                jar.set_cookie(c)
+                # Re-inject with the target server's hostname so the cookie
+                # IS sent when urllib makes requests to the target URL.
+                _inject_cookie(jar, _target_url, c.name, c.value)
         except Exception:
             pass
-    _merge_ancestor_cookies(jar, cfg, parent_entry, _seen)
+    _merge_ancestor_cookies(jar, cfg, parent_entry, _seen, _target_url)
 
 
 def _do_get(opener, url, timeout=30):
@@ -631,14 +644,15 @@ def get_authenticated_opener(server, server_entry, username, password,
     connect_to = connect_to or server_entry.get('connect_to')
 
     if cookie_auth == 'ancestors-only':
-        # Empty in-memory jar for target; ancestor cookies merged after login.
-        # NOTE: ancestor cookies must NOT be in the jar during the login POST.
-        # The outer Dockside proxy allows unauthenticated POST / through to the
-        # inner (that is the login flow), but if an outer session cookie is
-        # already present it may reject the request with 400.
+        # Empty in-memory jar for target; ancestor cookies injected first (with
+        # the target server's domain) so the outer proxy receives and validates
+        # them when the login POST passes through.
         jar = http.cookiejar.MozillaCookieJar()
         opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to)
+        if cfg:
+            _merge_ancestor_cookies(jar, cfg, server_entry)
         if username and password:
+            n_before = len(list(jar))  # ancestor cookies already in jar
             url = server.rstrip('/') + '/'
             if extra_cookies:
                 for cname, cval in extra_cookies.items():
@@ -652,15 +666,11 @@ def get_authenticated_opener(server, server_entry, username, password,
                     pass
             except urllib.error.URLError as e:
                 raise APIError(f'Login failed – connection error: {e.reason}')
-            if not list(jar):
+            if len(list(jar)) <= n_before:
                 raise APIError(
                     'Login failed – no session cookie received. '
                     'Check credentials and ensure the server URL is correct.'
                 )
-        # Merge ancestor cookies after login so subsequent requests carry both
-        # the inner session and the outer session (for the outer proxy).
-        if cfg:
-            _merge_ancestor_cookies(jar, cfg, server_entry)
         return opener
 
     cookie_file = session_cookie_file or _cookie_file_for(server_entry)
