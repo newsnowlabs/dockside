@@ -277,7 +277,8 @@ sub handle_login_form ($r, $parentFQDN) { # nginx request object # copy of $pare
 sub _login_body_handler ($r) {
    my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
    $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
-   return handle_login_form($r, $parentFQDN) || send_login_page($r);
+   handle_login_form($r, $parentFQDN) || send_login_page($r);
+   return nginx::OK;
 }
 
 sub _api_body_handler ($r) {
