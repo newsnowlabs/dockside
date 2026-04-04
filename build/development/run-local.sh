@@ -1,19 +1,17 @@
 #!/bin/bash
-# Prepare a local (non-container) environment and launch Dockside under s6 supervision.
+# Prepare a local (non-container) environment and launch Dockside under s6 supervision,
+# then authenticate the CLI automatically.
 # Run as root. Suitable for running integration tests locally.
 #
 # Usage: bash build/development/run-local.sh [--reset] [extra entrypoint args]
 #
 # Options:
-#   --reset   Remove /data/config before starting (forces fresh credential generation).
-#             Use this whenever you need a clean config or new admin password.
+#   --reset   Remove /data/config and ~/.config/dockside before starting,
+#             forcing fresh credential generation and a clean CLI session.
 #
-# The admin password is written to /tmp/dockside-passwd on every fresh start.
-# Re-read it with: cat /tmp/dockside-passwd
-#
-# The CLI needs www.local.dockside.dev excluded from any HTTP proxy. This script
-# writes the required env to /tmp/dockside-env; source it before using the CLI:
-#   source /tmp/dockside-env
+# After startup:
+#   /tmp/dockside-passwd  — admin credentials (admin:<password>)
+#   /tmp/dockside-env     — source this before using ./cli/dockside in other shells
 
 set -e
 
@@ -51,27 +49,63 @@ mkdir -p /opt/dockside/host
 # 6. Create /data (entrypoint writes config, certs, db here).
 mkdir -p /data
 
-# 7. Optionally reset config (forces fresh credential generation on next start).
-[ -n "$RESET" ] && rm -rf /data/config && echo "run-local: /data/config cleared"
+# 7. Optionally reset config and CLI session state.
+if [ -n "$RESET" ]; then
+  rm -rf /data/config ~/.config/dockside
+  echo "run-local: /data/config and ~/.config/dockside cleared"
+fi
 
 # 8. Ensure www.local.dockside.dev bypasses any HTTP proxy, then write an env file
 #    that CLI callers can source to get the same setting.
 export no_proxy="${no_proxy:+${no_proxy},}www.local.dockside.dev"
 export NO_PROXY="${NO_PROXY:+${NO_PROXY},}www.local.dockside.dev"
 printf 'export no_proxy="%s"\nexport NO_PROXY="%s"\n' "$no_proxy" "$NO_PROXY" > "$ENV_FILE"
-echo "run-local: CLI env written to $ENV_FILE (source it before using ./cli/dockside)"
 
 # 9. Kill any manually-started dockerd; s6 will manage it via --run-dockerd.
 pkill -x dockerd 2>/dev/null || true
 sleep 1
 
-# 10. Launch. --run-dockerd skips the docker socket check and container ID detection,
-#    and adds dockerd as an s6-supervised service (ulimit failure is now handled gracefully).
-#    --ssl-builtin uses the built-in local.dockside.dev cert; the server will expect
-#    Host: www.local.dockside.dev (https://www.local.dockside.dev/).
-#    --passwd-file captures the admin credentials for use by test scripts.
-exec /home/dockside/dockside/app/scripts/entrypoint.sh \
+# 10. Launch entrypoint in the background (it will exec s6-svscan and block indefinitely).
+#     --run-dockerd skips docker socket check and container ID detection.
+#     --ssl-builtin uses the built-in local.dockside.dev cert (Host: www.local.dockside.dev).
+#     --passwd-file captures admin credentials for CLI use.
+/home/dockside/dockside/app/scripts/entrypoint.sh \
   --run-dockerd \
   --ssl-builtin \
   --passwd-file "$PASSWD_FILE" \
-  "${EXTRA_ARGS[@]}"
+  "${EXTRA_ARGS[@]}" &
+ENTRYPOINT_PID=$!
+
+# 11. Wait for entrypoint to write the passwd file (signals config is ready).
+echo "run-local: waiting for server to initialise..."
+WAIT=0
+until [ -s "$PASSWD_FILE" ] || ! kill -0 "$ENTRYPOINT_PID" 2>/dev/null; do
+  sleep 1
+  WAIT=$((WAIT + 1))
+  [ "$WAIT" -ge 60 ] && echo "run-local: timed out waiting for passwd file" && exit 1
+done
+
+# 12. Wait for nginx to accept HTTPS connections.
+echo "run-local: waiting for nginx..."
+WAIT=0
+until curl -sk --connect-timeout 2 https://127.0.0.1/ -o /dev/null 2>/dev/null; do
+  sleep 2
+  WAIT=$((WAIT + 2))
+  [ "$WAIT" -ge 60 ] && echo "run-local: timed out waiting for nginx" && exit 1
+done
+
+# 13. Authenticate the CLI.
+USERNAME=$(cut -d: -f1 "$PASSWD_FILE")
+PASSWORD=$(cut -d: -f2 "$PASSWD_FILE")
+"$REPO_DIR/cli/dockside" login \
+  --connect-to 127.0.0.1 \
+  --no-verify \
+  --nickname local \
+  --server https://www.local.dockside.dev/ \
+  --username "$USERNAME" \
+  --password "$PASSWORD"
+
+echo "run-local: ready. To use the CLI in another shell: source $ENV_FILE"
+
+# Keep this process alive so the server isn't orphaned if run in the foreground.
+wait "$ENTRYPOINT_PID"
