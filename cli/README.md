@@ -136,6 +136,22 @@ dockside get my-devtainer --server https://prod.dockside.io
 Old single-server configurations (from CLI v0.1) are migrated transparently
 on first read.
 
+### Nested Dockside servers (`--parent`)
+
+If you use Dockside to host another Dockside instance, register the inner
+server with a `parent` pointing at the outer one:
+
+```sh
+dockside login --server https://www.outer.example.com --nickname outer
+dockside login --server https://www-inner--outer.example.com \
+    --nickname inner \
+    --parent outer
+```
+
+When a server entry has a `parent`, the CLI automatically merges ancestor
+session cookies in memory when talking to the child server. This is the
+recommended way to use nested Dockside instances.
+
 ## Login options
 
 ### Extra cookies (`--cookie`)
@@ -160,13 +176,32 @@ dockside login --server https://inner.dockside.io --cookie-file outer-server
 ```
 
 This is persisted in `config.json` so subsequent commands reuse the same file.
-It enables nested Dockside servers to share cookies — the inner server can
-reuse the outer server's cookie file by name.
+Typical uses:
+- give a server entry a stable custom session filename
+- direct multiple aliases for the same server at one cookie file
+- provide a scratch cookie file in scripts/tests without disturbing the default store
+
+For nested Dockside servers, prefer `--parent` over sharing one cookie file
+between inner and outer servers. Separate cookie files plus `parent` preserve
+session boundaries while still letting ancestor cookies flow where needed.
 
 Cookie filenames are validated: only letters, digits, hyphens, underscores,
 and dots are allowed; path separators, traversal, null bytes, and names
 longer than 128 characters are rejected. A `.txt` suffix is added
 automatically if not present.
+
+### Transport helpers for local and nested setups
+
+Two options are especially useful when the canonical server hostname is not
+directly reachable from the machine running the CLI:
+
+- `--connect-to HOST[:PORT]`: override the TCP target while preserving the URL
+  hostname for TLS SNI and the Host header
+- `--no-verify`: skip TLS verification when using self-signed or otherwise
+  non-public certificates
+
+For HTTP service debugging, `dockside check-url URL --debug-http` prints the
+resolved URL, effective transport target, and low-level connection failures.
 
 ## Output formats
 
@@ -240,7 +275,8 @@ dockside stop   my-feature --timeout 60                # custom timeout
 ## Global flags
 
 These flags are available on all authenticated commands (`list`, `get`,
-`create`, `start`, `stop`, `edit`, `remove`, `logs`):
+`create`, `start`, `stop`, `edit`, `remove`, `logs`, `check-url`, `whoami`,
+and user/role/profile subcommands):
 
 | Flag | Env var | Description |
 |------|---------|-------------|
@@ -249,6 +285,11 @@ These flags are available on all authenticated commands (`list`, `get`,
 | `--password PASS` | `DOCKSIDE_PASSWORD` | Password (one-shot auth) |
 | `--output FORMAT` | – | `text` \| `json` \| `yaml` |
 | `--no-verify` | – | Skip SSL certificate verification |
+| `--connect-to HOST[:PORT]` | `DOCKSIDE_CONNECT_TO` | Override the TCP target while preserving the URL hostname for TLS SNI and Host handling |
+| `--host-header HOST` | `DOCKSIDE_HOST_HEADER` | Override the HTTP Host header |
+| `--cookie-file PATH` | – | Override the target server's session cookie file path |
+| `--cookie-auth MODE` | – | `all` or `ancestors-only`; controls how stored/ancestor cookies are loaded |
+| `--debug-http` | – | Print raw HTTP request/response diagnostics where supported |
 
 ## Session storage
 
