@@ -112,6 +112,15 @@ _DEVELOPER_ROLE_PERMISSIONS = {
     'viewAllContainers':          0,
 }
 
+_VIEW_ALL_ROLE_PERMISSIONS = {
+    'viewAllContainers':          1,
+}
+
+_DEVELOP_ALL_ROLE_PERMISSIONS = {
+    **_DEVELOPER_ROLE_PERMISSIONS,
+    'developAllContainers':       1,
+}
+
 # Required admin permissions for running the test suite
 _REQUIRED_ADMIN_PERMISSIONS = [
     'createContainerReservation',
@@ -403,6 +412,8 @@ class _EnvManager:
         self.role_developer = self._ensure_role('inttest-developer', _DEVELOPER_ROLE_PERMISSIONS)
         self.role_viewer    = self._ensure_role('inttest-viewer-role', {})
         self.role_user      = self._ensure_role('inttest-user-role', {})
+        self.role_view_all  = self._ensure_role('inttest-viewall-role', _VIEW_ALL_ROLE_PERMISSIONS)
+        self.role_develop_all = self._ensure_role('inttest-developall-role', _DEVELOP_ALL_ROLE_PERMISSIONS)
 
         # SSH key info
         dev1_pub_path  = os.path.join(_SSH_DIR, 'testdev1_ed25519.pub')
@@ -431,11 +442,14 @@ class _EnvManager:
         self.user_viewer = self._ensure_user(
             'inttest-viewer', self.role_viewer, _viewer_resources,
         )
-        self.user_viewer2 = self._ensure_user(
-            'inttest-viewer2', self.role_viewer, _viewer_resources,
-        )
         self.user_user = self._ensure_user(
             'inttest-user', self.role_user, _viewer_resources,
+        )
+        self.user_view_all = self._ensure_user(
+            'inttest-viewall', self.role_view_all, _viewer_resources,
+        )
+        self.user_develop_all = self._ensure_user(
+            'inttest-developall', self.role_develop_all, _viewer_resources,
         )
 
         # Profiles
@@ -552,11 +566,14 @@ def main():
         test_username_dev1   = _env_manager.user_dev1
         test_username_dev2   = _env_manager.user_dev2
         test_username_viewer = _env_manager.user_viewer
-        test_username_viewer2 = _env_manager.user_viewer2
         test_username_user    = _env_manager.user_user
+        test_username_view_all = _env_manager.user_view_all
+        test_username_develop_all = _env_manager.user_develop_all
         test_role_developer  = _env_manager.role_developer
         test_role_viewer     = _env_manager.role_viewer
         test_role_user       = _env_manager.role_user
+        test_role_view_all   = _env_manager.role_view_all
+        test_role_develop_all = _env_manager.role_develop_all
         test_profile_alpine  = _env_manager.profile_alpine
         test_profile_nginx   = _env_manager.profile_nginx
         test_password_dev    = _env_manager.password_dev
@@ -565,11 +582,14 @@ def main():
             'test_username_dev1':   test_username_dev1,
             'test_username_dev2':   test_username_dev2,
             'test_username_viewer': test_username_viewer,
-            'test_username_viewer2': test_username_viewer2,
             'test_username_user':   test_username_user,
+            'test_username_view_all': test_username_view_all,
+            'test_username_develop_all': test_username_develop_all,
             'test_role_developer':  test_role_developer,
             'test_role_viewer':     test_role_viewer,
             'test_role_user':       test_role_user,
+            'test_role_view_all':   test_role_view_all,
+            'test_role_develop_all': test_role_develop_all,
             'test_profile_alpine':  test_profile_alpine,
             'test_profile_nginx':   test_profile_nginx,
             'test_password_dev':    test_password_dev,
@@ -582,8 +602,9 @@ def main():
             'dev1':   (test_username_dev1,   test_password_dev),
             'dev2':   (test_username_dev2,   test_password_dev),
             'viewer': (test_username_viewer, test_password_dev),
-            'viewer2': (test_username_viewer2, test_password_dev),
             'user':   (test_username_user, test_password_dev),
+            'view_all': (test_username_view_all, test_password_dev),
+            'develop_all': (test_username_develop_all, test_password_dev),
         }
 
         runner = TestRunner(

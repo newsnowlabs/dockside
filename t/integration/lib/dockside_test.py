@@ -467,7 +467,7 @@ class TestCase:
 
     Subclass and implement test_* methods.
     Access clients via self.admin, self.dev1, self.dev2, self.viewer,
-    self.viewer2, self.user, self.unauth.
+    self.user, self.view_all, self.develop_all, self.unauth.
     """
 
     # Injected by TestRunner before test execution
@@ -475,8 +475,9 @@ class TestCase:
     dev1 = None
     dev2 = None
     viewer = None
-    viewer2 = None
     user = None
+    view_all = None
+    develop_all = None
     unauth = None
 
     # Test mode / env injected by TestRunner
@@ -488,11 +489,14 @@ class TestCase:
     test_username_dev1    = 'inttest-dev1'
     test_username_dev2    = 'inttest-dev2'
     test_username_viewer  = 'inttest-viewer'
-    test_username_viewer2 = 'inttest-viewer2'
     test_username_user    = 'inttest-user'
+    test_username_view_all = 'inttest-viewall'
+    test_username_develop_all = 'inttest-developall'
     test_role_developer   = 'inttest-developer'
     test_role_viewer      = 'inttest-viewer-role'
     test_role_user        = 'inttest-user-role'
+    test_role_view_all    = 'inttest-viewall-role'
+    test_role_develop_all = 'inttest-developall-role'
     test_profile_alpine   = 'inttest-alpine'
     test_profile_nginx    = 'inttest-nginx'
     test_password_dev     = 'inttest-testpass'
@@ -713,8 +717,9 @@ class TestRunner:
             'dev1':   self._validate_client(self._make_client(*creds['dev1'], use_cli_admin_creds=False), 'dev1'),
             'dev2':   self._validate_client(self._make_client(*creds['dev2'], use_cli_admin_creds=False), 'dev2'),
             'viewer': self._validate_client(self._make_client(*creds['viewer'], use_cli_admin_creds=False), 'viewer'),
-            'viewer2': self._validate_client(self._make_client(*creds['viewer2'], use_cli_admin_creds=False), 'viewer2'),
             'user':   self._validate_client(self._make_client(*creds['user'], use_cli_admin_creds=False), 'user'),
+            'view_all': self._validate_client(self._make_client(*creds['view_all'], use_cli_admin_creds=False), 'view_all'),
+            'develop_all': self._validate_client(self._make_client(*creds['develop_all'], use_cli_admin_creds=False), 'develop_all'),
             'unauth': self._make_client(None, None, use_cli_admin_creds=False),
         }
 
@@ -747,8 +752,9 @@ class TestRunner:
         case.dev1 = self._clients['dev1']
         case.dev2 = self._clients['dev2']
         case.viewer = self._clients['viewer']
-        case.viewer2 = self._clients['viewer2']
         case.user = self._clients['user']
+        case.view_all = self._clients['view_all']
+        case.develop_all = self._clients['develop_all']
         case.unauth = self._clients['unauth']
         case.test_mode = self._test_mode
         case.harness_container_id = self._harness_container_id
@@ -779,8 +785,9 @@ class TestRunner:
         cls.dev1    = self._clients['dev1']
         cls.dev2    = self._clients['dev2']
         cls.viewer  = self._clients['viewer']
-        cls.viewer2 = self._clients['viewer2']
         cls.user    = self._clients['user']
+        cls.view_all = self._clients['view_all']
+        cls.develop_all = self._clients['develop_all']
         cls.unauth  = self._clients['unauth']
         cls.test_mode            = self._test_mode
         cls.harness_container_id = self._harness_container_id

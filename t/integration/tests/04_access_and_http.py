@@ -269,10 +269,10 @@ class AccessAndHttpTests(TestCase):
         principals = [
             ('owner', self.admin),
             ('named developer', self.dev2),
-            ('unnamed developer', self.dev1),
             ('named viewer', self.viewer),
-            ('unnamed viewer', self.viewer2),
             ('authenticated user', self.user),
+            ('view-all user', self.view_all),
+            ('develop-all user', self.develop_all),
             ('anonymous', self.unauth),
         ]
         for label, client in principals:
@@ -297,10 +297,10 @@ class AccessAndHttpTests(TestCase):
         self._assert_nginx_mode_matrix('developer', {
             'owner': 200,
             'named developer': 200,
-            'unnamed developer': 410,
             'named viewer': 410,
-            'unnamed viewer': 410,
             'authenticated user': 410,
+            'view-all user': 410,
+            'develop-all user': 200,
             'anonymous': 400,
         })
 
@@ -309,10 +309,10 @@ class AccessAndHttpTests(TestCase):
         self._assert_nginx_mode_matrix('viewer', {
             'owner': 200,
             'named developer': 200,
-            'unnamed developer': 410,
             'named viewer': 200,
-            'unnamed viewer': 410,
             'authenticated user': 410,
+            'view-all user': 200,
+            'develop-all user': 410,
             'anonymous': 400,
         })
 
@@ -321,10 +321,10 @@ class AccessAndHttpTests(TestCase):
         self._assert_nginx_mode_matrix('user', {
             'owner': 200,
             'named developer': 200,
-            'unnamed developer': 200,
             'named viewer': 200,
-            'unnamed viewer': 200,
             'authenticated user': 200,
+            'view-all user': 200,
+            'develop-all user': 200,
             'anonymous': 400,
         })
 
@@ -333,10 +333,10 @@ class AccessAndHttpTests(TestCase):
         self._assert_nginx_mode_matrix('public', {
             'owner': 200,
             'named developer': 200,
-            'unnamed developer': 200,
             'named viewer': 200,
-            'unnamed viewer': 200,
             'authenticated user': 200,
+            'view-all user': 200,
+            'develop-all user': 200,
             'anonymous': 200,
         })
 
