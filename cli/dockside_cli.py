@@ -5,6 +5,7 @@ Zero external dependencies - requires only Python 3.6+.
 """
 
 import argparse
+import copy
 import datetime
 import getpass
 import http.cookiejar
@@ -215,6 +216,16 @@ def _save_cookie_jar(jar, cookie_file):
         raise
     finally:
         jar.filename = orig
+
+
+def _save_target_cookie_jar(jar, cookie_file):
+    """Persist only target-server cookies, excluding injected ancestor cookies."""
+    target_jar = http.cookiejar.MozillaCookieJar()
+    for cookie in jar:
+        if cookie.has_nonstandard_attr('DocksideAncestor'):
+            continue
+        target_jar.set_cookie(copy.copy(cookie))
+    _save_cookie_jar(target_jar, cookie_file)
 
 
 # ── Config – multi-server ─────────────────────────────────────────────────────
@@ -558,7 +569,13 @@ def _merge_ancestor_cookies(jar, cfg, server_entry, _seen=None, _target_url=None
             for c in anc_jar:
                 # Re-inject with the target server's hostname so the cookie
                 # IS sent when urllib makes requests to the target URL.
-                _inject_cookie(jar, _target_url, c.name, c.value)
+                _inject_cookie(
+                    jar,
+                    _target_url,
+                    c.name,
+                    c.value,
+                    nonstandard_attrs={'DocksideAncestor': '1'},
+                )
         except Exception:
             pass
     _merge_ancestor_cookies(jar, cfg, parent_entry, _seen, _target_url)
@@ -639,7 +656,7 @@ def _do_post(opener, url, params, timeout=30, as_json=False):
 
 # ── Cookie injection ──────────────────────────────────────────────────────────
 
-def _inject_cookie(jar, server_url, name, value):
+def _inject_cookie(jar, server_url, name, value, nonstandard_attrs=None):
     """Inject a named cookie into the jar scoped to the server's hostname."""
     hostname = urllib.parse.urlparse(server_url).hostname or ''
     cookie = http.cookiejar.Cookie(
@@ -648,12 +665,36 @@ def _inject_cookie(jar, server_url, name, value):
         domain=hostname, domain_specified=True, domain_initial_dot=False,
         path='/', path_specified=True,
         secure=True, expires=None, discard=True,
-        comment=None, comment_url=None, rest={},
+        comment=None, comment_url=None, rest=dict(nonstandard_attrs or {}),
     )
     jar.set_cookie(cookie)
 
 
 # ── Authentication ────────────────────────────────────────────────────────────
+
+def _login_into_opener(opener, server, username, password, extra_cookies=None):
+    """POST credentials using an existing opener and return it on success."""
+    jar = opener._jar
+    if extra_cookies:
+        for cname, cval in extra_cookies.items():
+            _inject_cookie(jar, server, cname, cval)
+    url = server.rstrip('/') + '/'
+    payload = urllib.parse.urlencode(
+        {'username': username, 'password': password}
+    ).encode()
+    req = urllib.request.Request(url, data=payload, method='POST')
+    try:
+        with opener.open(req, timeout=15):
+            pass
+    except urllib.error.URLError as e:
+        raise APIError(f'Login failed – connection error: {e.reason}')
+    if not any(not cookie.has_nonstandard_attr('DocksideAncestor') for cookie in jar):
+        raise APIError(
+            'Login failed – no session cookie received. '
+            'Check credentials and ensure the server URL is correct.'
+        )
+    return opener
+
 
 def login(server, username, password, verify_ssl=True,
           extra_cookies=None, cookie_file=None, host_header=None, connect_to=None,
@@ -668,26 +709,8 @@ def login(server, username, password, verify_ssl=True,
     opener = _build_opener(cookie_file, verify_ssl,
                            host_header=host_header, connect_to=connect_to,
                            nest_level=nest_level)
-    if extra_cookies:
-        for cname, cval in extra_cookies.items():
-            _inject_cookie(opener._jar, server, cname, cval)
-    url = server.rstrip('/') + '/'
-    payload = urllib.parse.urlencode(
-        {'username': username, 'password': password}
-    ).encode()
-    req = urllib.request.Request(url, data=payload, method='POST')
-    try:
-        with opener.open(req, timeout=15):
-            pass
-    except urllib.error.URLError as e:
-        raise APIError(f'Login failed – connection error: {e.reason}')
-    jar = opener._jar
-    if not list(jar):
-        raise APIError(
-            'Login failed – no session cookie received. '
-            'Check credentials and ensure the server URL is correct.'
-        )
-    return opener
+    return _login_into_opener(opener, server, username, password,
+                              extra_cookies=extra_cookies)
 
 
 def get_authenticated_opener(server, server_entry, username, password,
@@ -704,12 +727,13 @@ def get_authenticated_opener(server, server_entry, username, password,
         instead of the path derived from config.json.  Ancestor cookies are
         still merged from their normal paths in the system config.
     cookie_auth: 'all' (default) — load both target and ancestor cookies;
-        'ancestors-only' — skip the target's stored session entirely (in-memory
-        only); requires username+password; useful for per-invocation isolation.
+        'ancestors-only' — skip loading the target's stored session before the
+        request/login while still merging ancestors in memory.
     cfg: loaded config dict, used to follow the 'parent' chain.  If None, no
         ancestor cookies are merged.
     """
     connect_to = connect_to or server_entry.get('connect_to')
+    cookie_file = session_cookie_file or _cookie_file_for(server_entry)
 
     # When connecting directly (bypassing the nginx proxy chain), compute the
     # X-Nest-Level value from the server URL so the Perl handler sees the correct
@@ -717,48 +741,32 @@ def get_authenticated_opener(server, server_entry, username, password,
     # header on each proxy_pass hop and we must not inject it ourselves.
     nest_level = _compute_nest_level(server) if connect_to else None
 
+    if username and password:
+        if cookie_auth == 'ancestors-only':
+            jar = http.cookiejar.MozillaCookieJar()
+            opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to,
+                                            nest_level=nest_level)
+        else:
+            opener = _build_opener(cookie_file, verify_ssl,
+                                   host_header=host_header, connect_to=connect_to,
+                                   nest_level=nest_level)
+        if cfg:
+            _merge_ancestor_cookies(opener._jar, cfg, server_entry)
+        opener = _login_into_opener(opener, server, username, password,
+                                    extra_cookies=extra_cookies)
+        if not transient:
+            _ensure_config_dir()
+            _save_target_cookie_jar(opener._jar, cookie_file)
+        return opener
     if cookie_auth == 'ancestors-only':
         # Empty in-memory jar for target; ancestor cookies injected first (with
         # the target server's domain) so the outer proxy receives and validates
-        # them when the login POST passes through.
+        # them when requests pass through.
         jar = http.cookiejar.MozillaCookieJar()
         opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to,
                                         nest_level=nest_level)
         if cfg:
             _merge_ancestor_cookies(jar, cfg, server_entry)
-        if username and password:
-            n_before = len(list(jar))  # ancestor cookies already in jar
-            url = server.rstrip('/') + '/'
-            if extra_cookies:
-                for cname, cval in extra_cookies.items():
-                    _inject_cookie(jar, server, cname, cval)
-            payload = urllib.parse.urlencode(
-                {'username': username, 'password': password}
-            ).encode()
-            req = urllib.request.Request(url, data=payload, method='POST')
-            try:
-                with opener.open(req, timeout=15):
-                    pass
-            except urllib.error.URLError as e:
-                raise APIError(f'Login failed – connection error: {e.reason}')
-            if len(list(jar)) <= n_before:
-                raise APIError(
-                    'Login failed – no session cookie received. '
-                    'Check credentials and ensure the server URL is correct.'
-                )
-        return opener
-
-    cookie_file = session_cookie_file or _cookie_file_for(server_entry)
-    if username and password:
-        opener = login(server, username, password, verify_ssl=verify_ssl,
-                       extra_cookies=extra_cookies, cookie_file=cookie_file,
-                       host_header=host_header, connect_to=connect_to,
-                       nest_level=nest_level)
-        if not transient:
-            _ensure_config_dir()
-            _save_cookie_jar(opener._jar, cookie_file)
-        if cfg:
-            _merge_ancestor_cookies(opener._jar, cfg, server_entry)
         return opener
     # Load stored cookies
     if not os.path.isfile(cookie_file):
@@ -1557,35 +1565,44 @@ def cmd_login(args):
         except ValueError as e:
             die(f'Invalid --cookie-file: {e}')
 
-    # Determine the cookie file path using a provisional entry (nickname/override may be set)
-    provisional_entry = {'url': server, 'nickname': nickname,
-                         'cookie_file': cookie_file_override}
-    cookie_file = _cookie_file_for(provisional_entry)
-
     host_header = (getattr(args, 'host_header', None)
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
     connect_to = (getattr(args, 'connect_to', None)
                   or os.environ.get('DOCKSIDE_CONNECT_TO')
                   or (current_entry or {}).get('connect_to')
                   or None)
-    nest_level = _compute_nest_level(server) if connect_to else None
+    parent = ((getattr(args, 'parent', None) or '').strip()
+              or (current_entry or {}).get('parent')
+              or None)
+    effective_cookie_file = cookie_file_override
+    if effective_cookie_file is None and current_entry:
+        effective_cookie_file = current_entry.get('cookie_file')
+    provisional_entry = {
+        'url': server,
+        'nickname': nickname,
+        'cookie_file': effective_cookie_file,
+        'connect_to': connect_to,
+        'parent': parent,
+    }
+    cookie_file = _cookie_file_for(provisional_entry)
     if getattr(args, 'debug_http', False):
         _enable_debug_http()
     try:
-        opener = login(server, username, password,
-                       verify_ssl=not getattr(args, 'no_verify', False),
-                       extra_cookies=extra_cookies or None,
-                       cookie_file=cookie_file,
-                       host_header=host_header,
-                       connect_to=connect_to,
-                       nest_level=nest_level)
+        get_authenticated_opener(
+            server,
+            provisional_entry,
+            username,
+            password,
+            verify_ssl=not getattr(args, 'no_verify', False),
+            transient=False,
+            extra_cookies=extra_cookies or None,
+            host_header=host_header,
+            connect_to=connect_to,
+            session_cookie_file=cookie_file,
+            cfg=cfg,
+        )
     except APIError as e:
         die(str(e))
-
-    _ensure_config_dir()
-    _save_cookie_jar(opener._jar, cookie_file)
-
-    parent = (getattr(args, 'parent', None) or '').strip() or None
     no_verify = getattr(args, 'no_verify', False)
     _upsert_server(cfg, server, nickname=nickname or None,
                    cookie_file=cookie_file_override,
