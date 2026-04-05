@@ -562,7 +562,15 @@ class TestCase:
         except APIError:
             return set()
         routers = (data.get('profileObject') or {}).get('routers') or {}
-        return set(routers.keys())
+        if isinstance(routers, dict):
+            return set(routers.keys())
+        if isinstance(routers, list):
+            return {
+                item.get('name')
+                for item in routers
+                if isinstance(item, dict) and item.get('name')
+            }
+        return set()
 
 
 # ── TestRunner ─────────────────────────────────────────────────────────────────
