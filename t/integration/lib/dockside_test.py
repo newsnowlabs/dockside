@@ -255,6 +255,8 @@ class DocksideClient:
     def _should_send_credentials(self, force_credentials=False):
         if self._use_cli_admin_creds:
             return False
+        if not self._username or not self._password:
+            return False
         if force_credentials:
             return True
         if not self._reuse_explicit_session:
@@ -464,7 +466,8 @@ class TestCase:
     Base class for integration test cases.
 
     Subclass and implement test_* methods.
-    Access clients via self.admin, self.dev1, self.dev2, self.viewer, self.unauth.
+    Access clients via self.admin, self.dev1, self.dev2, self.viewer,
+    self.viewer2, self.user, self.unauth.
     """
 
     # Injected by TestRunner before test execution
@@ -472,6 +475,8 @@ class TestCase:
     dev1 = None
     dev2 = None
     viewer = None
+    viewer2 = None
+    user = None
     unauth = None
 
     # Test mode / env injected by TestRunner
@@ -483,8 +488,11 @@ class TestCase:
     test_username_dev1    = 'inttest-dev1'
     test_username_dev2    = 'inttest-dev2'
     test_username_viewer  = 'inttest-viewer'
+    test_username_viewer2 = 'inttest-viewer2'
+    test_username_user    = 'inttest-user'
     test_role_developer   = 'inttest-developer'
     test_role_viewer      = 'inttest-viewer-role'
+    test_role_user        = 'inttest-user-role'
     test_profile_alpine   = 'inttest-alpine'
     test_profile_nginx    = 'inttest-nginx'
     test_password_dev     = 'inttest-testpass'
@@ -589,19 +597,32 @@ class TestCase:
     def skip(self, reason):
         raise SkipTest(reason)
 
+    def wait_until(self, predicate, timeout=20, interval=1, timeout_msg='condition not met'):
+        """Poll predicate() until it returns a truthy value or timeout expires."""
+        deadline = time.time() + timeout
+        last_value = None
+        while time.time() < deadline:
+            last_value = predicate()
+            if last_value:
+                return last_value
+            time.sleep(interval)
+        raise AssertionError(f'{timeout_msg} within {timeout}s (last={last_value!r})')
+
     def wait_running(self, client, name, timeout=120):
         """Poll until container status == 1 or timeout."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        def _running():
             try:
                 data = client.get_container(name)
-                status = data.get('status') if isinstance(data, dict) else None
-                if status == 1:
-                    return
             except APIError:
-                pass
-            time.sleep(3)
-        raise AssertionError(f'Container {name!r} did not reach running state within {timeout}s')
+                return False
+            return (data.get('status') if isinstance(data, dict) else None) == 1
+
+        self.wait_until(
+            _running,
+            timeout=timeout,
+            interval=1,
+            timeout_msg=f'Container {name!r} did not reach running state',
+        )
 
     def container_names_in_list(self, client):
         """Return set of container names visible to client."""
@@ -658,8 +679,6 @@ class TestRunner:
         self._register_cleanup()
 
     def _make_client(self, username, password, use_cli_admin_creds=False):
-        if not use_cli_admin_creds and username is None:
-            return None
         return DocksideClient(
             cli_path=self._cli_path,
             server_url=self._server_url,
@@ -694,7 +713,9 @@ class TestRunner:
             'dev1':   self._validate_client(self._make_client(*creds['dev1'], use_cli_admin_creds=False), 'dev1'),
             'dev2':   self._validate_client(self._make_client(*creds['dev2'], use_cli_admin_creds=False), 'dev2'),
             'viewer': self._validate_client(self._make_client(*creds['viewer'], use_cli_admin_creds=False), 'viewer'),
-            'unauth': None,
+            'viewer2': self._validate_client(self._make_client(*creds['viewer2'], use_cli_admin_creds=False), 'viewer2'),
+            'user':   self._validate_client(self._make_client(*creds['user'], use_cli_admin_creds=False), 'user'),
+            'unauth': self._make_client(None, None, use_cli_admin_creds=False),
         }
 
     def _register_cleanup(self):
@@ -726,6 +747,8 @@ class TestRunner:
         case.dev1 = self._clients['dev1']
         case.dev2 = self._clients['dev2']
         case.viewer = self._clients['viewer']
+        case.viewer2 = self._clients['viewer2']
+        case.user = self._clients['user']
         case.unauth = self._clients['unauth']
         case.test_mode = self._test_mode
         case.harness_container_id = self._harness_container_id
@@ -756,6 +779,8 @@ class TestRunner:
         cls.dev1    = self._clients['dev1']
         cls.dev2    = self._clients['dev2']
         cls.viewer  = self._clients['viewer']
+        cls.viewer2 = self._clients['viewer2']
+        cls.user    = self._clients['user']
         cls.unauth  = self._clients['unauth']
         cls.test_mode            = self._test_mode
         cls.harness_container_id = self._harness_container_id

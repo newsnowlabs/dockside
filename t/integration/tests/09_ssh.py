@@ -20,7 +20,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
@@ -113,7 +112,7 @@ class SshTests(TestCase):
         data = self.dev1.get_container(self.SSH_CONTAINER)
         if data.get('status') != 1:
             self.dev1.start(self.SSH_CONTAINER, wait=True, timeout=120)
-            time.sleep(2)
+        self.wait_running(self.dev1, self.SSH_CONTAINER, timeout=20)
 
     def _get_ssh_host_pattern(self):
         """
@@ -151,6 +150,35 @@ class SshTests(TestCase):
     def _get_parent_fqdn(self):
         data = self.dev1.get_container(self.SSH_CONTAINER)
         return (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN')
+
+    def _ssh_route_status(self, client):
+        """Return the SSH router status code, or None if not yet reachable."""
+        parent_fqdn = None if client._connect_to else self._get_parent_fqdn()
+        try:
+            code, _ = client.check_service(
+                self.SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
+            )
+        except APIError:
+            return None
+        return code
+
+    def _wait_ssh_route_status(self, client, expected_code, timeout=20):
+        """Poll the SSH router until it returns expected_code."""
+        self.wait_until(
+            lambda: self._ssh_route_status(client) == expected_code,
+            timeout=timeout,
+            interval=1,
+            timeout_msg=f'SSH route did not return {expected_code}',
+        )
+
+    def _wait_ssh_route_accessible(self, client, timeout=20):
+        """Poll until the SSH router stops returning the denied code."""
+        self.wait_until(
+            lambda: (lambda code: code is not None and code != 410)(self._ssh_route_status(client)),
+            timeout=timeout,
+            interval=1,
+            timeout_msg='SSH route did not become accessible',
+        )
 
     # ── Test A: Inbound SSH via wstunnel ──────────────────────────────────────
 
@@ -194,14 +222,8 @@ class SshTests(TestCase):
             self.dev1.update(self.SSH_CONTAINER, developers='')
         except APIError:
             pass
-
-        parent_fqdn = None if self.dev1._connect_to else self._get_parent_fqdn()
         try:
-            code, _ = self.dev2.check_service(
-                self.SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
-            )
-            self.assert_http_status(code, 410,
-                                    f'dev2 got {code} for SSH when not in developers')
+            self._wait_ssh_route_status(self.dev2, 410, timeout=20)
         except APIError as e:
             self.skip(f'Could not check SSH service: {e}')
 
@@ -215,8 +237,7 @@ class SshTests(TestCase):
         self._ensure_ssh_container()
 
         self.dev1.update(self.SSH_CONTAINER, developers=self.test_username_dev2)
-        # Dockside regenerates authorized_keys; give it a moment
-        time.sleep(2)
+        self._wait_ssh_route_accessible(self.dev2, timeout=20)
 
         uid_cookie = self.dev2.get_uid_cookie()
         if not uid_cookie:
@@ -247,15 +268,8 @@ class SshTests(TestCase):
         self._ensure_ssh_container()
         self.dev1.update(self.SSH_CONTAINER, developers=self.test_username_dev2)
         self.dev1.update(self.SSH_CONTAINER, developers='')
-        time.sleep(1)
-
-        parent_fqdn = None if self.dev1._connect_to else self._get_parent_fqdn()
         try:
-            code, _ = self.dev2.check_service(
-                self.SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
-            )
-            self.assert_http_status(code, 410,
-                                    f'dev2 got {code} after being removed from developers')
+            self._wait_ssh_route_status(self.dev2, 410, timeout=20)
         except APIError as e:
             self.skip(f'Could not check SSH service: {e}')
 
