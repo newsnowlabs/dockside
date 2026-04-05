@@ -13,6 +13,7 @@ import http.client
 import http.cookiejar
 import json
 import os
+import re
 import signal
 import ssl
 import subprocess
@@ -236,9 +237,10 @@ class DocksideClient:
         self._verify_ssl = verify_ssl
         self._use_cli_admin_creds = use_cli_admin_creds
         if not use_cli_admin_creds:
-            # Create a per-client temp file; sessions are isolated here.
-            # The system config's parent chain is still used for ancestor cookies.
-            fd, path = tempfile.mkstemp(suffix='.txt', prefix='dockside-sess-')
+            # Create a per-client temp file for the target session only.
+            # Ancestor cookies still come from the system config's parent chain.
+            user_tag = re.sub(r'[^A-Za-z0-9_.-]+', '-', username or 'user').strip('-') or 'user'
+            fd, path = tempfile.mkstemp(suffix='.txt', prefix=f'dockside-sess-{user_tag}-')
             os.close(fd)
             self._session_cookie_file = path
         else:
@@ -254,10 +256,6 @@ class DocksideClient:
             args.extend(['--username', self._username,
                          '--password', self._password])
             args.extend(['--cookie-file', self._session_cookie_file])
-            # ancestors-only: inject ancestor cookies BEFORE the login POST so
-            # that any outer proxy can validate them.  Safe when there is no
-            # parent chain (merges nothing, falls through to a normal login).
-            args.extend(['--cookie-auth', 'ancestors-only'])
         if not self._verify_ssl:
             args.append('--no-verify')
         if self._connect_to:

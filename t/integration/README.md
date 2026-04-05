@@ -118,41 +118,20 @@ server.
 
 Once the CLI is authenticated to both the outer and inner Dockside instances
 (to the outer, as any user owning or with development access to the inner;
-and to the inner, as `admin`), the harness passes `--cookie-auth ancestors-only`
-and `--cookie-file <tmpfile>` on future CLI calls made with explicit credentials
-for non-admin test users.
-
-`--cookie-auth ancestors-only` prevents the CLI from loading any stored session
-cookies for the target inner instance, while still merging ancestor cookies for
-the outer instance. As a result, the login POST carries only the ancestor
-cookie(s) plus the explicit test-user credentials, and subsequent requests in
-that same CLI invocation use the newly established inner session for that test
-user rather than the stored inner `admin` session.
+and to the inner, as `admin`), the harness passes `--cookie-file <tmpfile>` on
+future CLI calls made with explicit credentials for non-admin test users.
 
 `--cookie-file <tmpfile>` provides a dedicated per-client cookie path outside
-the system cookie store. In the intended model, this file is where the newly
-established inner-session cookie for that explicit test user should be persisted,
-so later CLI invocations for the same test client can reuse that inner session
-without re-sending the user's credentials, while ancestor cookies for the outer
-instance continue to be merged automatically from the system config's `parent`
-chain.
+the system cookie store. For test-user clients, the harness creates an
+initially-empty per-user temp file, continues to pass explicit credentials on
+every CLI invocation, and cleans the file up at test end. Ancestor cookies for
+the outer instance continue to be merged automatically from the system config's
+`parent` chain, so the login POST to an inner instance still carries the outer
+session cookie(s) needed by the proxy.
 
-In the current implementation, the `ancestors-only` code path already achieves
-the security-critical part of this design: it avoids loading the stored inner
-`admin` session and ensures the login POST carries only ancestor cookies plus
-the explicit test-user credentials. However, the new inner test-user session is
-currently retained only for that one CLI process and is not yet persisted to
-the temp cookie file for reuse across later subprocess invocations.
-
-(Simplest implementation:
-- keep --ancestors-only logic unchanged (for backwards compatibility);
-- ensure `--cookie-file <path>` correctly overrides the system path to the target's 
-  `cookie_file` for that invocation;
-- in the new persistent-login option scenario, ensure that tests provide an empty
-  per-test-user-namd temp file for `--cookie-file <path>` for each test user's
-  initial login; and thereafter ensure subsequent CLI calls for each test user use
-  `--cookie-file <path>` with the path to that test user's file;
-- at end of test, clean up all the temp files.)
+`--cookie-auth ancestors-only` is now deprecated for achieving this test
+behavior. The preferred test-harness pattern is to use isolated per-user
+`--cookie-file` paths and rely on the CLI's normal parent-chain cookie merging.
 
 > N.B. Important: if only `DOCKSIDE_TEST_HOST=...` is set, the runner selects
 **remote** mode. To get local-mode TCP routing to `localhost`, set
