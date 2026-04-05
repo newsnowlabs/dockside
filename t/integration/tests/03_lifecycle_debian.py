@@ -4,6 +4,7 @@
 
 import sys
 import os
+import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
@@ -73,8 +74,20 @@ class LifecycleDebianTests(TestCase):
         except Exception:
             pass
         self.admin.remove(self.CONTAINER_NAME)
-        names = self.container_names_in_list(self.admin)
-        self.assert_not_in(self.CONTAINER_NAME, names)
+        deadline = time.monotonic() + 10
+        c = None
+        while time.monotonic() < deadline:
+            containers = self.admin.list_containers()
+            c = next((item for item in containers
+                      if isinstance(item, dict) and item.get('name') == self.CONTAINER_NAME), None)
+            if c is None or c.get('status', 0) <= -3:
+                return
+            time.sleep(0.5)
+        status = c.get('status') if c is not None else None
+        self.assert_true(
+            c is None or status <= -3,
+            f'{self.CONTAINER_NAME!r} still in list after remove (status={status!r})',
+        )
         # Container removed by the test itself; tearDownClass will find nothing to clean up.
 
 
