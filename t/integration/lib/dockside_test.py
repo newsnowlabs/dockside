@@ -243,7 +243,8 @@ class DocksideClient:
         if not use_cli_admin_creds:
             # Create a per-client temp file for the target session only.
             # Ancestor cookies still come from the system config's parent chain.
-            user_tag = re.sub(r'[^A-Za-z0-9_.-]+', '-', username or 'user').strip('-') or 'user'
+            base_tag = username if username else 'anon'
+            user_tag = re.sub(r'[^A-Za-z0-9_.-]+', '-', base_tag).strip('-') or 'user'
             path = os.path.join(tempfile.gettempdir(), f'dockside-sess-{user_tag}.txt')
             with open(path, 'w', encoding='utf-8'):
                 pass
