@@ -13,6 +13,7 @@ import os
 import re
 import ssl
 import sys
+import socket
 import tempfile
 import time
 import http.client
@@ -1450,6 +1451,7 @@ def _client(args):
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
     connect_to = (getattr(args, 'connect_to', None)
                   or os.environ.get('DOCKSIDE_CONNECT_TO'))
+    effective_connect_to = connect_to or server_entry.get('connect_to')
     session_cookie_file = getattr(args, 'session_cookie_file', None) or None
     cookie_auth = getattr(args, 'cookie_auth', 'all') or 'all'
     if getattr(args, 'debug_http', False):
@@ -1479,6 +1481,9 @@ def _client(args):
            or cfg.get('output')
            or 'text')
     args._fmt = fmt
+    args._verify_effective = verify
+    args._host_header_effective = host_header
+    args._connect_to_effective = effective_connect_to
 
     return opener, server_url
 
@@ -2369,9 +2374,9 @@ def cmd_check_url(args):
     opener, _server = _client(args)
     url     = args.url
     timeout = getattr(args, 'timeout', 30)
-    verify  = not getattr(args, 'no_verify', False)
-    connect_to = (getattr(args, 'connect_to', None)
-                  or os.environ.get('DOCKSIDE_CONNECT_TO'))
+    verify  = getattr(args, '_verify_effective', not getattr(args, 'no_verify', False))
+    connect_to = getattr(args, '_connect_to_effective', None)
+    nest_level = _compute_nest_level(_server) if connect_to else None
 
     # Build a cross-domain SSL context
     ctx = ssl.create_default_context()
@@ -2408,9 +2413,14 @@ def cmd_check_url(args):
     else:
         handlers.append(urllib.request.HTTPRedirectHandler())
     if connect_to:
-        handlers.append(_ConnectToHandler(connect_to, ctx))
+        handlers.append(_ConnectToHandler(connect_to, ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     else:
-        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        handlers.append(urllib.request.HTTPSHandler(context=ctx, debuglevel=_HTTP_DEBUG_LEVEL))
+    host_header = getattr(args, '_host_header_effective', None)
+    if host_header:
+        handlers.append(_HostOverrideHandler(host_header))
+    if nest_level:
+        handlers.append(_NestLevelHandler(nest_level))
 
     check_opener = urllib.request.build_opener(*handlers)
     req = urllib.request.Request(url)
@@ -2424,7 +2434,21 @@ def cmd_check_url(args):
         body      = e.read()
         resp_hdrs = dict(e.headers) if e.headers else {}
     except urllib.error.URLError as e:
+        if getattr(args, 'debug_http', False):
+            print(f'# debug-http: check-url url={url}', file=sys.stderr)
+            print(f'# debug-http: connect_to={connect_to or "(direct)"}', file=sys.stderr)
+            print(f'# debug-http: target_host={target_host or "(empty)"}', file=sys.stderr)
+            print(f'# debug-http: nest_level={nest_level or "(none)"}', file=sys.stderr)
+            print(f'# debug-http: urlerror={e!r}', file=sys.stderr)
         die(f'Connection error: {e.reason}')
+    except socket.timeout as e:
+        if getattr(args, 'debug_http', False):
+            print(f'# debug-http: check-url url={url}', file=sys.stderr)
+            print(f'# debug-http: connect_to={connect_to or "(direct)"}', file=sys.stderr)
+            print(f'# debug-http: target_host={target_host or "(empty)"}', file=sys.stderr)
+            print(f'# debug-http: nest_level={nest_level or "(none)"}', file=sys.stderr)
+            print(f'# debug-http: timeout={e!r}', file=sys.stderr)
+        die(f'Connection error: {e}')
 
     result = {
         'status':  status,

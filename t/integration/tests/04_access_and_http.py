@@ -19,7 +19,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
-from dockside_test import TestCase, APIError, http_check
+from dockside_test import TestCase, APIError, http_check, verbose_enabled
 
 _BASE_AC_CONTAINER    = 'inttest-ac-01'
 _BASE_NGINX_CONTAINER = 'inttest-nginx-01'
@@ -232,9 +232,14 @@ class AccessAndHttpTests(TestCase):
 
     def _nginx_status(self, client, router='www'):
         """Return HTTP status code for the nginx container's www service."""
+        service_url = self._service_url(self.NGINX_CONTAINER, router_prefix=router)
         try:
-            status, _ = client.check_service(self.NGINX_CONTAINER, router_prefix=router)
-        except APIError:
+            status, _ = client.check_url(service_url)
+        except APIError as e:
+            if verbose_enabled():
+                user = getattr(client, '_username', None) or 'anonymous'
+                print(f'# nginx probe failed for user={user} url={service_url}: {e}',
+                      file=sys.stderr)
             return None
         return status
 
@@ -252,7 +257,11 @@ class AccessAndHttpTests(TestCase):
                 verify_ssl=self.admin._verify_ssl,
             )
             return code
-        except APIError:
+        except APIError as e:
+            if verbose_enabled():
+                connect_to = self.admin._connect_to or '(direct)'
+                print(f'# anonymous nginx probe failed for url={service_url} '
+                      f'connect_to={connect_to}: {e}', file=sys.stderr)
             return None
 
     def test_20_start_nginx(self):

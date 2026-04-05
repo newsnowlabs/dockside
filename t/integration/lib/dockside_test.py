@@ -113,6 +113,10 @@ def _fields_to_args(fields):
     return args
 
 
+def verbose_enabled():
+    return os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
+
+
 def http_check(url, connect_to=None, host_header=None, cookies=None,
                verify_ssl=False, timeout=10):
     """
@@ -163,7 +167,8 @@ def http_check(url, connect_to=None, host_header=None, cookies=None,
     except urllib.error.HTTPError as e:
         return e.code, e.read()
     except urllib.error.URLError as e:
-        raise APIError(f'HTTP check failed: {e.reason}')
+        target = f'{url} via {connect_to}' if connect_to else url
+        raise APIError(f'HTTP check failed for {target}: {e.reason}')
 
 
 def _inject_simple_cookie(jar, url, name, value):
