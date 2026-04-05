@@ -277,16 +277,6 @@ class DocksideClient:
             args.extend(['--connect-to', self._connect_to])
         return args
 
-    def _retry_safe(self, cmd_args):
-        """Return True only for read-only CLI commands safe to replay.
-
-        Mutating commands must never be automatically retried by the harness,
-        because a server-side partial success would leave state uncertain.
-        """
-        if not cmd_args:
-            return False
-        return cmd_args[0] in {'list', 'get', 'logs', 'check-url'}
-
     def _run_once(self, *cmd_args, force_credentials=False):
         """Run CLI subcommand; return parsed JSON or raise APIError."""
         # All subcommand tokens must come before global flags so that nested
@@ -318,13 +308,11 @@ class DocksideClient:
                 raise APIError(f'JSON parse error ({e}): stdout={result.stdout!r}')
         return None
 
-    def _run(self, *cmd_args):
+    def _run_readonly(self, *cmd_args):
         try:
             return self._run_once(*cmd_args)
         except APIError as e:
-            if (not self._reuse_explicit_session
-                    or self._should_send_credentials()
-                    or not self._retry_safe(cmd_args)):
+            if not self._reuse_explicit_session or self._should_send_credentials():
                 raise
             verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
             debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
@@ -333,6 +321,18 @@ class DocksideClient:
                       file=sys.stderr)
             self._persisted_session_ready = False
             return self._run_once(*cmd_args, force_credentials=True)
+
+    def _run_mutating(self, *cmd_args):
+        """Run a mutating CLI command exactly once.
+
+        Mutating commands must never be automatically retried by the harness,
+        because a server-side partial success would leave state uncertain.
+        """
+        return self._run_once(*cmd_args)
+
+    def _run(self, *cmd_args):
+        """Backward-compatible internal entrypoint for read-only commands."""
+        return self._run_readonly(*cmd_args)
 
     def _reload_cookie_jar(self):
         """Load/reload the session cookie file written by the CLI."""
@@ -373,35 +373,35 @@ class DocksideClient:
     # ── API methods ───────────────────────────────────────────────────────────
 
     def list_containers(self):
-        result = self._run('list')
+        result = self._run_readonly('list')
         return result if isinstance(result, list) else []
 
     def get_container(self, name):
-        return self._run('get', name)
+        return self._run_readonly('get', name)
 
     def create(self, **fields):
-        return self._run('create', *_fields_to_args(fields))
+        return self._run_mutating('create', *_fields_to_args(fields))
 
     def update(self, name, **fields):
-        return self._run('edit', name, *_fields_to_args(fields))
+        return self._run_mutating('edit', name, *_fields_to_args(fields))
 
     def start(self, name, wait=True, timeout=120):
         if wait:
-            return self._run('start', '--timeout', str(timeout), name)
-        return self._run('start', '--no-wait', name)
+            return self._run_mutating('start', '--timeout', str(timeout), name)
+        return self._run_mutating('start', '--no-wait', name)
 
     def stop(self, name, wait=True, timeout=60):
         if wait:
-            return self._run('stop', '--timeout', str(timeout), name)
-        return self._run('stop', '--no-wait', name)
+            return self._run_mutating('stop', '--timeout', str(timeout), name)
+        return self._run_mutating('stop', '--no-wait', name)
 
     def remove(self, name, wait=False, timeout=60):
         if wait:
-            return self._run('remove', '--force', '--timeout', str(timeout), name)
-        return self._run('remove', '--force', '--no-wait', name)
+            return self._run_mutating('remove', '--force', '--timeout', str(timeout), name)
+        return self._run_mutating('remove', '--force', '--no-wait', name)
 
     def logs(self, name):
-        return self._run('logs', name)
+        return self._run_readonly('logs', name)
 
     # ── HTTP service checks ───────────────────────────────────────────────────
 
@@ -411,7 +411,7 @@ class DocksideClient:
         Cookies are injected for the target domain regardless of the server domain.
         Returns (status_code, body_bytes).
         """
-        result = self._run('check-url', '--no-redirect', '--timeout', str(timeout), url)
+        result = self._run_readonly('check-url', '--no-redirect', '--timeout', str(timeout), url)
         if result is None:
             raise APIError('check-url returned no output')
         status   = result.get('status')
