@@ -485,6 +485,7 @@ def main():
     only_prefix  = os.environ.get('DOCKSIDE_TEST_ONLY', '').strip()
     harness_id   = os.environ.get('DOCKSIDE_TEST_HARNESS_ID', '').strip() or None
     skip_cleanup = os.environ.get('DOCKSIDE_TEST_SKIP_CLEANUP', '0') == '1'
+    reuse_user_sessions = os.environ.get('DOCKSIDE_TEST_REUSE_USER_SESSIONS', '0') == '1'
 
     # Network modify override
     env_nm = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()
@@ -580,6 +581,7 @@ def main():
             harness_container_id=harness_id,
             allow_network_modify=allow_network_modify,
             name_attrs=name_attrs,
+            reuse_user_sessions=reuse_user_sessions,
         )
 
         # ── Discover and run test modules ─────────────────────────────────────

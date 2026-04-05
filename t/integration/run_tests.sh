@@ -29,6 +29,15 @@
 #                               auto     generate a random 6-char hex suffix per run
 #                               <string> use this exact string as the suffix
 #
+#   DOCKSIDE_TEST_REUSE_USER_SESSIONS  1 = after each test user's first successful
+#                                      authenticated CLI call, reuse that user's
+#                                      per-client temp cookie file on later CLI
+#                                      invocations and retry only read-only
+#                                      commands with credentials if the reused
+#                                      session fails
+#                                      0/unset = pass explicit credentials on every
+#                                      CLI call for test users
+#
 #   DOCKSIDE_TEST_CONTAINER_ID   Running Dockside container ID (enables docker-exec
 #                                SSH tests in non-harness modes)
 #   DOCKSIDE_TEST_SSH_SERVER     Outbound SSH target (default: git@github.com)

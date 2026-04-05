@@ -129,6 +129,11 @@ the outer instance continue to be merged automatically from the system config's
 `parent` chain, so the login POST to an inner instance still carries the outer
 session cookie(s) needed by the proxy.
 
+An optional mode (`DOCKSIDE_TEST_REUSE_USER_SESSIONS=1`) reuses each
+test user's temp cookie file on later CLI subprocesses after an initial
+credentialed call has seeded it, while retrying only read-only commands with
+explicit credentials if the reused session fails.
+
 `--cookie-auth ancestors-only` is now deprecated for achieving this test
 behavior. The preferred test-harness pattern is to use isolated per-user
 `--cookie-file` paths and rely on the CLI's normal parent-chain cookie merging.

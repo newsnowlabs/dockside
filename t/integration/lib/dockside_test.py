@@ -228,7 +228,7 @@ class DocksideClient:
 
     def __init__(self, cli_path, server_url, username=None, password=None,
                  connect_to=None, verify_ssl=False,
-                 use_cli_admin_creds=False):
+                 use_cli_admin_creds=False, reuse_explicit_session=False):
         self._cli = cli_path
         self._server = server_url
         self._username = username
@@ -236,25 +236,40 @@ class DocksideClient:
         self._connect_to = connect_to
         self._verify_ssl = verify_ssl
         self._use_cli_admin_creds = use_cli_admin_creds
+        self._reuse_explicit_session = (
+            reuse_explicit_session and not use_cli_admin_creds
+        )
+        self._persisted_session_ready = False
         if not use_cli_admin_creds:
             # Create a per-client temp file for the target session only.
             # Ancestor cookies still come from the system config's parent chain.
             user_tag = re.sub(r'[^A-Za-z0-9_.-]+', '-', username or 'user').strip('-') or 'user'
-            fd, path = tempfile.mkstemp(suffix='.txt', prefix=f'dockside-sess-{user_tag}-')
-            os.close(fd)
+            path = os.path.join(tempfile.gettempdir(), f'dockside-sess-{user_tag}.txt')
+            with open(path, 'w', encoding='utf-8'):
+                pass
             self._session_cookie_file = path
         else:
             self._session_cookie_file = None  # use system config stored session
         self._cookie_jar = None  # loaded lazily after first _run
 
-    def _base_args(self):
+    def _should_send_credentials(self, force_credentials=False):
+        if self._use_cli_admin_creds:
+            return False
+        if force_credentials:
+            return True
+        if not self._reuse_explicit_session:
+            return True
+        return not self._persisted_session_ready
+
+    def _base_args(self, force_credentials=False):
         args = [
             '--server', self._server,
             '--output', 'json',
         ]
         if not self._use_cli_admin_creds:
-            args.extend(['--username', self._username,
-                         '--password', self._password])
+            if self._should_send_credentials(force_credentials=force_credentials):
+                args.extend(['--username', self._username,
+                             '--password', self._password])
             args.extend(['--cookie-file', self._session_cookie_file])
         if not self._verify_ssl:
             args.append('--no-verify')
@@ -262,13 +277,23 @@ class DocksideClient:
             args.extend(['--connect-to', self._connect_to])
         return args
 
-    def _run(self, *cmd_args):
+    def _retry_safe(self, cmd_args):
+        """Return True only for read-only CLI commands safe to replay.
+
+        Mutating commands must never be automatically retried by the harness,
+        because a server-side partial success would leave state uncertain.
+        """
+        if not cmd_args:
+            return False
+        return cmd_args[0] in {'list', 'get', 'logs', 'check-url'}
+
+    def _run_once(self, *cmd_args, force_credentials=False):
         """Run CLI subcommand; return parsed JSON or raise APIError."""
         # All subcommand tokens must come before global flags so that nested
         # sub-subcommand parsers (e.g. 'role create', 'user create') see their
         # subcommand word before any --server / --output / ... flags.
         # Global flags are appended at the end; argparse accepts them anywhere.
-        cmd = [self._cli] + list(cmd_args) + self._base_args()
+        cmd = [self._cli] + list(cmd_args) + self._base_args(force_credentials=force_credentials)
         env = os.environ.copy()
         # Always use the system config so the parent chain is available for
         # ancestor cookie merging.  Session isolation is achieved via --cookie-file.
@@ -293,18 +318,41 @@ class DocksideClient:
                 raise APIError(f'JSON parse error ({e}): stdout={result.stdout!r}')
         return None
 
+    def _run(self, *cmd_args):
+        try:
+            return self._run_once(*cmd_args)
+        except APIError as e:
+            if (not self._reuse_explicit_session
+                    or self._should_send_credentials()
+                    or not self._retry_safe(cmd_args)):
+                raise
+            verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
+            debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
+            if verbose or debug:
+                print('# Read-only command failed with reused session; retrying with explicit credentials',
+                      file=sys.stderr)
+            self._persisted_session_ready = False
+            return self._run_once(*cmd_args, force_credentials=True)
+
     def _reload_cookie_jar(self):
         """Load/reload the session cookie file written by the CLI."""
         if self._session_cookie_file is None:
+            self._cookie_jar = None
+            self._persisted_session_ready = False
             return
         if not os.path.isfile(self._session_cookie_file):
+            self._cookie_jar = None
+            self._persisted_session_ready = False
             return
         jar = http.cookiejar.MozillaCookieJar(self._session_cookie_file)
         try:
             jar.load(ignore_discard=True, ignore_expires=True)
         except Exception:
+            self._cookie_jar = None
+            self._persisted_session_ready = False
             return
         self._cookie_jar = jar
+        self._persisted_session_ready = any(True for _ in jar)
 
     def get_uid_cookie(self):
         """
@@ -405,6 +453,8 @@ class DocksideClient:
                 os.unlink(self._session_cookie_file)
             except OSError:
                 pass
+        self._cookie_jar = None
+        self._persisted_session_ready = False
 
 
 # ── TestCase base class ────────────────────────────────────────────────────────
@@ -585,7 +635,8 @@ class TestRunner:
 
     def __init__(self, cli_path, server_url, credentials, connect_to=None,
                  verify_ssl=False, test_mode='remote', harness_container_id=None,
-                 allow_network_modify=None, name_attrs=None):
+                 allow_network_modify=None, name_attrs=None,
+                 reuse_user_sessions=False):
         self._cli_path = cli_path
         self._server_url = server_url
         self._credentials = credentials  # dict: role -> (username, password) or (None, None)
@@ -595,6 +646,7 @@ class TestRunner:
         self._harness_container_id = harness_container_id
         self._allow_network_modify = allow_network_modify
         self._name_attrs = name_attrs or {}
+        self._reuse_user_sessions = reuse_user_sessions
         self._clients = {}
         self._active_cases = []
         self._active_class_teardowns = []
@@ -616,6 +668,7 @@ class TestRunner:
             connect_to=self._connect_to,
             verify_ssl=self._verify_ssl,
             use_cli_admin_creds=use_cli_admin_creds,
+            reuse_explicit_session=self._reuse_user_sessions,
         )
 
     def _validate_client(self, client, role):
