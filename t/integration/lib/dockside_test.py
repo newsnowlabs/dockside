@@ -285,11 +285,10 @@ class DocksideClient:
 
     def _run_once(self, *cmd_args, force_credentials=False):
         """Run CLI subcommand; return parsed JSON or raise APIError."""
-        # All subcommand tokens must come before global flags so that nested
-        # sub-subcommand parsers (e.g. 'role create', 'user create') see their
-        # subcommand word before any --server / --output / ... flags.
-        # Global flags are appended at the end; argparse accepts them anywhere.
-        cmd = [self._cli] + list(cmd_args) + self._base_args(force_credentials=force_credentials)
+        # Shared auth/transport flags are placed before the command so commands
+        # like `ssh` can safely treat everything after their target as passthrough
+        # argv for downstream tools such as OpenSSH.
+        cmd = [self._cli] + self._base_args(force_credentials=force_credentials) + list(cmd_args)
         env = os.environ.copy()
         # Always use the system config so the parent chain is available for
         # ancestor cookie merging.  Session isolation is achieved via --cookie-file.
