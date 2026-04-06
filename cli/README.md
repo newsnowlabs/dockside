@@ -47,6 +47,7 @@ dockside get my-feature -o json
 dockside start my-feature
 dockside stop my-feature
 dockside edit my-feature --description "Feature branch X" --viewers carol
+dockside ssh my-feature
 dockside ssh proxy-command my-feature
 dockside remove my-feature --force
 
@@ -72,6 +73,7 @@ dockside remove my-feature --force
 dockside logs my-feature
 dockside logs my-feature --raw
 dockside check-url https://www-my-feature.example.com/
+dockside ssh my-feature
 dockside ssh proxy-command my-feature
 ```
 
@@ -86,6 +88,7 @@ dockside ssh proxy-command my-feature
 | `remove` (`rm`, `delete`) | Remove a devtainer |
 | `logs` | Retrieve devtainer logs |
 | `check-url` | Fetch a routed URL using the current session |
+| `ssh` | Connect to a devtainer SSH router using the CLI’s resolved transport/auth path |
 | `ssh proxy-command` | Print a `wstunnel`-based `ProxyCommand` for a devtainer SSH router |
 | `whoami` | Show the authenticated user and effective permissions |
 
@@ -176,12 +179,19 @@ the source.
 ### SSH routing
 
 ```sh
+dockside ssh my-feature
+dockside ssh my-feature -- echo hello
 dockside ssh proxy-command my-feature
 dockside ssh proxy-command my-feature -o json
 ```
 
-`dockside ssh proxy-command` resolves the SSH router for a devtainer using the
-CLI's current server configuration and authentication path. It is useful for:
+`dockside ssh` connects to a devtainer SSH router using the CLI's current
+server configuration and authentication path. This lets the CLI resolve the
+effective websocket target, cookie header path, and nest level before handing
+off to OpenSSH.
+
+`dockside ssh proxy-command` exposes the lower-level `ProxyCommand` string used
+by that flow. It is useful for:
 
 - generating an `ssh_config` `ProxyCommand`
 - debugging nested or proxied Dockside SSH routing

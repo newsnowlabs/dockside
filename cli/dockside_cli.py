@@ -1146,6 +1146,7 @@ def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
     if not ssh_alias:
         die(f"Devtainer {container.get('name')!r} does not expose an 'ssh' router")
     server_hostname = urllib.parse.urlparse(server).hostname or ''
+    ssh_user = ((container.get('data') or {}).get('unixuser') or '').strip()
     nest_level = _compute_nest_level(server) if connect_to else None
     if connect_to:
         websocket_url = _connect_to_websocket_target(connect_to)
@@ -1162,6 +1163,7 @@ def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
     )
     return {
         'devtainer': container.get('name', ''),
+        'ssh_user': ssh_user,
         'ssh_alias': ssh_alias,
         'hostname': server_hostname,
         'websocket_url': websocket_url,
@@ -2590,6 +2592,55 @@ def cmd_ssh_proxy_command(args):
         print(result['proxy_command'])
 
 
+def cmd_ssh(args):
+    """
+    SSH convenience wrapper.
+
+    Supported forms:
+      dockside ssh DEVTAINER [remote-command...]
+      dockside ssh proxy-command DEVTAINER
+    """
+    if args.ssh_target == 'proxy-command':
+        if not args.ssh_rest:
+            die('ssh proxy-command requires DEVTAINER')
+        if len(args.ssh_rest) > 1:
+            die('ssh proxy-command accepts exactly one DEVTAINER argument')
+        args.devtainer = args.ssh_rest[0]
+        return cmd_ssh_proxy_command(args)
+
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        container = resolve(containers, args.ssh_target)
+        spec = _resolve_ssh_proxy_spec(
+            opener,
+            server,
+            container,
+            connect_to=getattr(args, '_connect_to_effective', None),
+        )
+    except APIError as e:
+        die(str(e))
+
+    ssh_alias = spec.get('ssh_alias')
+    ssh_hostname = spec.get('hostname')
+    proxy_command = spec.get('proxy_command')
+    ssh_user = spec.get('ssh_user')
+    if not ssh_alias or not ssh_hostname or not proxy_command:
+        die('CLI did not resolve a usable SSH proxy spec')
+
+    destination = f'{ssh_user}@{ssh_alias}' if ssh_user else ssh_alias
+    remote_args = list(getattr(args, 'ssh_rest', None) or [])
+    if remote_args and remote_args[0] == '--':
+        remote_args = remote_args[1:]
+    argv = [
+        'ssh',
+        '-o', f'ProxyCommand={proxy_command}',
+        '-o', f'HostName={ssh_hostname}',
+        destination,
+    ] + remote_args
+    os.execvp('ssh', argv)
+
+
 def cmd_whoami(args):
     """Show the authenticated user and their effective (server-merged) permissions."""
     opener, server = _client(args)
@@ -3025,21 +3076,30 @@ def build_parser():
     sp.set_defaults(func=cmd_check_url)
 
     # ── ssh ───────────────────────────────────────────────────────────────────
-    ssh_p = sub.add_parser(
+    sp = sub.add_parser(
         'ssh',
-        help='SSH helpers for devtainer routes',
-    )
-    ssh_sub = ssh_p.add_subparsers(dest='ssh_command', metavar='SUBCOMMAND')
-    ssh_sub.required = True
-
-    sp = ssh_sub.add_parser(
-        'proxy-command',
-        help='Print a ProxyCommand line for a devtainer ssh router',
+        help='Connect to a devtainer ssh router or print its ProxyCommand',
+        description=(
+            'SSH helper for devtainer routes.\n\n'
+            'Direct connect:\n'
+            '  dockside ssh DEVTAINER [remote-command...]\n\n'
+            'Low-level proxy command:\n'
+            '  dockside ssh proxy-command DEVTAINER'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_global_flags(sp)
-    sp.add_argument('devtainer', metavar='DEVTAINER',
-                    help='Name, reservation ID, or container ID')
-    sp.set_defaults(func=cmd_ssh_proxy_command)
+    sp.add_argument(
+        'ssh_target',
+        metavar='TARGET',
+        help='DEVTAINER identifier, or the literal subcommand name "proxy-command"',
+    )
+    sp.add_argument(
+        'ssh_rest',
+        nargs='*',
+        help='Devtainer name for proxy-command, or remote command args for direct ssh',
+    )
+    sp.set_defaults(func=cmd_ssh)
 
     # ── whoami ─────────────────────────────────────────────────────────────────
     sp = sub.add_parser(
