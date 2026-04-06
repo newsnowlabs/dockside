@@ -1201,10 +1201,7 @@ def _ssh_config_host_pattern(ssh_alias):
     """Return a reusable per-server ssh_config Host pattern for a resolved alias."""
     if not ssh_alias.startswith('ssh-'):
         return ssh_alias
-    sep = ssh_alias.rfind('--')
-    if sep <= 4:
-        return ssh_alias
-    return f'ssh-*{ssh_alias[sep:]}'
+    return re.sub(r'^ssh-(?:.*?(?=--|\.))', 'ssh-*', ssh_alias, count=1) if re.search(r'--|\.', ssh_alias[4:]) else 'ssh-*'
 
 
 # ── Text rendering ────────────────────────────────────────────────────────────
