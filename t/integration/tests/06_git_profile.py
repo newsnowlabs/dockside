@@ -1,5 +1,24 @@
 """
 06_git_profile.py — Git URL, branch, and PR options
+
+Current coverage:
+  - launch accepts a gitURL for the example 03-git-repo profile
+  - launch accepts branch / PR profile options
+  - launch accepts alternate allowed images for the profile
+  - gitURL is stored in the resulting reservation data
+
+This does not yet verify the contents of the launched devtainer, only that the
+launch-time API and profile wiring accept and persist these fields.
+
+Possible future extension:
+  - in local / harness mode, inspect the running devtainer with docker exec and
+    assert the expected repository and checkout state
+  - in remote mode, do the same over SSH when the 09_ssh.py prerequisites are
+    available
+  - verify:
+      * default-branch checkout
+      * explicit branch checkout
+      * explicit PR checkout
 """
 
 import sys
