@@ -10,6 +10,7 @@ our @EXPORT_OK = ( qw(
    call_socket_api call_socket_json_api
    get_uri
    run run_system clean_pty run_pty
+   sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
    cache cacheReadWrite cloneHash
    encrypt_password generate_auth_cookie_values validate_auth_cookie
@@ -57,6 +58,37 @@ sub wlog ($m) {
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
    
    print STDERR $dt . " [dockside] " . $m . "\n";
+}
+
+sub sanitize_sensitive_text ($text) {
+   return '' unless defined $text;
+
+   my $out = $text;
+
+   # Redact explicit env payloads that can carry secrets into docker exec calls.
+   $out =~ s/--env=(OWNER_DETAILS|SSH_AGENT_KEYS|GH_TOKEN)=[^\n]*/--env=$1=<redacted>/g;
+
+   # Redact PEM private-key blocks if they appear in any other context.
+   $out =~ s/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----/<redacted-private-key>/sg;
+
+   # Redact JSON-style gh_token fields.
+   $out =~ s/("gh_token"\s*:\s*")[^"]*"/$1<redacted>"/g;
+   $out =~ s/('gh_token'\s*=>\s*')[^']*'/$1<redacted>'/g;
+
+   return $out;
+}
+
+sub _display_cmd (@cmd) {
+   return '' unless @cmd;
+
+   my @summary = ($cmd[0]);
+   if( @cmd >= 2 ) {
+      push @summary, $cmd[1];
+   }
+   if( @cmd >= 3 && $cmd[0] =~ m!/(?:docker|podman)$! && $cmd[1] eq 'network' ) {
+      push @summary, $cmd[2];
+   }
+   return join(' ', grep { defined($_) && $_ ne '' } @summary);
 }
 
 sub get_config ($path) {
@@ -154,8 +186,15 @@ sub run ($cmd, $unsafe = undef) {
    my $in = `$cmd`;
 
    unless($unsafe) {
-      die Exception->new( 'dbg' => sprintf( "Error running '%s': message '%s', exit code %d", $cmd, $!, $? >> 8 )) if( $? == -1 ) || ( $? >> 8 ) != 0;
-      die Exception->new( 'dbg' => sprintf( "Error running '%s': died with signal %d, %s coredump", ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without' )) if( $? & 127 );
+      my $safe_cmd = sanitize_sensitive_text($cmd);
+      die Exception->new(
+         'msg' => sprintf("Internal error - Error running command: exit code %d", $? >> 8),
+         'dbg' => sprintf("Error running '%s': message '%s', exit code %d", $safe_cmd, $!, $? >> 8)
+      ) if( $? == -1 ) || ( $? >> 8 ) != 0;
+      die Exception->new(
+         'msg' => 'Internal error - Command died with signal',
+         'dbg' => sprintf("Error running '%s': died with signal %d, %s coredump", $safe_cmd, ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without')
+      ) if( $? & 127 );
    }
 
    return $in;
@@ -167,14 +206,21 @@ sub run_system (@cmd) {
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
 
-   my $cmd = join(' ', @cmd);
+   my $cmd = join(' ', map { sanitize_sensitive_text($_) } @cmd);
+   my $display_cmd = _display_cmd(@cmd);
 
    flog("run_system: $cmd");
 
    my $exitCode = system(@cmd);
 
-   die Exception->new( 'dbg' => sprintf( "Error running '%s': gave '%s' and exit code %d", $cmd, $!, $? >> 8 )) if( $? == -1 ) || ( $? >> 8 ) != 0;
-   die Exception->new( 'dbg' => sprintf( "Error running '%s': died with signal %d, %s coredump", ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without' )) if( $? & 127 );
+   die Exception->new(
+      'msg' => sprintf("Internal error - Error running '%s': exit code %d", $display_cmd, $? >> 8),
+      'dbg' => sprintf( "Error running '%s': gave '%s' and exit code %d", $cmd, $!, $? >> 8 )
+   ) if( $? == -1 ) || ( $? >> 8 ) != 0;
+   die Exception->new(
+      'msg' => sprintf("Internal error - Error running '%s': signal %d", $display_cmd, ( $? & 127 )),
+      'dbg' => sprintf( "Error running '%s': died with signal %d, %s coredump", $cmd, ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without' )
+   ) if( $? & 127 );
 
    return $? >> 8;
 }

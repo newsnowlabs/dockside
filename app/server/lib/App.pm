@@ -13,7 +13,7 @@ use JSON;
 use URI::Escape;
 use Try::Tiny;
 use File::Path;
-use Util qw(flog wlog run run_pty YYYYMMDDHHMMSS);
+use Util qw(flog wlog run run_pty sanitize_sensitive_text YYYYMMDDHHMMSS);
 use Data qw($CONFIG $VERSION $HOSTINFO $HOSTNAME);
 use Containers;
 use Profile;
@@ -713,17 +713,23 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       return redirect($r, 302, '/');
    }
    catch {
-      my ($msg, $dbg, $time) = ref($_) eq 'Exception' ? ($_->msg(), $_->dbg(), $_->time()) : ($_, $_, time);
+      my ($msg, $dbg, $time);
+      if( ref($_) eq 'Exception' ) {
+         ($msg, $dbg, $time) = ($_->msg(), $_->dbg(), $_->time());
+      }
+      else {
+         ($msg, $dbg, $time) = map { sanitize_sensitive_text($_) } ($_, $_, time);
+      }
 
       my $Time = YYYYMMDDHHMMSS($time);
 
       flog("Reporting exception at '$Time': msg='$msg'; dbg='$dbg'; content type='$type'");
 
       if($type eq 'text') {
-         return text($r, 401, "$msg - $dbg (at $Time)");
+         return text($r, 401, "$msg (at $Time)");
       }
       else {
-         return json($r, 401, { 'status' => '401', 'msg' => "$msg - $dbg (at $Time)", 'time' => $time });
+         return json($r, 401, { 'status' => '401', 'msg' => "$msg (at $Time)", 'time' => $time });
       }
    };
 
@@ -738,7 +744,13 @@ sub handler ($r, $protocol) {
       return _handler($r, $protocol);
    }
    catch {
-      my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
+      my ($msg, $dbg);
+      if( ref($_) ) {
+         ($msg, $dbg) = ($_->msg(), $_->dbg());
+      }
+      else {
+         ($msg, $dbg) = map { sanitize_sensitive_text($_) } ($_, $_);
+      }
 
       wlog( "Caught exception: dbg='$dbg'; msg='$msg'");
       flog("Caught exception: dbg='$dbg'; msg='$msg'");

@@ -12,7 +12,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri);
+use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri sanitize_sensitive_text);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
 ################################################################################
@@ -832,15 +832,15 @@ sub meta_has_user ($self, $key, $user) {
 #
 
 sub action ($self, $action, $args = {}) {
-   my $command;
+   my @command;
    if($action eq 'start') {
-      $command = 'start';
+      @command = ('start');
    }
    elsif($action eq 'stop') {
-      $command = 'stop';
+      @command = ('stop');
    }
    elsif($action eq 'remove') {
-      $command = 'rm --volumes';
+      @command = ('rm', '--volumes');
    }
    elsif($action eq 'getLogs') {
       return $self->load_container_logs({
@@ -854,24 +854,40 @@ sub action ($self, $action, $args = {}) {
    }
 
    my $containerId = $self->containerId();
-   return run("$CONFIG->{'docker'}{'bin'} $command $containerId");
+   return run_system($CONFIG->{'docker'}{'bin'}, @command, $containerId);
 }
 
 sub update_network ($self) {
    my $network = $self->data('network');
    my $containerId = $self->{'containerId'};
+   my $attached = $self->{'inspect'}{'Networks'} // {};
 
-   flog("update_network: $network");
+   flog(sprintf(
+      "update_network: reservationId=%s containerId=%s desired=%s attached=[%s]",
+      $self->id() // '',
+      $containerId // '',
+      defined($network) ? $network : '<undef>',
+      join(', ', sort keys %$attached),
+   ));
+
+   # If the container is already attached only to the requested network,
+   # there is nothing to do.
+   if( $network && $attached->{$network} && scalar(keys %$attached) == 1 ) {
+      flog("update_network: no-op; already attached only to desired network '$network'");
+      return;
+   }
 
    # Disconnect all existing networks, except requested one.
-   foreach my $oldNetwork (keys %{$self->{'inspect'}{'Networks'}}) {
-      next if $network eq $oldNetwork;
-      run("$CONFIG->{'docker'}{'bin'} network disconnect $oldNetwork $containerId");
+   foreach my $oldNetwork (keys %$attached) {
+      next if ($network // '') eq ($oldNetwork // '');
+      flog("update_network: disconnecting network '$oldNetwork' from container '$containerId'");
+      run_system($CONFIG->{'docker'}{'bin'}, 'network', 'disconnect', $oldNetwork, $containerId);
    }
 
    # Connect requested network, if not existing
-   if(!$self->{'inspect'}{'Networks'}{$network}) {
-      run("$CONFIG->{'docker'}{'bin'} network connect $network $containerId");
+   if($network && !$attached->{$network}) {
+      flog("update_network: connecting network '$network' to container '$containerId'");
+      run_system($CONFIG->{'docker'}{'bin'}, 'network', 'connect', $network, $containerId);
    }
 }
 
@@ -1103,10 +1119,10 @@ sub exec ($reservation, $command = undef) {
          "--env=SSHD_ENABLE=1"
       );
 
-      flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
+      flog(sanitize_sensitive_text("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
          join(' ', @Command) . "' for owner '$owner', developers '" .
          join(',', @usernames) . "', owner details '$user_details', keys '$keys_json'"
-      );
+      ));
    }
    else {   
       flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
