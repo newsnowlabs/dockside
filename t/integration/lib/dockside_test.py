@@ -360,21 +360,26 @@ class DocksideClient:
         self._cookie_jar = jar
         self._persisted_session_ready = any(True for _ in jar)
 
-    def get_uid_cookie(self):
+    def get_auth_cookie_header(self):
         """
-        Return (cookie_name, cookie_value) for the session UID cookie,
-        or None if not found.
-        Used by SSH tests to build the wstunnel ProxyCommand.
+        Return the cookie header string from /getAuthCookies for this client.
+
+        This mirrors the UI SSH flow, so ancestor cookies and any configured
+        global cookie are handled by the server-side helper rather than being
+        reconstructed from the local cookie jar.
         """
-        if self._cookie_jar is None:
-            self._reload_cookie_jar()
-        if self._cookie_jar is None:
+        url = self._server.rstrip('/') + '/getAuthCookies'
+        result = self._run_readonly('check-url', '--no-redirect', '--timeout', '30', url)
+        if result is None:
             return None
-        for cookie in self._cookie_jar:
-            # Dockside's UID cookie names start with _ds
-            if cookie.name.startswith('_ds'):
-                return cookie.name, cookie.value
-        return None
+        body = result.get('body', '')
+        if not isinstance(body, str) or not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        return payload.get('data')
 
     # ── API methods ───────────────────────────────────────────────────────────
 

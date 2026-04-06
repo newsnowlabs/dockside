@@ -13,7 +13,6 @@ The committed test-only Ed25519 keypairs are in:
 import os
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
@@ -23,6 +22,8 @@ from _ssh_test_common import (
     _DEV1_KEY,
     _DEV2_KEY,
     build_proxy_command,
+    debug_ssh_command,
+    ssh_tempdir,
     write_ssh_config,
     wstunnel_available,
 )
@@ -42,24 +43,25 @@ class SshTests(SshTestMixin, TestCase):
 
         self._ensure_ssh_container()
 
-        uid_cookie = self.dev1.get_uid_cookie()
-        if not uid_cookie:
-            self.skip('Could not extract UID cookie from dev1 session')
-        uid_name, uid_value = uid_cookie
+        cookie_header = self.dev1.get_auth_cookie_header()
+        if not cookie_header:
+            self.skip('Could not fetch SSH auth cookies from dev1 session')
 
-        ssh_hostname, wss_url = self._get_ssh_host_pattern()
-        proxy_cmd = build_proxy_command(uid_name, uid_value, wss_url)
+        ssh_alias, ssh_hostname, wss_url = self._get_ssh_host_pattern()
+        proxy_cmd = build_proxy_command(cookie_header, wss_url)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with ssh_tempdir() as tmpdir:
             config_path = write_ssh_config(
                 tmpdir,
-                host_pattern=ssh_hostname,
+                host_pattern=ssh_alias,
                 proxy_command=proxy_cmd,
                 hostname=ssh_hostname,
                 identity_file=_DEV1_KEY,
             )
+            argv = ['ssh', '-F', config_path, ssh_alias, 'echo', 'hello']
+            debug_ssh_command(argv, config_path)
             r = subprocess.run(
-                ['ssh', '-F', config_path, ssh_hostname, 'echo', 'hello'],
+                argv,
                 capture_output=True, text=True, timeout=30
             )
         self.assert_equal(r.stdout.strip(), 'hello',
@@ -90,24 +92,25 @@ class SshTests(SshTestMixin, TestCase):
         self.dev1.update(self.SSH_CONTAINER, developers=self.test_username_dev2)
         self._wait_ssh_route_accessible(self.dev2, timeout=20)
 
-        uid_cookie = self.dev2.get_uid_cookie()
-        if not uid_cookie:
-            self.skip('Could not extract UID cookie from dev2 session')
-        uid_name, uid_value = uid_cookie
+        cookie_header = self.dev2.get_auth_cookie_header()
+        if not cookie_header:
+            self.skip('Could not fetch SSH auth cookies from dev2 session')
 
-        ssh_hostname, wss_url = self._get_ssh_host_pattern()
-        proxy_cmd = build_proxy_command(uid_name, uid_value, wss_url)
+        ssh_alias, ssh_hostname, wss_url = self._get_ssh_host_pattern()
+        proxy_cmd = build_proxy_command(cookie_header, wss_url)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with ssh_tempdir() as tmpdir:
             config_path = write_ssh_config(
                 tmpdir,
-                host_pattern=ssh_hostname,
+                host_pattern=ssh_alias,
                 proxy_command=proxy_cmd,
                 hostname=ssh_hostname,
                 identity_file=_DEV2_KEY,
             )
+            argv = ['ssh', '-F', config_path, ssh_alias, 'echo', 'hello']
+            debug_ssh_command(argv, config_path)
             r = subprocess.run(
-                ['ssh', '-F', config_path, ssh_hostname, 'echo', 'hello'],
+                argv,
                 capture_output=True, text=True, timeout=30
             )
         self.assert_equal(r.stdout.strip(), 'hello',

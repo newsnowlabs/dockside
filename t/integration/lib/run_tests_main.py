@@ -348,7 +348,8 @@ class _EnvManager:
         for res_key, res_val in resources.items():
             create_args.extend(['--set', f'resources.{res_key}={json.dumps(res_val)}'])
         if ssh_pubkey:
-            create_args.extend(['--set', f'ssh.authorized_keys={json.dumps([ssh_pubkey])}'])
+            public_key_name = (ssh_keypair_name or 'integration-key') + '-pub'
+            create_args.extend(['--set', f'ssh.publicKeys.{public_key_name}={ssh_pubkey}'])
         if ssh_keypair_name and ssh_privkey_path and ssh_pubkey_value:
             create_args.extend([
                 '--set', f'ssh.keypairs.{ssh_keypair_name}.public={ssh_pubkey_value}',
