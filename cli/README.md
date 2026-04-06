@@ -34,6 +34,7 @@ dockside login --server https://www.local.dockside.dev --nickname local
 dockside login --server https://www.staging.dockside.example.com --nickname staging
 dockside server list
 dockside server use local
+dockside --server staging list -o json
 
 # Create and inspect a devtainer
 dockside create --profile default --name my-feature --image ubuntu:22.04 \
@@ -47,8 +48,8 @@ dockside get my-feature -o json
 dockside start my-feature
 dockside stop my-feature
 dockside edit my-feature --description "Feature branch X" --viewers carol
-dockside ssh my-feature
-dockside ssh proxy-command my-feature
+dockside --server staging ssh my-feature
+dockside --server staging ssh proxy-command my-feature
 dockside remove my-feature --force
 
 # Manage users and profiles
@@ -74,7 +75,7 @@ dockside logs my-feature
 dockside logs my-feature --raw
 dockside check-url https://www-my-feature.example.com/
 dockside ssh my-feature
-dockside ssh proxy-command my-feature
+dockside --server staging ssh proxy-command my-feature
 ```
 
 | Subcommand | Purpose |
@@ -194,7 +195,9 @@ off to OpenSSH.
 
 Any arguments after `DEVTAINER` are passed through to `ssh`, so options such as
 `-v` or additional remote-command arguments can be supplied directly. Dockside
-CLI options such as `--server` must appear before `DEVTAINER`.
+CLI options such as `--server` must appear before `DEVTAINER`. Shared auth and
+transport flags can be placed either before the command, such as
+`dockside --server staging list`, or after it, such as `dockside list --server staging`.
 
 `dockside ssh config` prints a reusable `ssh_config` `Host` block with the same
 resolved `ProxyCommand`, `Hostname`, and optional `User`, `IdentityFile`, and
@@ -574,7 +577,7 @@ dockside list -o json
 dockside get my-devtainer -o json
 dockside check-url URL -o json
 dockside check-url URL --debug-http
-dockside ssh proxy-command my-devtainer -o json
+dockside --server staging -o json ssh proxy-command my-devtainer
 ```
 
 ## Appendix: Security

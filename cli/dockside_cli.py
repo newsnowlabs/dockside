@@ -2778,6 +2778,7 @@ def build_parser():
         epilog=EPILOG,
     )
     p.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+    _add_global_flags(p)
 
     sub = p.add_subparsers(dest='command', metavar='COMMAND')
     sub.required = True
