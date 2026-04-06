@@ -430,6 +430,13 @@ class DocksideClient:
         body     = body_str.encode('utf-8') if isinstance(body_str, str) else (body_str or b'')
         return status, body
 
+    def ssh_proxy_spec(self, name):
+        """Return the CLI-resolved SSH proxy spec for a devtainer."""
+        result = self._run_readonly('ssh', 'proxy-command', name)
+        if not isinstance(result, dict):
+            raise APIError('ssh proxy-command returned no structured output')
+        return result
+
     def check_service(self, container_name, router_prefix='www',
                       parent_fqdn=None, timeout=30):
         """

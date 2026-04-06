@@ -15,6 +15,7 @@ import re
 import ssl
 import sys
 import socket
+import shlex
 import tempfile
 import time
 import http.client
@@ -1084,6 +1085,90 @@ def _router_urls(container):
         if rname and router.get('type') != 'passthru':
             result[rname] = _make_router_url(router, name, parent_fqdn, data)
     return result
+
+
+def _ssh_alias(container):
+    """Return the SSH host alias/FQDN for a container's ssh router."""
+    ssh_url = (_router_urls(container) or {}).get('ssh', '')
+    if not ssh_url or '@' not in ssh_url:
+        return ''
+    return ssh_url.rsplit('@', 1)[1]
+
+
+def _connect_to_websocket_target(connect_to):
+    """
+    Return a websocket URL for the TCP target implied by --connect-to.
+
+    The logical SSH host remains in --hostHeader=%n (and optionally --tlsSNI %n);
+    this helper only decides the raw websocket TCP endpoint.
+    """
+    if not connect_to:
+        return None
+    if ':' in connect_to:
+        host, _, port_str = connect_to.rpartition(':')
+        port = int(port_str)
+    else:
+        host = connect_to
+        port = 443
+    if host in ('localhost', '::1'):
+        host = '127.0.0.1'
+    return f'wss://{host}:{port}' if port != 443 else f'wss://{host}'
+
+
+def _auth_cookie_header(opener, server):
+    """Return the server-generated Cookie header string from /getAuthCookies."""
+    data = _do_get(opener, server.rstrip('/') + '/getAuthCookies', timeout=30)
+    return data.get('data') or ''
+
+
+def _build_ssh_proxy_command(cookie_header, websocket_url, nest_level=None, tls_sni=None):
+    """
+    Build a ProxyCommand line suitable for use inside ssh_config.
+
+    `%n` and `%p` are intentionally left for OpenSSH to expand.
+    """
+    if not cookie_header:
+        raise APIError('No auth cookie header returned by /getAuthCookies')
+    argv = ['wstunnel', '--hostHeader=%n']
+    if nest_level:
+        argv.append(f'--customHeaders=X-Nest-Level: {nest_level}')
+    argv.append(f'--customHeaders=Cookie: {cookie_header.replace("%", "%%")}')
+    argv.extend(['-L', 'stdio:127.0.0.1:%p'])
+    if tls_sni:
+        argv.extend(['--tlsSNI', tls_sni])
+    argv.append(websocket_url)
+    return shlex.join(argv)
+
+
+def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
+    """Resolve the pieces needed for an SSH ProxyCommand for a container."""
+    ssh_alias = _ssh_alias(container)
+    if not ssh_alias:
+        die(f"Devtainer {container.get('name')!r} does not expose an 'ssh' router")
+    server_hostname = urllib.parse.urlparse(server).hostname or ''
+    nest_level = _compute_nest_level(server) if connect_to else None
+    if connect_to:
+        websocket_url = _connect_to_websocket_target(connect_to)
+        tls_sni = '%n'
+    else:
+        websocket_url = f'wss://{server_hostname}'
+        tls_sni = None
+    cookie_header = _auth_cookie_header(opener, server)
+    proxy_command = _build_ssh_proxy_command(
+        cookie_header,
+        websocket_url,
+        nest_level=nest_level,
+        tls_sni=tls_sni,
+    )
+    return {
+        'devtainer': container.get('name', ''),
+        'ssh_alias': ssh_alias,
+        'hostname': server_hostname,
+        'websocket_url': websocket_url,
+        'connect_to': connect_to or '',
+        'nest_level': nest_level or '',
+        'proxy_command': proxy_command,
+    }
 
 
 # ── Text rendering ────────────────────────────────────────────────────────────
@@ -2484,6 +2569,27 @@ def cmd_check_url(args):
         sys.stdout.write(result['body'])
 
 
+def cmd_ssh_proxy_command(args):
+    """Print a ProxyCommand line for a devtainer's ssh router."""
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        container = resolve(containers, args.devtainer)
+        result = _resolve_ssh_proxy_spec(
+            opener,
+            server,
+            container,
+            connect_to=getattr(args, '_connect_to_effective', None),
+        )
+    except APIError as e:
+        die(str(e))
+
+    if args._fmt in ('json', 'yaml'):
+        emit(result, args._fmt)
+    else:
+        print(result['proxy_command'])
+
+
 def cmd_whoami(args):
     """Show the authenticated user and their effective (server-merged) permissions."""
     opener, server = _client(args)
@@ -2917,6 +3023,23 @@ def build_parser():
     sp.add_argument('--timeout', type=int, default=30, metavar='SECS',
                     help='Request timeout in seconds (default: 30)')
     sp.set_defaults(func=cmd_check_url)
+
+    # ── ssh ───────────────────────────────────────────────────────────────────
+    ssh_p = sub.add_parser(
+        'ssh',
+        help='SSH helpers for devtainer routes',
+    )
+    ssh_sub = ssh_p.add_subparsers(dest='ssh_command', metavar='SUBCOMMAND')
+    ssh_sub.required = True
+
+    sp = ssh_sub.add_parser(
+        'proxy-command',
+        help='Print a ProxyCommand line for a devtainer ssh router',
+    )
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER',
+                    help='Name, reservation ID, or container ID')
+    sp.set_defaults(func=cmd_ssh_proxy_command)
 
     # ── whoami ─────────────────────────────────────────────────────────────────
     sp = sub.add_parser(

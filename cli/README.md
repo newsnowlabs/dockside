@@ -47,6 +47,7 @@ dockside get my-feature -o json
 dockside start my-feature
 dockside stop my-feature
 dockside edit my-feature --description "Feature branch X" --viewers carol
+dockside ssh proxy-command my-feature
 dockside remove my-feature --force
 
 # Manage users and profiles
@@ -71,6 +72,7 @@ dockside remove my-feature --force
 dockside logs my-feature
 dockside logs my-feature --raw
 dockside check-url https://www-my-feature.example.com/
+dockside ssh proxy-command my-feature
 ```
 
 | Subcommand | Purpose |
@@ -84,6 +86,7 @@ dockside check-url https://www-my-feature.example.com/
 | `remove` (`rm`, `delete`) | Remove a devtainer |
 | `logs` | Retrieve devtainer logs |
 | `check-url` | Fetch a routed URL using the current session |
+| `ssh proxy-command` | Print a `wstunnel`-based `ProxyCommand` for a devtainer SSH router |
 | `whoami` | Show the authenticated user and effective permissions |
 
 ### Addressing devtainers
@@ -169,6 +172,26 @@ dockside stop my-feature --timeout 60
 `dockside logs` strips ANSI escape sequences and dangerous control characters
 by default. Use `--raw` to preserve the original terminal output when you trust
 the source.
+
+### SSH routing
+
+```sh
+dockside ssh proxy-command my-feature
+dockside ssh proxy-command my-feature -o json
+```
+
+`dockside ssh proxy-command` resolves the SSH router for a devtainer using the
+CLI's current server configuration and authentication path. It is useful for:
+
+- generating an `ssh_config` `ProxyCommand`
+- debugging nested or proxied Dockside SSH routing
+- inspecting the effective websocket target, cookie header path, and nest level
+
+For structured debugging output, prefer:
+
+```sh
+dockside ssh proxy-command my-feature -o json
+```
 
 ## User and role management
 
@@ -531,6 +554,7 @@ dockside list -o json
 dockside get my-devtainer -o json
 dockside check-url URL -o json
 dockside check-url URL --debug-http
+dockside ssh proxy-command my-devtainer -o json
 ```
 
 ## Appendix: Security
