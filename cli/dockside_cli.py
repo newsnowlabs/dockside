@@ -2597,7 +2597,7 @@ def cmd_ssh(args):
     SSH convenience wrapper.
 
     Supported forms:
-      dockside ssh DEVTAINER [remote-command...]
+      dockside ssh DEVTAINER [SSH-ARGS...]
       dockside ssh proxy-command DEVTAINER
     """
     if args.ssh_target == 'proxy-command':
@@ -3081,8 +3081,10 @@ def build_parser():
         help='Connect to a devtainer ssh router or print its ProxyCommand',
         description=(
             'SSH helper for devtainer routes.\n\n'
+            'All Dockside CLI options must appear before DEVTAINER. Anything after\n'
+            'DEVTAINER is passed through to ssh unchanged.\n\n'
             'Direct connect:\n'
-            '  dockside ssh DEVTAINER [remote-command...]\n\n'
+            '  dockside ssh DEVTAINER [SSH-ARGS...]\n\n'
             'Low-level proxy command:\n'
             '  dockside ssh proxy-command DEVTAINER'
         ),
@@ -3091,13 +3093,14 @@ def build_parser():
     _add_global_flags(sp)
     sp.add_argument(
         'ssh_target',
-        metavar='TARGET',
+        metavar='DEVTAINER',
         help='DEVTAINER identifier, or the literal subcommand name "proxy-command"',
     )
     sp.add_argument(
         'ssh_rest',
-        nargs='*',
-        help='Devtainer name for proxy-command, or remote command args for direct ssh',
+        nargs=argparse.REMAINDER,
+        metavar='SSH-ARGS',
+        help='SSH args for direct connect, or DEVTAINER for proxy-command; all Dockside options must come before DEVTAINER',
     )
     sp.set_defaults(func=cmd_ssh)
 

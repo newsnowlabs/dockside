@@ -180,6 +180,7 @@ the source.
 
 ```sh
 dockside ssh my-feature
+dockside ssh my-feature -v
 dockside ssh my-feature -- echo hello
 dockside ssh proxy-command my-feature
 dockside ssh proxy-command my-feature -o json
@@ -189,6 +190,10 @@ dockside ssh proxy-command my-feature -o json
 server configuration and authentication path. This lets the CLI resolve the
 effective websocket target, cookie header path, and nest level before handing
 off to OpenSSH.
+
+Any arguments after `DEVTAINER` are passed through to `ssh`, so options such as
+`-v` or additional remote-command arguments can be supplied directly. Dockside
+CLI options such as `--server` must appear before `DEVTAINER`.
 
 `dockside ssh proxy-command` exposes the lower-level `ProxyCommand` string used
 by that flow. It is useful for:
