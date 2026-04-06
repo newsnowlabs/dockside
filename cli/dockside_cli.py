@@ -1173,6 +1173,29 @@ def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
     }
 
 
+def _build_ssh_config_block(spec, identity_file=None, forward_agent=False, alias=None):
+    """Render an ssh_config Host block from a resolved ssh proxy spec."""
+    ssh_alias = alias or spec.get('ssh_alias') or ''
+    ssh_hostname = spec.get('hostname') or ''
+    proxy_command = spec.get('proxy_command') or ''
+    ssh_user = spec.get('ssh_user') or ''
+    if not ssh_alias or not ssh_hostname or not proxy_command:
+        raise APIError('CLI did not resolve a usable SSH proxy spec')
+
+    lines = [
+        f'Host {ssh_alias}',
+        f'    ProxyCommand {proxy_command}',
+        f'    Hostname {ssh_hostname}',
+    ]
+    if ssh_user:
+        lines.append(f'    User {ssh_user}')
+    if identity_file:
+        lines.append(f'    IdentityFile {identity_file}')
+    if forward_agent:
+        lines.append('    ForwardAgent yes')
+    return '\n'.join(lines)
+
+
 # ── Text rendering ────────────────────────────────────────────────────────────
 
 def _status_str(status):
@@ -2592,12 +2615,40 @@ def cmd_ssh_proxy_command(args):
         print(result['proxy_command'])
 
 
+def cmd_ssh_config(args):
+    """Print an ssh_config Host block for a devtainer SSH router."""
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        container = resolve(containers, args.devtainer)
+        result = _resolve_ssh_proxy_spec(
+            opener,
+            server,
+            container,
+            connect_to=getattr(args, '_connect_to_effective', None),
+        )
+        result['ssh_config'] = _build_ssh_config_block(
+            result,
+            identity_file=getattr(args, 'identity_file', None),
+            forward_agent=getattr(args, 'forward_agent', False),
+            alias=getattr(args, 'ssh_alias_override', None),
+        )
+    except APIError as e:
+        die(str(e))
+
+    if args._fmt in ('json', 'yaml'):
+        emit(result, args._fmt)
+    else:
+        print(result['ssh_config'])
+
+
 def cmd_ssh(args):
     """
     SSH convenience wrapper.
 
     Supported forms:
       dockside ssh DEVTAINER [SSH-ARGS...]
+      dockside ssh config DEVTAINER
       dockside ssh proxy-command DEVTAINER
     """
     if args.ssh_target == 'proxy-command':
@@ -2607,6 +2658,13 @@ def cmd_ssh(args):
             die('ssh proxy-command accepts exactly one DEVTAINER argument')
         args.devtainer = args.ssh_rest[0]
         return cmd_ssh_proxy_command(args)
+    if args.ssh_target == 'config':
+        if not args.ssh_rest:
+            die('ssh config requires DEVTAINER')
+        if len(args.ssh_rest) > 1:
+            die('ssh config accepts exactly one DEVTAINER argument')
+        args.devtainer = args.ssh_rest[0]
+        return cmd_ssh_config(args)
 
     opener, server = _client(args)
     try:
@@ -2636,8 +2694,12 @@ def cmd_ssh(args):
         'ssh',
         '-o', f'ProxyCommand={proxy_command}',
         '-o', f'HostName={ssh_hostname}',
-        destination,
-    ] + remote_args
+    ]
+    if getattr(args, 'identity_file', None):
+        argv.extend(['-o', f'IdentityFile={args.identity_file}'])
+    if getattr(args, 'forward_agent', False):
+        argv.extend(['-o', 'ForwardAgent=yes'])
+    argv.extend([destination] + remote_args)
     os.execvp('ssh', argv)
 
 
@@ -3085,16 +3147,24 @@ def build_parser():
             'DEVTAINER is passed through to ssh unchanged.\n\n'
             'Direct connect:\n'
             '  dockside ssh DEVTAINER [SSH-ARGS...]\n\n'
+            'Config block:\n'
+            '  dockside ssh config DEVTAINER\n\n'
             'Low-level proxy command:\n'
             '  dockside ssh proxy-command DEVTAINER'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_global_flags(sp)
+    sp.add_argument('--identity-file', metavar='PATH',
+                    help='SSH private key to use for direct ssh or ssh config output')
+    sp.add_argument('--forward-agent', action='store_true',
+                    help='Enable SSH agent forwarding for direct ssh or ssh config output')
+    sp.add_argument('--alias', dest='ssh_alias_override', metavar='HOST_ALIAS',
+                    help='Override the Host alias used by ssh config output')
     sp.add_argument(
         'ssh_target',
         metavar='DEVTAINER',
-        help='DEVTAINER identifier, or the literal subcommand name "proxy-command"',
+        help='DEVTAINER identifier, or the literal subcommand name "config" or "proxy-command"',
     )
     sp.add_argument(
         'ssh_rest',

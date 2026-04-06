@@ -182,8 +182,9 @@ the source.
 dockside ssh my-feature
 dockside ssh my-feature -v
 dockside ssh my-feature -- echo hello
+dockside ssh config my-feature
 dockside ssh proxy-command my-feature
-dockside ssh proxy-command my-feature -o json
+dockside ssh -o json proxy-command my-feature
 ```
 
 `dockside ssh` connects to a devtainer SSH router using the CLI's current
@@ -195,6 +196,10 @@ Any arguments after `DEVTAINER` are passed through to `ssh`, so options such as
 `-v` or additional remote-command arguments can be supplied directly. Dockside
 CLI options such as `--server` must appear before `DEVTAINER`.
 
+`dockside ssh config` prints a reusable `ssh_config` `Host` block with the same
+resolved `ProxyCommand`, `Hostname`, and optional `User`, `IdentityFile`, and
+`ForwardAgent` settings.
+
 `dockside ssh proxy-command` exposes the lower-level `ProxyCommand` string used
 by that flow. It is useful for:
 
@@ -205,7 +210,7 @@ by that flow. It is useful for:
 For structured debugging output, prefer:
 
 ```sh
-dockside ssh proxy-command my-feature -o json
+dockside ssh -o json proxy-command my-feature
 ```
 
 ## User and role management
