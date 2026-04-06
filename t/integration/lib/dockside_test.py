@@ -108,9 +108,12 @@ class _ConnectToHandler(urllib.request.HTTPSHandler):
 
 def _fields_to_args(fields):
     """Convert a dict of fields to CLI --flag value pairs."""
+    flag_names = {
+        'gitURL': 'git-url',
+    }
     args = []
     for k, v in fields.items():
-        args.extend([f'--{k}', str(v)])
+        args.extend([f'--{flag_names.get(k, k)}', str(v)])
     return args
 
 
