@@ -23,7 +23,9 @@ from _ssh_test_common import (
     _DEV2_KEY,
     debug_ssh_command,
     prepare_identity_file,
+    ssh_available,
     ssh_tempdir,
+    warn_missing_host_tool,
     write_ssh_config,
     wstunnel_available,
 )
@@ -36,7 +38,11 @@ class SshTests(SshTestMixin, TestCase):
 
     def test_01_owner_ssh_via_wstunnel(self):
         """dev1 (owner) can SSH into their devtainer via wstunnel."""
+        if not ssh_available():
+            warn_missing_host_tool('ssh')
+            self.skip('ssh not in PATH')
         if not wstunnel_available():
+            warn_missing_host_tool('wstunnel')
             self.skip('wstunnel not in PATH')
         if not os.path.isfile(_DEV1_KEY):
             self.skip(f'testdev1 key not found at {_DEV1_KEY}')
@@ -83,7 +89,11 @@ class SshTests(SshTestMixin, TestCase):
 
     def test_03_add_dev2_and_ssh_connects(self):
         """After adding dev2 as developer, they can SSH in with their key."""
+        if not ssh_available():
+            warn_missing_host_tool('ssh')
+            self.skip('ssh not in PATH')
         if not wstunnel_available():
+            warn_missing_host_tool('wstunnel')
             self.skip('wstunnel not in PATH')
         if not os.path.isfile(_DEV2_KEY):
             self.skip(f'testdev2 key not found at {_DEV2_KEY}')

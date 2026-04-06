@@ -515,6 +515,7 @@ class TestCase:
     test_profile_alpine   = 'inttest-alpine'
     test_profile_nginx    = 'inttest-nginx'
     test_password_dev     = 'inttest-testpass'
+    test_system_bin_dir   = '/opt/dockside/system/latest/bin'
 
     # Suffix for all test resource names (injected by TestRunner)
     _name_suffix = ''

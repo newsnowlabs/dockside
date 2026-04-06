@@ -330,13 +330,33 @@ class _EnvManager:
                      ssh_keypair_name=None, ssh_privkey_path=None, ssh_pubkey_value=None):
         name     = _suffixed(base_name, self._suffix)
         existing = self._get_user(name)
+
+        def _ssh_set_args():
+            args = []
+            if ssh_pubkey:
+                public_key_name = (
+                    'integration-key-pub'
+                    if ssh_keypair_name == '*'
+                    else (ssh_keypair_name or 'integration-key') + '-pub'
+                )
+                args.extend(['--set', f'ssh.publicKeys.{public_key_name}={ssh_pubkey}'])
+            if ssh_keypair_name and ssh_privkey_path and ssh_pubkey_value:
+                args.extend([
+                    '--set', f'ssh.keypairs.{ssh_keypair_name}.public={ssh_pubkey_value}',
+                    '--set', f'ssh.keypairs.{ssh_keypair_name}.private=@{ssh_privkey_path}',
+                ])
+            return args
+
         if existing is not None:
             # Check role matches; be lenient about resources (just require presence)
             existing_role = existing.get('role', '')
             if existing_role == role_name:
                 # Always (re-)set the password so that a user created without one
                 # (e.g. by a previous buggy run) gets a usable passwd entry.
-                self._admin._run('user', 'edit', name, '--user-password', self.password_dev)
+                self._admin._run(
+                    'user', 'edit', name, '--user-password', self.password_dev,
+                    *_ssh_set_args()
+                )
                 self._track_reused(self._created_users, name)
                 print(f'# User {name!r}: reusing existing (role matches)', file=sys.stderr)
                 return name
@@ -354,14 +374,7 @@ class _EnvManager:
         ]
         for res_key, res_val in resources.items():
             create_args.extend(['--set', f'resources.{res_key}={json.dumps(res_val)}'])
-        if ssh_pubkey:
-            public_key_name = (ssh_keypair_name or 'integration-key') + '-pub'
-            create_args.extend(['--set', f'ssh.publicKeys.{public_key_name}={ssh_pubkey}'])
-        if ssh_keypair_name and ssh_privkey_path and ssh_pubkey_value:
-            create_args.extend([
-                '--set', f'ssh.keypairs.{ssh_keypair_name}.public={ssh_pubkey_value}',
-                '--set', f'ssh.keypairs.{ssh_keypair_name}.private=@{ssh_privkey_path}',
-            ])
+        create_args.extend(_ssh_set_args())
 
         self._admin._run('user', 'create', name, *create_args)
         self._created_users.append(name)
@@ -437,14 +450,14 @@ class _EnvManager:
         self.user_dev1 = self._ensure_user(
             'inttest-dev1', self.role_developer, _dev_resources,
             ssh_pubkey=dev1_pubkey,
-            ssh_keypair_name='testdev1-integration',
+            ssh_keypair_name='*',
             ssh_privkey_path=dev1_priv_path,
             ssh_pubkey_value=dev1_pubkey,
         )
         self.user_dev2 = self._ensure_user(
             'inttest-dev2', self.role_developer, _dev_resources,
             ssh_pubkey=dev2_pubkey,
-            ssh_keypair_name='testdev2-integration',
+            ssh_keypair_name='*',
             ssh_privkey_path=dev2_priv_path,
             ssh_pubkey_value=dev2_pubkey,
         )
@@ -594,6 +607,10 @@ def main():
         test_profile_alpine  = _env_manager.profile_alpine
         test_profile_nginx   = _env_manager.profile_nginx
         test_password_dev    = _env_manager.password_dev
+        test_system_bin_dir  = os.environ.get(
+            'DOCKSIDE_TEST_SYSTEM_BIN_DIR',
+            '/opt/dockside/system/latest/bin',
+        )
 
         name_attrs = {
             'test_username_dev1':   test_username_dev1,
@@ -610,6 +627,7 @@ def main():
             'test_profile_alpine':  test_profile_alpine,
             'test_profile_nginx':   test_profile_nginx,
             'test_password_dev':    test_password_dev,
+            'test_system_bin_dir':  test_system_bin_dir,
             '_name_suffix':         suffix,
         }
 

@@ -16,7 +16,8 @@ and produce TAP-compatible output.
 | `06_git_profile.py` | Git URL, branch, PR options |
 | `07_ide.py` | IDE creation; viewer/developer IDE access |
 | `08_network.py` | Network assignment; harness-only: create/attach/detach networks |
-| `09_ssh.py` | Inbound SSH via wstunnel; outbound SSH via integrated ssh-agent |
+| `09_ssh.py` | Inbound SSH via wstunnel |
+| `10_ssh_outbound.py` | Outbound self-SSH via the devtainer's integrated ssh-agent |
 
 ## Test Modes
 
@@ -291,20 +292,31 @@ these routers should not include `viewer`, `user`, or `public`.
 
 ## SSH Tests
 
-Tests `09_ssh.py` use committed test-only Ed25519 keypairs:
+Tests `09_ssh.py` and `10_ssh_outbound.py` use committed test-only Ed25519 keypairs:
 - `t/integration/config/ssh/testdev1_ed25519` + `.pub`
 - `t/integration/config/ssh/testdev2_ed25519` + `.pub`
 
 These are safe to commit — they are purpose-generated, non-production keys
-used only against ephemeral test instances. They are embedded in `users.json`
-so Dockside automatically populates `~/.ssh/authorized_keys` inside devtainers.
+used only against ephemeral test instances. The harness writes the public keys
+into the test users' `ssh.publicKeys.*` entries and the private keypair into
+`ssh.keypairs.*`, so Dockside both populates `~/.ssh/authorized_keys` and loads
+the matching private key into the devtainer's integrated `ssh-agent`.
 
-**Test A (inbound via wstunnel):** requires `wstunnel` in `PATH`. Skipped otherwise.
-The ProxyCommand format mirrors what `SSHInfo.vue` generates in the UI.
+**`09_ssh.py` (inbound via wstunnel):**
+- requires `wstunnel` in `PATH`
+- uses host-side `ssh` plus the CLI-resolved ProxyCommand / SSH config details
+- skipped if `wstunnel` is unavailable
 
-**Test B (outbound via ssh-agent):** requires `docker` CLI and a known
-container ID. Set `DOCKSIDE_TEST_SSH_SERVER=git@github.com` (or another server
-where the testdev1 public key is pre-authorized).
+**`10_ssh_outbound.py` (outbound via integrated ssh-agent):**
+- in `local` / `harness` mode, requires host `docker` CLI and the devtainer's
+  embedded OpenSSH client under `DOCKSIDE_TEST_SYSTEM_BIN_DIR` (default:
+  `/opt/dockside/system/latest/bin`)
+- in `remote` mode, requires `wstunnel` in `PATH` so the test can enter the
+  devtainer via `dockside ssh`
+- both paths then run the same in-devtainer check:
+  - confirm `ssh-agent` is running and has the expected key
+  - confirm `~dockside/.ssh/authorized_keys` contains the matching public key
+  - SSH from the devtainer to `dockside@127.0.0.1` and expect success
 
 ## Network Tests
 

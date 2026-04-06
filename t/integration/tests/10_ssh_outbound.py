@@ -1,14 +1,21 @@
 """
 10_ssh_outbound.py — Outbound SSH via the devtainer's integrated ssh-agent.
 
-Prerequisites:
-  - docker CLI in PATH
-  - harness_container_id known or DOCKSIDE_TEST_CONTAINER_ID set
-  - DOCKSIDE_TEST_SSH_SERVER set (default: git@github.com)
-  - testdev1 public key pre-authorised at that server
+This test verifies that the devtainer's integrated ssh-agent can authenticate
+an outbound SSH connection by SSHing from the devtainer to its own local SSH
+server on 127.0.0.1. The matching public key is already provisioned into the
+owner user's authorized_keys inside the devtainer, so no external SSH service
+is required.
 
-The committed test-only Ed25519 keypair is in:
-  t/integration/config/ssh/testdev1_ed25519{,.pub}
+Execution path is mode-dependent:
+  - local / harness: use docker exec for direct in-container verification
+  - remote: use dockside ssh, because host Docker access to the devtainer is
+    not available from the external machine
+
+Both paths perform the same substantive check:
+  1. find SSH_AUTH_SOCK inside the devtainer
+  2. use that agent to SSH to dockside@127.0.0.1
+  3. expect the local SSH server in the same devtainer to accept the key
 """
 
 import os
@@ -18,56 +25,89 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 from dockside_test import TestCase
-from _ssh_test_common import SshTestMixin, docker_available
+from _ssh_test_common import (
+    SshTestMixin,
+    _DEV1_KEY,
+    docker_available,
+    prepare_identity_file,
+    ssh_available,
+    ssh_tempdir,
+    warn_missing_host_tool,
+    wstunnel_available,
+)
 
 
 class SshOutboundTests(SshTestMixin, TestCase):
     """Outbound SSH via the devtainer's integrated ssh-agent."""
 
-    def test_01_outgoing_ssh_via_integrated_agent(self):
-        """Use the devtainer's integrated ssh-agent to SSH outward."""
-        if not docker_available():
-            self.skip('docker CLI not available')
+    _SELF_SSH_SCRIPT = (
+        "ps auxw | egrep '(ssh|drop)' || true; "
+        'agent_sock=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1); '
+        'test -n "$agent_sock" || { echo "No ssh-agent socket found in devtainer" >&2; exit 1; }; '
+        'ssh_bin="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/ssh"; '
+        'ssh_add_bin="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/ssh-add"; '
+        '[ -x "$ssh_bin" ] || ssh_bin=ssh; '
+        '[ -x "$ssh_add_bin" ] || ssh_add_bin=ssh-add; '
+        'SSH_AUTH_SOCK="$agent_sock" "$ssh_add_bin" -L || true; '
+        'cat ~dockside/.ssh/authorized_keys || true; '
+        'SSH_AUTH_SOCK="$agent_sock" '
+        '"$ssh_bin" -T '
+        '-o StrictHostKeyChecking=no '
+        '-o UserKnownHostsFile=/dev/null '
+        '-o BatchMode=yes '
+        'dockside@127.0.0.1 echo hello'
+    )
 
-        container_id = (
-            self.harness_container_id
-            or os.environ.get('DOCKSIDE_TEST_CONTAINER_ID', '').strip()
-        )
-        if not container_id:
-            self.skip('No Dockside container ID available (set DOCKSIDE_TEST_CONTAINER_ID)')
-
-        ssh_server = os.environ.get('DOCKSIDE_TEST_SSH_SERVER', 'git@github.com').strip()
-
-        self._ensure_ssh_container()
-
-        data = self.dev1.get_container(self.SSH_CONTAINER)
-        devtainer_id = (data.get('data') or {}).get('id') or data.get('containerId')
-        if not devtainer_id:
-            self.skip('Could not determine devtainer container ID')
-
-        result = subprocess.run(
-            ['docker', 'exec', devtainer_id, 'bash', '-c',
-             'ls /tmp/ssh-*/agent.* 2>/dev/null | head -1'],
-            capture_output=True, text=True, timeout=10
-        )
-        agent_sock = result.stdout.strip()
-        if not agent_sock:
-            self.skip('No ssh-agent socket found in devtainer (IDE not started?)')
-
-        result = subprocess.run(
-            ['docker', 'exec', '-e', f'SSH_AUTH_SOCK={agent_sock}',
-             devtainer_id, 'ssh', '-T', '-o', 'StrictHostKeyChecking=no',
-             ssh_server],
+    def _run_self_ssh_via_docker(self, devtainer_id):
+        return subprocess.run(
+            ['docker', 'exec', '-e', f'DOCKSIDE_TEST_SYSTEM_BIN_DIR={self.test_system_bin_dir}',
+             devtainer_id, 'bash', '-lc', self._SELF_SSH_SCRIPT],
             capture_output=True, text=True, timeout=30
         )
-        output = (result.stdout + result.stderr).lower()
-        if 'github.com' in ssh_server:
-            self.assert_true(
-                'successfully authenticated' in output,
-                f'Expected "successfully authenticated" in output; got: {output[:200]!r}'
+
+    def _run_self_ssh_via_dockside_ssh(self):
+        if not ssh_available():
+            warn_missing_host_tool('ssh')
+            self.skip('ssh not in PATH')
+        if not wstunnel_available():
+            warn_missing_host_tool('wstunnel')
+            self.skip('wstunnel not in PATH')
+        if not os.path.isfile(_DEV1_KEY):
+            self.skip(f'testdev1 key not found at {_DEV1_KEY}')
+        with ssh_tempdir() as tmpdir:
+            identity_file = prepare_identity_file(tmpdir, _DEV1_KEY)
+            cmd = (
+                [self.dev1._cli]
+                + self.dev1._base_args()
+                + ['ssh', '--identity-file', identity_file,
+                   self.SSH_CONTAINER, 'bash', '-lc', self._SELF_SSH_SCRIPT]
             )
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+    def test_01_outgoing_ssh_via_integrated_agent(self):
+        """Use the devtainer's integrated ssh-agent to SSH to 127.0.0.1."""
+        self._ensure_ssh_container()
+
+        expected_pubkey = open(_DEV1_KEY + '.pub', 'r', encoding='utf-8').read().strip()
+
+        if self.test_mode in ('local', 'harness'):
+            if not docker_available():
+                self.skip('docker CLI not available')
+            data = self.dev1.get_container(self.SSH_CONTAINER)
+            devtainer_id = (data.get('data') or {}).get('id') or data.get('containerId')
+            if not devtainer_id:
+                self.skip('Could not determine devtainer container ID')
+            result = self._run_self_ssh_via_docker(devtainer_id)
         else:
-            self.assert_true(
-                result.returncode == 0 or 'authenticated' in output or 'welcome' in output,
-                f'Outgoing SSH failed; rc={result.returncode} output={output[:200]!r}'
-            )
+            result = self._run_self_ssh_via_dockside_ssh()
+
+        self.assert_in(
+            expected_pubkey, result.stdout,
+            f'Integrated ssh-agent did not report the expected key; '
+            f'stdout={result.stdout!r} stderr={result.stderr!r}'
+        )
+        self.assert_true(
+            result.returncode == 0 and result.stdout.strip().endswith('hello'),
+            f'Outgoing self-SSH failed; rc={result.returncode} '
+            f'stdout={result.stdout!r} stderr={result.stderr!r}'
+        )

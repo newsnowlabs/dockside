@@ -24,6 +24,15 @@ def wstunnel_available():
     return shutil.which('wstunnel') is not None
 
 
+def ssh_available():
+    return shutil.which('ssh') is not None
+
+
+def warn_missing_host_tool(tool_name):
+    print(f'# WARNING: {tool_name} not found in PATH; SSH integration test will be skipped',
+          file=sys.stderr)
+
+
 def docker_available():
     try:
         result = subprocess.run(['docker', 'version'], capture_output=True, timeout=5)
