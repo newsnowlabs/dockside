@@ -1,35 +1,33 @@
 # Dockside CLI
 
 A command-line interface for managing [Dockside](https://github.com/newsnowlabs/dockside)
-devtainers. Uses the same HTTP API as the Dockside web frontend.
+devtainers. It uses the same HTTP API as the Dockside web frontend.
 
-**Zero external dependencies** – requires only Python 3.6+ (standard library only).
+**Zero external dependencies**. Requires only Python 3.6+ and the standard library.
 
 ## Installation
 
-### Direct use (no install needed)
+### Direct use
 
 ```sh
-# Clone the repo and run directly:
+# Run directly from the repo:
 python3 cli/dockside_cli.py --help
 
-# Or use the launcher script after making it executable:
+# Or use the launcher script:
 chmod +x cli/dockside
 ./cli/dockside --help
 ```
 
-### Install with pip (adds `dockside` to PATH)
+### Install with pip
 
 ```sh
 pip install ./cli
-# or, to install from the repo root:
-pip install dockside-cli   # once published to PyPI
 ```
 
 ## Quick start
 
 ```sh
-# Authenticate (saves session to ~/.config/dockside/)
+# Authenticate once for interactive use
 dockside login --server https://www.local.dockside.dev --nickname local
 
 # Manage multiple servers
@@ -37,34 +35,321 @@ dockside login --server https://www.staging.dockside.example.com --nickname stag
 dockside server list
 dockside server use local
 
-# List devtainers
+# Create and inspect a devtainer
+dockside create --profile default --name my-feature --image ubuntu:22.04 \
+    --git-url https://github.com/org/repo
 dockside list
-dockside list --urls          # add per-router URL columns (IDE, SSH, WWW, …)
-
-# Show devtainer details (includes per-router URLs)
+dockside list -o json
 dockside get my-feature
+dockside get my-feature -o json
 
-# Create a devtainer and wait for it to start
-dockside create --profile myprofile --name my-feature --image ubuntu:22.04 \
-    --git-url https://github.com/org/repo --developers alice,role:backend
-
-# Start / stop / remove
-dockside start  my-feature
-dockside stop   my-feature
-dockside remove my-feature --force
-dockside remove my-feature --force
-
-# View logs (ANSI escape sequences are stripped by default)
-dockside logs my-feature
-dockside logs my-feature --raw   # preserve raw terminal output
-
-# Edit metadata
+# Operate on the devtainer
+dockside start my-feature
+dockside stop my-feature
 dockside edit my-feature --description "Feature branch X" --viewers carol
+dockside remove my-feature --force
+
+# Manage users and profiles
+dockside user list
+dockside profile list
 ```
 
-## CI / GitHub Actions (no stored session)
+## Dev container management
 
-Pass credentials via flags or environment variables on every invocation:
+Typical commands:
+
+```sh
+dockside list -o json
+dockside list --urls
+dockside get my-feature -o json
+dockside create --profile myprofile --name my-feature --image ubuntu:22.04 \
+    --git-url https://github.com/org/repo --developers alice,role:backend
+dockside edit my-feature --description "PR #42" --viewers bob
+dockside start my-feature
+dockside stop my-feature
+dockside remove my-feature --force
+dockside logs my-feature
+dockside logs my-feature --raw
+dockside check-url https://www-my-feature.example.com/
+```
+
+| Subcommand | Purpose |
+|------------|---------|
+| `list` (`ls`) | List accessible devtainers |
+| `get` | Show one devtainer in detail |
+| `create` | Create and launch a devtainer |
+| `edit` | Edit mutable devtainer metadata |
+| `start` | Start a stopped devtainer |
+| `stop` | Stop a running devtainer |
+| `remove` (`rm`, `delete`) | Remove a devtainer |
+| `logs` | Retrieve devtainer logs |
+| `check-url` | Fetch a routed URL using the current session |
+| `whoami` | Show the authenticated user and effective permissions |
+
+### Addressing devtainers
+
+The `DEVTAINER` argument accepts:
+
+- a container name such as `my-feature`
+- a reservation ID
+- a Docker container ID, or an unambiguous prefix of one
+
+### `create`
+
+```sh
+dockside create --profile default --name my-feature --image ubuntu:22.04
+dockside create --profile default --name my-feature --from-json create.json
+```
+
+All launch-time fields exposed by the CLI are accepted either as flags, via
+`--from-json`, or both. Flags override JSON values.
+
+| Flag | API field | Notes | Editable after launch |
+|------|-----------|-------|-----------------------|
+| `--name` | `name` | Lowercase letters, digits, hyphens | No |
+| `--profile` | `profile` | Required unless supplied in `--from-json` | No |
+| `--image` | `image` | e.g. `ubuntu:22.04` | No |
+| `--runtime` | `runtime` | e.g. `runc`, `sysbox-runc` | No |
+| `--unixuser` | `unixuser` | Unix user inside the container | No |
+| `--git-url` | `gitURL` | Git repo to clone on launch | No |
+| `--options JSON` | `options` | Profile-specific launch options | No |
+| `--network` | `network` | Docker network name | Yes |
+| `--ide` | `IDE` | IDE image/tag | Yes |
+| `--description` | `description` | Free-text description | Yes |
+| `--viewers` | `viewers` | Comma-separated users / `role:NAME` entries | Yes |
+| `--developers` | `developers` | Comma-separated users / `role:NAME` entries | Yes |
+| `--private` / `--no-private` | `private` | Visibility to other admins | Yes |
+| `--access JSON` | `access` | Per-router access map | Yes |
+| `--from-json FILE`| `-` | `–` | Read creation params from JSON | N/A |
+
+For the exact flag surface, defaults, and wait options, use:
+
+```sh
+dockside create --help
+```
+
+### `edit`
+
+```sh
+dockside edit my-feature --description "Feature branch X"
+dockside edit my-feature --from-json edit.json
+```
+
+Editable fields are:
+
+- `--network`
+- `--ide`
+- `--description`
+- `--viewers`
+- `--developers`
+- `--private` / `--no-private`
+- `--access`
+
+Fields fixed at launch time such as `name`, `profile`, `image`, `runtime`,
+`unixuser`, and `git-url` cannot be changed after creation.
+
+For the full syntax, use:
+
+```sh
+dockside edit --help
+```
+
+### Waiting behaviour
+
+By default, `create`, `start`, `stop`, and `remove` poll until the requested
+state is observed or the timeout expires.
+
+```sh
+dockside create --profile ci --name my-pr --no-wait
+dockside stop my-feature --timeout 60
+```
+
+### `logs`
+
+`dockside logs` strips ANSI escape sequences and dangerous control characters
+by default. Use `--raw` to preserve the original terminal output when you trust
+the source.
+
+## User and role management
+
+These commands require `manageUsers` permission.
+
+```sh
+# Users
+dockside user list -o json
+dockside user get alice -o json
+dockside user create alice --email alice@example.com --role developer --user-password s3cret
+dockside user edit alice --set resources.profiles='["myprofile","ci"]'
+dockside user remove alice --force
+
+# Roles
+dockside role list -o json
+dockside role get developer -o json
+dockside role create developer --set permissions.createContainerReservation=1
+dockside role edit developer --set permissions.stopContainer=1
+dockside role remove developer --force
+```
+
+| Subcommand | Purpose |
+|------------|---------|
+| `user list` (`ls`) | List users |
+| `user get` | Show one user |
+| `user create` | Create a user |
+| `user edit` | Edit a user |
+| `user remove` (`rm`, `delete`) | Remove a user |
+| `role list` (`ls`) | List roles |
+| `role get` | Show one role |
+| `role create` | Create a role |
+| `role edit` | Edit a role |
+| `role remove` (`rm`, `delete`) | Remove a role |
+
+### `user create`
+
+Use simple flags for common top-level fields and `--set KEY=VALUE` for nested
+properties.
+
+```sh
+dockside user create alice \
+    --email alice@example.com \
+    --role developer \
+    --user-password s3cret
+
+dockside user create alice \
+    --set resources.profiles='["*"]' \
+    --set permissions.createContainerReservation=1
+```
+
+Useful flags:
+
+- `--email`
+- `--role`
+- `--name`
+- `--user-password`
+- `--gh-token`
+- `--permissions JSON`
+- `--resources JSON`
+- `--ssh JSON`
+- `--set KEY=VALUE`
+- `--unset KEY`
+- `--from-json FILE|-`
+
+### `user edit`
+
+`user edit` supports the same field shapes as `user create`, plus:
+
+- `--sensitive` on `user get` / `user edit` output paths when you need to
+  include private keys and `gh_token`
+
+Typical nested edits:
+
+```sh
+dockside user edit alice --gh-token github_pat_xxx
+dockside user edit alice --set ssh.publicKeys.laptop=@~/.ssh/id_ed25519.pub
+dockside user edit alice --set ssh.keypairs.*.public=@~/.ssh/id_ed25519.pub
+dockside user edit alice --set ssh.keypairs.*.private=@~/.ssh/id_ed25519
+dockside user edit alice --unset ssh.publicKeys.oldkey
+```
+
+For full syntax:
+
+```sh
+dockside user create --help
+dockside user edit --help
+```
+
+### `role create`
+
+Roles are typically created either from JSON or with `--set`:
+
+```sh
+dockside role create developer \
+    --set permissions.createContainerReservation=1 \
+    --set resources.profiles='["*"]'
+```
+
+Useful flags:
+
+- `--permissions JSON`
+- `--resources JSON`
+- `--set KEY=VALUE`
+- `--unset KEY`
+- `--from-json FILE|-`
+
+### `role edit`
+
+```sh
+dockside role edit developer --set permissions.stopContainer=1
+```
+
+For full syntax:
+
+```sh
+dockside role create --help
+dockside role edit --help
+```
+
+## Profile management
+
+These commands require `manageProfiles` permission.
+
+```sh
+dockside profile list -o json
+dockside profile get debian-dev -o json
+dockside profile create myteam --from-json profile.json
+dockside profile edit myteam --set name="My Team"
+dockside profile rename myteam myteam-v2
+dockside profile remove myteam-v2 --force
+```
+
+| Subcommand | Purpose |
+|------------|---------|
+| `profile list` (`ls`) | List profiles |
+| `profile get` | Show one profile record |
+| `profile create` | Create a profile |
+| `profile edit` | Edit a profile |
+| `profile remove` (`rm`, `delete`) | Remove a profile |
+| `profile rename` | Rename a profile ID / file-stem |
+
+### `profile create`
+
+Profiles can be created from a full JSON record or assembled with `--set`:
+
+```sh
+dockside profile create myteam --from-json profile.json
+dockside profile create myteam --set name="My Team" --active
+```
+
+Key points:
+
+- `PROFILE` is the unique file-stem ID used in `dockside create --profile ...`
+- the JSON `name` display field defaults to the profile ID if omitted
+- new profiles are inactive by default unless `--active` is supplied
+
+Useful flags:
+
+- `--active` / `--no-active`
+- `--set KEY=VALUE`
+- `--unset KEY`
+- `--from-json FILE|-`
+
+### `profile edit`
+
+```sh
+dockside profile edit myteam --set images='["ubuntu:*"]'
+dockside profile edit myteam --no-active
+```
+
+For full syntax:
+
+```sh
+dockside profile create --help
+dockside profile edit --help
+```
+
+## CI and scripting
+
+For non-interactive use, pass credentials via flags or environment variables on
+every invocation instead of relying on a stored session:
 
 ```sh
 DOCKSIDE_SERVER=https://www.local.dockside.dev \
@@ -78,65 +363,36 @@ dockside create \
     --output json
 ```
 
-Or supply them from a JSON file:
+JSON input works well in scripts:
 
 ```sh
 echo '{"profile":"ci","name":"pr-123","image":"ubuntu:22.04"}' | \
   dockside create --from-json -
+
+dockside edit test --from-json - < <(echo '{"description": "A devtainer for testing Project Beta"}')
 ```
 
-## Commands
+## Appendix: Server configuration
 
-| Command | Description |
-|---------|-------------|
-| `login`        | Authenticate and save session cookie |
-| `logout`       | Clear saved session for the current (or `--server`) server |
-| `logout --all` | Clear all saved sessions and remove config |
-| `server list`  | List all configured servers |
-| `server use`   | Set the current default server |
-| `list`         | List all accessible devtainers |
-| `get`          | Show details of a specific devtainer |
-| `create`       | Create and launch a new devtainer |
-| `start`        | Start a stopped devtainer |
-| `stop`         | Stop a running devtainer |
-| `edit`         | Edit devtainer metadata |
-| `remove`       | Remove a devtainer (aliases: `rm`, `delete`) |
-| `logs`         | Retrieve devtainer logs |
-| `user list/get/create/edit/remove` | Manage users (requires `manageUsers` permission) |
-| `role list/get/create/edit/remove` | Manage roles (requires `manageUsers` permission) |
-
-## Addressing devtainers
-
-The `DEVTAINER` argument accepts:
-- Container **name** (e.g. `my-feature`)
-- **Reservation ID** (hex string from `dockside get`)
-- **Docker container ID** (full or unambiguous prefix)
-
-## Multi-server configuration
+### Multi-server configuration
 
 The CLI supports multiple Dockside servers. Each server is stored in
 `config.json` with an optional nickname.
 
 ```sh
-# Add servers with nicknames
 dockside login --server https://prod.dockside.io --nickname prod
 dockside login --server https://staging.dockside.io --nickname staging
 
-# List configured servers
 dockside server list
-
-# Switch the active default
 dockside server use staging
 
-# Target a specific server on any command (by nickname or URL)
 dockside list --server prod
 dockside get my-devtainer --server https://prod.dockside.io
 ```
 
-Old single-server configurations (from CLI v0.1) are migrated transparently
-on first read.
+Old single-server configurations are migrated automatically on first read.
 
-### Nested Dockside servers (`--parent`)
+### Developing Dockside in Dockside
 
 If you use Dockside to host another Dockside instance, register the inner
 server with a `parent` pointing at the outer one:
@@ -148,16 +404,20 @@ dockside login --server https://www-inner--outer.example.com \
     --parent outer
 ```
 
-When a server entry has a `parent`, the CLI automatically merges ancestor
-session cookies in memory when talking to the child server. This is the
-recommended way to use nested Dockside instances.
+When a server entry has a `parent`, the CLI merges ancestor session cookies in
+memory when talking to the child server. This is the recommended model for
+nested Dockside instances; use it instead of sharing one cookie file between
+inner and outer servers.
 
-## Login options
+### Login options
 
-### Extra cookies (`--cookie`)
+Authenticate once for interactive use:
 
-Some Dockside servers require a global cookie for access. Use `--cookie`
-(repeatable) to inject additional cookies before the login POST:
+```sh
+dockside login --server https://www.local.dockside.dev --nickname local
+```
+
+Some servers require extra cookies before login:
 
 ```sh
 dockside login --server https://www.local.dockside.dev \
@@ -165,200 +425,118 @@ dockside login --server https://www.local.dockside.dev \
     --cookie anotherCookie=value
 ```
 
-### Cookie file override (`--cookie-file`)
-
-By default, each server's session is stored in
-`~/.config/dockside/cookies/<slug>.txt` (derived from the nickname or
-hostname). Use `--cookie-file` to override the filename:
+`--cookie-file` can override the per-server target session filename:
 
 ```sh
-dockside login --server https://inner.dockside.io --cookie-file outer-server
+dockside login --server https://inner.dockside.io --cookie-file inner-session
 ```
 
-This is persisted in `config.json` so subsequent commands reuse the same file.
-Typical uses:
-- give a server entry a stable custom session filename
-- direct multiple aliases for the same server at one cookie file
-- provide a scratch cookie file in scripts/tests without disturbing the default store
+For local or nested setups where the canonical hostname is not directly
+reachable, `--connect-to` and `--no-verify` are often useful:
 
-For nested Dockside servers, prefer `--parent` over sharing one cookie file
-between inner and outer servers. Separate cookie files plus `parent` preserve
-session boundaries while still letting ancestor cookies flow where needed.
-
-Cookie filenames are validated: only letters, digits, hyphens, underscores,
-and dots are allowed; path separators, traversal, null bytes, and names
-longer than 128 characters are rejected. A `.txt` suffix is added
-automatically if not present.
-
-### Transport helpers for local and nested setups
-
-Two options are especially useful when the canonical server hostname is not
-directly reachable from the machine running the CLI:
-
-- `--connect-to HOST[:PORT]`: override the TCP target while preserving the URL
-  hostname for TLS SNI and the Host header
-- `--no-verify`: skip TLS verification when using self-signed or otherwise
-  non-public certificates
+```sh
+dockside login \
+    --server https://www.local.dockside.dev \
+    --connect-to 127.0.0.1 \
+    --no-verify \
+    --nickname local
+```
 
 For HTTP service debugging, `dockside check-url URL --debug-http` prints the
 resolved URL, effective transport target, and low-level connection failures.
 
-## Output formats
+## Appendix: Global flags
+
+Most authenticated commands share these flags:
+
+| Flag | Env var | Purpose |
+|------|---------|---------|
+| `--server URL_OR_NICKNAME` | `DOCKSIDE_SERVER` | Target server |
+| `--username USER` | `DOCKSIDE_USER` | One-shot auth username |
+| `--password PASS` | `DOCKSIDE_PASSWORD` | One-shot auth password |
+| `--output FORMAT` | – | `text`, `json`, or `yaml` |
+| `--no-verify` | – | Skip TLS certificate verification |
+| `--host-header HOST` | `DOCKSIDE_HOST_HEADER` | Override the HTTP Host header |
+| `--connect-to HOST[:PORT]` | `DOCKSIDE_CONNECT_TO` | Override only the TCP target |
+| `--cookie-file PATH` | – | Override the target server’s session cookie file |
+| `--cookie-auth MODE` | – | Cookie loading mode (`all` or `ancestors-only`) |
+| `--debug-http` | – | Print raw HTTP diagnostics where supported |
+
+For exact availability on a specific command, use:
 
 ```sh
-dockside list                  # text table (default)
-dockside list -o json          # JSON array
-dockside list -o yaml          # YAML
+dockside <command> --help
+```
+
+## Appendix: Output formats
+
+```sh
+dockside list
+dockside list -o json
+dockside list -o yaml
 dockside list -o json | jq '.[].name'
 ```
 
-The default output format can be set per-server at login time
-(`dockside login --output json`) and is stored in `config.json`.
+The default output format may also be stored per server at login time.
 
-## User and role management
+## Appendix: Session storage
 
-These commands require `manageUsers` permission (granted to the `admin` role by default).
-
-```sh
-# List / inspect users
-dockside user list
-dockside user get alice
-dockside user get alice --sensitive   # include private keys and gh_token in output
-
-# Create a user (password is hashed and stored in the passwd file)
-dockside user create alice \
-    --email alice@example.com \
-    --role developer \
-    --user-password s3cret
-
-# Edit user properties — use simple flags for top-level fields,
-# or dot-notation --set for nested fields
-dockside user edit alice --gh-token github_pat_xxx
-dockside user edit alice --set ssh.publicKeys.laptop=@~/.ssh/id_ed25519.pub
-dockside user edit alice --set ssh.keypairs.*.public=@~/.ssh/id_ed25519.pub
-dockside user edit alice --set ssh.keypairs.*.private=@~/.ssh/id_ed25519
-dockside user edit alice --set resources.profiles='["myprofile","ci"]'
-dockside user edit alice --set permissions.createContainerReservation=1
-dockside user edit alice --unset ssh.publicKeys.oldkey
-
-# Remove a user
-dockside user remove alice --force
-```
-
-```sh
-# List / inspect roles
-dockside role list
-dockside role get developer
-
-# Create a role
-dockside role create developer \
-    --set permissions.createContainerReservation=1 \
-    --set resources.profiles='["*"]'
-
-# Update a role
-dockside role edit developer --set permissions.stopContainer=1
-
-# Remove a role
-dockside role remove developer --force
-```
-
-## Waiting behaviour
-
-By default `create`, `start`, `stop`, and `remove` poll the API until the
-requested state is confirmed (or until `--timeout` seconds elapse).
-
-```sh
-dockside create --profile ci --name my-pr --no-wait    # fire and forget
-dockside stop   my-feature --timeout 60                # custom timeout
-```
-
-## Global flags
-
-These flags are available on all authenticated commands (`list`, `get`,
-`create`, `start`, `stop`, `edit`, `remove`, `logs`, `check-url`, `whoami`,
-and user/role/profile subcommands):
-
-| Flag | Env var | Description |
-|------|---------|-------------|
-| `--server URL_OR_NICKNAME` | `DOCKSIDE_SERVER` | Target server (URL or configured nickname) |
-| `--username USER` | `DOCKSIDE_USER` | Username (one-shot auth) |
-| `--password PASS` | `DOCKSIDE_PASSWORD` | Password (one-shot auth) |
-| `--output FORMAT` | – | `text` \| `json` \| `yaml` |
-| `--no-verify` | – | Skip SSL certificate verification |
-| `--connect-to HOST[:PORT]` | `DOCKSIDE_CONNECT_TO` | Override the TCP target while preserving the URL hostname for TLS SNI and Host handling |
-| `--host-header HOST` | `DOCKSIDE_HOST_HEADER` | Override the HTTP Host header |
-| `--cookie-file PATH` | – | Override the target server's session cookie file path |
-| `--cookie-auth MODE` | – | `all` or `ancestors-only`; controls how stored/ancestor cookies are loaded |
-| `--debug-http` | – | Print raw HTTP request/response diagnostics where supported |
-
-## Session storage
-
-```
+```text
 ~/.config/dockside/
-  config.json          # server list, current server, output format
+  config.json
   cookies/
-    <slug>.txt         # per-server session cookies (mode 0600)
+    <slug>.txt
 ```
 
-The slug is derived from the server's nickname or URL hostname. A
-`cookie_file` override in `config.json` changes the filename used.
+The cookie-file slug is derived from the server nickname or URL hostname unless
+overridden by `cookie_file` in `config.json`.
 
-Override the config directory with `DOCKSIDE_CONFIG_DIR=/path/to/dir`.
-
-## `create` fields
-
-All fields available in the Dockside web form are supported:
-
-| Flag | API field | Notes | Editable |
-|------|-----------|-------|----------|
-| `--name` | `name` | Lowercase letters, digits, hyphens | No |
-| `--profile` | `profile` | **Required** | No |
-| `--image` | `image` | Docker image (e.g. `ubuntu:22.04`) | No |
-| `--runtime` | `runtime` | e.g. `runc`, `sysbox-runc` | No |
-| `--unixuser` | `unixuser` | Unix user inside the container | No |
-| `--git-url` | `gitURL` | Git repo to clone on launch | No |
-| `--ide` | `IDE` | e.g. `theia/latest`, `openvscode/latest` | Yes (effective on reboot) |
-| `--network` | `network` | Docker network name | Yes |
-| `--description` | `description` | Free-text description | Yes |
-| `--viewers` | `viewers` | Comma-separated users/roles | Yes |
-| `--developers` | `developers` | Comma-separated users/roles | Yes |
-| `--private` | `private` | Hide from other admins | Yes |
-| `--access JSON` | `access` | e.g. `'{"ssh":"developer","www":"public"}'` | Yes |
-| `--options JSON` | `options` | Profile-specific options | No |
-| `--from-json FILE` | – | Read all params from JSON file (`-` = stdin) | N/A |
-
-## `edit` fields
-
-Only these fields can be changed after launch:
-
-`--network`, `--ide`, `--description`, `--viewers`, `--developers`,
-`--private`/`--no-private`, `--access`
-
-## `--from-json` editing
+Override the config directory with:
 
 ```sh
-dockside edit test --from-json - < <(echo '{"description": "A devtainer for testing Project Beta"}')
+DOCKSIDE_CONFIG_DIR=/path/to/dir
 ```
 
-## Log sanitisation
+## Appendix: How the integration tests use the CLI
 
-`dockside logs` strips ANSI escape sequences (CSI, OSC, two-character ESC)
-and dangerous control characters from container output by default. This
-prevents terminal injection attacks from untrusted log content. Printable
-text, tabs, newlines, and carriage returns are preserved.
+The integration harness drives Dockside almost entirely through the CLI, so the
+CLI doubles as both a user-facing tool and the test transport layer.
 
-Use `--raw` to disable sanitisation when you trust the source and need the
-original terminal output.
+Current test-harness pattern:
 
-## Security
+- admin operations usually use a pre-authenticated stored session
+- named test-user operations pass explicit `--username` / `--password`
+- those same test-user operations also pass a dedicated `--cookie-file` per
+  test user so the target-server session is isolated from the normal system
+  cookie store
+- target-anonymous router checks use `check-url` with an empty dedicated
+  `--cookie-file` and no target credentials, so the request is anonymous to the
+  target server while still using the normal CLI transport path
 
-- **Config directory validation**: `DOCKSIDE_CONFIG_DIR` rejects empty paths,
-  null bytes, path traversal (`..`), and symlinks.
-- **Atomic file writes**: all config and cookie file writes use a temp-file +
-  `os.replace()` pattern to prevent partial writes.
-- **Symlink protection**: config and cookie files are never read from or
-  written through symlinks.
-- **Cookie filename validation**: user-supplied `--cookie-file` values are
-  sanitised to prevent path traversal or injection.
-- **HTTPS enforcement**: `http://` URLs are automatically upgraded to
-  `https://`.
+This is especially important for nested or outer-proxied Dockside deployments:
+
+- ancestor cookies may still need to flow through the CLI’s normal auth path so
+  the request can traverse outer Dockside layers
+- a plain no-cookie HTTP probe is often not representative of how a real routed
+  request reaches the target instance
+
+`--cookie-auth ancestors-only` still exists in the CLI as an advanced mode, but
+the integration tests now prefer isolated `--cookie-file` paths as the normal
+way to achieve target-session isolation.
+
+If you are debugging test behavior, the most relevant commands are usually:
+
+```sh
+dockside list -o json
+dockside get my-devtainer -o json
+dockside check-url URL -o json
+dockside check-url URL --debug-http
+```
+
+## Appendix: Security
+
+- `DOCKSIDE_CONFIG_DIR` is validated to reject empty paths, null bytes, path
+  traversal, and symlinks.
+- Config and cookie file writes use atomic temp-file + `os.replace()`.
+- Cookie filenames supplied via `--cookie-file` are sanitised.
+- `http://` server URLs are upgraded to `https://`.
