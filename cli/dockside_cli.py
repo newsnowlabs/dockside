@@ -1165,6 +1165,7 @@ def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
         'devtainer': container.get('name', ''),
         'ssh_user': ssh_user,
         'ssh_alias': ssh_alias,
+        'ssh_config_host': _ssh_config_host_pattern(ssh_alias),
         'hostname': server_hostname,
         'websocket_url': websocket_url,
         'connect_to': connect_to or '',
@@ -1175,7 +1176,7 @@ def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
 
 def _build_ssh_config_block(spec, identity_file=None, forward_agent=False, alias=None):
     """Render an ssh_config Host block from a resolved ssh proxy spec."""
-    ssh_alias = alias or spec.get('ssh_alias') or ''
+    ssh_alias = alias or spec.get('ssh_config_host') or spec.get('ssh_alias') or ''
     ssh_hostname = spec.get('hostname') or ''
     proxy_command = spec.get('proxy_command') or ''
     ssh_user = spec.get('ssh_user') or ''
@@ -1194,6 +1195,16 @@ def _build_ssh_config_block(spec, identity_file=None, forward_agent=False, alias
     if forward_agent:
         lines.append('    ForwardAgent yes')
     return '\n'.join(lines)
+
+
+def _ssh_config_host_pattern(ssh_alias):
+    """Return a reusable per-server ssh_config Host pattern for a resolved alias."""
+    if not ssh_alias.startswith('ssh-'):
+        return ssh_alias
+    sep = ssh_alias.rfind('--')
+    if sep <= 4:
+        return ssh_alias
+    return f'ssh-*{ssh_alias[sep:]}'
 
 
 # ── Text rendering ────────────────────────────────────────────────────────────
@@ -1314,38 +1325,44 @@ def _add_global_flags(p):
     """Add auth / output flags shared by every authenticated subcommand."""
     p.add_argument(
         '--server', '-s', metavar='URL_OR_NICKNAME',
+        default=argparse.SUPPRESS,
         help='Dockside server URL or configured nickname  [env: DOCKSIDE_SERVER]',
     )
     p.add_argument(
         '--username', '-u', metavar='USER',
+        default=argparse.SUPPRESS,
         help='Username for one-shot auth  [env: DOCKSIDE_USER]',
     )
     p.add_argument(
         '--password', '-p', metavar='PASS',
+        default=argparse.SUPPRESS,
         help='Password for one-shot auth  [env: DOCKSIDE_PASSWORD]',
     )
     p.add_argument(
         '--output', '-o',
         choices=['text', 'json', 'yaml'],
-        default=None,
+        default=argparse.SUPPRESS,
         help='Output format (default: text)',
     )
     p.add_argument(
-        '--no-verify', action='store_true',
+        '--no-verify', action='store_true', default=argparse.SUPPRESS,
         help='Skip SSL certificate verification (e.g. for self-signed certs)',
     )
     p.add_argument(
         '--host-header', dest='host_header', metavar='HOST',
+        default=argparse.SUPPRESS,
         help='Override HTTP Host header sent with every request  [env: DOCKSIDE_HOST_HEADER]',
     )
     p.add_argument(
         '--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
+        default=argparse.SUPPRESS,
         help='Override TCP connection target (host/IP, optional :port). '
              'The server URL hostname is still used for TLS SNI and the Host header.  '
              '[env: DOCKSIDE_CONNECT_TO]',
     )
     p.add_argument(
         '--cookie-file', dest='session_cookie_file', metavar='PATH',
+        default=argparse.SUPPRESS,
         help='Full path to use as the session cookie file for the target server, '
              'overriding the path derived from config.json. Ancestor cookies are '
              'still loaded from their normal paths in the system config. '
@@ -1355,13 +1372,13 @@ def _add_global_flags(p):
     p.add_argument(
         '--cookie-auth', dest='cookie_auth', metavar='MODE',
         choices=['all', 'ancestors-only'],
-        default='all',
+        default=argparse.SUPPRESS,
         help='Cookie loading mode: "all" (default) loads target and ancestor cookies; '
              '"ancestors-only" skips the target\'s stored session and uses only ancestor '
              'cookies merged in-memory (requires --username/--password).',
     )
     p.add_argument(
-        '--debug-http', dest='debug_http', action='store_true',
+        '--debug-http', dest='debug_http', action='store_true', default=argparse.SUPPRESS,
         help='Print raw HTTP request/response headers for debugging.',
     )
 
