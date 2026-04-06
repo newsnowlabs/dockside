@@ -13,6 +13,7 @@ import http.client
 import http.cookiejar
 import json
 import os
+import re
 import signal
 import ssl
 import subprocess
@@ -107,10 +108,17 @@ class _ConnectToHandler(urllib.request.HTTPSHandler):
 
 def _fields_to_args(fields):
     """Convert a dict of fields to CLI --flag value pairs."""
+    flag_names = {
+        'gitURL': 'git-url',
+    }
     args = []
     for k, v in fields.items():
-        args.extend([f'--{k}', str(v)])
+        args.extend([f'--{flag_names.get(k, k)}', str(v)])
     return args
+
+
+def verbose_enabled():
+    return os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
 
 
 def http_check(url, connect_to=None, host_header=None, cookies=None,
@@ -163,7 +171,8 @@ def http_check(url, connect_to=None, host_header=None, cookies=None,
     except urllib.error.HTTPError as e:
         return e.code, e.read()
     except urllib.error.URLError as e:
-        raise APIError(f'HTTP check failed: {e.reason}')
+        target = f'{url} via {connect_to}' if connect_to else url
+        raise APIError(f'HTTP check failed for {target}: {e.reason}')
 
 
 def _inject_simple_cookie(jar, url, name, value):
@@ -222,7 +231,7 @@ class DocksideClient:
 
     def __init__(self, cli_path, server_url, username=None, password=None,
                  connect_to=None, verify_ssl=False,
-                 use_cli_admin_creds=False):
+                 use_cli_admin_creds=False, reuse_explicit_session=False):
         self._cli = cli_path
         self._server = server_url
         self._username = username
@@ -230,42 +239,56 @@ class DocksideClient:
         self._connect_to = connect_to
         self._verify_ssl = verify_ssl
         self._use_cli_admin_creds = use_cli_admin_creds
+        self._reuse_explicit_session = (
+            reuse_explicit_session and not use_cli_admin_creds
+        )
+        self._persisted_session_ready = False
         if not use_cli_admin_creds:
-            # Create a per-client temp file; sessions are isolated here.
-            # The system config's parent chain is still used for ancestor cookies.
-            fd, path = tempfile.mkstemp(suffix='.txt', prefix='dockside-sess-')
-            os.close(fd)
+            # Create a per-client temp file for the target session only.
+            # Ancestor cookies still come from the system config's parent chain.
+            base_tag = username if username else 'anon'
+            user_tag = re.sub(r'[^A-Za-z0-9_.-]+', '-', base_tag).strip('-') or 'user'
+            path = os.path.join(tempfile.gettempdir(), f'dockside-sess-{user_tag}.txt')
+            with open(path, 'w', encoding='utf-8'):
+                pass
             self._session_cookie_file = path
         else:
             self._session_cookie_file = None  # use system config stored session
         self._cookie_jar = None  # loaded lazily after first _run
 
-    def _base_args(self):
+    def _should_send_credentials(self, force_credentials=False):
+        if self._use_cli_admin_creds:
+            return False
+        if not self._username or not self._password:
+            return False
+        if force_credentials:
+            return True
+        if not self._reuse_explicit_session:
+            return True
+        return not self._persisted_session_ready
+
+    def _base_args(self, force_credentials=False):
         args = [
             '--server', self._server,
             '--output', 'json',
         ]
         if not self._use_cli_admin_creds:
-            args.extend(['--username', self._username,
-                         '--password', self._password])
+            if self._should_send_credentials(force_credentials=force_credentials):
+                args.extend(['--username', self._username,
+                             '--password', self._password])
             args.extend(['--cookie-file', self._session_cookie_file])
-            # ancestors-only: inject ancestor cookies BEFORE the login POST so
-            # that any outer proxy can validate them.  Safe when there is no
-            # parent chain (merges nothing, falls through to a normal login).
-            args.extend(['--cookie-auth', 'ancestors-only'])
         if not self._verify_ssl:
             args.append('--no-verify')
         if self._connect_to:
             args.extend(['--connect-to', self._connect_to])
         return args
 
-    def _run(self, *cmd_args):
+    def _run_once(self, *cmd_args, force_credentials=False):
         """Run CLI subcommand; return parsed JSON or raise APIError."""
-        # All subcommand tokens must come before global flags so that nested
-        # sub-subcommand parsers (e.g. 'role create', 'user create') see their
-        # subcommand word before any --server / --output / ... flags.
-        # Global flags are appended at the end; argparse accepts them anywhere.
-        cmd = [self._cli] + list(cmd_args) + self._base_args()
+        # Shared auth/transport flags are placed before the command so commands
+        # like `ssh` can safely treat everything after their target as passthrough
+        # argv for downstream tools such as OpenSSH.
+        cmd = [self._cli] + self._base_args(force_credentials=force_credentials) + list(cmd_args)
         env = os.environ.copy()
         # Always use the system config so the parent chain is available for
         # ancestor cookie merging.  Session isolation is achieved via --cookie-file.
@@ -290,67 +313,105 @@ class DocksideClient:
                 raise APIError(f'JSON parse error ({e}): stdout={result.stdout!r}')
         return None
 
+    def _run_readonly(self, *cmd_args):
+        try:
+            return self._run_once(*cmd_args)
+        except APIError as e:
+            if not self._reuse_explicit_session or self._should_send_credentials():
+                raise
+            verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
+            debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
+            if verbose or debug:
+                print('# Read-only command failed with reused session; retrying with explicit credentials',
+                      file=sys.stderr)
+            self._persisted_session_ready = False
+            return self._run_once(*cmd_args, force_credentials=True)
+
+    def _run_mutating(self, *cmd_args):
+        """Run a mutating CLI command exactly once.
+
+        Mutating commands must never be automatically retried by the harness,
+        because a server-side partial success would leave state uncertain.
+        """
+        return self._run_once(*cmd_args)
+
+    def _run(self, *cmd_args):
+        """Backward-compatible internal entrypoint for read-only commands."""
+        return self._run_readonly(*cmd_args)
+
     def _reload_cookie_jar(self):
         """Load/reload the session cookie file written by the CLI."""
         if self._session_cookie_file is None:
+            self._cookie_jar = None
+            self._persisted_session_ready = False
             return
         if not os.path.isfile(self._session_cookie_file):
+            self._cookie_jar = None
+            self._persisted_session_ready = False
             return
         jar = http.cookiejar.MozillaCookieJar(self._session_cookie_file)
         try:
             jar.load(ignore_discard=True, ignore_expires=True)
         except Exception:
+            self._cookie_jar = None
+            self._persisted_session_ready = False
             return
         self._cookie_jar = jar
+        self._persisted_session_ready = any(True for _ in jar)
 
-    def get_uid_cookie(self):
+    def get_auth_cookie_header(self):
         """
-        Return (cookie_name, cookie_value) for the session UID cookie,
-        or None if not found.
-        Used by SSH tests to build the wstunnel ProxyCommand.
+        Return the cookie header string from /getAuthCookies for this client.
+
+        This mirrors the UI SSH flow, so ancestor cookies and any configured
+        global cookie are handled by the server-side helper rather than being
+        reconstructed from the local cookie jar.
         """
-        if self._cookie_jar is None:
-            self._reload_cookie_jar()
-        if self._cookie_jar is None:
+        url = self._server.rstrip('/') + '/getAuthCookies'
+        result = self._run_readonly('check-url', '--no-redirect', '--timeout', '30', url)
+        if result is None:
             return None
-        for cookie in self._cookie_jar:
-            # Dockside's UID cookie names start with _ds
-            if cookie.name.startswith('_ds'):
-                return cookie.name, cookie.value
-        return None
+        body = result.get('body', '')
+        if not isinstance(body, str) or not body:
+            return None
+        try:
+            payload = json.loads(body)
+        except Exception:
+            return None
+        return payload.get('data')
 
     # ── API methods ───────────────────────────────────────────────────────────
 
     def list_containers(self):
-        result = self._run('list')
+        result = self._run_readonly('list')
         return result if isinstance(result, list) else []
 
     def get_container(self, name):
-        return self._run('get', name)
+        return self._run_readonly('get', name)
 
     def create(self, **fields):
-        return self._run('create', *_fields_to_args(fields))
+        return self._run_mutating('create', *_fields_to_args(fields))
 
     def update(self, name, **fields):
-        return self._run('edit', name, *_fields_to_args(fields))
+        return self._run_mutating('edit', name, *_fields_to_args(fields))
 
     def start(self, name, wait=True, timeout=120):
         if wait:
-            return self._run('start', '--timeout', str(timeout), name)
-        return self._run('start', '--no-wait', name)
+            return self._run_mutating('start', '--timeout', str(timeout), name)
+        return self._run_mutating('start', '--no-wait', name)
 
     def stop(self, name, wait=True, timeout=60):
         if wait:
-            return self._run('stop', '--timeout', str(timeout), name)
-        return self._run('stop', '--no-wait', name)
+            return self._run_mutating('stop', '--timeout', str(timeout), name)
+        return self._run_mutating('stop', '--no-wait', name)
 
     def remove(self, name, wait=False, timeout=60):
         if wait:
-            return self._run('remove', '--force', '--timeout', str(timeout), name)
-        return self._run('remove', '--force', '--no-wait', name)
+            return self._run_mutating('remove', '--force', '--timeout', str(timeout), name)
+        return self._run_mutating('remove', '--force', '--no-wait', name)
 
     def logs(self, name):
-        return self._run('logs', name)
+        return self._run_readonly('logs', name)
 
     # ── HTTP service checks ───────────────────────────────────────────────────
 
@@ -360,13 +421,20 @@ class DocksideClient:
         Cookies are injected for the target domain regardless of the server domain.
         Returns (status_code, body_bytes).
         """
-        result = self._run('check-url', '--no-redirect', '--timeout', str(timeout), url)
+        result = self._run_readonly('check-url', '--no-redirect', '--timeout', str(timeout), url)
         if result is None:
             raise APIError('check-url returned no output')
         status   = result.get('status')
         body_str = result.get('body', '')
         body     = body_str.encode('utf-8') if isinstance(body_str, str) else (body_str or b'')
         return status, body
+
+    def ssh_proxy_spec(self, name):
+        """Return the CLI-resolved SSH proxy spec for a devtainer."""
+        result = self._run_readonly('ssh', 'proxy-command', name)
+        if not isinstance(result, dict):
+            raise APIError('ssh proxy-command returned no structured output')
+        return result
 
     def check_service(self, container_name, router_prefix='www',
                       parent_fqdn=None, timeout=30):
@@ -402,6 +470,8 @@ class DocksideClient:
                 os.unlink(self._session_cookie_file)
             except OSError:
                 pass
+        self._cookie_jar = None
+        self._persisted_session_ready = False
 
 
 # ── TestCase base class ────────────────────────────────────────────────────────
@@ -411,7 +481,8 @@ class TestCase:
     Base class for integration test cases.
 
     Subclass and implement test_* methods.
-    Access clients via self.admin, self.dev1, self.dev2, self.viewer, self.unauth.
+    Access clients via self.admin, self.dev1, self.dev2, self.viewer,
+    self.user, self.view_all, self.develop_all, self.unauth.
     """
 
     # Injected by TestRunner before test execution
@@ -419,6 +490,9 @@ class TestCase:
     dev1 = None
     dev2 = None
     viewer = None
+    user = None
+    view_all = None
+    develop_all = None
     unauth = None
 
     # Test mode / env injected by TestRunner
@@ -430,8 +504,14 @@ class TestCase:
     test_username_dev1    = 'inttest-dev1'
     test_username_dev2    = 'inttest-dev2'
     test_username_viewer  = 'inttest-viewer'
+    test_username_user    = 'inttest-user'
+    test_username_view_all = 'inttest-viewall'
+    test_username_develop_all = 'inttest-developall'
     test_role_developer   = 'inttest-developer'
     test_role_viewer      = 'inttest-viewer-role'
+    test_role_user        = 'inttest-user-role'
+    test_role_view_all    = 'inttest-viewall-role'
+    test_role_develop_all = 'inttest-developall-role'
     test_profile_alpine   = 'inttest-alpine'
     test_profile_nginx    = 'inttest-nginx'
     test_password_dev     = 'inttest-testpass'
@@ -536,19 +616,32 @@ class TestCase:
     def skip(self, reason):
         raise SkipTest(reason)
 
+    def wait_until(self, predicate, timeout=20, interval=1, timeout_msg='condition not met'):
+        """Poll predicate() until it returns a truthy value or timeout expires."""
+        deadline = time.time() + timeout
+        last_value = None
+        while time.time() < deadline:
+            last_value = predicate()
+            if last_value:
+                return last_value
+            time.sleep(interval)
+        raise AssertionError(f'{timeout_msg} within {timeout}s (last={last_value!r})')
+
     def wait_running(self, client, name, timeout=120):
         """Poll until container status == 1 or timeout."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        def _running():
             try:
                 data = client.get_container(name)
-                status = data.get('status') if isinstance(data, dict) else None
-                if status == 1:
-                    return
             except APIError:
-                pass
-            time.sleep(3)
-        raise AssertionError(f'Container {name!r} did not reach running state within {timeout}s')
+                return False
+            return (data.get('status') if isinstance(data, dict) else None) == 1
+
+        self.wait_until(
+            _running,
+            timeout=timeout,
+            interval=1,
+            timeout_msg=f'Container {name!r} did not reach running state',
+        )
 
     def container_names_in_list(self, client):
         """Return set of container names visible to client."""
@@ -562,7 +655,15 @@ class TestCase:
         except APIError:
             return set()
         routers = (data.get('profileObject') or {}).get('routers') or {}
-        return set(routers.keys())
+        if isinstance(routers, dict):
+            return set(routers.keys())
+        if isinstance(routers, list):
+            return {
+                item.get('name')
+                for item in routers
+                if isinstance(item, dict) and item.get('name')
+            }
+        return set()
 
 
 # ── TestRunner ─────────────────────────────────────────────────────────────────
@@ -574,7 +675,8 @@ class TestRunner:
 
     def __init__(self, cli_path, server_url, credentials, connect_to=None,
                  verify_ssl=False, test_mode='remote', harness_container_id=None,
-                 allow_network_modify=None, name_attrs=None):
+                 allow_network_modify=None, name_attrs=None,
+                 reuse_user_sessions=False):
         self._cli_path = cli_path
         self._server_url = server_url
         self._credentials = credentials  # dict: role -> (username, password) or (None, None)
@@ -584,6 +686,7 @@ class TestRunner:
         self._harness_container_id = harness_container_id
         self._allow_network_modify = allow_network_modify
         self._name_attrs = name_attrs or {}
+        self._reuse_user_sessions = reuse_user_sessions
         self._clients = {}
         self._active_cases = []
         self._active_class_teardowns = []
@@ -595,8 +698,6 @@ class TestRunner:
         self._register_cleanup()
 
     def _make_client(self, username, password, use_cli_admin_creds=False):
-        if not use_cli_admin_creds and username is None:
-            return None
         return DocksideClient(
             cli_path=self._cli_path,
             server_url=self._server_url,
@@ -605,6 +706,7 @@ class TestRunner:
             connect_to=self._connect_to,
             verify_ssl=self._verify_ssl,
             use_cli_admin_creds=use_cli_admin_creds,
+            reuse_explicit_session=self._reuse_user_sessions,
         )
 
     def _validate_client(self, client, role):
@@ -630,7 +732,10 @@ class TestRunner:
             'dev1':   self._validate_client(self._make_client(*creds['dev1'], use_cli_admin_creds=False), 'dev1'),
             'dev2':   self._validate_client(self._make_client(*creds['dev2'], use_cli_admin_creds=False), 'dev2'),
             'viewer': self._validate_client(self._make_client(*creds['viewer'], use_cli_admin_creds=False), 'viewer'),
-            'unauth': None,
+            'user':   self._validate_client(self._make_client(*creds['user'], use_cli_admin_creds=False), 'user'),
+            'view_all': self._validate_client(self._make_client(*creds['view_all'], use_cli_admin_creds=False), 'view_all'),
+            'develop_all': self._validate_client(self._make_client(*creds['develop_all'], use_cli_admin_creds=False), 'develop_all'),
+            'unauth': self._make_client(None, None, use_cli_admin_creds=False),
         }
 
     def _register_cleanup(self):
@@ -662,6 +767,9 @@ class TestRunner:
         case.dev1 = self._clients['dev1']
         case.dev2 = self._clients['dev2']
         case.viewer = self._clients['viewer']
+        case.user = self._clients['user']
+        case.view_all = self._clients['view_all']
+        case.develop_all = self._clients['develop_all']
         case.unauth = self._clients['unauth']
         case.test_mode = self._test_mode
         case.harness_container_id = self._harness_container_id
@@ -692,6 +800,9 @@ class TestRunner:
         cls.dev1    = self._clients['dev1']
         cls.dev2    = self._clients['dev2']
         cls.viewer  = self._clients['viewer']
+        cls.user    = self._clients['user']
+        cls.view_all = self._clients['view_all']
+        cls.develop_all = self._clients['develop_all']
         cls.unauth  = self._clients['unauth']
         cls.test_mode            = self._test_mode
         cls.harness_container_id = self._harness_container_id

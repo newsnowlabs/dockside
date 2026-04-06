@@ -112,6 +112,15 @@ _DEVELOPER_ROLE_PERMISSIONS = {
     'viewAllContainers':          0,
 }
 
+_VIEW_ALL_ROLE_PERMISSIONS = {
+    'viewAllContainers':          1,
+}
+
+_DEVELOP_ALL_ROLE_PERMISSIONS = {
+    **_DEVELOPER_ROLE_PERMISSIONS,
+    'developAllContainers':       1,
+}
+
 # Required admin permissions for running the test suite
 _REQUIRED_ADMIN_PERMISSIONS = [
     'createContainerReservation',
@@ -227,10 +236,11 @@ def _check_admin_permissions(admin_client, server_url):
 class _EnvManager:
     """Creates and tracks test roles, users, and profiles; cleans up on request."""
 
-    def __init__(self, admin_client, suffix, server_url):
+    def __init__(self, admin_client, suffix, server_url, cleanup_reused=False):
         self._admin    = admin_client
         self._suffix   = suffix
         self._server   = server_url
+        self._cleanup_reused = cleanup_reused
         self._created_roles    = []
         self._created_users    = []
         self._created_profiles = []
@@ -265,6 +275,10 @@ class _EnvManager:
         except APIError:
             return None
 
+    def _track_reused(self, bucket, name):
+        if self._cleanup_reused and name not in bucket:
+            bucket.append(name)
+
     def _perms_match(self, record, expected_perms):
         """Check that a role's permissions dict matches the expected spec."""
         actual = (record.get('permissions') or {})
@@ -289,6 +303,7 @@ class _EnvManager:
         existing = self._get_role(name)
         if existing is not None:
             if self._perms_match(existing, perms_spec):
+                self._track_reused(self._created_roles, name)
                 print(f'# Role {name!r}: reusing existing (permissions match)', file=sys.stderr)
                 return name
             else:
@@ -322,6 +337,7 @@ class _EnvManager:
                 # Always (re-)set the password so that a user created without one
                 # (e.g. by a previous buggy run) gets a usable passwd entry.
                 self._admin._run('user', 'edit', name, '--user-password', self.password_dev)
+                self._track_reused(self._created_users, name)
                 print(f'# User {name!r}: reusing existing (role matches)', file=sys.stderr)
                 return name
             else:
@@ -339,7 +355,8 @@ class _EnvManager:
         for res_key, res_val in resources.items():
             create_args.extend(['--set', f'resources.{res_key}={json.dumps(res_val)}'])
         if ssh_pubkey:
-            create_args.extend(['--set', f'ssh.authorized_keys={json.dumps([ssh_pubkey])}'])
+            public_key_name = (ssh_keypair_name or 'integration-key') + '-pub'
+            create_args.extend(['--set', f'ssh.publicKeys.{public_key_name}={ssh_pubkey}'])
         if ssh_keypair_name and ssh_privkey_path and ssh_pubkey_value:
             create_args.extend([
                 '--set', f'ssh.keypairs.{ssh_keypair_name}.public={ssh_pubkey_value}',
@@ -357,6 +374,7 @@ class _EnvManager:
         name     = _suffixed(base_name, self._suffix)
         existing = self._get_profile(name)
         if existing is not None:
+            self._track_reused(self._created_profiles, name)
             print(f'# Profile {name!r}: reusing existing', file=sys.stderr)
             return name
 
@@ -402,6 +420,9 @@ class _EnvManager:
         # Roles
         self.role_developer = self._ensure_role('inttest-developer', _DEVELOPER_ROLE_PERMISSIONS)
         self.role_viewer    = self._ensure_role('inttest-viewer-role', {})
+        self.role_user      = self._ensure_role('inttest-user-role', {})
+        self.role_view_all  = self._ensure_role('inttest-viewall-role', _VIEW_ALL_ROLE_PERMISSIONS)
+        self.role_develop_all = self._ensure_role('inttest-developall-role', _DEVELOP_ALL_ROLE_PERMISSIONS)
 
         # SSH key info
         dev1_pub_path  = os.path.join(_SSH_DIR, 'testdev1_ed25519.pub')
@@ -429,6 +450,15 @@ class _EnvManager:
         )
         self.user_viewer = self._ensure_user(
             'inttest-viewer', self.role_viewer, _viewer_resources,
+        )
+        self.user_user = self._ensure_user(
+            'inttest-user', self.role_user, _viewer_resources,
+        )
+        self.user_view_all = self._ensure_user(
+            'inttest-viewall', self.role_view_all, _viewer_resources,
+        )
+        self.user_develop_all = self._ensure_user(
+            'inttest-developall', self.role_develop_all, _viewer_resources,
         )
 
         # Profiles
@@ -485,6 +515,8 @@ def main():
     only_prefix  = os.environ.get('DOCKSIDE_TEST_ONLY', '').strip()
     harness_id   = os.environ.get('DOCKSIDE_TEST_HARNESS_ID', '').strip() or None
     skip_cleanup = os.environ.get('DOCKSIDE_TEST_SKIP_CLEANUP', '0') == '1'
+    reuse_user_sessions = os.environ.get('DOCKSIDE_TEST_REUSE_USER_SESSIONS', '0') == '1'
+    cleanup_reused = os.environ.get('DOCKSIDE_TEST_CLEANUP_REUSED', '0') == '1'
 
     # Network modify override
     env_nm = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()
@@ -535,7 +567,14 @@ def main():
         print('# Test resource suffix: (none)', file=sys.stderr)
 
     # ── Dynamic environment setup ─────────────────────────────────────────────
-    _env_manager = _EnvManager(admin_client, suffix, server_url)
+    if cleanup_reused:
+        print('# Reused test resources will be cleaned up at end of run', file=sys.stderr)
+    _env_manager = _EnvManager(
+        admin_client,
+        suffix,
+        server_url,
+        cleanup_reused=cleanup_reused,
+    )
     ok = False
     try:
         _env_manager.setup()
@@ -544,8 +583,14 @@ def main():
         test_username_dev1   = _env_manager.user_dev1
         test_username_dev2   = _env_manager.user_dev2
         test_username_viewer = _env_manager.user_viewer
+        test_username_user    = _env_manager.user_user
+        test_username_view_all = _env_manager.user_view_all
+        test_username_develop_all = _env_manager.user_develop_all
         test_role_developer  = _env_manager.role_developer
         test_role_viewer     = _env_manager.role_viewer
+        test_role_user       = _env_manager.role_user
+        test_role_view_all   = _env_manager.role_view_all
+        test_role_develop_all = _env_manager.role_develop_all
         test_profile_alpine  = _env_manager.profile_alpine
         test_profile_nginx   = _env_manager.profile_nginx
         test_password_dev    = _env_manager.password_dev
@@ -554,8 +599,14 @@ def main():
             'test_username_dev1':   test_username_dev1,
             'test_username_dev2':   test_username_dev2,
             'test_username_viewer': test_username_viewer,
+            'test_username_user':   test_username_user,
+            'test_username_view_all': test_username_view_all,
+            'test_username_develop_all': test_username_develop_all,
             'test_role_developer':  test_role_developer,
             'test_role_viewer':     test_role_viewer,
+            'test_role_user':       test_role_user,
+            'test_role_view_all':   test_role_view_all,
+            'test_role_develop_all': test_role_develop_all,
             'test_profile_alpine':  test_profile_alpine,
             'test_profile_nginx':   test_profile_nginx,
             'test_password_dev':    test_password_dev,
@@ -568,6 +619,9 @@ def main():
             'dev1':   (test_username_dev1,   test_password_dev),
             'dev2':   (test_username_dev2,   test_password_dev),
             'viewer': (test_username_viewer, test_password_dev),
+            'user':   (test_username_user, test_password_dev),
+            'view_all': (test_username_view_all, test_password_dev),
+            'develop_all': (test_username_develop_all, test_password_dev),
         }
 
         runner = TestRunner(
@@ -580,6 +634,7 @@ def main():
             harness_container_id=harness_id,
             allow_network_modify=allow_network_modify,
             name_attrs=name_attrs,
+            reuse_user_sessions=reuse_user_sessions,
         )
 
         # ── Discover and run test modules ─────────────────────────────────────

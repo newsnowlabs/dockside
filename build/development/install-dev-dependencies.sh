@@ -19,4 +19,5 @@ apt-get -y --no-install-recommends --no-install-suggests install \
     s6 \
     jq \
     kmod \
+    ripgrep \
     logrotate cron- bcron- exim4-

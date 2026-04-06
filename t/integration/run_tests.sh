@@ -29,6 +29,20 @@
 #                               auto     generate a random 6-char hex suffix per run
 #                               <string> use this exact string as the suffix
 #
+#   DOCKSIDE_TEST_REUSE_USER_SESSIONS  1 = after each test user's first successful
+#                                      authenticated CLI call, reuse that user's
+#                                      per-client temp cookie file on later CLI
+#                                      invocations and retry only read-only
+#                                      commands with credentials if the reused
+#                                      session fails
+#                                      0/unset = pass explicit credentials on every
+#                                      CLI call for test users
+#
+#   DOCKSIDE_TEST_CLEANUP_REUSED       1 = also remove reused test roles/users/
+#                                      profiles for this suffix at end of run
+#                                      0/unset = remove only resources created by
+#                                      the current run
+#
 #   DOCKSIDE_TEST_CONTAINER_ID   Running Dockside container ID (enables docker-exec
 #                                SSH tests in non-harness modes)
 #   DOCKSIDE_TEST_SSH_SERVER     Outbound SSH target (default: git@github.com)
@@ -54,6 +68,10 @@
 #
 #   # Run only a subset:
 #   DOCKSIDE_TEST_IMAGE=... bash t/integration/run_tests.sh --only 04
+#
+#   # Fixed-suffix rerun that also cleans reused test resources:
+#   DOCKSIDE_TEST_NAME_SUFFIX=xyz DOCKSIDE_TEST_CLEANUP_REUSED=1 \
+#     bash t/integration/run_tests.sh --only 09
 #
 #   # Allow network modification in remote/local mode (use with care):
 #   DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1 DOCKSIDE_TEST_HOST=... bash t/integration/run_tests.sh --only 08

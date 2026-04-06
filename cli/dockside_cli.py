@@ -5,6 +5,7 @@ Zero external dependencies - requires only Python 3.6+.
 """
 
 import argparse
+import copy
 import datetime
 import getpass
 import http.cookiejar
@@ -13,6 +14,8 @@ import os
 import re
 import ssl
 import sys
+import socket
+import shlex
 import tempfile
 import time
 import http.client
@@ -214,6 +217,16 @@ def _save_cookie_jar(jar, cookie_file):
         raise
     finally:
         jar.filename = orig
+
+
+def _save_target_cookie_jar(jar, cookie_file):
+    """Persist only target-server cookies, excluding injected ancestor cookies."""
+    target_jar = http.cookiejar.MozillaCookieJar()
+    for cookie in jar:
+        if cookie.has_nonstandard_attr('DocksideAncestor'):
+            continue
+        target_jar.set_cookie(copy.copy(cookie))
+    _save_cookie_jar(target_jar, cookie_file)
 
 
 # ── Config – multi-server ─────────────────────────────────────────────────────
@@ -557,7 +570,13 @@ def _merge_ancestor_cookies(jar, cfg, server_entry, _seen=None, _target_url=None
             for c in anc_jar:
                 # Re-inject with the target server's hostname so the cookie
                 # IS sent when urllib makes requests to the target URL.
-                _inject_cookie(jar, _target_url, c.name, c.value)
+                _inject_cookie(
+                    jar,
+                    _target_url,
+                    c.name,
+                    c.value,
+                    nonstandard_attrs={'DocksideAncestor': '1'},
+                )
         except Exception:
             pass
     _merge_ancestor_cookies(jar, cfg, parent_entry, _seen, _target_url)
@@ -638,7 +657,7 @@ def _do_post(opener, url, params, timeout=30, as_json=False):
 
 # ── Cookie injection ──────────────────────────────────────────────────────────
 
-def _inject_cookie(jar, server_url, name, value):
+def _inject_cookie(jar, server_url, name, value, nonstandard_attrs=None):
     """Inject a named cookie into the jar scoped to the server's hostname."""
     hostname = urllib.parse.urlparse(server_url).hostname or ''
     cookie = http.cookiejar.Cookie(
@@ -647,12 +666,36 @@ def _inject_cookie(jar, server_url, name, value):
         domain=hostname, domain_specified=True, domain_initial_dot=False,
         path='/', path_specified=True,
         secure=True, expires=None, discard=True,
-        comment=None, comment_url=None, rest={},
+        comment=None, comment_url=None, rest=dict(nonstandard_attrs or {}),
     )
     jar.set_cookie(cookie)
 
 
 # ── Authentication ────────────────────────────────────────────────────────────
+
+def _login_into_opener(opener, server, username, password, extra_cookies=None):
+    """POST credentials using an existing opener and return it on success."""
+    jar = opener._jar
+    if extra_cookies:
+        for cname, cval in extra_cookies.items():
+            _inject_cookie(jar, server, cname, cval)
+    url = server.rstrip('/') + '/'
+    payload = urllib.parse.urlencode(
+        {'username': username, 'password': password}
+    ).encode()
+    req = urllib.request.Request(url, data=payload, method='POST')
+    try:
+        with opener.open(req, timeout=15):
+            pass
+    except urllib.error.URLError as e:
+        raise APIError(f'Login failed – connection error: {e.reason}')
+    if not any(not cookie.has_nonstandard_attr('DocksideAncestor') for cookie in jar):
+        raise APIError(
+            'Login failed – no session cookie received. '
+            'Check credentials and ensure the server URL is correct.'
+        )
+    return opener
+
 
 def login(server, username, password, verify_ssl=True,
           extra_cookies=None, cookie_file=None, host_header=None, connect_to=None,
@@ -667,26 +710,8 @@ def login(server, username, password, verify_ssl=True,
     opener = _build_opener(cookie_file, verify_ssl,
                            host_header=host_header, connect_to=connect_to,
                            nest_level=nest_level)
-    if extra_cookies:
-        for cname, cval in extra_cookies.items():
-            _inject_cookie(opener._jar, server, cname, cval)
-    url = server.rstrip('/') + '/'
-    payload = urllib.parse.urlencode(
-        {'username': username, 'password': password}
-    ).encode()
-    req = urllib.request.Request(url, data=payload, method='POST')
-    try:
-        with opener.open(req, timeout=15):
-            pass
-    except urllib.error.URLError as e:
-        raise APIError(f'Login failed – connection error: {e.reason}')
-    jar = opener._jar
-    if not list(jar):
-        raise APIError(
-            'Login failed – no session cookie received. '
-            'Check credentials and ensure the server URL is correct.'
-        )
-    return opener
+    return _login_into_opener(opener, server, username, password,
+                              extra_cookies=extra_cookies)
 
 
 def get_authenticated_opener(server, server_entry, username, password,
@@ -703,12 +728,13 @@ def get_authenticated_opener(server, server_entry, username, password,
         instead of the path derived from config.json.  Ancestor cookies are
         still merged from their normal paths in the system config.
     cookie_auth: 'all' (default) — load both target and ancestor cookies;
-        'ancestors-only' — skip the target's stored session entirely (in-memory
-        only); requires username+password; useful for per-invocation isolation.
+        'ancestors-only' — skip loading the target's stored session before the
+        request/login while still merging ancestors in memory.
     cfg: loaded config dict, used to follow the 'parent' chain.  If None, no
         ancestor cookies are merged.
     """
     connect_to = connect_to or server_entry.get('connect_to')
+    cookie_file = session_cookie_file or _cookie_file_for(server_entry)
 
     # When connecting directly (bypassing the nginx proxy chain), compute the
     # X-Nest-Level value from the server URL so the Perl handler sees the correct
@@ -716,48 +742,32 @@ def get_authenticated_opener(server, server_entry, username, password,
     # header on each proxy_pass hop and we must not inject it ourselves.
     nest_level = _compute_nest_level(server) if connect_to else None
 
+    if username and password:
+        if cookie_auth == 'ancestors-only':
+            jar = http.cookiejar.MozillaCookieJar()
+            opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to,
+                                            nest_level=nest_level)
+        else:
+            opener = _build_opener(cookie_file, verify_ssl,
+                                   host_header=host_header, connect_to=connect_to,
+                                   nest_level=nest_level)
+        if cfg:
+            _merge_ancestor_cookies(opener._jar, cfg, server_entry)
+        opener = _login_into_opener(opener, server, username, password,
+                                    extra_cookies=extra_cookies)
+        if not transient:
+            _ensure_config_dir()
+            _save_target_cookie_jar(opener._jar, cookie_file)
+        return opener
     if cookie_auth == 'ancestors-only':
         # Empty in-memory jar for target; ancestor cookies injected first (with
         # the target server's domain) so the outer proxy receives and validates
-        # them when the login POST passes through.
+        # them when requests pass through.
         jar = http.cookiejar.MozillaCookieJar()
         opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to,
                                         nest_level=nest_level)
         if cfg:
             _merge_ancestor_cookies(jar, cfg, server_entry)
-        if username and password:
-            n_before = len(list(jar))  # ancestor cookies already in jar
-            url = server.rstrip('/') + '/'
-            if extra_cookies:
-                for cname, cval in extra_cookies.items():
-                    _inject_cookie(jar, server, cname, cval)
-            payload = urllib.parse.urlencode(
-                {'username': username, 'password': password}
-            ).encode()
-            req = urllib.request.Request(url, data=payload, method='POST')
-            try:
-                with opener.open(req, timeout=15):
-                    pass
-            except urllib.error.URLError as e:
-                raise APIError(f'Login failed – connection error: {e.reason}')
-            if len(list(jar)) <= n_before:
-                raise APIError(
-                    'Login failed – no session cookie received. '
-                    'Check credentials and ensure the server URL is correct.'
-                )
-        return opener
-
-    cookie_file = session_cookie_file or _cookie_file_for(server_entry)
-    if username and password:
-        opener = login(server, username, password, verify_ssl=verify_ssl,
-                       extra_cookies=extra_cookies, cookie_file=cookie_file,
-                       host_header=host_header, connect_to=connect_to,
-                       nest_level=nest_level)
-        if not transient:
-            _ensure_config_dir()
-            _save_cookie_jar(opener._jar, cookie_file)
-        if cfg:
-            _merge_ancestor_cookies(opener._jar, cfg, server_entry)
         return opener
     # Load stored cookies
     if not os.path.isfile(cookie_file):
@@ -1077,6 +1087,123 @@ def _router_urls(container):
     return result
 
 
+def _ssh_alias(container):
+    """Return the SSH host alias/FQDN for a container's ssh router."""
+    ssh_url = (_router_urls(container) or {}).get('ssh', '')
+    if not ssh_url or '@' not in ssh_url:
+        return ''
+    return ssh_url.rsplit('@', 1)[1]
+
+
+def _connect_to_websocket_target(connect_to):
+    """
+    Return a websocket URL for the TCP target implied by --connect-to.
+
+    The logical SSH host remains in --hostHeader=%n (and optionally --tlsSNI %n);
+    this helper only decides the raw websocket TCP endpoint.
+    """
+    if not connect_to:
+        return None
+    if ':' in connect_to:
+        host, _, port_str = connect_to.rpartition(':')
+        port = int(port_str)
+    else:
+        host = connect_to
+        port = 443
+    if host in ('localhost', '::1'):
+        host = '127.0.0.1'
+    return f'wss://{host}:{port}' if port != 443 else f'wss://{host}'
+
+
+def _auth_cookie_header(opener, server):
+    """Return the server-generated Cookie header string from /getAuthCookies."""
+    data = _do_get(opener, server.rstrip('/') + '/getAuthCookies', timeout=30)
+    return data.get('data') or ''
+
+
+def _build_ssh_proxy_command(cookie_header, websocket_url, nest_level=None, tls_sni=None):
+    """
+    Build a ProxyCommand line suitable for use inside ssh_config.
+
+    `%n` and `%p` are intentionally left for OpenSSH to expand.
+    """
+    if not cookie_header:
+        raise APIError('No auth cookie header returned by /getAuthCookies')
+    argv = ['wstunnel', '--hostHeader=%n']
+    if nest_level:
+        argv.append(f'--customHeaders=X-Nest-Level: {nest_level}')
+    argv.append(f'--customHeaders=Cookie: {cookie_header.replace("%", "%%")}')
+    argv.extend(['-L', 'stdio:127.0.0.1:%p'])
+    if tls_sni:
+        argv.extend(['--tlsSNI', tls_sni])
+    argv.append(websocket_url)
+    return shlex.join(argv)
+
+
+def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
+    """Resolve the pieces needed for an SSH ProxyCommand for a container."""
+    ssh_alias = _ssh_alias(container)
+    if not ssh_alias:
+        die(f"Devtainer {container.get('name')!r} does not expose an 'ssh' router")
+    server_hostname = urllib.parse.urlparse(server).hostname or ''
+    ssh_user = ((container.get('data') or {}).get('unixuser') or '').strip()
+    nest_level = _compute_nest_level(server) if connect_to else None
+    if connect_to:
+        websocket_url = _connect_to_websocket_target(connect_to)
+        tls_sni = '%n'
+    else:
+        websocket_url = f'wss://{server_hostname}'
+        tls_sni = None
+    cookie_header = _auth_cookie_header(opener, server)
+    proxy_command = _build_ssh_proxy_command(
+        cookie_header,
+        websocket_url,
+        nest_level=nest_level,
+        tls_sni=tls_sni,
+    )
+    return {
+        'devtainer': container.get('name', ''),
+        'ssh_user': ssh_user,
+        'ssh_alias': ssh_alias,
+        'ssh_config_host': _ssh_config_host_pattern(ssh_alias),
+        'hostname': server_hostname,
+        'websocket_url': websocket_url,
+        'connect_to': connect_to or '',
+        'nest_level': nest_level or '',
+        'proxy_command': proxy_command,
+    }
+
+
+def _build_ssh_config_block(spec, identity_file=None, forward_agent=False, alias=None):
+    """Render an ssh_config Host block from a resolved ssh proxy spec."""
+    ssh_alias = alias or spec.get('ssh_config_host') or spec.get('ssh_alias') or ''
+    ssh_hostname = spec.get('hostname') or ''
+    proxy_command = spec.get('proxy_command') or ''
+    ssh_user = spec.get('ssh_user') or ''
+    if not ssh_alias or not ssh_hostname or not proxy_command:
+        raise APIError('CLI did not resolve a usable SSH proxy spec')
+
+    lines = [
+        f'Host {ssh_alias}',
+        f'    ProxyCommand {proxy_command}',
+        f'    Hostname {ssh_hostname}',
+    ]
+    if ssh_user:
+        lines.append(f'    User {ssh_user}')
+    if identity_file:
+        lines.append(f'    IdentityFile {identity_file}')
+    if forward_agent:
+        lines.append('    ForwardAgent yes')
+    return '\n'.join(lines)
+
+
+def _ssh_config_host_pattern(ssh_alias):
+    """Return a reusable per-server ssh_config Host pattern for a resolved alias."""
+    if not ssh_alias.startswith('ssh-'):
+        return ssh_alias
+    return re.sub(r'^ssh-(?:.*?(?=--|\.))', 'ssh-*', ssh_alias, count=1) if re.search(r'--|\.', ssh_alias[4:]) else 'ssh-*'
+
+
 # ── Text rendering ────────────────────────────────────────────────────────────
 
 def _status_str(status):
@@ -1195,38 +1322,44 @@ def _add_global_flags(p):
     """Add auth / output flags shared by every authenticated subcommand."""
     p.add_argument(
         '--server', '-s', metavar='URL_OR_NICKNAME',
+        default=argparse.SUPPRESS,
         help='Dockside server URL or configured nickname  [env: DOCKSIDE_SERVER]',
     )
     p.add_argument(
         '--username', '-u', metavar='USER',
+        default=argparse.SUPPRESS,
         help='Username for one-shot auth  [env: DOCKSIDE_USER]',
     )
     p.add_argument(
         '--password', '-p', metavar='PASS',
+        default=argparse.SUPPRESS,
         help='Password for one-shot auth  [env: DOCKSIDE_PASSWORD]',
     )
     p.add_argument(
         '--output', '-o',
         choices=['text', 'json', 'yaml'],
-        default=None,
+        default=argparse.SUPPRESS,
         help='Output format (default: text)',
     )
     p.add_argument(
-        '--no-verify', action='store_true',
+        '--no-verify', action='store_true', default=argparse.SUPPRESS,
         help='Skip SSL certificate verification (e.g. for self-signed certs)',
     )
     p.add_argument(
         '--host-header', dest='host_header', metavar='HOST',
+        default=argparse.SUPPRESS,
         help='Override HTTP Host header sent with every request  [env: DOCKSIDE_HOST_HEADER]',
     )
     p.add_argument(
         '--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
+        default=argparse.SUPPRESS,
         help='Override TCP connection target (host/IP, optional :port). '
              'The server URL hostname is still used for TLS SNI and the Host header.  '
              '[env: DOCKSIDE_CONNECT_TO]',
     )
     p.add_argument(
         '--cookie-file', dest='session_cookie_file', metavar='PATH',
+        default=argparse.SUPPRESS,
         help='Full path to use as the session cookie file for the target server, '
              'overriding the path derived from config.json. Ancestor cookies are '
              'still loaded from their normal paths in the system config. '
@@ -1236,13 +1369,13 @@ def _add_global_flags(p):
     p.add_argument(
         '--cookie-auth', dest='cookie_auth', metavar='MODE',
         choices=['all', 'ancestors-only'],
-        default='all',
+        default=argparse.SUPPRESS,
         help='Cookie loading mode: "all" (default) loads target and ancestor cookies; '
              '"ancestors-only" skips the target\'s stored session and uses only ancestor '
              'cookies merged in-memory (requires --username/--password).',
     )
     p.add_argument(
-        '--debug-http', dest='debug_http', action='store_true',
+        '--debug-http', dest='debug_http', action='store_true', default=argparse.SUPPRESS,
         help='Print raw HTTP request/response headers for debugging.',
     )
 
@@ -1450,6 +1583,7 @@ def _client(args):
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
     connect_to = (getattr(args, 'connect_to', None)
                   or os.environ.get('DOCKSIDE_CONNECT_TO'))
+    effective_connect_to = connect_to or server_entry.get('connect_to')
     session_cookie_file = getattr(args, 'session_cookie_file', None) or None
     cookie_auth = getattr(args, 'cookie_auth', 'all') or 'all'
     if getattr(args, 'debug_http', False):
@@ -1479,6 +1613,9 @@ def _client(args):
            or cfg.get('output')
            or 'text')
     args._fmt = fmt
+    args._verify_effective = verify
+    args._host_header_effective = host_header
+    args._connect_to_effective = effective_connect_to
 
     return opener, server_url
 
@@ -1552,35 +1689,44 @@ def cmd_login(args):
         except ValueError as e:
             die(f'Invalid --cookie-file: {e}')
 
-    # Determine the cookie file path using a provisional entry (nickname/override may be set)
-    provisional_entry = {'url': server, 'nickname': nickname,
-                         'cookie_file': cookie_file_override}
-    cookie_file = _cookie_file_for(provisional_entry)
-
     host_header = (getattr(args, 'host_header', None)
                    or os.environ.get('DOCKSIDE_HOST_HEADER'))
     connect_to = (getattr(args, 'connect_to', None)
                   or os.environ.get('DOCKSIDE_CONNECT_TO')
                   or (current_entry or {}).get('connect_to')
                   or None)
-    nest_level = _compute_nest_level(server) if connect_to else None
+    parent = ((getattr(args, 'parent', None) or '').strip()
+              or (current_entry or {}).get('parent')
+              or None)
+    effective_cookie_file = cookie_file_override
+    if effective_cookie_file is None and current_entry:
+        effective_cookie_file = current_entry.get('cookie_file')
+    provisional_entry = {
+        'url': server,
+        'nickname': nickname,
+        'cookie_file': effective_cookie_file,
+        'connect_to': connect_to,
+        'parent': parent,
+    }
+    cookie_file = _cookie_file_for(provisional_entry)
     if getattr(args, 'debug_http', False):
         _enable_debug_http()
     try:
-        opener = login(server, username, password,
-                       verify_ssl=not getattr(args, 'no_verify', False),
-                       extra_cookies=extra_cookies or None,
-                       cookie_file=cookie_file,
-                       host_header=host_header,
-                       connect_to=connect_to,
-                       nest_level=nest_level)
+        get_authenticated_opener(
+            server,
+            provisional_entry,
+            username,
+            password,
+            verify_ssl=not getattr(args, 'no_verify', False),
+            transient=False,
+            extra_cookies=extra_cookies or None,
+            host_header=host_header,
+            connect_to=connect_to,
+            session_cookie_file=cookie_file,
+            cfg=cfg,
+        )
     except APIError as e:
         die(str(e))
-
-    _ensure_config_dir()
-    _save_cookie_jar(opener._jar, cookie_file)
-
-    parent = (getattr(args, 'parent', None) or '').strip() or None
     no_verify = getattr(args, 'no_verify', False)
     _upsert_server(cfg, server, nickname=nickname or None,
                    cookie_file=cookie_file_override,
@@ -2369,9 +2515,9 @@ def cmd_check_url(args):
     opener, _server = _client(args)
     url     = args.url
     timeout = getattr(args, 'timeout', 30)
-    verify  = not getattr(args, 'no_verify', False)
-    connect_to = (getattr(args, 'connect_to', None)
-                  or os.environ.get('DOCKSIDE_CONNECT_TO'))
+    verify  = getattr(args, '_verify_effective', not getattr(args, 'no_verify', False))
+    connect_to = getattr(args, '_connect_to_effective', None)
+    nest_level = _compute_nest_level(_server) if connect_to else None
 
     # Build a cross-domain SSL context
     ctx = ssl.create_default_context()
@@ -2408,9 +2554,14 @@ def cmd_check_url(args):
     else:
         handlers.append(urllib.request.HTTPRedirectHandler())
     if connect_to:
-        handlers.append(_ConnectToHandler(connect_to, ctx))
+        handlers.append(_ConnectToHandler(connect_to, ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     else:
-        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        handlers.append(urllib.request.HTTPSHandler(context=ctx, debuglevel=_HTTP_DEBUG_LEVEL))
+    host_header = getattr(args, '_host_header_effective', None)
+    if host_header:
+        handlers.append(_HostOverrideHandler(host_header))
+    if nest_level:
+        handlers.append(_NestLevelHandler(nest_level))
 
     check_opener = urllib.request.build_opener(*handlers)
     req = urllib.request.Request(url)
@@ -2424,7 +2575,21 @@ def cmd_check_url(args):
         body      = e.read()
         resp_hdrs = dict(e.headers) if e.headers else {}
     except urllib.error.URLError as e:
+        if getattr(args, 'debug_http', False):
+            print(f'# debug-http: check-url url={url}', file=sys.stderr)
+            print(f'# debug-http: connect_to={connect_to or "(direct)"}', file=sys.stderr)
+            print(f'# debug-http: target_host={target_host or "(empty)"}', file=sys.stderr)
+            print(f'# debug-http: nest_level={nest_level or "(none)"}', file=sys.stderr)
+            print(f'# debug-http: urlerror={e!r}', file=sys.stderr)
         die(f'Connection error: {e.reason}')
+    except socket.timeout as e:
+        if getattr(args, 'debug_http', False):
+            print(f'# debug-http: check-url url={url}', file=sys.stderr)
+            print(f'# debug-http: connect_to={connect_to or "(direct)"}', file=sys.stderr)
+            print(f'# debug-http: target_host={target_host or "(empty)"}', file=sys.stderr)
+            print(f'# debug-http: nest_level={nest_level or "(none)"}', file=sys.stderr)
+            print(f'# debug-http: timeout={e!r}', file=sys.stderr)
+        die(f'Connection error: {e}')
 
     result = {
         'status':  status,
@@ -2441,6 +2606,115 @@ def cmd_check_url(args):
             print(f'{k}: {v}')
         print()
         sys.stdout.write(result['body'])
+
+
+def cmd_ssh_proxy_command(args):
+    """Print a ProxyCommand line for a devtainer's ssh router."""
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        container = resolve(containers, args.devtainer)
+        result = _resolve_ssh_proxy_spec(
+            opener,
+            server,
+            container,
+            connect_to=getattr(args, '_connect_to_effective', None),
+        )
+    except APIError as e:
+        die(str(e))
+
+    if args._fmt in ('json', 'yaml'):
+        emit(result, args._fmt)
+    else:
+        print(result['proxy_command'])
+
+
+def cmd_ssh_config(args):
+    """Print an ssh_config Host block for a devtainer SSH router."""
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        container = resolve(containers, args.devtainer)
+        result = _resolve_ssh_proxy_spec(
+            opener,
+            server,
+            container,
+            connect_to=getattr(args, '_connect_to_effective', None),
+        )
+        result['ssh_config'] = _build_ssh_config_block(
+            result,
+            identity_file=getattr(args, 'identity_file', None),
+            forward_agent=getattr(args, 'forward_agent', False),
+            alias=getattr(args, 'ssh_alias_override', None),
+        )
+    except APIError as e:
+        die(str(e))
+
+    if args._fmt in ('json', 'yaml'):
+        emit(result, args._fmt)
+    else:
+        print(result['ssh_config'])
+
+
+def cmd_ssh(args):
+    """
+    SSH convenience wrapper.
+
+    Supported forms:
+      dockside ssh DEVTAINER [SSH-ARGS...]
+      dockside ssh config DEVTAINER
+      dockside ssh proxy-command DEVTAINER
+    """
+    if args.ssh_target == 'proxy-command':
+        if not args.ssh_rest:
+            die('ssh proxy-command requires DEVTAINER')
+        if len(args.ssh_rest) > 1:
+            die('ssh proxy-command accepts exactly one DEVTAINER argument')
+        args.devtainer = args.ssh_rest[0]
+        return cmd_ssh_proxy_command(args)
+    if args.ssh_target == 'config':
+        if not args.ssh_rest:
+            die('ssh config requires DEVTAINER')
+        if len(args.ssh_rest) > 1:
+            die('ssh config accepts exactly one DEVTAINER argument')
+        args.devtainer = args.ssh_rest[0]
+        return cmd_ssh_config(args)
+
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        container = resolve(containers, args.ssh_target)
+        spec = _resolve_ssh_proxy_spec(
+            opener,
+            server,
+            container,
+            connect_to=getattr(args, '_connect_to_effective', None),
+        )
+    except APIError as e:
+        die(str(e))
+
+    ssh_alias = spec.get('ssh_alias')
+    ssh_hostname = spec.get('hostname')
+    proxy_command = spec.get('proxy_command')
+    ssh_user = spec.get('ssh_user')
+    if not ssh_alias or not ssh_hostname or not proxy_command:
+        die('CLI did not resolve a usable SSH proxy spec')
+
+    destination = f'{ssh_user}@{ssh_alias}' if ssh_user else ssh_alias
+    remote_args = list(getattr(args, 'ssh_rest', None) or [])
+    if remote_args and remote_args[0] == '--':
+        remote_args = remote_args[1:]
+    argv = [
+        'ssh',
+        '-o', f'ProxyCommand={proxy_command}',
+        '-o', f'HostName={ssh_hostname}',
+    ]
+    if getattr(args, 'identity_file', None):
+        argv.extend(['-o', f'IdentityFile={args.identity_file}'])
+    if getattr(args, 'forward_agent', False):
+        argv.extend(['-o', 'ForwardAgent=yes'])
+    argv.extend([destination] + remote_args)
+    os.execvp('ssh', argv)
 
 
 def cmd_whoami(args):
@@ -2518,6 +2792,7 @@ def build_parser():
         epilog=EPILOG,
     )
     p.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+    _add_global_flags(p)
 
     sub = p.add_subparsers(dest='command', metavar='COMMAND')
     sub.required = True
@@ -2876,6 +3151,43 @@ def build_parser():
     sp.add_argument('--timeout', type=int, default=30, metavar='SECS',
                     help='Request timeout in seconds (default: 30)')
     sp.set_defaults(func=cmd_check_url)
+
+    # ── ssh ───────────────────────────────────────────────────────────────────
+    sp = sub.add_parser(
+        'ssh',
+        help='Connect to a devtainer ssh router or print its ProxyCommand',
+        description=(
+            'SSH helper for devtainer routes.\n\n'
+            'All Dockside CLI options must appear before DEVTAINER. Anything after\n'
+            'DEVTAINER is passed through to ssh unchanged.\n\n'
+            'Direct connect:\n'
+            '  dockside ssh DEVTAINER [SSH-ARGS...]\n\n'
+            'Config block:\n'
+            '  dockside ssh config DEVTAINER\n\n'
+            'Low-level proxy command:\n'
+            '  dockside ssh proxy-command DEVTAINER'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    sp.add_argument('--identity-file', metavar='PATH',
+                    help='SSH private key to use for direct ssh or ssh config output')
+    sp.add_argument('--forward-agent', action='store_true',
+                    help='Enable SSH agent forwarding for direct ssh or ssh config output')
+    sp.add_argument('--alias', dest='ssh_alias_override', metavar='HOST_ALIAS',
+                    help='Override the Host alias used by ssh config output')
+    sp.add_argument(
+        'ssh_target',
+        metavar='DEVTAINER',
+        help='DEVTAINER identifier, or the literal subcommand name "config" or "proxy-command"',
+    )
+    sp.add_argument(
+        'ssh_rest',
+        nargs=argparse.REMAINDER,
+        metavar='SSH-ARGS',
+        help='SSH args for direct connect, or DEVTAINER for proxy-command; all Dockside options must come before DEVTAINER',
+    )
+    sp.set_defaults(func=cmd_ssh)
 
     # ── whoami ─────────────────────────────────────────────────────────────────
     sp = sub.add_parser(

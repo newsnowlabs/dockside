@@ -73,8 +73,24 @@ class LifecycleDebianTests(TestCase):
         except Exception:
             pass
         self.admin.remove(self.CONTAINER_NAME)
-        names = self.container_names_in_list(self.admin)
-        self.assert_not_in(self.CONTAINER_NAME, names)
+
+        def _removed():
+            containers = self.admin.list_containers()
+            c = next(
+                (
+                    item for item in containers
+                    if isinstance(item, dict) and item.get('name') == self.CONTAINER_NAME
+                ),
+                None,
+            )
+            return c is None or c.get('status', 0) <= -3
+
+        self.wait_until(
+            _removed,
+            timeout=20,
+            interval=1,
+            timeout_msg=f'{self.CONTAINER_NAME!r} still present after remove',
+        )
         # Container removed by the test itself; tearDownClass will find nothing to clean up.
 
 

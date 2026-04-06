@@ -193,11 +193,13 @@ sub meta ($self, $key, @rest) {
    }
    elsif( $key =~ /^(viewers|developers)$/ ) {
 
-      # $value can be a comma-separated list of items of form either '<username>' or 'role:<role>' or ''
+      # $value can be a comma-separated list of items of form either
+      # '<username>' or 'role:<role>' or ''. Accept the same character set
+      # supported by user/role creation: letters, digits, hyphens, underscores.
       my @values = split(/,/, $value);
 
       # Check if all values match the regex
-      if( (grep { /^(role:)?[a-z][a-z0-9]+$/ } @values) == @values ) {
+      if( (grep { /^(?:role:)?[A-Za-z0-9_-]+$/ } @values) == @values ) {
          # TODO: check that username(s) and role(s) provided are valid
          $self->{'meta'}{$key} = $value || '';
       }

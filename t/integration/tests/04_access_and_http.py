@@ -14,12 +14,11 @@ Uses two containers:
 
 import sys
 import os
-import time
 import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
-from dockside_test import TestCase, APIError, http_check
+from dockside_test import TestCase, APIError, verbose_enabled
 
 _BASE_AC_CONTAINER    = 'inttest-ac-01'
 _BASE_NGINX_CONTAINER = 'inttest-nginx-01'
@@ -228,32 +227,64 @@ class AccessAndHttpTests(TestCase):
             data = self.admin.get_container(self.NGINX_CONTAINER)
         if data.get('status') != 1:
             self.admin.start(self.NGINX_CONTAINER, wait=True, timeout=120)
-            time.sleep(3)  # Let nginx fully initialise
+        self.wait_until(
+            lambda: self._nginx_status(self.admin) == 200,
+            timeout=20,
+            interval=1,
+            timeout_msg='nginx owner route did not become ready',
+        )
 
     def _nginx_status(self, client, router='www'):
         """Return HTTP status code for the nginx container's www service."""
+        service_url = self._service_url(self.NGINX_CONTAINER, router_prefix=router)
         try:
-            status, _ = client.check_service(self.NGINX_CONTAINER, router_prefix=router)
-        except APIError:
+            status, _ = client.check_url(service_url)
+        except APIError as e:
+            if verbose_enabled():
+                user = getattr(client, '_username', None) or 'anonymous'
+                print(f'# nginx probe failed for user={user} url={service_url}: {e}',
+                      file=sys.stderr)
             return None
         return status
 
-    def _nginx_anon_status(self, router='www'):
-        """
-        Return HTTP status for the nginx service as an unauthenticated visitor
-        (no session cookies at all).
-        """
-        service_url = self._service_url(self.NGINX_CONTAINER, router_prefix=router)
+    def _set_nginx_access(self, mode, developers=None, viewers=None):
+        """Apply access mode and named principals for nginx router tests."""
+        self._ensure_nginx_running()
+        if developers is not None:
+            self.admin.update(self.NGINX_CONTAINER, developers=developers)
+        if viewers is not None:
+            self.admin.update(self.NGINX_CONTAINER, viewers=viewers)
         try:
-            code, _ = http_check(
-                service_url,
-                connect_to=self.admin._connect_to,
-                cookies=None,
-                verify_ssl=self.admin._verify_ssl,
+            self.admin.update(self.NGINX_CONTAINER, access=f'{{"www":"{mode}"}}')
+        except APIError as e:
+            self.skip(f'Cannot set {mode} mode: {e}')
+
+    def _assert_nginx_mode_matrix(self, mode, expected_by_principal):
+        """Assert nginx router responses for the standard access matrix."""
+        self._set_nginx_access(
+            mode,
+            developers=self.test_username_dev2,
+            viewers=self.test_username_viewer,
+        )
+        principals = [
+            ('owner', self.admin),
+            ('named developer', self.dev2),
+            ('named viewer', self.viewer),
+            ('authenticated user', self.user),
+            ('view-all user', self.view_all),
+            ('develop-all user', self.develop_all),
+            ('anonymous', self.unauth),
+        ]
+        for label, client in principals:
+            code = self._nginx_status(client)
+            if code is None:
+                self.skip(f'Could not reach nginx service for {label}')
+            expected = expected_by_principal[label]
+            self.assert_http_status(
+                code,
+                expected,
+                f'{label} got {code} in {mode} mode',
             )
-            return code
-        except APIError:
-            return None
 
     def test_20_start_nginx(self):
         """Start the nginx container and wait for it to be ready."""
@@ -261,132 +292,53 @@ class AccessAndHttpTests(TestCase):
         data = self.admin.get_container(self.NGINX_CONTAINER)
         self.assert_equal(data.get('status'), 1, 'nginx not running after start')
 
-    def test_21_default_developer_owner_gets_200(self):
-        """Owner gets 200 in developer mode (default)."""
-        self._ensure_nginx_running()
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"developer"}')
-        except APIError:
-            pass
-        code = self._nginx_status(self.admin)
-        if code is None:
-            self.skip('Could not reach nginx service')
-        self.assert_http_status(code, 200, f'owner got {code} in developer mode')
+    def test_21_developer_mode_access_matrix(self):
+        """Developer mode: owner and named developers only."""
+        self._assert_nginx_mode_matrix('developer', {
+            'owner': 200,
+            'named developer': 200,
+            'named viewer': 410,
+            'authenticated user': 410,
+            'view-all user': 410,
+            'develop-all user': 200,
+            'anonymous': 400,
+        })
 
-    def test_22_default_developer_unauth_gets_400(self):
-        """Unauthenticated user gets 400 in developer mode."""
-        self._ensure_nginx_running()
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"developer"}')
-        except APIError:
-            pass
-        code = self._nginx_anon_status()
-        if code is None:
-            self.skip('Could not reach nginx service anonymously')
-        self.assert_http_status(code, 400, f'unauth got {code} instead of 400 in developer mode')
+    def test_22_viewer_mode_access_matrix(self):
+        """Viewer mode: owner, named developers, and named viewers only."""
+        self._assert_nginx_mode_matrix('viewer', {
+            'owner': 200,
+            'named developer': 200,
+            'named viewer': 200,
+            'authenticated user': 410,
+            'view-all user': 200,
+            'develop-all user': 410,
+            'anonymous': 400,
+        })
 
-    def test_23_public_mode_unauth_gets_200(self):
-        """Unauthenticated user gets 200 in public mode."""
-        self._ensure_nginx_running()
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"public"}')
-        except APIError as e:
-            self.skip(f'Cannot set public mode: {e}')
-        code = self._nginx_anon_status()
-        if code is None:
-            self.skip('Could not reach nginx service anonymously')
-        self.assert_http_status(code, 200, f'unauth got {code} instead of 200 in public mode')
+    def test_23_user_mode_access_matrix(self):
+        """User mode: any authenticated target user may access; anonymous may not."""
+        self._assert_nginx_mode_matrix('user', {
+            'owner': 200,
+            'named developer': 200,
+            'named viewer': 200,
+            'authenticated user': 200,
+            'view-all user': 200,
+            'develop-all user': 200,
+            'anonymous': 400,
+        })
 
-    def test_24_public_mode_viewer_gets_200(self):
-        """Viewer (not in viewers list) gets 200 in public mode."""
-        self._ensure_nginx_running()
-        self.admin.update(self.NGINX_CONTAINER, viewers='')
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"public"}')
-        except APIError as e:
-            self.skip(f'Cannot set public mode: {e}')
-        code = self._nginx_status(self.viewer)
-        if code is None:
-            self.skip('Could not reach nginx service')
-        self.assert_http_status(code, 200, f'viewer got {code} in public mode')
-
-    def test_25_user_mode_unauth_gets_400(self):
-        """Unauthenticated user gets 400 in user mode."""
-        self._ensure_nginx_running()
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"user"}')
-        except APIError as e:
-            self.skip(f'Cannot set user mode: {e}')
-        code = self._nginx_anon_status()
-        if code is None:
-            self.skip('Could not reach nginx service anonymously')
-        self.assert_http_status(code, 400, f'unauth got {code} in user mode')
-
-    def test_26_user_mode_authenticated_gets_200(self):
-        """Authenticated user (viewer, not in viewers list) gets 200 in user mode."""
-        self._ensure_nginx_running()
-        self.admin.update(self.NGINX_CONTAINER, viewers='')
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"user"}')
-        except APIError as e:
-            self.skip(f'Cannot set user mode: {e}')
-        code = self._nginx_status(self.viewer)
-        if code is None:
-            self.skip('Could not reach nginx service')
-        self.assert_http_status(code, 200, f'viewer got {code} in user mode')
-
-    def test_27_viewer_mode_named_viewer_gets_200(self):
-        """Named viewer gets 200 when access=viewer."""
-        self._ensure_nginx_running()
-        self.admin.update(self.NGINX_CONTAINER, viewers=self.test_username_viewer)
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"viewer"}')
-        except APIError as e:
-            self.skip(f'Cannot set viewer mode: {e}')
-        code = self._nginx_status(self.viewer)
-        if code is None:
-            self.skip('Could not reach nginx service')
-        self.assert_http_status(code, 200, f'named viewer got {code} in viewer mode')
-
-    def test_28_viewer_mode_unnamed_dev2_gets_410(self):
-        """dev2 (not in developers/viewers) gets 410 in viewer mode."""
-        self._ensure_nginx_running()
-        self.admin.update(self.NGINX_CONTAINER, viewers=self.test_username_viewer, developers='')
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"viewer"}')
-        except APIError as e:
-            self.skip(f'Cannot set viewer mode: {e}')
-        code = self._nginx_status(self.dev2)
-        if code is None:
-            self.skip('Could not reach nginx service')
-        self.assert_http_status(code, 410, f'unnamed dev2 got {code} in viewer mode')
-
-    def test_29_developer_mode_named_dev2_gets_200(self):
-        """dev2 in developers list gets 200 in developer mode."""
-        self._ensure_nginx_running()
-        self.admin.update(self.NGINX_CONTAINER, developers=self.test_username_dev2)
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"developer"}')
-        except APIError:
-            pass
-        code = self._nginx_status(self.dev2)
-        if code is None:
-            self.skip('Could not reach nginx service')
-        self.assert_http_status(code, 200, f'named dev2 got {code} in developer mode')
-
-    def test_30_developer_mode_viewer_gets_410(self):
-        """Viewer (even if named in viewers list) gets 410 in developer mode."""
-        self._ensure_nginx_running()
-        self.admin.update(self.NGINX_CONTAINER, viewers=self.test_username_viewer,
-                          developers=self.test_username_dev2)
-        try:
-            self.admin.update(self.NGINX_CONTAINER, access='{"www":"developer"}')
-        except APIError:
-            pass
-        code = self._nginx_status(self.viewer)
-        if code is None:
-            self.skip('Could not reach nginx service')
-        self.assert_http_status(code, 410, f'viewer got {code} in developer mode')
+    def test_24_public_mode_access_matrix(self):
+        """Public mode: all authenticated and target-anonymous probes succeed."""
+        self._assert_nginx_mode_matrix('public', {
+            'owner': 200,
+            'named developer': 200,
+            'named viewer': 200,
+            'authenticated user': 200,
+            'view-all user': 200,
+            'develop-all user': 200,
+            'anonymous': 200,
+        })
 
     def test_31_router_listing_reflects_access_mode(self):
         """Router visibility in list matches access mode: dev2 sees www in developer mode, viewer doesn't."""

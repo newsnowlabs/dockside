@@ -1,7 +1,12 @@
 #!/bin/bash
-# Prepare a local (non-container) environment and launch Dockside under s6 supervision,
-# then authenticate the CLI automatically.
-# Run as root. Suitable for running integration tests locally.
+#
+# Prepare a 'vanilla' local (non-container) Debian environment and launch Dockside
+# via its standard container entrypoint, under its included s6 supervisor, then
+# authenticate the CLI automatically.
+#
+# - Suitable for running integration tests locally inside a vanilla Debian environment
+#   with dockerd installed, such as Claude Code for Web
+# - Run as root. 
 #
 # Usage: bash build/development/run-local.sh [--reset] [extra entrypoint args]
 #
