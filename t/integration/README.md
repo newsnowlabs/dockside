@@ -197,6 +197,19 @@ DOCKSIDE_TEST_NAME_SUFFIX=auto bash t/integration/run_tests.sh --only 04 --skip-
 
 ## Test Construction
 
+### Test Imperatives
+
+- Each test must be deterministic and independent of execution order.
+- A test must either keep a container alive for the whole class or create a fresh per-test container; do not mix those models accidentally.
+- Successive test methods must not remove a container and then recreate a container with the same name in the next method. Asynchronous `stop --no-wait` / `remove --no-wait` cleanup can race with the next method's `setUp()`.
+- If per-method cleanup removes containers, use a distinct container name per test method.
+- If a class intentionally shares a container across methods, keep creation and cleanup at class scope (`setUpClass` / `tearDownClass`) and make the stateful progression explicit in the test docstring.
+- Tests must not rely on pre-existing roles, users, profiles, or container state outside the harness-managed dynamic environment.
+- Mutating commands should be issued once; any wait for resulting state must be done by polling read-only APIs rather than by replaying the mutation.
+- After changing state that is reflected through cached container metadata, tests should allow for bounded convergence by polling rather than assuming immediate readback. This applies in particular to:
+  - removed containers, where Dockside may keep the reservation record briefly before removing it
+  - Docker state that Dockside learns via `docker-event-daemon` from dockerd events, so an API read may lag briefly behind a completed Docker operation.
+
 ### Admin Credentials and Session Isolation
 
 The harness creates separate `DocksideClient` instances for each test role

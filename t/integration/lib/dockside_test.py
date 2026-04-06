@@ -518,6 +518,7 @@ class TestCase:
 
     # Suffix for all test resource names (injected by TestRunner)
     _name_suffix = ''
+    _test_method_name = ''
 
     @classmethod
     def _sfx(cls, name):
@@ -831,6 +832,7 @@ class TestRunner:
         for method_name in methods:
             self._total += 1
             case = cls()
+            case._test_method_name = method_name
             self._inject_clients(case)
             self._active_cases.append(case)
             label = f'{cls.__name__}.{method_name}'

@@ -4,6 +4,7 @@
 
 import sys
 import os
+import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
@@ -20,7 +21,10 @@ class EditTests(TestCase):
 
     def setUp(self):
         super().setUp()
-        self.CONTAINER_NAME = self._sfx(_BASE_CONTAINER)
+        method_name = getattr(self, '_test_method_name', '') or 'test'
+        match = re.match(r'^test_(\d+)', method_name)
+        method_tag = match.group(1) if match else 'xx'
+        self.CONTAINER_NAME = self._sfx(f'{_BASE_CONTAINER}-{method_tag}')
         self.register_cleanup(self.CONTAINER_NAME)
         try:
             self.admin.create(profile=self.test_profile_alpine, name=self.CONTAINER_NAME)
