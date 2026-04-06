@@ -236,10 +236,11 @@ def _check_admin_permissions(admin_client, server_url):
 class _EnvManager:
     """Creates and tracks test roles, users, and profiles; cleans up on request."""
 
-    def __init__(self, admin_client, suffix, server_url):
+    def __init__(self, admin_client, suffix, server_url, cleanup_reused=False):
         self._admin    = admin_client
         self._suffix   = suffix
         self._server   = server_url
+        self._cleanup_reused = cleanup_reused
         self._created_roles    = []
         self._created_users    = []
         self._created_profiles = []
@@ -274,6 +275,10 @@ class _EnvManager:
         except APIError:
             return None
 
+    def _track_reused(self, bucket, name):
+        if self._cleanup_reused and name not in bucket:
+            bucket.append(name)
+
     def _perms_match(self, record, expected_perms):
         """Check that a role's permissions dict matches the expected spec."""
         actual = (record.get('permissions') or {})
@@ -298,6 +303,7 @@ class _EnvManager:
         existing = self._get_role(name)
         if existing is not None:
             if self._perms_match(existing, perms_spec):
+                self._track_reused(self._created_roles, name)
                 print(f'# Role {name!r}: reusing existing (permissions match)', file=sys.stderr)
                 return name
             else:
@@ -331,6 +337,7 @@ class _EnvManager:
                 # Always (re-)set the password so that a user created without one
                 # (e.g. by a previous buggy run) gets a usable passwd entry.
                 self._admin._run('user', 'edit', name, '--user-password', self.password_dev)
+                self._track_reused(self._created_users, name)
                 print(f'# User {name!r}: reusing existing (role matches)', file=sys.stderr)
                 return name
             else:
@@ -367,6 +374,7 @@ class _EnvManager:
         name     = _suffixed(base_name, self._suffix)
         existing = self._get_profile(name)
         if existing is not None:
+            self._track_reused(self._created_profiles, name)
             print(f'# Profile {name!r}: reusing existing', file=sys.stderr)
             return name
 
@@ -508,6 +516,7 @@ def main():
     harness_id   = os.environ.get('DOCKSIDE_TEST_HARNESS_ID', '').strip() or None
     skip_cleanup = os.environ.get('DOCKSIDE_TEST_SKIP_CLEANUP', '0') == '1'
     reuse_user_sessions = os.environ.get('DOCKSIDE_TEST_REUSE_USER_SESSIONS', '0') == '1'
+    cleanup_reused = os.environ.get('DOCKSIDE_TEST_CLEANUP_REUSED', '0') == '1'
 
     # Network modify override
     env_nm = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()
@@ -558,7 +567,14 @@ def main():
         print('# Test resource suffix: (none)', file=sys.stderr)
 
     # ── Dynamic environment setup ─────────────────────────────────────────────
-    _env_manager = _EnvManager(admin_client, suffix, server_url)
+    if cleanup_reused:
+        print('# Reused test resources will be cleaned up at end of run', file=sys.stderr)
+    _env_manager = _EnvManager(
+        admin_client,
+        suffix,
+        server_url,
+        cleanup_reused=cleanup_reused,
+    )
     ok = False
     try:
         _env_manager.setup()

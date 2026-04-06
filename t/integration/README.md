@@ -134,6 +134,11 @@ test user's temp cookie file on later CLI subprocesses after an initial
 credentialed call has seeded it, while retrying only read-only commands with
 explicit credentials if the reused session fails.
 
+When rerunning with a fixed suffix, the harness normally preserves any
+pre-existing roles, users, and profiles for that suffix and only removes
+resources created by the current run. Set `DOCKSIDE_TEST_CLEANUP_REUSED=1` to
+also remove reused test resources for that suffix at the end of the run.
+
 `--cookie-auth ancestors-only` is now deprecated for achieving this test
 behavior. The preferred test-harness pattern is to use isolated per-user
 `--cookie-file` paths and rely on the CLI's normal parent-chain cookie merging.
@@ -162,6 +167,7 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_SSH_SERVER` | `git@github.com` | Outbound SSH server for test 09 B |
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
 | `DOCKSIDE_TEST_NAME_SUFFIX` | (none) | Suffix for test resource names; `auto` generates a random 6-char hex string |
+| `DOCKSIDE_TEST_CLEANUP_REUSED` | `0` | Also clean up reused test roles/users/profiles for the active suffix, not just resources created by the current run |
 | `DOCKSIDE_TEST_SKIP_CLEANUP` | `0` | Usually set via `--skip-cleanup`; preserves created test roles/users/profiles for investigation |
 
 ## Runner Flags
