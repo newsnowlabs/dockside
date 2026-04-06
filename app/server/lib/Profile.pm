@@ -13,8 +13,8 @@ use v5.36;
 
 use JSON;
 use Storable qw(dclone);
-use Data qw($CONFIG $HOSTNAME $HOSTINFO);
-use Util qw(flog TO_JSON);
+use Data qw($CONFIG $HOSTNAME $HOSTINFO $INNER_DOCKERD);
+use Util qw(flog TO_JSON call_socket_json_api);
 
 ################################################################################
 # CURRENT VERSION
@@ -102,7 +102,19 @@ sub applyDefaultsAndFilters ($self) {
    }
 
    # Network
-   my @hostNetworks = sort { $a cmp $b } keys %{Containers->containers->{$HOSTNAME}{'inspect'}{'Networks'}};
+   # When running with an inner dockerd (or when the host container ID is unknown),
+   # there is no "host container" whose attached networks can constrain the profile.
+   # In that case, fall back to querying the Docker API for all available networks.
+   my @hostNetworks;
+   if(!$HOSTNAME && $INNER_DOCKERD) {
+      my $nets = eval { call_socket_json_api($CONFIG->{'docker'}{'socket'}, '/networks') };
+      if($nets && ref($nets) eq 'ARRAY') {
+         @hostNetworks = map { $_->{'Name'} } @$nets;
+      }
+   }
+   else {
+      @hostNetworks = sort { $a cmp $b } keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} };
+   }
    $self->{'networks'} = ["*"] unless defined($self->{'networks'});
    $self->{'networks'} = $applyFilters->('network', \@hostNetworks);
 

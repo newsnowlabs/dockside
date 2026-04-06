@@ -639,10 +639,11 @@ def main():
 
         # ── Discover and run test modules ─────────────────────────────────────
         tests_dir  = os.path.join(INTEGRATION_DIR, 'tests')
+        only_prefixes = [p.strip() for p in only_prefix.replace(',', ' ').split() if p.strip()]
         test_files = sorted(
             f for f in os.listdir(tests_dir)
             if f.endswith('.py') and not f.startswith('_')
-            and (not only_prefix or f.startswith(only_prefix))
+            and (not only_prefixes or any(f.startswith(p) for p in only_prefixes))
         )
 
         print('TAP version 13')

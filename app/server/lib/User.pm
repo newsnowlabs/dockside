@@ -838,6 +838,10 @@ sub set ($self, $reservation, $property, $value = '') {
       if( ref($value) eq 'HASH' ) {
          $decoded = $value;
       }
+      elsif( !defined($value) || $value eq '' ) {
+         # No options submitted: start with an empty hash and let defaults fill in below.
+         $decoded = {};
+      }
       else {
          try {
             $decoded = decode_json($value);

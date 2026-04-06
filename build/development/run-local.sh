@@ -6,13 +6,17 @@
 #
 # - Suitable for running integration tests locally inside a vanilla Debian environment
 #   with dockerd installed, such as Claude Code for Web
-# - Run as root. 
+# - Run as root.
 #
-# Usage: bash build/development/run-local.sh [--reset] [extra entrypoint args]
+# Usage: bash build/development/run-local.sh [--reset] [--tests [PREFIXES]] [extra entrypoint args]
 #
 # Options:
-#   --reset   Remove /data/config and ~/.config/dockside before starting,
-#             forcing fresh credential generation and a clean CLI session.
+#   --reset           Remove /data/config and ~/.config/dockside before starting,
+#                     forcing fresh credential generation and a clean CLI session.
+#   --tests [PREFIXES]  After the server is ready, run integration tests in local mode,
+#                     then exit with the test suite's exit code. PREFIXES is an optional
+#                     comma-separated list of test file prefixes to run (e.g. "01,02,03");
+#                     if omitted, all tests are run.
 #
 # After startup:
 #   /tmp/dockside-passwd  — admin credentials (admin:<password>)
@@ -24,22 +28,44 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PASSWD_FILE=/tmp/dockside-passwd
 ENV_FILE=/tmp/dockside-env
 
-# Parse --reset from our own args before forwarding the rest to entrypoint.
+# Parse our own flags before forwarding the rest to entrypoint.
 EXTRA_ARGS=()
-for arg in "$@"; do
-  case "$arg" in
-    --reset) RESET=1 ;;
-    *) EXTRA_ARGS+=("$arg") ;;
+RESET=""
+RUN_TESTS=""
+TEST_PREFIXES=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reset)
+      RESET=1
+      shift
+      ;;
+    --tests)
+      RUN_TESTS=1
+      shift
+      # Optional argument: a comma-separated list of test prefixes
+      if [[ $# -gt 0 && "$1" != --* ]]; then
+        TEST_PREFIXES="$1"
+        shift
+      fi
+      ;;
+    *)
+      EXTRA_ARGS+=("$1")
+      shift
+      ;;
   esac
 done
 
 # 1. Create dockside user so /home/dockside exists and nginx.conf 'user dockside' resolves.
 id dockside &>/dev/null || useradd -r -m -d /home/dockside -s /bin/bash dockside
 
-# 2. Add dockside to docker and bind groups (mirrors Dockerfile's usermod -a -G docker,bind).
-#    docker: needed for docker-event-daemon and nginx's Perl module (Docker API calls).
-#    bind:   needed for bind9 DNS service (though disabled in local-dev mode).
-usermod -aG docker,bind dockside
+# 2. Add dockside to docker group (needed for docker-event-daemon and nginx's Perl module).
+#    Also add to bind group if it exists (needed for bind9 DNS service, but bind9 is
+#    disabled in local-dev mode so this is optional).
+if getent group bind &>/dev/null; then
+  usermod -aG docker,bind dockside
+else
+  usermod -aG docker dockside
+fi
 
 # 3. Allow dockside to run git in the repo directory (owned by root/another user).
 sudo -u dockside git config --global --add safe.directory /home/user/dockside 2>/dev/null || true
@@ -111,6 +137,23 @@ PASSWORD=$(cut -d: -f2 "$PASSWD_FILE")
   --password "$PASSWORD"
 
 echo "run-local: ready. To use the CLI in another shell: source $ENV_FILE"
+
+# 14. If --tests was requested, run the integration test suite now and exit.
+if [ -n "$RUN_TESTS" ]; then
+  TEST_ARGS=()
+  if [ -n "$TEST_PREFIXES" ]; then
+    TEST_ARGS+=(--only "$TEST_PREFIXES")
+  fi
+  set +e
+  DOCKSIDE_TEST_MODE=local \
+  DOCKSIDE_TEST_HOST=www.local.dockside.dev \
+  DOCKSIDE_TEST_NAME_SUFFIX=auto \
+    bash "$REPO_DIR/t/integration/run_tests.sh" "${TEST_ARGS[@]}"
+  TEST_EXIT=$?
+  set -e
+  kill "$ENTRYPOINT_PID" 2>/dev/null || true
+  exit "$TEST_EXIT"
+fi
 
 # Keep this process alive so the server isn't orphaned if run in the foreground.
 wait "$ENTRYPOINT_PID"
