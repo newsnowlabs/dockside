@@ -899,8 +899,10 @@ sub updateContainerReservation ($self, $args) {
    # Store the changes if all updates are successful
    $reservation->store();
 
-   # Apply any network changes
-   $reservation->update_network();
+   # Only reconcile Docker network attachment when the requested network changed.
+   if( ($origReservation->data('network') // '') ne ($reservation->data('network') // '') ) {
+      $reservation->update_network();
+   }
 
    # Only if the reservation is running
    if($reservation->is_running) {
