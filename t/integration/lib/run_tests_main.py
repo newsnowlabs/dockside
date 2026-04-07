@@ -14,7 +14,7 @@ Environment variables (set by run_tests.sh / harness.sh):
   DOCKSIDE_TEST_HARNESS_ID   Harness container ID (harness mode)
   DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY  1 or 0 (override default per-mode behaviour)
   DOCKSIDE_TEST_NAME_SUFFIX  Suffix for test resource names:
-                               (unset)  no suffix — use standard names
+                               (unset)  same as 'auto'
                                auto     generate a fresh random 6-char hex suffix
                                <string> use this exact string as the suffix
 """
@@ -165,13 +165,11 @@ def _read_file(path):
 def _resolve_suffix():
     """
     Resolve the test resource name suffix from DOCKSIDE_TEST_NAME_SUFFIX:
-      unset  → '' (no suffix)
+      unset  → random 6-char hex string (same as 'auto')
       'auto' → random 6-char hex string, printed to stderr
       other  → that string verbatim
     """
-    raw = os.environ.get('DOCKSIDE_TEST_NAME_SUFFIX', '').strip()
-    if not raw:
-        return ''
+    raw = os.environ.get('DOCKSIDE_TEST_NAME_SUFFIX', 'auto').strip()
     if raw == 'auto':
         suffix = '%06x' % random.randrange(0x1000000)
         print(f'# DOCKSIDE_TEST_NAME_SUFFIX=auto → suffix: {suffix}', file=sys.stderr)
@@ -529,7 +527,7 @@ def main():
     harness_id   = os.environ.get('DOCKSIDE_TEST_HARNESS_ID', '').strip() or None
     skip_cleanup = os.environ.get('DOCKSIDE_TEST_SKIP_CLEANUP', '0') == '1'
     reuse_user_sessions = os.environ.get('DOCKSIDE_TEST_REUSE_USER_SESSIONS', '0') == '1'
-    cleanup_reused = os.environ.get('DOCKSIDE_TEST_CLEANUP_REUSED', '0') == '1'
+    cleanup_reused = os.environ.get('DOCKSIDE_TEST_CLEANUP_REUSED', '1') == '1'
 
     # Network modify override
     env_nm = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()

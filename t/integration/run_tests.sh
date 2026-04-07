@@ -11,6 +11,8 @@
 #   DOCKSIDE_TEST_HOST    Public FQDN (or URL) of the Dockside instance, e.g.:
 #                           www.local.dockside.dev
 #                           https://www.myinstance.example.com/
+#                         If unset outside harness mode, the runner tries the
+#                         CLI's currently selected server URL.
 #                         Any https:// prefix and trailing slash are stripped.
 #                         - remote:  requests go directly to https://$DOCKSIDE_TEST_HOST
 #                         - local:   requests go to https://$DOCKSIDE_TEST_HOST with
@@ -25,7 +27,7 @@
 #   DOCKSIDE_TEST_VERIFY_SSL  0 (default) or 1
 #
 #   DOCKSIDE_TEST_NAME_SUFFIX  Suffix for test resource names:
-#                               (unset)  standard names, e.g. inttest-dev1
+#                               (unset)  defaults to auto
 #                               auto     generate a random 6-char hex suffix per run
 #                               <string> use this exact string as the suffix
 #
@@ -38,9 +40,9 @@
 #                                      0/unset = pass explicit credentials on every
 #                                      CLI call for test users
 #
-#   DOCKSIDE_TEST_CLEANUP_REUSED       1 = also remove reused test roles/users/
-#                                      profiles for this suffix at end of run
-#                                      0/unset = remove only resources created by
+#   DOCKSIDE_TEST_CLEANUP_REUSED       1/unset = also remove reused test roles/
+#                                      users/profiles for this suffix at end of run
+#                                      0 = remove only resources created by
 #                                      the current run
 #
 #   DOCKSIDE_TEST_CONTAINER_ID   Running Dockside container ID (enables docker-exec
@@ -81,6 +83,47 @@ set -euo pipefail
 INTEGRATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${INTEGRATION_DIR}/../.." && pwd)"
 
+# ── Default environment ───────────────────────────────────────────────────────
+: "${DOCKSIDE_TEST_NAME_SUFFIX:=auto}"
+: "${DOCKSIDE_TEST_CLEANUP_REUSED:=1}"
+export DOCKSIDE_TEST_NAME_SUFFIX
+export DOCKSIDE_TEST_CLEANUP_REUSED
+
+# ── Infer host from current CLI server, when possible ────────────────────────
+if [[ -z "${DOCKSIDE_TEST_HOST:-}" && -z "${DOCKSIDE_TEST_IMAGE:-}" ]]; then
+    DOCKSIDE_TEST_HOST="$(
+        python3 - <<'PY'
+import json
+import os
+
+cfg_path = os.path.expanduser('~/.config/dockside/config.json')
+try:
+    with open(cfg_path, encoding='utf-8') as fh:
+        cfg = json.load(fh)
+except Exception:
+    print('')
+    raise SystemExit(0)
+
+ref = cfg.get('current')
+servers = cfg.get('servers') or []
+entry = None
+if ref:
+    for item in servers:
+        if item.get('nickname') == ref or item.get('url') == ref:
+            entry = item
+            break
+if entry is None and servers:
+    entry = servers[0]
+
+print((entry or {}).get('url', ''))
+PY
+    )"
+    if [[ -n "${DOCKSIDE_TEST_HOST}" ]]; then
+        echo "# DOCKSIDE_TEST_HOST not set; using current CLI server: ${DOCKSIDE_TEST_HOST}" >&2
+        export DOCKSIDE_TEST_HOST
+    fi
+fi
+
 # Parse flags
 ONLY_PREFIX=""
 VERBOSE=0
@@ -105,6 +148,7 @@ elif [[ -n "${DOCKSIDE_TEST_HOST:-}" ]]; then
     MODE="remote"
 else
     echo "ERROR: Set DOCKSIDE_TEST_HOST (remote/local) or DOCKSIDE_TEST_IMAGE (harness)" >&2
+    echo "       Or select a current CLI server with 'dockside login' / 'dockside server use'" >&2
     echo "       Or set DOCKSIDE_TEST_MODE=local with DOCKSIDE_TEST_HOST" >&2
     exit 1
 fi

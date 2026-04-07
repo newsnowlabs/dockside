@@ -32,7 +32,6 @@ dockside login \
   --server https://www-mydockside.local.dockside.dev/
 
 DOCKSIDE_TEST_MODE=local \
-DOCKSIDE_TEST_NAME_SUFFIX=auto \ # Use isolated user/role/profile names
 DOCKSIDE_TEST_HOST='https://www-mydockside.local.dockside.dev/' \
 bash t/integration/run_tests.sh
 ```
@@ -47,7 +46,6 @@ bash t/integration/run_tests.sh
 
 # Now run tests...
 DOCKSIDE_TEST_MODE=local \
-DOCKSIDE_TEST_NAME_SUFFIX="auto" \
 DOCKSIDE_TEST_HOST="https://www.local.dockside.dev/" \
 ./t/integration/run_tests.sh
 ```
@@ -63,8 +61,6 @@ dockside login \
   --server https://www.local.dockside.dev/
 
 DOCKSIDE_TEST_MODE=local \
-DOCKSIDE_TEST_NAME_SUFFIX=auto \ # Use isolated user/role/profile names
-DOCKSIDE_TEST_HOST='https://www.local.dockside.dev/' \
 bash t/integration/run_tests.sh
 ```
 
@@ -89,7 +85,6 @@ dockside login \
    --nickname local \
    --server https://www.local.dockside.dev
 
-DOCKSIDE_TEST_NAME_SUFFIX=auto # Use isolated user/role/profile names \
 DOCKSIDE_TEST_HOST='https://www.local.dockside.dev/' \
 bash t/integration/run_tests.sh
 ```
@@ -159,7 +154,7 @@ avoiding dependence on public routing from inside the Dockside container.
 | Variable | Default | Description |
 |---|---|---|
 | `DOCKSIDE_TEST_MODE` | (if `DOCKSIDE_TEST_IMAGE`, then `harness`; else `remote`) | `local`, `remote`, or `harness` |
-| `DOCKSIDE_TEST_HOST` | — | Public FQDN or URL, e.g. `www.local.dockside.dev` or `https://www.local.dockside.dev/` |
+| `DOCKSIDE_TEST_HOST` | current CLI server URL | Public FQDN or URL, e.g. `www.local.dockside.dev` or `https://www.local.dockside.dev/`; if unset outside harness mode, the runner uses the CLI's currently selected server |
 | `DOCKSIDE_TEST_ADMIN` | — | `username:password` (if unset, uses stored CLI session) |
 | `DOCKSIDE_TEST_IMAGE` | — | Docker image for harness mode |
 | `DOCKSIDE_TEST_HARNESS_ZONE` | `dockside.test` | DNS zone used by harness mode when launching a fresh Dockside container |
@@ -167,9 +162,14 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_CONTAINER_ID` | — | Running Dockside container ID (enables docker-exec SSH tests in non-harness modes) |
 | `DOCKSIDE_TEST_SSH_SERVER` | `git@github.com` | Outbound SSH server for test 09 B |
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
-| `DOCKSIDE_TEST_NAME_SUFFIX` | (none) | Suffix for test resource names; `auto` generates a random 6-char hex string |
-| `DOCKSIDE_TEST_CLEANUP_REUSED` | `0` | Also clean up reused test roles/users/profiles for the active suffix, not just resources created by the current run |
+| `DOCKSIDE_TEST_NAME_SUFFIX` | `auto` | Suffix for test resource names; `auto` generates a random 6-char hex string |
+| `DOCKSIDE_TEST_CLEANUP_REUSED` | `1` | Also clean up reused test roles/users/profiles for the active suffix, not just resources created by the current run |
 | `DOCKSIDE_TEST_SKIP_CLEANUP` | `0` | Usually set via `--skip-cleanup`; preserves created test roles/users/profiles for investigation |
+
+If `DOCKSIDE_TEST_HOST` is unset outside harness mode, the runner reads the
+CLI config and uses the currently selected server URL. The harness still
+verifies the effective admin identity and permissions via `dockside whoami`
+before creating any test resources.
 
 ## Runner Flags
 
@@ -193,7 +193,7 @@ bash t/integration/run_tests.sh --only 09
 DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1 bash t/integration/run_tests.sh --only 08
 
 # Run a preserved repro with isolated resource names:
-DOCKSIDE_TEST_NAME_SUFFIX=auto bash t/integration/run_tests.sh --only 04 --skip-cleanup --verbose
+bash t/integration/run_tests.sh --only 04 --skip-cleanup --verbose
 ```
 
 ## Test Construction
