@@ -41,13 +41,15 @@ def docker_available():
         return False
 
 
-def write_ssh_config(tmpdir, host_pattern, proxy_command, hostname, identity_file):
+def write_ssh_config(tmpdir, host_pattern, proxy_command, hostname, identity_file, ssh_user=None):
     """Write a temporary SSH config file and return its path."""
     config_path = os.path.join(tmpdir, 'ssh_config')
     with open(config_path, 'w') as fh:
         fh.write(f'Host {host_pattern}\n')
         fh.write(f'    ProxyCommand {proxy_command}\n')
         fh.write(f'    Hostname {hostname}\n')
+        if ssh_user:
+            fh.write(f'    User {ssh_user}\n')
         fh.write(f'    IdentityFile {identity_file}\n')
         fh.write('    IdentitiesOnly yes\n')
         fh.write('    PreferredAuthentications publickey\n')
@@ -60,6 +62,50 @@ def write_ssh_config(tmpdir, host_pattern, proxy_command, hostname, identity_fil
         fh.write('    LogLevel ERROR\n')
     os.chmod(config_path, 0o600)
     return config_path
+
+
+def write_cli_ssh_config(tmpdir, config_text):
+    """Write CLI-generated ssh_config text plus strict test-only options."""
+    config_path = os.path.join(tmpdir, 'ssh_config')
+    with open(config_path, 'w', encoding='utf-8') as fh:
+        fh.write(config_text.rstrip())
+        fh.write('\n')
+        fh.write('    IdentitiesOnly yes\n')
+        fh.write('    PreferredAuthentications publickey\n')
+        fh.write('    PasswordAuthentication no\n')
+        fh.write('    KbdInteractiveAuthentication no\n')
+        fh.write('    BatchMode yes\n')
+        fh.write('    StrictHostKeyChecking no\n')
+        fh.write('    UserKnownHostsFile /dev/null\n')
+        fh.write('    LogLevel ERROR\n')
+    os.chmod(config_path, 0o600)
+    return config_path
+
+
+def run_host_ssh_via_cli_config(client, devtainer, private_key_path, remote_argv):
+    """
+    Use the CLI's `ssh config` output plus strict test-only options to run ssh.
+
+    Returns subprocess.CompletedProcess.
+    """
+    spec = client.ssh_proxy_spec(devtainer)
+    ssh_alias = spec.get('ssh_alias')
+    if not ssh_alias:
+        raise APIError('CLI did not return a usable SSH alias')
+    with ssh_tempdir() as tmpdir:
+        identity_file = prepare_identity_file(tmpdir, private_key_path)
+        config_text = client.ssh_config(
+            devtainer,
+            identity_file=identity_file,
+            alias=ssh_alias,
+        )
+        config_path = write_cli_ssh_config(tmpdir, config_text)
+        argv = ['ssh', '-F', config_path, ssh_alias] + list(remote_argv)
+        debug_ssh_command(argv, config_path)
+        return subprocess.run(
+            argv,
+            capture_output=True, text=True, timeout=30
+        )
 
 
 def prepare_identity_file(tmpdir, source_path):

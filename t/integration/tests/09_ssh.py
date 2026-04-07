@@ -21,12 +21,9 @@ from _ssh_test_common import (
     SshTestMixin,
     _DEV1_KEY,
     _DEV2_KEY,
-    debug_ssh_command,
-    prepare_identity_file,
+    run_host_ssh_via_cli_config,
     ssh_available,
-    ssh_tempdir,
     warn_missing_host_tool,
-    write_ssh_config,
     wstunnel_available,
 )
 
@@ -49,28 +46,9 @@ class SshTests(SshTestMixin, TestCase):
 
         self._ensure_ssh_container()
 
-        spec = self.dev1.ssh_proxy_spec(self.SSH_CONTAINER)
-        ssh_alias = spec.get('ssh_alias')
-        ssh_hostname = spec.get('hostname')
-        proxy_cmd = spec.get('proxy_command')
-        if not ssh_alias or not ssh_hostname or not proxy_cmd:
-            self.skip('CLI did not return a usable SSH proxy spec for dev1')
-
-        with ssh_tempdir() as tmpdir:
-            identity_file = prepare_identity_file(tmpdir, _DEV1_KEY)
-            config_path = write_ssh_config(
-                tmpdir,
-                host_pattern=ssh_alias,
-                proxy_command=proxy_cmd,
-                hostname=ssh_hostname,
-                identity_file=identity_file,
-            )
-            argv = ['ssh', '-F', config_path, ssh_alias, 'echo', 'hello']
-            debug_ssh_command(argv, config_path)
-            r = subprocess.run(
-                argv,
-                capture_output=True, text=True, timeout=30
-            )
+        r = run_host_ssh_via_cli_config(
+            self.dev1, self.SSH_CONTAINER, _DEV1_KEY, ['echo', 'hello']
+        )
         self.assert_equal(r.stdout.strip(), 'hello',
                           f'SSH did not return hello; rc={r.returncode} '
                           f'stderr={r.stderr!r} stdout={r.stdout!r}')
@@ -103,28 +81,9 @@ class SshTests(SshTestMixin, TestCase):
         self.dev1.update(self.SSH_CONTAINER, developers=self.test_username_dev2)
         self._wait_ssh_route_accessible(self.dev2, timeout=20)
 
-        spec = self.dev2.ssh_proxy_spec(self.SSH_CONTAINER)
-        ssh_alias = spec.get('ssh_alias')
-        ssh_hostname = spec.get('hostname')
-        proxy_cmd = spec.get('proxy_command')
-        if not ssh_alias or not ssh_hostname or not proxy_cmd:
-            self.skip('CLI did not return a usable SSH proxy spec for dev2')
-
-        with ssh_tempdir() as tmpdir:
-            identity_file = prepare_identity_file(tmpdir, _DEV2_KEY)
-            config_path = write_ssh_config(
-                tmpdir,
-                host_pattern=ssh_alias,
-                proxy_command=proxy_cmd,
-                hostname=ssh_hostname,
-                identity_file=identity_file,
-            )
-            argv = ['ssh', '-F', config_path, ssh_alias, 'echo', 'hello']
-            debug_ssh_command(argv, config_path)
-            r = subprocess.run(
-                argv,
-                capture_output=True, text=True, timeout=30
-            )
+        r = run_host_ssh_via_cli_config(
+            self.dev2, self.SSH_CONTAINER, _DEV2_KEY, ['echo', 'hello']
+        )
         self.assert_equal(r.stdout.strip(), 'hello',
                           f'dev2 SSH failed; rc={r.returncode} '
                           f'stderr={r.stderr!r} stdout={r.stdout!r}')

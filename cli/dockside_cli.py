@@ -1121,6 +1121,34 @@ def _auth_cookie_header(opener, server):
     return data.get('data') or ''
 
 
+def _merged_ssh_cookie_header(opener, server):
+    """
+    Return the Cookie header for SSH proxying to `server`.
+
+    /getAuthCookies returns the target server's own auth cookie (plus any
+    configured globalCookie), but it does not include ancestor cookies that the
+    CLI merged into the opener jar via the configured parent chain. For nested
+    Dockside instances we must prepend those ancestor cookies too, so the
+    ProxyCommand request traverses the outer proxies with the same effective
+    authentication state as normal CLI requests.
+    """
+    target_cookie_header = _auth_cookie_header(opener, server)
+
+    ancestor_parts = []
+    for cookie in getattr(opener, '_jar', ()) or ():
+        try:
+            if cookie.has_nonstandard_attr('DocksideAncestor'):
+                ancestor_parts.append(f'{cookie.name}={cookie.value}')
+        except Exception:
+            continue
+
+    if ancestor_parts and target_cookie_header:
+        return '; '.join(ancestor_parts + [target_cookie_header])
+    if ancestor_parts:
+        return '; '.join(ancestor_parts)
+    return target_cookie_header
+
+
 def _build_ssh_proxy_command(cookie_header, websocket_url, nest_level=None, tls_sni=None):
     """
     Build a ProxyCommand line suitable for use inside ssh_config.
@@ -1154,7 +1182,7 @@ def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
     else:
         websocket_url = f'wss://{server_hostname}'
         tls_sni = None
-    cookie_header = _auth_cookie_header(opener, server)
+    cookie_header = _merged_ssh_cookie_header(opener, server)
     proxy_command = _build_ssh_proxy_command(
         cookie_header,
         websocket_url,

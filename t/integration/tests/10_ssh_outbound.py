@@ -29,9 +29,8 @@ from _ssh_test_common import (
     SshTestMixin,
     _DEV1_KEY,
     docker_available,
-    prepare_identity_file,
+    run_host_ssh_via_cli_config,
     ssh_available,
-    ssh_tempdir,
     warn_missing_host_tool,
     wstunnel_available,
 )
@@ -74,15 +73,9 @@ class SshOutboundTests(SshTestMixin, TestCase):
             self.skip('wstunnel not in PATH')
         if not os.path.isfile(_DEV1_KEY):
             self.skip(f'testdev1 key not found at {_DEV1_KEY}')
-        with ssh_tempdir() as tmpdir:
-            identity_file = prepare_identity_file(tmpdir, _DEV1_KEY)
-            cmd = (
-                [self.dev1._cli]
-                + self.dev1._base_args()
-                + ['ssh', '--identity-file', identity_file,
-                   self.SSH_CONTAINER, 'bash', '-lc', self._SELF_SSH_SCRIPT]
-            )
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return run_host_ssh_via_cli_config(
+            self.dev1, self.SSH_CONTAINER, _DEV1_KEY, ['bash', '-lc', self._SELF_SSH_SCRIPT]
+        )
 
     def test_01_outgoing_ssh_via_integrated_agent(self):
         """Use the devtainer's integrated ssh-agent to SSH to 127.0.0.1."""

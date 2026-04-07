@@ -339,6 +339,35 @@ class DocksideClient:
         """Backward-compatible internal entrypoint for read-only commands."""
         return self._run_readonly(*cmd_args)
 
+    def _run_text(self, *cmd_args):
+        """Run a read-only CLI command that returns plain text output."""
+        cmd = [self._cli, '--server', self._server, '--output', 'text']
+        if not self._use_cli_admin_creds:
+            if self._should_send_credentials():
+                cmd.extend(['--username', self._username,
+                            '--password', self._password])
+            cmd.extend(['--cookie-file', self._session_cookie_file])
+        if not self._verify_ssl:
+            cmd.append('--no-verify')
+        if self._connect_to:
+            cmd.extend(['--connect-to', self._connect_to])
+        cmd.extend(list(cmd_args))
+        env = os.environ.copy()
+        env.pop('DOCKSIDE_CONFIG_DIR', None)
+        verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
+        debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
+        if verbose or debug:
+            print(f'# CMD: {" ".join(cmd)}', file=sys.stderr)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if debug:
+            print(f'# DEBUG rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}',
+                  file=sys.stderr)
+        if result.returncode != 0:
+            msg = result.stderr.strip() or result.stdout.strip()
+            raise APIError(msg or f'CLI exited {result.returncode}')
+        self._reload_cookie_jar()
+        return result.stdout
+
     def _reload_cookie_jar(self):
         """Load/reload the session cookie file written by the CLI."""
         if self._session_cookie_file is None:
@@ -435,6 +464,19 @@ class DocksideClient:
         if not isinstance(result, dict):
             raise APIError('ssh proxy-command returned no structured output')
         return result
+
+    def ssh_config(self, name, identity_file=None, alias=None, forward_agent=False):
+        """Return CLI-generated ssh_config text for a devtainer."""
+        args = ['ssh']
+        if identity_file:
+            args.extend(['--identity-file', identity_file])
+        if forward_agent:
+            args.append('--forward-agent')
+        if alias:
+            args.extend(['--alias', alias])
+        args.append('config')
+        args.append(name)
+        return self._run_text(*args)
 
     def check_service(self, container_name, router_prefix='www',
                       parent_fqdn=None, timeout=30):
