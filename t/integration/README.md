@@ -65,11 +65,17 @@ bash t/integration/run_tests.sh
 ```
 
 ### Harness mode (CI)
-Launches a fresh Dockside container, runs all tests, then removes the container:
+Launches a fresh Dockside container, runs all tests, then removes the container.
+By default the harness also creates an isolated temporary CLI config directory,
+logs in there, and drives the harness target through the CLI's stored server
+entry rather than by forcing `--connect-to` on every CLI call:
 ```bash
 DOCKSIDE_TEST_IMAGE=newsnowlabs/dockside:latest \
 bash t/integration/run_tests.sh
 ```
+
+Set `DOCKSIDE_TEST_HARNESS_ISOLATED_CLI_CONFIG=0` to fall back to the legacy
+direct `--connect-to` harness transport.
 
 ### Via test.sh
 ```bash
@@ -158,18 +164,21 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_ADMIN` | — | `username:password` (if unset, uses stored CLI session) |
 | `DOCKSIDE_TEST_IMAGE` | — | Docker image for harness mode |
 | `DOCKSIDE_TEST_HARNESS_ZONE` | `dockside.test` | DNS zone used by harness mode when launching a fresh Dockside container |
+| `DOCKSIDE_TEST_HARNESS_ISOLATED_CLI_CONFIG` | `1` | In harness mode, create a temporary `DOCKSIDE_CLI_CONFIG` and temporary server entry so the CLI's stored transport settings drive test traffic; set `0` for legacy direct `--connect-to` transport |
 | `DOCKSIDE_TEST_VERIFY_SSL` | `0` | Set `1` to verify SSL certificates |
 | `DOCKSIDE_TEST_CONTAINER_ID` | — | Running Dockside container ID (enables docker-exec SSH tests in non-harness modes) |
 | `DOCKSIDE_TEST_SSH_SERVER` | `git@github.com` | Outbound SSH server for test 09 B |
+| `DOCKSIDE_TEST_CONTAINER_ACCESS` | `auto` | Preferred access method for tests that can inspect a devtainer via either `docker exec` or SSH; ignored if the requested method is unavailable |
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
 | `DOCKSIDE_TEST_NAME_SUFFIX` | `auto` | Suffix for test resource names; `auto` generates a random 6-char hex string |
 | `DOCKSIDE_TEST_CLEANUP_REUSED` | `1` | Also clean up reused test roles/users/profiles for the active suffix, not just resources created by the current run |
 | `DOCKSIDE_TEST_SKIP_CLEANUP` | `0` | Usually set via `--skip-cleanup`; preserves created test roles/users/profiles for investigation |
 
 If `DOCKSIDE_TEST_HOST` is unset outside harness mode, the runner reads the
-CLI config and uses the currently selected server URL. The harness still
-verifies the effective admin identity and permissions via `dockside whoami`
-before creating any test resources.
+current CLI config (`DOCKSIDE_CLI_CONFIG`, `DOCKSIDE_CONFIG_DIR`, or
+`~/.config/dockside`) and uses the currently selected server URL. The harness
+still verifies the effective admin identity and permissions via `dockside
+whoami` before creating any test resources.
 
 ## Runner Flags
 
@@ -313,6 +322,8 @@ the matching private key into the devtainer's integrated `ssh-agent`.
   `/opt/dockside/system/latest/bin`)
 - in `remote` mode, requires `wstunnel` in `PATH` so the test can enter the
   devtainer via `dockside ssh`
+- `DOCKSIDE_TEST_CONTAINER_ACCESS=auto|docker|ssh` can request which path is
+  preferred; the test falls back when the requested mechanism is unavailable
 - both paths then run the same in-devtainer check:
   - confirm `ssh-agent` is running and has the expected key
   - confirm `~dockside/.ssh/authorized_keys` contains the matching public key

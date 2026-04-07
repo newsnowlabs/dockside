@@ -543,6 +543,8 @@ overridden by `cookie_file` in `config.json`.
 Override the config directory with:
 
 ```sh
+DOCKSIDE_CLI_CONFIG=/path/to/dir
+# legacy name also still works:
 DOCKSIDE_CONFIG_DIR=/path/to/dir
 ```
 
@@ -585,7 +587,8 @@ dockside --server staging -o json ssh proxy-command my-devtainer
 
 ## Appendix: Security
 
-- `DOCKSIDE_CONFIG_DIR` is validated to reject empty paths, null bytes, path
+- `DOCKSIDE_CLI_CONFIG` and the legacy `DOCKSIDE_CONFIG_DIR` are validated to
+  reject empty paths, null bytes, path
   traversal, and symlinks.
 - Config and cookie file writes use atomic temp-file + `os.replace()`.
 - Cookie filenames supplied via `--cookie-file` are sanitised.

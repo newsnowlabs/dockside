@@ -24,6 +24,11 @@
 #
 #   DOCKSIDE_TEST_IMAGE   Docker image for harness mode
 #   DOCKSIDE_TEST_HARNESS_ZONE  DNS zone for harness container (default: dockside.test)
+#   DOCKSIDE_TEST_HARNESS_ISOLATED_CLI_CONFIG
+#                         1/unset = in harness mode, create a temporary CLI config
+#                         directory and temporary server entry so the CLI's own
+#                         stored transport settings drive test traffic
+#                         0 = use legacy direct --connect-to transport in harness mode
 #   DOCKSIDE_TEST_VERIFY_SSL  0 (default) or 1
 #
 #   DOCKSIDE_TEST_NAME_SUFFIX  Suffix for test resource names:
@@ -53,6 +58,9 @@
 #   DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY  1 = allow creating/attaching Docker networks
 #                                       0 = disallow (even in harness mode)
 #                                       (unset = use mode default)
+#   DOCKSIDE_TEST_CONTAINER_ACCESS  auto|docker|ssh
+#                                  Preferred method for tests that can inspect a
+#                                  devtainer via either docker exec or SSH
 #
 # Examples:
 #   # Harness mode (CI):
@@ -96,7 +104,12 @@ if [[ -z "${DOCKSIDE_TEST_HOST:-}" && -z "${DOCKSIDE_TEST_IMAGE:-}" ]]; then
 import json
 import os
 
-cfg_path = os.path.expanduser('~/.config/dockside/config.json')
+cfg_root = (
+    os.environ.get('DOCKSIDE_CLI_CONFIG')
+    or os.environ.get('DOCKSIDE_CONFIG_DIR')
+    or os.path.join(os.path.expanduser('~'), '.config', 'dockside')
+)
+cfg_path = os.path.join(cfg_root, 'config.json')
 try:
     with open(cfg_path, encoding='utf-8') as fh:
         cfg = json.load(fh)
@@ -138,6 +151,8 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
     esac
 done
+
+[[ "$SKIP_CLEANUP" == "1" ]] && export DOCKSIDE_TEST_SKIP_CLEANUP=1
 
 # ── Mode detection ─────────────────────────────────────────────────────────────
 if [[ -n "${DOCKSIDE_TEST_MODE:-}" ]]; then
@@ -193,7 +208,6 @@ export DOCKSIDE_TEST_ONLY="${ONLY_PREFIX}"
 export DOCKSIDE_TEST_HARNESS_ID="${DOCKSIDE_TEST_HARNESS_ID:-}"
 [[ "$VERBOSE"      == "1" ]] && export DOCKSIDE_TEST_VERBOSE=1
 [[ "$DEBUG"        == "1" ]] && export DOCKSIDE_TEST_DEBUG=1
-[[ "$SKIP_CLEANUP" == "1" ]] && export DOCKSIDE_TEST_SKIP_CLEANUP=1
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {

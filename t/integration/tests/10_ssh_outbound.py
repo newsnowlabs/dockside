@@ -16,6 +16,9 @@ Both paths perform the same substantive check:
   1. find SSH_AUTH_SOCK inside the devtainer
   2. use that agent to SSH to dockside@127.0.0.1
   3. expect the local SSH server in the same devtainer to accept the key
+
+`DOCKSIDE_TEST_CONTAINER_ACCESS=auto|docker|ssh` can request a preferred path.
+The test ignores that preference when the requested mechanism is unavailable.
 """
 
 import os
@@ -77,22 +80,63 @@ class SshOutboundTests(SshTestMixin, TestCase):
             self.dev1, self.SSH_CONTAINER, _DEV1_KEY, ['bash', '-lc', self._SELF_SSH_SCRIPT]
         )
 
+    def _requested_access_method(self):
+        value = os.environ.get('DOCKSIDE_TEST_CONTAINER_ACCESS', 'auto').strip().lower()
+        return value if value in ('auto', 'docker', 'ssh') else 'auto'
+
+    def _docker_exec_target(self):
+        if not docker_available():
+            return None
+        try:
+            data = self.dev1.get_container(self.SSH_CONTAINER)
+        except Exception:
+            return None
+        return (data.get('data') or {}).get('id') or data.get('containerId')
+
     def test_01_outgoing_ssh_via_integrated_agent(self):
         """Use the devtainer's integrated ssh-agent to SSH to 127.0.0.1."""
         self._ensure_ssh_container()
 
         expected_pubkey = open(_DEV1_KEY + '.pub', 'r', encoding='utf-8').read().strip()
+        access = self._requested_access_method()
+        default_access = 'docker' if self.test_mode in ('local', 'harness') else 'ssh'
+        if access == 'auto':
+            access = default_access
 
-        if self.test_mode in ('local', 'harness'):
-            if not docker_available():
-                self.skip('docker CLI not available')
-            data = self.dev1.get_container(self.SSH_CONTAINER)
-            devtainer_id = (data.get('data') or {}).get('id') or data.get('containerId')
-            if not devtainer_id:
-                self.skip('Could not determine devtainer container ID')
+        devtainer_id = self._docker_exec_target()
+        docker_possible = bool(devtainer_id)
+        ssh_possible = (
+            ssh_available()
+            and wstunnel_available()
+            and os.path.isfile(_DEV1_KEY)
+        )
+
+        if access == 'docker' and docker_possible:
             result = self._run_self_ssh_via_docker(devtainer_id)
-        else:
+        elif access == 'ssh' and ssh_possible:
             result = self._run_self_ssh_via_dockside_ssh()
+        elif access == 'docker' and ssh_possible:
+            result = self._run_self_ssh_via_dockside_ssh()
+        elif access == 'ssh' and docker_possible:
+            result = self._run_self_ssh_via_docker(devtainer_id)
+        elif docker_possible:
+            result = self._run_self_ssh_via_docker(devtainer_id)
+        elif ssh_possible:
+            result = self._run_self_ssh_via_dockside_ssh()
+        elif access == 'ssh':
+            if not ssh_available():
+                warn_missing_host_tool('ssh')
+                self.skip('ssh not in PATH')
+            if not wstunnel_available():
+                warn_missing_host_tool('wstunnel')
+                self.skip('wstunnel not in PATH')
+            if not os.path.isfile(_DEV1_KEY):
+                self.skip(f'testdev1 key not found at {_DEV1_KEY}')
+            self.skip('Requested SSH container access is unavailable')
+        elif access == 'docker':
+            self.skip('Requested docker-exec container access is unavailable')
+        else:
+            self.skip('No usable container access method available')
 
         self.assert_in(
             expected_pubkey, result.stdout,

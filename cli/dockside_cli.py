@@ -39,25 +39,25 @@ def _validate_config_dir(path):
     - paths that resolve to a symlink
     """
     if not path:
-        raise ValueError("DOCKSIDE_CONFIG_DIR is empty")
+        raise ValueError("Dockside config directory override is empty")
     abs_path = os.path.normpath(os.path.abspath(path))
     if '\x00' in abs_path:
-        raise ValueError("DOCKSIDE_CONFIG_DIR contains null bytes")
+        raise ValueError("Dockside config directory override contains null bytes")
     if not os.path.isabs(abs_path):
-        raise ValueError("DOCKSIDE_CONFIG_DIR is not absolute")
+        raise ValueError("Dockside config directory override is not absolute")
     # normpath removes '..' but be explicit about rejecting them in the raw input
     for part in path.replace('\\', '/').split('/'):
         if part == '..':
             raise ValueError(
-                f"DOCKSIDE_CONFIG_DIR {path!r} contains path traversal components"
+                f"Dockside config directory override {path!r} contains path traversal components"
             )
     if os.path.islink(abs_path):
-        raise ValueError(f"DOCKSIDE_CONFIG_DIR {abs_path!r} is a symlink")
+        raise ValueError(f"Dockside config directory override {abs_path!r} is a symlink")
     return abs_path
 
 
 def _resolve_config_dir():
-    raw = os.environ.get('DOCKSIDE_CONFIG_DIR')
+    raw = os.environ.get('DOCKSIDE_CLI_CONFIG') or os.environ.get('DOCKSIDE_CONFIG_DIR')
     if raw:
         try:
             return _validate_config_dir(raw)

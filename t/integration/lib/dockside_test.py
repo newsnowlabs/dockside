@@ -231,7 +231,8 @@ class DocksideClient:
 
     def __init__(self, cli_path, server_url, username=None, password=None,
                  connect_to=None, verify_ssl=False,
-                 use_cli_admin_creds=False, reuse_explicit_session=False):
+                 use_cli_admin_creds=False, reuse_explicit_session=False,
+                 use_server_transport=False):
         self._cli = cli_path
         self._server = server_url
         self._username = username
@@ -239,6 +240,7 @@ class DocksideClient:
         self._connect_to = connect_to
         self._verify_ssl = verify_ssl
         self._use_cli_admin_creds = use_cli_admin_creds
+        self._use_server_transport = use_server_transport
         self._reuse_explicit_session = (
             reuse_explicit_session and not use_cli_admin_creds
         )
@@ -279,7 +281,7 @@ class DocksideClient:
             args.extend(['--cookie-file', self._session_cookie_file])
         if not self._verify_ssl:
             args.append('--no-verify')
-        if self._connect_to:
+        if self._connect_to and not self._use_server_transport:
             args.extend(['--connect-to', self._connect_to])
         return args
 
@@ -349,7 +351,7 @@ class DocksideClient:
             cmd.extend(['--cookie-file', self._session_cookie_file])
         if not self._verify_ssl:
             cmd.append('--no-verify')
-        if self._connect_to:
+        if self._connect_to and not self._use_server_transport:
             cmd.extend(['--connect-to', self._connect_to])
         cmd.extend(list(cmd_args))
         env = os.environ.copy()
@@ -720,7 +722,7 @@ class TestRunner:
     def __init__(self, cli_path, server_url, credentials, connect_to=None,
                  verify_ssl=False, test_mode='remote', harness_container_id=None,
                  allow_network_modify=None, name_attrs=None,
-                 reuse_user_sessions=False):
+                 reuse_user_sessions=False, use_server_transport=False):
         self._cli_path = cli_path
         self._server_url = server_url
         self._credentials = credentials  # dict: role -> (username, password) or (None, None)
@@ -731,6 +733,7 @@ class TestRunner:
         self._allow_network_modify = allow_network_modify
         self._name_attrs = name_attrs or {}
         self._reuse_user_sessions = reuse_user_sessions
+        self._use_server_transport = use_server_transport
         self._clients = {}
         self._active_cases = []
         self._active_class_teardowns = []
@@ -751,6 +754,7 @@ class TestRunner:
             verify_ssl=self._verify_ssl,
             use_cli_admin_creds=use_cli_admin_creds,
             reuse_explicit_session=self._reuse_user_sessions,
+            use_server_transport=self._use_server_transport,
         )
 
     def _validate_client(self, client, role):

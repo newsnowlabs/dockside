@@ -8,6 +8,9 @@ Environment variables (set by run_tests.sh / harness.sh):
   DOCKSIDE_TEST_MODE         local|remote|harness
   DOCKSIDE_TEST_SERVER_URL   Full https URL (canonical, set by run_tests.sh)
   DOCKSIDE_TEST_CONNECT_TO   TCP override: 'host[:port]' (set for local/harness)
+  DOCKSIDE_TEST_USE_SERVER_TRANSPORT
+                             1 to rely on CLI server config transport instead
+                             of passing --connect-to on every CLI call
   DOCKSIDE_TEST_ADMIN        username:password  (if unset, uses stored CLI session)
   DOCKSIDE_TEST_VERIFY_SSL   0 or 1 (default: 0)
   DOCKSIDE_TEST_ONLY         prefix filter (e.g. '04')
@@ -521,6 +524,7 @@ def main():
 
     server_url   = os.environ.get('DOCKSIDE_TEST_SERVER_URL', '')
     connect_to   = os.environ.get('DOCKSIDE_TEST_CONNECT_TO', '').strip() or None
+    use_server_transport = os.environ.get('DOCKSIDE_TEST_USE_SERVER_TRANSPORT', '0') == '1'
     test_mode    = os.environ.get('DOCKSIDE_TEST_MODE', 'remote')
     verify_ssl   = os.environ.get('DOCKSIDE_TEST_VERIFY_SSL', '0') == '1'
     only_prefix  = os.environ.get('DOCKSIDE_TEST_ONLY', '').strip()
@@ -565,6 +569,7 @@ def main():
         connect_to=connect_to,
         verify_ssl=verify_ssl,
         use_cli_admin_creds=(admin_creds[0] is None),
+        use_server_transport=use_server_transport,
     )
 
     # Pre-flight: verify admin has required permissions (via dockside whoami)
@@ -651,6 +656,7 @@ def main():
             allow_network_modify=allow_network_modify,
             name_attrs=name_attrs,
             reuse_user_sessions=reuse_user_sessions,
+            use_server_transport=use_server_transport,
         )
 
         # ── Discover and run test modules ─────────────────────────────────────
