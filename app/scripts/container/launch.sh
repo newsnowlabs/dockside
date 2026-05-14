@@ -131,24 +131,18 @@ update_ssh_authorized_keys() {
 create_git_config() {
    local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
 
-   if [ -f "$HOME/.gitconfig" ]; then
-      log "Leaving be existing ~/.gitconfig"
-      return
-   fi
-
    if [ -z "$GIT_COMMITTER_NAME" ] && [ -z "$GIT_COMMITTER_EMAIL" ]; then
       GIT_COMMITTER_NAME=$(echo "$OWNER_DETAILS" | jq -re '.name')
       GIT_COMMITTER_EMAIL=$(echo "$OWNER_DETAILS" | jq -re '.email')
    fi
 
    if [ -n "$GIT_COMMITTER_NAME" ] && [ -n "$GIT_COMMITTER_EMAIL" ]; then
-      log "Creating ~/.gitconfig for $IDE_USER"
-      busybox cat >$HOME/.gitconfig <<_EOE_ && busybox chown $IDE_USER:$IDE_USER $HOME/.gitconfig
-[user]
-name = $GIT_COMMITTER_NAME
-email = $GIT_COMMITTER_EMAIL
-_EOE_
-    fi
+      log "Updating ~/.gitconfig with user.name = $GIT_COMMITTER_NAME"
+      $IDE_PATH/bin/git config -f $HOME/.gitconfig --replace-all user.name "$GIT_COMMITTER_NAME"
+      log "Updating ~/.gitconfig with user.email = $GIT_COMMITTER_EMAIL"
+      $IDE_PATH/bin/git config -f $HOME/.gitconfig --replace-all user.email "$GIT_COMMITTER_EMAIL"
+      busybox chown $IDE_USER:$IDE_USER $HOME/.gitconfig
+   fi
 }
 
 launch_sshd() {
