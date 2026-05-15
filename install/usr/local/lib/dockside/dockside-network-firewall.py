@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import random
 import signal
 import socket
 import struct
@@ -43,22 +44,51 @@ from typing import Dict, List, Optional
 # Environment-driven constants
 # ---------------------------------------------------------------------------
 
+def _env_int(name: str, default: int, min_value: int,
+             max_value: Optional[int] = None) -> int:
+    """Parse and bound an integer environment setting at import time."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name}: expected integer, got {raw!r}")
+    if value < min_value:
+        raise ValueError(f"{name}: must be >= {min_value}, got {value}")
+    if max_value is not None and value > max_value:
+        raise ValueError(f"{name}: must be <= {max_value}, got {value}")
+    return value
+
+
 # How long (seconds) a resolved IP address may linger in an ipset after it
 # is no longer returned by DNS.  The grace period prevents brief DNS flapping
 # (common with CDN services returning different IP pools) from immediately
 # blocking in-flight connections.
-IPSET_STALE_TTL = int(os.environ.get("IPSET_STALE_TTL", "300"))
+IPSET_STALE_TTL = _env_int("IPSET_STALE_TTL", 300, 1, 86400)
 
 # How often (seconds) the daemon re-resolves hostname-backed ipsets to catch
 # DNS changes.  Should be comfortably below IPSET_STALE_TTL so fresh IPs are
 # added well before stale ones expire.  Individual ipsets may override this
 # via the per-ipset ``refresh_interval`` field.
-IPSET_REFRESH_INTERVAL = int(os.environ.get("IPSET_REFRESH_INTERVAL", "60"))
+IPSET_REFRESH_INTERVAL = _env_int("IPSET_REFRESH_INTERVAL", 60, 1, 86400)
 
 # How many DNS queries to fire per hostname per refresh cycle (global default).
 # CDN hostnames that return a different IP on each query benefit from a higher
 # value; individual ipsets may override via the per-ipset ``dns_queries`` field.
-IPSET_DNS_QUERIES = int(os.environ.get("IPSET_DNS_QUERIES", "1"))
+IPSET_DNS_QUERIES = _env_int("IPSET_DNS_QUERIES", 1, 1, 50)
+
+# Upper bounds that prevent accidental runaway DNS or kernel-memory use.  The
+# per-ipset extended JSON form may lower/raise max_entries within this bound;
+# hostname count is intentionally global so one config file cannot create an
+# unbounded DNS fan-out.
+IPSET_MAX_HOSTNAMES = _env_int("IPSET_MAX_HOSTNAMES", 100, 1, 1000)
+IPSET_MAX_ENTRIES   = _env_int("IPSET_MAX_ENTRIES", 4096, 1, 65536)
+
+# Failed DNS cycles are retried with exponential backoff rather than a tight
+# loop.  Jitter spreads retries when many ipsets fail at once.
+IPSET_FAILURE_BACKOFF_MAX = _env_int("IPSET_FAILURE_BACKOFF_MAX", 300, 1, 3600)
+IPSET_REFRESH_JITTER_PCT  = _env_int("IPSET_REFRESH_JITTER_PCT", 10, 0, 100)
 
 # String prefix applied to every iptables chain name and ipset name created
 # by this daemon.  Makes Dockside-owned objects instantly identifiable and
@@ -584,6 +614,8 @@ class IpsetDef:
                           Independent of the global IPSET_REFRESH_INTERVAL,
                           so CDN sets can be refreshed every few seconds while
                           stable single-IP sets refresh less often.
+        max_entries:      Maximum live IP addresses retained for this ipset;
+                          bounds accidental CDN/discovery fan-out.
     """
 
     def __init__(
@@ -592,11 +624,53 @@ class IpsetDef:
         dns_queries: int = IPSET_DNS_QUERIES,
         stale_ttl: int = IPSET_STALE_TTL,
         refresh_interval: int = IPSET_REFRESH_INTERVAL,
+        max_entries: int = IPSET_MAX_ENTRIES,
     ):
         self.hostnames        = hostnames
         self.dns_queries      = dns_queries
         self.stale_ttl        = stale_ttl
         self.refresh_interval = refresh_interval
+        self.max_entries      = max_entries
+
+    def validate(self, set_name: str) -> None:
+        """Validate tuning fields after construction from any config form."""
+        if not isinstance(self.hostnames, list):
+            raise ValueError(f"ipset {set_name!r}: hostnames must be a list")
+        if len(self.hostnames) > IPSET_MAX_HOSTNAMES:
+            raise ValueError(
+                f"ipset {set_name!r}: too many hostnames "
+                f"({len(self.hostnames)} > {IPSET_MAX_HOSTNAMES})"
+            )
+        for entry in self.hostnames:
+            _val_host_entry(entry, f"ipset {set_name!r}: entry")
+        if (not isinstance(self.dns_queries, int)
+                or isinstance(self.dns_queries, bool)
+                or not (1 <= self.dns_queries <= 50)):
+            raise ValueError(
+                f"ipset {set_name!r}: dns_queries must be an integer "
+                f"1–50, got {self.dns_queries!r}"
+            )
+        if (not isinstance(self.stale_ttl, int)
+                or isinstance(self.stale_ttl, bool)
+                or not (1 <= self.stale_ttl <= 86400)):
+            raise ValueError(
+                f"ipset {set_name!r}: stale_ttl must be an integer "
+                f"1–86400, got {self.stale_ttl!r}"
+            )
+        if (not isinstance(self.refresh_interval, int)
+                or isinstance(self.refresh_interval, bool)
+                or not (1 <= self.refresh_interval <= 86400)):
+            raise ValueError(
+                f"ipset {set_name!r}: refresh_interval must be an integer "
+                f"1–86400, got {self.refresh_interval!r}"
+            )
+        if (not isinstance(self.max_entries, int)
+                or isinstance(self.max_entries, bool)
+                or not (1 <= self.max_entries <= 65536)):
+            raise ValueError(
+                f"ipset {set_name!r}: max_entries must be an integer "
+                f"1–65536, got {self.max_entries!r}"
+            )
 
     def to_dict(self):
         """Serialize to JSON-compatible form.
@@ -607,7 +681,8 @@ class IpsetDef:
         """
         if (self.dns_queries      == IPSET_DNS_QUERIES
                 and self.stale_ttl        == IPSET_STALE_TTL
-                and self.refresh_interval == IPSET_REFRESH_INTERVAL):
+                and self.refresh_interval == IPSET_REFRESH_INTERVAL
+                and self.max_entries      == IPSET_MAX_ENTRIES):
             return list(self.hostnames)
         d: dict = {"hostnames": list(self.hostnames)}
         if self.dns_queries != IPSET_DNS_QUERIES:
@@ -616,6 +691,8 @@ class IpsetDef:
             d["stale_ttl"] = self.stale_ttl
         if self.refresh_interval != IPSET_REFRESH_INTERVAL:
             d["refresh_interval"] = self.refresh_interval
+        if self.max_entries != IPSET_MAX_ENTRIES:
+            d["max_entries"] = self.max_entries
         return d
 
     def __repr__(self) -> str:
@@ -623,7 +700,8 @@ class IpsetDef:
             f"IpsetDef(hosts={self.hostnames!r}, "
             f"dns_queries={self.dns_queries}, "
             f"stale_ttl={self.stale_ttl}, "
-            f"refresh_interval={self.refresh_interval})"
+            f"refresh_interval={self.refresh_interval}, "
+            f"max_entries={self.max_entries})"
         )
 
 
@@ -636,7 +714,7 @@ class Config:
     ipset name → list of hostnames/IPs to populate it with.
     """
 
-    def __init__(self, networks: List[NetworkSpec], ipsets: Dict[str, List[str]]):
+    def __init__(self, networks: List[NetworkSpec], ipsets: Dict[str, IpsetDef]):
         # Ordered list of all configured networks.
         self.networks = networks
 
@@ -704,38 +782,25 @@ class Config:
         for set_name, value in raw_ipsets.items():
             _val_identifier(set_name, "ipset name")
             if isinstance(value, list):
-                for entry in value:
-                    _val_host_entry(entry, f"ipset {set_name!r}: entry")
-                ipsets[set_name] = IpsetDef(value)
+                ipset_def = IpsetDef(value)
+                ipset_def.validate(set_name)
+                ipsets[set_name] = ipset_def
             elif isinstance(value, dict):
                 hostnames        = value.get("hostnames", [])
                 dns_queries      = value.get("dns_queries",      IPSET_DNS_QUERIES)
                 stale_ttl        = value.get("stale_ttl",        IPSET_STALE_TTL)
                 refresh_interval = value.get("refresh_interval", IPSET_REFRESH_INTERVAL)
+                max_entries      = value.get("max_entries",      IPSET_MAX_ENTRIES)
                 if not isinstance(hostnames, list):
                     raise ValueError(
                         f"ipset {set_name!r}: 'hostnames' must be a list"
                     )
-                for entry in hostnames:
-                    _val_host_entry(entry, f"ipset {set_name!r}: entry")
-                if not isinstance(dns_queries, int) or not (1 <= dns_queries <= 50):
-                    raise ValueError(
-                        f"ipset {set_name!r}: dns_queries must be an integer "
-                        f"1–50, got {dns_queries!r}"
-                    )
-                if not isinstance(stale_ttl, int) or stale_ttl < 1:
-                    raise ValueError(
-                        f"ipset {set_name!r}: stale_ttl must be a positive "
-                        f"integer, got {stale_ttl!r}"
-                    )
-                if not isinstance(refresh_interval, int) or refresh_interval < 1:
-                    raise ValueError(
-                        f"ipset {set_name!r}: refresh_interval must be a "
-                        f"positive integer, got {refresh_interval!r}"
-                    )
-                ipsets[set_name] = IpsetDef(
-                    hostnames, dns_queries, stale_ttl, refresh_interval
+                ipset_def = IpsetDef(
+                    hostnames, dns_queries, stale_ttl,
+                    refresh_interval, max_entries
                 )
+                ipset_def.validate(set_name)
+                ipsets[set_name] = ipset_def
             else:
                 raise ValueError(
                     f"ipset {set_name!r}: expected list or dict, "
@@ -1075,10 +1140,38 @@ class IpsetManager:
         # Registry mapping each ipset name to its IpsetDef.
         # Populated by ensure_ipset(); used by the refresh methods.
         self._sets: Dict[str, IpsetDef] = {}
-        # Monotonic timestamp of the most recent successful refresh per ipset.
-        # Used by refresh_due() and time_until_next_refresh() to implement
-        # per-ipset refresh intervals without per-ipset threads.
-        self._last_refresh: Dict[str, float] = {}
+        # Per-ipset DNS state used for scheduling/backoff and operator status.
+        self._last_attempt: Dict[str, float] = {}
+        self._last_success: Dict[str, float] = {}
+        self._last_error: Dict[str, str] = {}
+        self._failure_count: Dict[str, int] = {}
+        self._next_refresh: Dict[str, float] = {}
+        # Per-ipset/per-hostname IP cache.  A hostname that temporarily fails to
+        # resolve keeps its previous IPs refreshed in the seen-set, preventing
+        # other successful hostnames in the same ipset from aging it out.
+        self._host_ips: Dict[str, Dict[str, set]] = {}
+
+    @staticmethod
+    def _jitter(seconds: float) -> float:
+        """Apply small positive jitter to spread simultaneous DNS refreshes."""
+        if seconds <= 0 or IPSET_REFRESH_JITTER_PCT <= 0:
+            return seconds
+        return seconds * (1.0 + random.uniform(0.0, IPSET_REFRESH_JITTER_PCT / 100.0))
+
+    def _schedule_success(self, name: str, ipset_def: IpsetDef) -> None:
+        self._failure_count[name] = 0
+        self._last_success[name]  = time.monotonic()
+        self._next_refresh[name] = (
+            time.monotonic() + self._jitter(float(ipset_def.refresh_interval))
+        )
+
+    def _schedule_failure(self, name: str, ipset_def: IpsetDef, message: str) -> None:
+        failures = self._failure_count.get(name, 0) + 1
+        self._failure_count[name] = failures
+        self._last_error[name] = message
+        base = max(1, min(ipset_def.refresh_interval, IPSET_FAILURE_BACKOFF_MAX))
+        delay = min(float(IPSET_FAILURE_BACKOFF_MAX), float(base) * (2 ** (failures - 1)))
+        self._next_refresh[name] = time.monotonic() + self._jitter(delay)
 
     def ensure_ipset(self, name: str, ipset_def: IpsetDef) -> None:
         """Register a named ipset, create it in the kernel (if absent), and populate it.
@@ -1101,8 +1194,15 @@ class IpsetManager:
             ipset_def: IpsetDef carrying hostnames and tuning parameters.
         """
         self._sets[name] = ipset_def
+        # Drop cached DNS state for hostnames removed from the ipset definition.
+        allowed_hosts = set(ipset_def.hostnames)
+        host_state = self._host_ips.setdefault(name, {})
+        for host in list(host_state):
+            if host not in allowed_hosts:
+                host_state.pop(host, None)
         # Create the live set; -exist means "silently skip if already present".
-        _run(["ipset", "create", name, "hash:ip", "-exist"])
+        _run(["ipset", "create", name, "hash:ip",
+              "maxelem", str(ipset_def.max_entries), "-exist"])
         seen = name + "--seen"
         # Create the seen-set with per-entry TTL so entries auto-expire if not
         # refreshed within stale_ttl seconds.
@@ -1114,16 +1214,16 @@ class IpsetManager:
         """Re-resolve and refresh every registered ipset immediately.
 
         Called from ``_two_phase_apply`` (after a config change) and from the
-        ``refresh`` management-socket action.  Updates ``_last_refresh`` for
-        each set so the periodic loop does not immediately re-refresh right
-        after an explicit full refresh.  Failures for individual ipsets are
-        logged but do not abort the loop.
+        privileged ``refresh`` management-socket action.  Updates scheduling
+        state for each set so the periodic loop does not immediately re-refresh
+        right after an explicit full refresh.  Failures for individual ipsets
+        are logged but do not abort the loop.
         """
         # Iterate over a snapshot of keys so that concurrent modifications
         # (unlikely but possible via socket reloads) do not raise RuntimeError.
         for name in list(self._sets):
             try:
-                self._refresh_one(name)   # _refresh_one updates _last_refresh
+                self._refresh_one(name)   # _refresh_one updates scheduling state
             except Exception:
                 logging.exception("Failed to refresh ipset %s", name)
 
@@ -1140,9 +1240,9 @@ class IpsetManager:
             idef = self._sets.get(name)
             if idef is None:
                 continue
-            if now - self._last_refresh.get(name, 0.0) >= idef.refresh_interval:
+            if now >= self._next_refresh.get(name, 0.0):
                 try:
-                    self._refresh_one(name)   # updates _last_refresh
+                    self._refresh_one(name)   # updates scheduling state
                 except Exception:
                     logging.exception("Failed to refresh ipset %s", name)
 
@@ -1157,84 +1257,104 @@ class IpsetManager:
         if not self._sets:
             return float(IPSET_REFRESH_INTERVAL)
         now = time.monotonic()
-        return max(
-            0.0,
-            min(
-                self._last_refresh.get(name, 0.0) + idef.refresh_interval - now
-                for name, idef in self._sets.items()
-            ),
-        )
+        return max(0.0, min(
+            self._next_refresh.get(name, 0.0) - now
+            for name in self._sets
+        ))
 
     def _refresh_one(self, name: str) -> None:
         """Re-resolve hostnames for one ipset and synchronise the kernel set.
 
-        Algorithm (the "seen-set" pattern):
-          1. Resolve all hostnames to a set of new IPs (new_ips), firing
-             ``ipset_def.dns_queries`` queries per hostname so that CDN pools
-             that return a different IP on each call are discovered faster.
-          2. Safety check: if resolution yields nothing, leave the live set
-             unchanged to avoid emptying it due to a transient DNS outage.
-          3. For each newly resolved IP:
-               a. Add it to the live set (idempotent; -exist skips duplicates).
-               b. Delete + re-add it to the seen-set to reset its TTL clock
-                  using ``ipset_def.stale_ttl`` as the per-entry timeout.
-                  (A plain ``ipset add … timeout`` does NOT extend an existing
-                  entry's TTL — only delete-then-add achieves that.)
-          4. For each IP currently in the live set but absent from new_ips:
-               check the seen-set; if the IP has also expired from the seen-set
-               (i.e. absent from DNS for longer than stale_ttl) remove it from
-               the live set.  This is the grace-period mechanism.
-          5. Record the refresh timestamp for time_until_next_refresh().
+        This is intentionally best-effort DNS sampling, not a complete CDN
+        inventory.  Successful hostnames update their per-host cache; failed
+        hostnames keep their previous cache alive so a partial DNS outage does
+        not age out unrelated entries in the same ipset.  A refresh attempt is
+        recorded even on total failure so the scheduler can back off instead of
+        retrying in a tight loop.
         """
         ipset_def = self._sets.get(name)
         if ipset_def is None:
             return
+        now = time.monotonic()
+        self._last_attempt[name] = now
         seen = name + "--seen"
 
-        # Resolve all hostnames, firing dns_queries calls per host to maximise
-        # CDN pool discovery within a single refresh cycle.
-        new_ips: set = set()
-        for host in ipset_def.hostnames:
-            ips = _resolve_hostname_multi(host, ipset_def.dns_queries)
-            if ips:
-                new_ips.update(ips)
-            else:
-                logging.warning("Could not resolve %s for ipset %s", host, name)
+        host_state = self._host_ips.setdefault(name, {})
+        successful_hosts = 0
+        failed_hosts: List[str] = []
 
-        # Safety guard: if every hostname failed to resolve, keep the live set
-        # as-is rather than emptying it (would block all traffic using this set).
-        if not new_ips:
+        # Resolve each hostname independently.  If one hostname fails, preserve
+        # and re-refresh its previous IPs rather than letting other successful
+        # hostnames cause those entries to become stale.
+        for host in ipset_def.hostnames:
+            ips = set(_resolve_hostname_multi(host, ipset_def.dns_queries))
+            if ips:
+                successful_hosts += 1
+                host_state[host] = ips
+            else:
+                failed_hosts.append(host)
+                logging.warning("Could not resolve %s for ipset %s", host, name)
+                host_state.setdefault(host, set())
+
+        # The live desired set is the union of cached per-hostname answers.  For
+        # failed hostnames this uses their previous successful answers, if any.
+        desired_ips: set = set()
+        for host in ipset_def.hostnames:
+            desired_ips.update(host_state.get(host, set()))
+
+        # Bound accidental DNS/CDN fan-out before touching kernel state.  Sorting
+        # keeps behaviour deterministic when an operator hits the cap.
+        if len(desired_ips) > ipset_def.max_entries:
             logging.error(
-                "No IPs resolved for ipset %s — leaving live set unchanged", name
+                "ipset %s resolved/cached %d IPs, exceeding max_entries=%d; "
+                "truncating deterministically",
+                name, len(desired_ips), ipset_def.max_entries,
             )
+            desired_ips = set(sorted(desired_ips)[:ipset_def.max_entries])
+
+        # First startup, or a total outage with no cache: fail closed by leaving
+        # the live set unchanged, but schedule using backoff rather than a 0.1 s
+        # retry loop.
+        if not desired_ips:
+            msg = "no IPs resolved"
+            logging.error("No IPs resolved for ipset %s — leaving live set unchanged", name)
+            self._schedule_failure(name, ipset_def, msg)
             return
 
-        # Snapshot the IPs currently in the kernel live set before making changes.
         live_ips = self._get_ipset_ips(name)
 
-        # Add new IPs; refresh seen-set timeout (delete+add to reset TTL counter).
-        for ip in new_ips:
-            # Idempotent add to the live set; won't fail if already present.
+        # Add desired IPs and refresh their seen-set timeout.  This includes
+        # cached IPs for temporarily failed hostnames, deliberately preserving
+        # them until that hostname is removed from config or a later success
+        # replaces its cache.
+        for ip in desired_ips:
             _run(["ipset", "add", "-exist", name, ip], allow_fail=True)
-            # Delete first — necessary to reset an existing entry's TTL in the
-            # seen-set (ipset does not allow in-place timeout extension).
             _run(["ipset", "del", seen, ip], allow_fail=True)
             _run(["ipset", "add", seen, ip,
                   "timeout", str(ipset_def.stale_ttl)], allow_fail=True)
 
-        # Remove IPs that are stale: absent from new resolution AND expired from seen-set.
-        for ip in live_ips - new_ips:
-            # ``ipset test`` exits 0 if the entry exists, non-zero if absent/expired.
+        # Remove IPs that are absent from all current per-hostname caches and
+        # whose seen-set grace period has expired.
+        for ip in live_ips - desired_ips:
             r = _run(["ipset", "test", seen, ip], allow_fail=True)
             if r.returncode != 0:
-                # IP has not appeared in DNS for at least stale_ttl seconds.
                 logging.info("Removing stale IP %s from ipset %s", ip, name)
                 _run(["ipset", "del", name, ip], allow_fail=True)
 
-        logging.debug("ipset %s refreshed: %d active IPs", name, len(new_ips))
-        # Record when this ipset was last successfully refreshed so the loop
-        # can sleep precisely until the next one is due.
-        self._last_refresh[name] = time.monotonic()
+        if successful_hosts:
+            if failed_hosts:
+                self._last_error[name] = "partial DNS failure: " + ", ".join(failed_hosts)
+            else:
+                self._last_error.pop(name, None)
+            logging.debug(
+                "ipset %s refreshed: %d active cached IPs (%d/%d hosts ok)",
+                name, len(desired_ips), successful_hosts, len(ipset_def.hostnames),
+            )
+            self._schedule_success(name, ipset_def)
+        else:
+            msg = "all hostname lookups failed; preserved cached IPs"
+            logging.warning("ipset %s refresh failed; preserved %d cached IPs", name, len(desired_ips))
+            self._schedule_failure(name, ipset_def, msg)
 
     def _get_ipset_ips(self, name: str) -> set:
         """Return the set of IP addresses currently stored in a kernel ipset.
@@ -1282,10 +1402,49 @@ class IpsetManager:
         to remove the kernel ipset objects as well.
         """
         self._sets.pop(name, None)
+        self._last_attempt.pop(name, None)
+        self._last_success.pop(name, None)
+        self._last_error.pop(name, None)
+        self._failure_count.pop(name, None)
+        self._next_refresh.pop(name, None)
+        self._host_ips.pop(name, None)
 
     def registered_names(self) -> set:
         """Return the set of ipset names currently registered for periodic refresh."""
         return set(self._sets.keys())
+
+    def status_snapshot(self) -> dict:
+        """Return operator-facing DNS/refresh state for all registered ipsets."""
+        now = time.monotonic()
+        details: dict = {}
+        for name, idef in self._sets.items():
+            host_state = self._host_ips.get(name, {})
+            details[name] = {
+                "hostnames": list(idef.hostnames),
+                "dns_queries": idef.dns_queries,
+                "stale_ttl": idef.stale_ttl,
+                "refresh_interval": idef.refresh_interval,
+                "max_entries": idef.max_entries,
+                "last_attempt_age": (
+                    None if name not in self._last_attempt
+                    else max(0.0, now - self._last_attempt[name])
+                ),
+                "last_success_age": (
+                    None if name not in self._last_success
+                    else max(0.0, now - self._last_success[name])
+                ),
+                "next_refresh_seconds": max(
+                    0.0, self._next_refresh.get(name, 0.0) - now
+                ),
+                "failure_count": self._failure_count.get(name, 0),
+                "last_error": self._last_error.get(name),
+                "cached_by_hostname": {
+                    host: sorted(host_state.get(host, set()))
+                    for host in idef.hostnames
+                },
+                "live_ips": sorted(self._get_ipset_ips(name)),
+            }
+        return details
 
 
 # ---------------------------------------------------------------------------
@@ -1959,16 +2118,16 @@ class ManagementSocket:
       Peer credentials are read via ``SO_PEERCRED`` for every connection.
       Mutating actions (those that alter iptables/ipset state or persisted
       config) require the connecting process to run as root (UID 0).
-      Read-only actions (``status``, ``refresh``) are permitted for any
-      process in the socket's group.  All requests are logged with their peer
-      PID/UID/GID for audit purposes.
+      Read-only actions (currently ``status``) are permitted for any process in
+      the socket's group.  All requests are logged with their peer PID/UID/GID
+      for audit purposes.
     """
 
     # Actions that alter iptables/ipset kernel state or the persisted config
     # files; these require the connecting peer to be root (UID 0).
     _MUTATING_ACTIONS = frozenset({
         "reload", "apply", "set-network", "remove-network",
-        "set-ipset", "remove-ipset", "reconcile",
+        "set-ipset", "remove-ipset", "reconcile", "refresh",
     })
 
     def __init__(self):
@@ -2093,7 +2252,7 @@ class ManagementSocket:
 
                 # ── Authorization ─────────────────────────────────────────────
                 # Mutating actions may only be invoked by root (UID 0).
-                # Read-only actions (status, refresh) are open to any peer
+                # Read-only actions (currently status) are open to any peer
                 # that can connect (already constrained by socket 0o660 perms).
                 if action in self._MUTATING_ACTIONS and peer_uid != 0:
                     resp = {
@@ -2132,8 +2291,8 @@ class FirewallDaemon:
 
     Thread model:
       Main thread      — blocks on ``_stop.wait()`` after startup; handles signals.
-      ipset-refresh    — daemon thread; re-resolves all ipsets every
-                         IPSET_REFRESH_INTERVAL seconds.
+      ipset-refresh    — daemon thread; re-resolves ipsets on independent
+                         per-set schedules with DNS-failure backoff.
       mgmt-socket      — daemon thread (if ``socket_path`` provided); accepts
                          management connections.
       config-reload    — short-lived daemon thread spawned on SIGUSR1.
@@ -2289,7 +2448,8 @@ class FirewallDaemon:
         concurrent config reloads (SIGUSR1 / socket "reload" action).
         """
         while True:
-            wait = self._ipset_mgr.time_until_next_refresh()
+            with self._lock:
+                wait = self._ipset_mgr.time_until_next_refresh()
             # 0.1 s floor avoids a busy-spin when an ipset is immediately due.
             if self._stop.wait(timeout=max(wait, 0.1)):
                 break
@@ -2866,7 +3026,11 @@ class FirewallDaemon:
                     ),
                 }
 
-            new_ipsets = {k: v for k, v in old_cfg.ipsets.items() if k != ipset_name}
+            new_ipsets = {
+                k: v.to_dict()
+                for k, v in old_cfg.ipsets.items()
+                if k != ipset_name
+            }
             net_data = old_cfg.to_net_data()
             fw_data  = old_cfg.to_fw_data()
             fw_data["ipsets"] = new_ipsets
@@ -2891,16 +3055,20 @@ class FirewallDaemon:
         if not cfg:
             # Daemon started but _apply_full has not completed yet.
             return {"status": "ok", "ready": False}
-        return {
-            "status":   "ok",
-            "ready":    True,
-            "networks": [s.name for s in cfg.networks],
-            "ipsets":   {
-                # Snapshot live kernel ipset membership (not the hostname list).
-                name: sorted(self._ipset_mgr._get_ipset_ips(name))
-                for name in cfg.ipsets
-            },
-        }
+        with self._lock:
+            details = self._ipset_mgr.status_snapshot()
+            return {
+                "status":   "ok",
+                "ready":    True,
+                "networks": [s.name for s in cfg.networks],
+                "ipsets":   {
+                    # Preserve the legacy compact status field: live kernel
+                    # membership only, sorted for deterministic output.
+                    name: details.get(name, {}).get("live_ips", [])
+                    for name in cfg.ipsets
+                },
+                "ipset_details": details,
+            }
 
 
 # ---------------------------------------------------------------------------
