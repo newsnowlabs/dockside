@@ -18,6 +18,7 @@ perl_require App.pm;
 perl_set $upstream_http Proxy::http_server_port;
 perl_set $upstream_https Proxy::https_server_port;
 perl_set $upstream_cookie Proxy::upstream_cookie;
+perl_set $ide_cache_control Proxy::ide_cache_control_var;
 
 log_format proxy_http '$host - $upstream_http - $remote_addr - $remote_user [$time_local] ' '"$request" $status $body_bytes_sent ' '"$http_referer" "$http_user_agent"';
 log_format proxy_https '$host - $upstream_https - $remote_addr - $remote_user [$time_local] ' '"$request" $status $body_bytes_sent ' '"$http_referer" "$http_user_agent"';
@@ -103,6 +104,11 @@ server {
       access_log /var/log/nginx/access.log proxy_http;
     }
 
+    if ($ide_cache_control != "") {
+      proxy_hide_header Cache-Control;
+      add_header Cache-Control $ide_cache_control always;
+    }
+
     proxy_pass_header Authorization;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -175,7 +181,12 @@ server {
       proxy_pass $upstream_https;
       access_log /var/log/nginx/access.log proxy_https;
     }
-    
+
+    if ($ide_cache_control != "") {
+      proxy_hide_header Cache-Control;
+      add_header Cache-Control $ide_cache_control always;
+    }
+
     # Enable SNI
     proxy_ssl_server_name on;
     proxy_ssl_name $host;

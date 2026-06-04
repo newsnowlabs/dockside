@@ -176,14 +176,27 @@ sub get_server_port ($r, $protocol) {
    # Now check if $User can access services (on any running reservation) with access level $props->{'auth'}
    my $reservationPermissions = $User->reservationPermissions($reservation);
    if( $reservationPermissions->{'auth'}{ $props->{'auth'} } ) {
+      $r->variable('ide_cache_control', _ide_cache_control($reservation));
       return $props->{'uri'};
    }
 
    return $errorCode;
 }
 
+sub _ide_cache_control ($reservation) {
+   my $running_ide = $reservation->data('runningIDE') // '';
+   return 'public, max-age=31536000, immutable' if $running_ide =~ /^openvscode/;
+   return '';
+}
+
 # PUBLIC METHODS
 # --------------
+
+# perl_set wrapper: returns the ide_cache_control variable set as a side-effect
+# by get_server_port, or '' if not set (non-IDE or unauthenticated requests).
+sub ide_cache_control_var ($r) {
+   return $r->variable('ide_cache_control') // '';
+}
 
 # Given a local base port number, convert to a host:port pair for http.
 sub http_server_port ($r) {
