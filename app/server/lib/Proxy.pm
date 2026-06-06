@@ -185,7 +185,7 @@ sub get_server_port ($r, $protocol) {
 
 sub _ide_cache_control ($reservation) {
    my $running_ide = $reservation->data('runningIDE') // '';
-   return 'public, max-age=31536000, immutable' if $running_ide =~ /^openvscode/;
+   return '1' if $running_ide =~ /^openvscode/;
    return '';
 }
 
