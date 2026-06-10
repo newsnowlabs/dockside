@@ -307,7 +307,7 @@ RUN cd $DS_PATH/bin && \
 # so providing fully working terminal access to gh
 RUN cd $DS_PATH/bin && \
     mv gh gh.orig && \
-    echo -e "#!$DS_PATH/bin/sh\nexport SSL_CERT_FILE=$DS_PATH/certs/ca-certificates.crt\nexec gh.orig \"\$@\"\n" >gh && \
+    echo -e "#!$DS_PATH/bin/sh\nexport SSL_CERT_FILE=$DS_PATH/certs/ca-certificates.crt\nexec \"\$(dirname \"\$0\")/gh.orig\" \"\$@\"\n" >gh && \
     chmod 755 gh
 
 # Create system/latest symlink pointing to the versioned directory
