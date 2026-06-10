@@ -322,80 +322,146 @@ fi
 log "Creating /var/log/$APP log directory ..."
 mkdir -p /var/log/$APP && chown -R $USER:$USER /var/log/$APP
 
-log "Populating $OPT_PATH from ${OPT_PATH}.img/ ..."
-if [ -d "${OPT_PATH}.img" ] && [ -d "$OPT_PATH" ]; then
-
-  # IDE version dirs: copy new ones only, preserving existing (running devtainers may still use them)
-  for ide in "${OPT_PATH}.img/ide"/*; do
-
-    name="$(basename "$ide")"
-
-    # Backwards-compatibility with Dockside v3.x: if 'latest' is not a symlink, mv it to 'latest.orig' 
-    if [ -d "${OPT_PATH}/ide/$name/latest" ] && [ ! -h "${OPT_PATH}/ide/$name/latest" ]; then
-      mv "${OPT_PATH}/ide/$name/latest" "${OPT_PATH}/ide/$name/latest.orig"
-    fi
-
-    for version in "$ide"/*; do
-      dst="$OPT_PATH/ide/$name/$(basename "$version")"
-
-      if [ -d "$version" ] && [ ! -h "$version" ]; then
-        if [ ! -e "$dst" ]; then
-          log "- [INSTALL] ${version#${OPT_PATH}.img/ide/}"
-          mkdir -p "$(dirname "$dst")"
-          cp -a "$version" "$(dirname "$dst")/"
-        else
-          log "- [EXISTS]  ${version#${OPT_PATH}.img/ide/}"
-        fi
-      fi
-    done
-
-    log "- [INSTALL] latest -> $name/$(readlink "$ide/latest")"
-    cp -a -P "$ide/latest" "$OPT_PATH/ide/$(basename "$ide")"
-  done
-
-  # Backwards-compatibility with Dockside v3.x: if 'latest' is not a symlink, mv it to 'latest.orig' 
-  if [ -d "${OPT_PATH}/system/latest" ] && [ ! -h "${OPT_PATH}/system/latest" ]; then
-    mv "${OPT_PATH}/system/latest" "${OPT_PATH}/system/latest.orig"
-  fi
-
-  # system/ version dirs: same pattern
-  for version in "${OPT_PATH}.img/system"/*/; do
-    dst="$OPT_PATH/system/$(basename "$version")"
-
-    # Copy if the src version is a directory but not a symlink and the dst doesn't yet exist:
-    if [ -d "$version" ] && [ ! -h "$version" ]; then
-      if [ ! -e "$dst" ]; then
-        log "- [INSTALL] system/$(basename "$version")"
-        mkdir -p "$OPT_PATH/system"
-        cp -a "$version" "$OPT_PATH/system/"
-      else
-        log "- [EXISTS]  system/$(basename "$version")"
-      fi
-    fi
-  done
-
-  # Update 'system/latest' symlink
-  log "- [INSTALL] latest -> system/$(readlink "${OPT_PATH}.img/system/latest")"
-  cp -a -P "${OPT_PATH}.img/system/latest" "$OPT_PATH/system/"
-
-  # Always update latest symlinks and bin/ (small, safe to overwrite)
-  mkdir -p "$OPT_PATH/bin" "$OPT_PATH/system"
-  log "- [INSTALL] bin/"
-  cp -a "${OPT_PATH}.img/bin/." "$OPT_PATH/bin/"
-
-  log "- [INSTALL] launch.sh"
-  cp -a -P "${OPT_PATH}.img/launch.sh" "$OPT_PATH/"
-
-  log "- Done."
+# Determine IDE volume state once: drives the populate logic below and replaces
+# the separate writability log that previously appeared after the populate block.
+if ! mountpoint -q "$OPT_PATH" 2>/dev/null; then
+  OPT_PATH_STATE=symlinked
+elif (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then
+  OPT_PATH_STATE=writeable
 else
-  log "- Skipping: ${OPT_PATH}.img not found (development/legacy mode)."
+  OPT_PATH_STATE=readonly
 fi
 
-log "Testing if shared IDE volume '$OPT_PATH' is writeable ..."
-if (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then
-  log "- Shared IDE volume is writeable ..."
+log "Populating $OPT_PATH from ${OPT_PATH}.img/ ..."
+if [ -d "${OPT_PATH}.img" ]; then
+
+  # Set to 0 to disable atomic bootstrap-symlink expansion and use a simple
+  # ordered copy instead (safe fallback; launch.sh is still installed last).
+  _EXPAND_BOOTSTRAP_SYMLINKS=1
+
+  case "$OPT_PATH_STATE" in
+    symlinked)
+      log "- $OPT_PATH is not a mountpoint; using build-time symlinks to ${OPT_PATH}.img directly (no volume mounted)."
+      ;;
+    readonly)
+      log "- Shared IDE volume is read-only; skipping populate."
+      ;;
+    writeable)
+      log "- Shared IDE volume is writeable."
+
+      if [ "$_EXPAND_BOOTSTRAP_SYMLINKS" = "1" ]; then
+
+        # Replace bootstrap symlinks (volume just initialised from image layer) with real content.
+        # Each item is copied to a .new path first so the bootstrap symlink stays live throughout
+        # the copy; only briefly unavailable during the close-together rm+mv (directories/files),
+        # or not at all for symlinks (mv atomically replaces the old symlink).
+        # launch.sh is skipped here and installed last — it is the readiness signal.
+        for item in "$OPT_PATH"/*; do
+          name="${item##*/}"
+          [ "$name" = "launch.sh" ] && continue
+          src="${OPT_PATH}.img/${name}"
+          [ -h "$item" ] && [ "$(readlink "$item")" = "$src" ] || continue
+          log "- [EXPAND] $name"
+          cp -a "$src" "${item}.new"
+          if [ -h "${item}.new" ]; then
+            mv "${item}.new" "$item"
+          else
+            rm "$item" && mv "${item}.new" "$item"
+          fi
+        done
+
+        # IDE version dirs: copy new ones only, preserving existing (running devtainers may still use them)
+        for ide in "${OPT_PATH}.img/ide"/*; do
+
+          name="$(basename "$ide")"
+
+          # Backwards-compatibility with Dockside v3.x: if 'latest' is not a symlink, mv it to 'latest.orig'
+          if [ -d "${OPT_PATH}/ide/$name/latest" ] && [ ! -h "${OPT_PATH}/ide/$name/latest" ]; then
+            mv "${OPT_PATH}/ide/$name/latest" "${OPT_PATH}/ide/$name/latest.orig"
+          fi
+
+          for version in "$ide"/*; do
+            dst="$OPT_PATH/ide/$name/$(basename "$version")"
+
+            if [ -d "$version" ] && [ ! -h "$version" ]; then
+              if [ ! -e "$dst" ]; then
+                log "- [INSTALL] ${version#${OPT_PATH}.img/ide/}"
+                mkdir -p "$(dirname "$dst")"
+                cp -a "$version" "$(dirname "$dst")/"
+              else
+                log "- [EXISTS]  ${version#${OPT_PATH}.img/ide/}"
+              fi
+            fi
+          done
+
+          log "- [INSTALL] latest -> $name/$(readlink "$ide/latest")"
+          cp -a -P "$ide/latest" "$OPT_PATH/ide/$(basename "$ide")"
+        done
+
+        # Backwards-compatibility with Dockside v3.x: if 'latest' is not a symlink, mv it to 'latest.orig'
+        if [ -d "${OPT_PATH}/system/latest" ] && [ ! -h "${OPT_PATH}/system/latest" ]; then
+          mv "${OPT_PATH}/system/latest" "${OPT_PATH}/system/latest.orig"
+        fi
+
+        # system/ version dirs: same pattern
+        for version in "${OPT_PATH}.img/system"/*; do
+          dst="$OPT_PATH/system/$(basename "$version")"
+
+          if [ -d "$version" ] && [ ! -h "$version" ]; then
+            if [ ! -e "$dst" ]; then
+              log "- [INSTALL] system/$(basename "$version")"
+              mkdir -p "$OPT_PATH/system"
+              cp -a "$version" "$OPT_PATH/system/"
+            else
+              log "- [EXISTS]  system/$(basename "$version")"
+            fi
+          fi
+        done
+
+        # Update 'system/latest' symlink
+        log "- [INSTALL] latest -> system/$(readlink "${OPT_PATH}.img/system/latest")"
+        cp -a -P "${OPT_PATH}.img/system/latest" "$OPT_PATH/system/"
+
+        # Always update bin/ (small, safe to overwrite)
+        mkdir -p "$OPT_PATH/bin" "$OPT_PATH/system"
+        log "- [INSTALL] bin/"
+        cp -a "${OPT_PATH}.img/bin/." "$OPT_PATH/bin/"
+
+      else
+
+        log "- Simple ordered copy (bootstrap-symlink expansion disabled)."
+
+        # Remove any bootstrap symlinks before copying; mkdir -p handles the real-dir case.
+        for _name in system bin ide; do
+          [ -h "$OPT_PATH/$_name" ] && rm "$OPT_PATH/$_name"
+          mkdir -p "$OPT_PATH/$_name"
+        done
+
+        log "- [INSTALL] system/"
+        cp -a "${OPT_PATH}.img/system/." "$OPT_PATH/system/"
+
+        log "- [INSTALL] bin/"
+        cp -a "${OPT_PATH}.img/bin/." "$OPT_PATH/bin/"
+
+        log "- [INSTALL] ide/"
+        cp -a "${OPT_PATH}.img/ide/." "$OPT_PATH/ide/"
+
+      fi
+
+      # launch.sh installed last in both paths: its presence as a real file is the readiness
+      # signal for child dev containers. A premature docker exec fails cleanly (ENOENT) until
+      # this step completes.
+      log "- [INSTALL] launch.sh"
+      cp -a "${OPT_PATH}.img/launch.sh" "$OPT_PATH/launch.sh.new"
+      [ -h "$OPT_PATH/launch.sh" ] && rm "$OPT_PATH/launch.sh"
+      mv "$OPT_PATH/launch.sh.new" "$OPT_PATH/launch.sh"
+
+      log "- Done."
+      ;;
+  esac
+
 else
-  log "- Shared IDE volume is not writeable."
+  log "- Skipping: ${OPT_PATH}.img not found (development/legacy mode)."
 fi
 
 log "Testing if shared host data volume '$OPT_PATH/host' is writeable ..."

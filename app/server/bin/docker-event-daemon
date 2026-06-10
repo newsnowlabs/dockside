@@ -62,6 +62,13 @@ use Reservation;
 use Containers;
 use User;
 
+# Retry failed docker exec attempts (e.g. container not yet fully initialised).
+# Set $EXEC_RETRY_MAX to 0 to disable and restore original one-shot behaviour.
+my $EXEC_RETRY_MAX      = 12;  # max retries after the first failure (12 * 5s = 60s)
+my $EXEC_RETRY_INTERVAL = 5;   # seconds between retries
+
+my %pendingExec;  # containerId => { attempts => N, nextTime => epoch }
+
 my $SIGNAL_RECEIVED = 0;
 my $STOP_EVENT_LOOP = sub { };
 
@@ -228,12 +235,19 @@ sub onContainerStart ($id, $eventCount) {
 
    flog("onContainerStart #$eventCount: we manage reservationId=$reservationId with containerId=$containerId");
 
+   # Clear any stale retry entry from a previous start of the same container.
+   delete $pendingExec{$containerId};
+
    try {
       $reservation->exec();
    }
    catch {
       my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
       flog("onContainerStart #$eventCount: failed to launch IDE for reservationId=$reservationId with containerId=$containerId: dbg='$dbg'; msg='$msg'");
+      if ($EXEC_RETRY_MAX > 0) {
+         flog("onContainerStart #$eventCount: scheduling retry for containerId=$containerId");
+         $pendingExec{$containerId} = { attempts => 1, nextTime => time() + $EXEC_RETRY_INTERVAL };
+      }
       return undef;
    };
 
@@ -260,6 +274,9 @@ sub onEvent ($event, $eventCount) {
    }
 
    if( $type eq 'container' && $action =~ /^(stop|create|destroy)$/ ) {
+      if ($action =~ /^(stop|destroy)$/ && delete $pendingExec{$id}) {
+         flog("onEvent #$eventCount: cancelled pending exec retry for $action containerId=$id");
+      }
       return 1; # Container lifecycle change; state refresh needed.
    }
 
@@ -323,6 +340,48 @@ sub eventHandler {
          catch {
             flog("eventHandler::on_tick: caught exception: " . (ref($_) ? $_->dbg : $_));
          };
+
+         # Retry any pending docker exec calls whose next-retry time has arrived.
+         if (%pendingExec) {
+            try {
+               for my $cid (keys %pendingExec) {
+                  my $entry = $pendingExec{$cid};
+                  next if time() < $entry->{'nextTime'};
+
+                  if ($entry->{'attempts'} > $EXEC_RETRY_MAX) {
+                     flog("eventHandler:tick: giving up on exec retry for containerId=$cid after $EXEC_RETRY_MAX retries");
+                     delete $pendingExec{$cid};
+                     next;
+                  }
+
+                  flog("eventHandler:tick: exec retry attempt $entry->{'attempts'} for containerId=$cid");
+
+                  Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+
+                  my $reservations = Reservation->load({ 'containerId' => $cid });
+                  if (!@$reservations) {
+                     flog("eventHandler:tick: containerId=$cid no longer managed; cancelling retry");
+                     delete $pendingExec{$cid};
+                     next;
+                  }
+
+                  try {
+                     $reservations->[0]->exec();
+                     flog("eventHandler:tick: exec retry succeeded on attempt $entry->{'attempts'} for containerId=$cid");
+                     delete $pendingExec{$cid};
+                  }
+                  catch {
+                     my $dbg = ref($_) ? $_->dbg() : $_;
+                     flog("eventHandler:tick: exec retry attempt $entry->{'attempts'} failed for containerId=$cid: $dbg");
+                     $entry->{'attempts'}++;
+                     $entry->{'nextTime'} = time() + $EXEC_RETRY_INTERVAL;
+                  };
+               }
+            }
+            catch {
+               flog("eventHandler::on_tick::retry: caught exception: " . (ref($_) ? $_->dbg : $_));
+            };
+         }
       },
    );
    
