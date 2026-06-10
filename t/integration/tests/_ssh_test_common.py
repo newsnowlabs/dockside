@@ -41,6 +41,21 @@ def docker_available():
         return False
 
 
+def requested_container_access_method(default='auto'):
+    value = os.environ.get('DOCKSIDE_TEST_CONTAINER_ACCESS', default).strip().lower()
+    return value if value in ('auto', 'docker', 'ssh') else default
+
+
+def devtainer_container_id(client, devtainer_name):
+    if not docker_available():
+        return None
+    try:
+        data = client.get_container(devtainer_name)
+    except Exception:
+        return None
+    return (data.get('data') or {}).get('id') or data.get('containerId')
+
+
 def write_ssh_config(tmpdir, host_pattern, proxy_command, hostname, identity_file, ssh_user=None):
     """Write a temporary SSH config file and return its path."""
     config_path = os.path.join(tmpdir, 'ssh_config')
@@ -106,6 +121,107 @@ def run_host_ssh_via_cli_config(client, devtainer, private_key_path, remote_argv
             argv,
             capture_output=True, text=True, timeout=30
         )
+
+
+def run_in_devtainer(client, devtainer, remote_argv, private_key_path=None,
+                     preferred='auto', system_bin_dir=None, run_as_user=None):
+    """
+    Run a command inside a devtainer using docker exec or host-side SSH.
+
+    preferred: auto|docker|ssh
+    Returns subprocess.CompletedProcess.
+    Raises APIError if no usable access method is available.
+    """
+    access = requested_container_access_method(preferred)
+    devtainer_id = devtainer_container_id(client, devtainer)
+    docker_possible = bool(devtainer_id)
+    ssh_possible = (
+        ssh_available()
+        and wstunnel_available()
+        and private_key_path
+        and os.path.isfile(private_key_path)
+    )
+
+    if access == 'auto':
+        access = 'docker' if docker_possible else 'ssh'
+
+    actual_backend = None
+
+    argv = list(remote_argv)
+    docker_argv = ['docker', 'exec']
+    if run_as_user:
+        docker_argv.extend(['-u', run_as_user])
+    if system_bin_dir:
+        docker_argv.extend(['-e', 'DOCKSIDE_TEST_SYSTEM_BIN_DIR=%s' % system_bin_dir])
+        argv = ['env', 'DOCKSIDE_TEST_SYSTEM_BIN_DIR=%s' % system_bin_dir] + argv
+    docker_argv.extend([devtainer_id] + argv)
+
+    if debug_enabled():
+        print(
+            '# DEBUG run_in_devtainer devtainer=%s preferred=%s chosen=%s '
+            'docker_possible=%s ssh_possible=%s' % (
+                devtainer,
+                preferred,
+                access,
+                int(docker_possible),
+                int(ssh_possible),
+            ),
+            file=sys.stderr,
+        )
+
+    def _debug_result(result, backend):
+        if not debug_enabled():
+            return
+        print(
+            f'# DEBUG run_in_devtainer result backend={backend} '
+            f'rc={result.returncode} '
+            f'stdout={result.stdout!r} '
+            f'stderr={result.stderr!r}',
+            file=sys.stderr,
+        )
+
+    if access == 'docker' and docker_possible:
+        actual_backend = 'docker'
+        if debug_enabled():
+            print(f'# DEBUG run_in_devtainer backend={actual_backend} devtainer={devtainer}',
+                  file=sys.stderr)
+        r = subprocess.run(docker_argv, capture_output=True, text=True, timeout=30)
+        _debug_result(r, actual_backend)
+        return r
+    if access == 'ssh' and ssh_possible:
+        actual_backend = 'ssh'
+        if debug_enabled():
+            print(f'# DEBUG run_in_devtainer backend={actual_backend} devtainer={devtainer}',
+                  file=sys.stderr)
+        r = run_host_ssh_via_cli_config(client, devtainer, private_key_path, argv)
+        _debug_result(r, actual_backend)
+        return r
+    if access == 'docker' and ssh_possible:
+        actual_backend = 'ssh'
+        if debug_enabled():
+            print(f'# DEBUG run_in_devtainer fallback backend={actual_backend} devtainer={devtainer}',
+                  file=sys.stderr)
+        r = run_host_ssh_via_cli_config(client, devtainer, private_key_path, argv)
+        _debug_result(r, actual_backend)
+        return r
+    if access == 'ssh' and docker_possible:
+        actual_backend = 'docker'
+        if debug_enabled():
+            print(f'# DEBUG run_in_devtainer fallback backend={actual_backend} devtainer={devtainer}',
+                  file=sys.stderr)
+        r = subprocess.run(docker_argv, capture_output=True, text=True, timeout=30)
+        _debug_result(r, actual_backend)
+        return r
+
+    if access == 'ssh':
+        if not ssh_available():
+            warn_missing_host_tool('ssh')
+        if not wstunnel_available():
+            warn_missing_host_tool('wstunnel')
+        raise APIError('Requested SSH container access is unavailable')
+    if access == 'docker':
+        raise APIError('Requested docker-exec container access is unavailable')
+    raise APIError('No usable container access method available')
 
 
 def prepare_identity_file(tmpdir, source_path):
