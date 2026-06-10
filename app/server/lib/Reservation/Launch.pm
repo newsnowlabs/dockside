@@ -94,7 +94,7 @@ sub cmdline_network ($self) {
 
 sub cmdline_docker_args ($self) {
    return (ref($self->profileObject->{'dockerArgs'}) eq 'ARRAY') ?
-      @{$self->profileObject->{'dockerArgs'}} : ();
+      map { $self->_placeholders($_) } @{$self->profileObject->{'dockerArgs'}} : ();
 }
 
 # This function generates mount options for tmpfs mounts.
