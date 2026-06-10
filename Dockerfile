@@ -535,9 +535,10 @@ RUN apt-get update && \
 # named volume is mounted at /opt/dockside, Docker copies image-layer content
 # (including these symlinks) into the volume before the container starts. This means
 # launch.sh and other items are accessible via symlink from the first instant, so
-# docker exec calls from an outer Dockside never race against the entrypoint's
-# populate step. When the entrypoint detects a writeable volume it expands the
-# symlinks to real content; the named-volume path also enables in-place upgrades.
+# docker exec calls from an outer Dockside never race against an inner Dockside
+# server entrypoint's populate step. When the entrypoint detects a writeable volume
+# it expands the symlinks to real content; the named-volume path also enables in-place
+# upgrades.
 RUN mv $OPT_PATH $OPT_PATH.img && mkdir -p $OPT_PATH \
     && for item in $OPT_PATH.img/*; do ln -s "$item" "$OPT_PATH/${item##*/}"; done
 
