@@ -23,6 +23,10 @@ log() {
    echo "$S$1" >&2
 }
 
+git() {
+   $IDE_PATH/bin/git -c "http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt" --exec-path="$IDE_PATH/bin" "$@"
+}
+
 which() {
    local cmd="$1"
    for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && return 0; done
@@ -170,13 +174,13 @@ launch_sshd() {
 create_git_repo() {
    [ -n "$GIT_URL" ] || return
 
-   log "- Running: $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL"
-   GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL
+   log "- Running: git clone $GIT_URL"
+   GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" git clone "$GIT_URL"
 
    # If $GIT_URL is an https:// URI, then store sslcainfo in .gitconfig
    if echo "$GIT_URL" | grep -qE '^https?://'; then
       log "Updating ~/.gitconfig with http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt"
-      $IDE_PATH/bin/git config -f $HOME/.gitconfig --add http.sslcainfo $IDE_PATH/certs/ca-certificates.crt
+      git config -f "$HOME/.gitconfig" --add http.sslcainfo "$IDE_PATH/certs/ca-certificates.crt"
    fi
 }
 
@@ -220,10 +224,15 @@ checkout_git_branch_or_pr() {
 
    if [ -n "$PR" ]; then
       log "Checking out PR $PR in $REPO"
-      (cd "$REPO" && $IDE_PATH/bin/gh pr checkout "$PR") || log "WARN: gh pr checkout '$PR' failed in repo '$REPO'"
+      if (cd "$REPO" && $IDE_PATH/bin/gh pr checkout "$PR"); then
+         log "Checked out PR $PR via gh in $REPO"
+      else
+         log "gh pr checkout '$PR' failed, trying git fetch fallback"
+         (cd "$REPO" && git fetch origin "refs/pull/$PR/head" && git checkout FETCH_HEAD) || log "WARN: PR $PR checkout failed in $REPO"
+      fi
    else
       log "Checking out branch $BRANCH in $REPO"
-      (cd "$REPO" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || log "WARN: git checkout '$BRANCH' failed in repo '$REPO'"
+      (cd "$REPO" && git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH") || log "WARN: git checkout '$BRANCH' failed in repo '$REPO'"
    fi
 }
 
@@ -491,6 +500,8 @@ launch_nonroot() {
    # Exported env vars made available to run_nonroot:
    export DEVCONTAINER_VSCODE
 
+   # Without -l, su passes all inherited/exported env vars to the child process unchanged,
+   # so only PATH and HOME need to be stated here as they require new values for $IDE_USER.
    $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" $DOCKSIDE_ROOT/launch.sh run_nonroot"
 }
 
@@ -521,8 +532,8 @@ launch_theia() {
       log "Launching and supervising the Theia IDE at $IDE_PATH"
 
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
-         # su will retain exported env vars and set new ones.
-         # So we use 'env -i' to clear all env vars before setting just the ones needed.
+         # Without -l, su passes all inherited/exported env vars through; env -i clears them
+         # so only the vars the IDE launcher needs are explicitly stated.
          $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
       else
          env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
@@ -559,8 +570,8 @@ launch_openvscode() {
       log "Launching and supervising the openvscode IDE at $IIDE_PATH"
 
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
-         # su will retain exported env vars and set new ones.
-         # So we use 'env -i' to clear all env vars before setting just the ones needed.
+         # Without -l, su passes all inherited/exported env vars through; env -i clears them
+         # so only the vars the IDE launcher needs are explicitly stated.
          $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
       else
          env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
@@ -580,6 +591,7 @@ run_nonroot() {
       create_git_repo
       gh_authenticate
       checkout_git_branch_or_pr
+      [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
       populate_vscode_extensions;
       populate_vscode_settings
       log "Repo setup subproc finished";
