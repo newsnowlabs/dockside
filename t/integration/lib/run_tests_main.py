@@ -70,6 +70,59 @@ _ALPINE_PROFILE = {
     ],
 }
 
+_GIT_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Git Repo",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": ["ubuntu:latest", "debian:latest", "alpine:latest"],
+    "gitURLs": ["*"],
+    "unixusers": ["dockside"],
+    "options": [
+        {
+            "name": "branch",
+            "label": "Branch",
+            "type": "text",
+            "default": "",
+            "placeholder": "e.g. main, feature/my-feature (leave blank for default)",
+        },
+        {
+            "name": "pr",
+            "label": "Pull Request #",
+            "type": "text",
+            "default": "",
+            "placeholder": "e.g. 42 (overrides branch if set)",
+        },
+        {
+            "name": "gh_token",
+            "label": "GitHub Token",
+            "type": "text",
+            "default": "",
+            "placeholder": "GitHub personal access token for gh pr checkout",
+        },
+    ],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--memory=1G", "--pids-limit=4000", "--env=GH_TOKEN={option.gh_token}"],
+    "command": [
+        "/bin/sh", "-c",
+        "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity",
+    ],
+}
+
 _NGINX_PROFILE = {
     "version": 2,
     "name": "Integration Test - NGINX",
@@ -254,6 +307,7 @@ class _EnvManager:
         self.user_viewer     = None
         self.profile_alpine  = None
         self.profile_nginx   = None
+        self.profile_git     = None
         self.password_dev    = 'inttest-testpass'
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -327,10 +381,19 @@ class _EnvManager:
 
     # ── user management ───────────────────────────────────────────────────────
 
-    def _ensure_user(self, base_name, role_name, resources, ssh_pubkey=None,
-                     ssh_keypair_name=None, ssh_privkey_path=None, ssh_pubkey_value=None):
+    def _ensure_user(self, base_name, role_name, resources, display_name=None,
+                     email=None, ssh_pubkey=None, ssh_keypair_name=None,
+                     ssh_privkey_path=None, ssh_pubkey_value=None):
         name     = _suffixed(base_name, self._suffix)
         existing = self._get_user(name)
+
+        def _user_set_args():
+            args = []
+            if display_name is not None:
+                args.extend(['--name', display_name])
+            if email is not None:
+                args.extend(['--email', email])
+            return args
 
         def _ssh_set_args():
             args = []
@@ -355,7 +418,9 @@ class _EnvManager:
                 # Always (re-)set the password so that a user created without one
                 # (e.g. by a previous buggy run) gets a usable passwd entry.
                 self._admin._run(
-                    'user', 'edit', name, '--user-password', self.password_dev,
+                    'user', 'edit', name,
+                    '--user-password', self.password_dev,
+                    *_user_set_args(),
                     *_ssh_set_args()
                 )
                 self._track_reused(self._created_users, name)
@@ -373,6 +438,7 @@ class _EnvManager:
             '--role',          role_name,
             '--user-password', self.password_dev,
         ]
+        create_args.extend(_user_set_args())
         for res_key, res_val in resources.items():
             create_args.extend(['--set', f'resources.{res_key}={json.dumps(res_val)}'])
         create_args.extend(_ssh_set_args())
@@ -450,6 +516,8 @@ class _EnvManager:
         # Users
         self.user_dev1 = self._ensure_user(
             'inttest-dev1', self.role_developer, _dev_resources,
+            display_name='Integration Test Dev 1',
+            email='inttest-dev1@dockside-integration-test.invalid',
             ssh_pubkey=dev1_pubkey,
             ssh_keypair_name='*',
             ssh_privkey_path=dev1_priv_path,
@@ -457,6 +525,8 @@ class _EnvManager:
         )
         self.user_dev2 = self._ensure_user(
             'inttest-dev2', self.role_developer, _dev_resources,
+            display_name='Integration Test Dev 2',
+            email='inttest-dev2@dockside-integration-test.invalid',
             ssh_pubkey=dev2_pubkey,
             ssh_keypair_name='*',
             ssh_privkey_path=dev2_priv_path,
@@ -464,20 +534,29 @@ class _EnvManager:
         )
         self.user_viewer = self._ensure_user(
             'inttest-viewer', self.role_viewer, _viewer_resources,
+            display_name='Integration Test Viewer',
+            email='inttest-viewer@dockside-integration-test.invalid',
         )
         self.user_user = self._ensure_user(
             'inttest-user', self.role_user, _viewer_resources,
+            display_name='Integration Test User',
+            email='inttest-user@dockside-integration-test.invalid',
         )
         self.user_view_all = self._ensure_user(
             'inttest-viewall', self.role_view_all, _viewer_resources,
+            display_name='Integration Test View-All',
+            email='inttest-viewall@dockside-integration-test.invalid',
         )
         self.user_develop_all = self._ensure_user(
             'inttest-developall', self.role_develop_all, _viewer_resources,
+            display_name='Integration Test Develop-All',
+            email='inttest-developall@dockside-integration-test.invalid',
         )
 
         # Profiles
         self.profile_alpine = self._ensure_profile('inttest-alpine', _ALPINE_PROFILE)
         self.profile_nginx  = self._ensure_profile('inttest-nginx',  _NGINX_PROFILE)
+        self.profile_git    = self._ensure_profile('inttest-git',    _GIT_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
 
@@ -609,6 +688,7 @@ def main():
         test_role_develop_all = _env_manager.role_develop_all
         test_profile_alpine  = _env_manager.profile_alpine
         test_profile_nginx   = _env_manager.profile_nginx
+        test_profile_git     = _env_manager.profile_git
         test_password_dev    = _env_manager.password_dev
         test_system_bin_dir  = os.environ.get(
             'DOCKSIDE_TEST_SYSTEM_BIN_DIR',
@@ -629,6 +709,7 @@ def main():
             'test_role_develop_all': test_role_develop_all,
             'test_profile_alpine':  test_profile_alpine,
             'test_profile_nginx':   test_profile_nginx,
+            'test_profile_git':     test_profile_git,
             'test_password_dev':    test_password_dev,
             'test_system_bin_dir':  test_system_bin_dir,
             '_name_suffix':         suffix,

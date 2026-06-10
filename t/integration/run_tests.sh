@@ -142,17 +142,20 @@ ONLY_PREFIX=""
 VERBOSE=0
 DEBUG=0
 SKIP_CLEANUP=0
+SKIP_CONTAINER_CLEANUP=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --only) ONLY_PREFIX="$2"; shift 2 ;;
         --verbose) VERBOSE=1; shift ;;
         --debug) DEBUG=1; shift ;;
         --skip-cleanup) SKIP_CLEANUP=1; shift ;;
+        --skip-container-cleanup) SKIP_CONTAINER_CLEANUP=1; shift ;;
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
     esac
 done
 
 [[ "$SKIP_CLEANUP" == "1" ]] && export DOCKSIDE_TEST_SKIP_CLEANUP=1
+[[ "$SKIP_CONTAINER_CLEANUP" == "1" ]] && export DOCKSIDE_TEST_SKIP_CONTAINER_CLEANUP=1
 
 # ── Mode detection ─────────────────────────────────────────────────────────────
 if [[ -n "${DOCKSIDE_TEST_MODE:-}" ]]; then

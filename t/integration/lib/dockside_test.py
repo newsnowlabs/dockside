@@ -575,6 +575,8 @@ class TestCase:
         self._cleanup_names = []
 
     def tearDown(self):
+        if os.environ.get('DOCKSIDE_TEST_SKIP_CONTAINER_CLEANUP') == '1':
+            return
         for name in self._cleanup_names:
             try:
                 self.admin.stop(name, wait=False)

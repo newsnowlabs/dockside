@@ -13,7 +13,7 @@ and produce TAP-compatible output.
 | `03_lifecycle_debian.py` | Create / start / stop / remove (debian image) |
 | `04_access_and_http.py` | Access control: visibility, router filtering, HTTP proxy responses |
 | `05_edit.py` | Edit metadata fields; viewer/non-developer cannot edit |
-| `06_git_profile.py` | Git URL, branch, PR options |
+| `06_git_profile.py` | Git URL, branch, PR options (PR test requires `DOCKSIDE_TEST_GITHUB_TOKEN`) |
 | `07_ide.py` | IDE creation; viewer/developer IDE access |
 | `08_network.py` | Network assignment; harness-only: create/attach/detach networks |
 | `09_ssh.py` | Inbound SSH via wstunnel |
@@ -21,8 +21,43 @@ and produce TAP-compatible output.
 
 ## Test Modes
 
+### Inside a Dockside development container (recommended for active development)
+
+The recommended way to develop and test Dockside is to launch a Dockside
+development container from an outer Dockside server using the
+`01-dockside-own-ide` profile.  The inner container runs its own Dockside
+instance, and you test that inner instance from within the container itself.
+
+Because the inner container has `ssh` and `wstunnel` available under
+`/opt/dockside/system/latest/bin`, you can exercise the **full routing stack**
+(host SSH → wstunnel ProxyCommand → inner Dockside's nginx → devtainer
+dropbear) without any special setup:
+
+```bash
+# Authenticate the CLI once against the inner Dockside server
+dockside login \
+  --server https://www-mydev.example.dockside.dev
+
+# Run all tests; remote mode is auto-detected from the stored CLI session.
+# DOCKSIDE_TEST_CONTAINER_ACCESS defaults to 'auto', which in remote mode
+# resolves to 'ssh' when wstunnel is available — exercising the full routing
+# stack for SSH and outbound-SSH tests.
+bash t/integration/run_tests.sh
+```
+
+If you want to pin the access method explicitly:
+```bash
+# Full routing path (nginx + wstunnel + dropbear) — recommended:
+DOCKSIDE_TEST_CONTAINER_ACCESS=ssh bash t/integration/run_tests.sh --only 10
+
+# In-container only (bypasses nginx/wstunnel) — faster for targeted debugging:
+DOCKSIDE_TEST_CONTAINER_ACCESS=docker bash t/integration/run_tests.sh --only 10
+```
+
 ### Local mode inside an 'inner' Dockside development container
-When Dockside is developed using Dockside, this command runs tests inside an 'inner' Dockside development container called `mydockside`:
+When the inner Dockside instance is being tested from within itself (i.e. the
+test runner and the Dockside server are the same container), use local mode so
+the CLI routes to `localhost` rather than via the public hostname:
 ```bash
 # Preferred: authenticate the CLI once, then reuse the stored admin session
 dockside login \
@@ -173,6 +208,7 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_NAME_SUFFIX` | `auto` | Suffix for test resource names; `auto` generates a random 6-char hex string |
 | `DOCKSIDE_TEST_CLEANUP_REUSED` | `1` | Also clean up reused test roles/users/profiles for the active suffix, not just resources created by the current run |
 | `DOCKSIDE_TEST_SKIP_CLEANUP` | `0` | Usually set via `--skip-cleanup`; preserves created test roles/users/profiles for investigation |
+| `DOCKSIDE_TEST_GITHUB_TOKEN` | — | GitHub personal access token; enables `06_git_profile.py` test_03 (PR checkout via `gh pr checkout`); test is skipped if unset |
 
 If `DOCKSIDE_TEST_HOST` is unset outside harness mode, the runner reads the
 current CLI config (`DOCKSIDE_CLI_CONFIG`, `DOCKSIDE_CONFIG_DIR`, or
@@ -299,6 +335,35 @@ for a container whose services are all set to `developer` mode.
 Always restricted to `owner` or `developer`; the profile `auth` array for
 these routers should not include `viewer`, `user`, or `public`.
 
+## Git Profile Tests
+
+`06_git_profile.py` tests the git-repo launch feature: cloning a repo, checking
+out a branch, and checking out a PR via `gh pr checkout`.
+
+The PR test (`test_03`) requires a GitHub personal access token so that `gh` can
+authenticate inside the devtainer:
+
+```bash
+DOCKSIDE_TEST_GITHUB_TOKEN=<token> \
+DOCKSIDE_TEST_CONTAINER_ACCESS=docker \
+bash t/integration/run_tests.sh --only 06
+```
+
+If `DOCKSIDE_TEST_GITHUB_TOKEN` is not set the PR test is **skipped** (not
+failed). The remaining tests (default-branch clone, explicit branch, alternate
+images) run without any token.
+
+If you already have a token stored via `gh auth login` on the host, you may
+populate the variable automatically — but only if you are comfortable with the
+token being passed into ephemeral test containers as a `GH_TOKEN` environment
+variable (visible via `docker inspect` and container logs):
+
+```bash
+DOCKSIDE_TEST_GITHUB_TOKEN=$(/opt/dockside/system/latest/bin/gh auth token 2>/dev/null) \
+DOCKSIDE_TEST_CONTAINER_ACCESS=docker \
+bash t/integration/run_tests.sh --only 06
+```
+
 ## SSH Tests
 
 Tests `09_ssh.py` and `10_ssh_outbound.py` use committed test-only Ed25519 keypairs:
@@ -317,17 +382,31 @@ the matching private key into the devtainer's integrated `ssh-agent`.
 - skipped if `wstunnel` is unavailable
 
 **`10_ssh_outbound.py` (outbound via integrated ssh-agent):**
-- in `local` / `harness` mode, requires host `docker` CLI and the devtainer's
-  embedded OpenSSH client under `DOCKSIDE_TEST_SYSTEM_BIN_DIR` (default:
-  `/opt/dockside/system/latest/bin`)
-- in `remote` mode, requires `wstunnel` in `PATH` so the test can enter the
-  devtainer via `dockside ssh`
-- `DOCKSIDE_TEST_CONTAINER_ACCESS=auto|docker|ssh` can request which path is
-  preferred; the test falls back when the requested mechanism is unavailable
-- both paths then run the same in-devtainer check:
-  - confirm `ssh-agent` is running and has the expected key
-  - confirm `~dockside/.ssh/authorized_keys` contains the matching public key
-  - SSH from the devtainer to `dockside@127.0.0.1` and expect success
+
+`DOCKSIDE_TEST_CONTAINER_ACCESS=auto|docker|ssh` selects how the test enters
+the devtainer.  The two values cover different depths of the routing stack:
+
+| Value | How the test enters the devtainer | What routing is exercised |
+|---|---|---|
+| `docker` | `docker exec` directly into the container | In-container only (dropbear, ssh-agent, authorized_keys); nginx and wstunnel are **not** exercised |
+| `ssh` | Host-side `ssh` via a wstunnel ProxyCommand built from `dockside ssh config` | Full stack: nginx routing → wstunnel → devtainer dropbear |
+| `auto` | `docker` if Docker is reachable; otherwise `ssh` | Whichever is resolved above |
+
+`ssh` is the preferred value when available — it tests the complete user-facing
+SSH path.  When running from a Dockside development container, both `ssh` and
+`wstunnel` are available under `/opt/dockside/system/latest/bin`, so `auto`
+resolves to `ssh` automatically.
+
+Both paths run the same in-devtainer check once inside:
+- confirm `ssh-agent` is running and has the expected key loaded
+- confirm `~dockside/.ssh/authorized_keys` contains the matching public key
+- SSH from the devtainer to `dockside@127.0.0.1` and expect `hello`
+
+Requirements:
+- `docker` path: host `docker` CLI accessible; devtainer's OpenSSH client
+  under `DOCKSIDE_TEST_SYSTEM_BIN_DIR` (default: `/opt/dockside/system/latest/bin`)
+- `ssh` path: `wstunnel` and `ssh` in `PATH` (both present in Dockside
+  development containers)
 
 ## Network Tests
 
