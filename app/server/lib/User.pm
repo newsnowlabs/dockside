@@ -828,9 +828,13 @@ sub set ($self, $reservation, $property, $value = '') {
       # No options defined in this profile: ignore any submitted value.
       return 1 unless @$profileOptions;
 
-      # Decode JSON string if needed.
+      # Decode JSON string if needed. An undef or empty value means no options
+      # were supplied; treat as empty hash so defaults are filled in below.
       my $decoded;
-      if( ref($value) eq 'HASH' ) {
+      if( !defined($value) || $value eq '' ) {
+         $decoded = {};
+      }
+      elsif( ref($value) eq 'HASH' ) {
          $decoded = $value;
       }
       else {
