@@ -58,9 +58,14 @@
 #   DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY  1 = allow creating/attaching Docker networks
 #                                       0 = disallow (even in harness mode)
 #                                       (unset = use mode default)
-#   DOCKSIDE_TEST_CONTAINER_ACCESS  auto|docker|ssh
-#                                  Preferred method for tests that can inspect a
-#                                  devtainer via either docker exec or SSH
+#   DOCKSIDE_TEST_CONTAINER_ACCESS  docker|ssh (default: ssh)
+#                                  Method for tests that inspect a devtainer
+#                                  internally.  'ssh' (default) uses wstunnel and
+#                                  exercises the real access path; wstunnel must be
+#                                  in PATH or the runner aborts early.  'docker'
+#                                  uses docker exec — bypasses the SSH path, useful
+#                                  on hosts without wstunnel but not recommended
+#                                  for CI.  'auto' is no longer accepted.
 #
 # Examples:
 #   # Harness mode (CI):
@@ -211,6 +216,24 @@ export DOCKSIDE_TEST_ONLY="${ONLY_PREFIX}"
 export DOCKSIDE_TEST_HARNESS_ID="${DOCKSIDE_TEST_HARNESS_ID:-}"
 [[ "$VERBOSE"      == "1" ]] && export DOCKSIDE_TEST_VERBOSE=1
 [[ "$DEBUG"        == "1" ]] && export DOCKSIDE_TEST_DEBUG=1
+
+# ── Container access method ───────────────────────────────────────────────────
+: "${DOCKSIDE_TEST_CONTAINER_ACCESS:=ssh}"
+export DOCKSIDE_TEST_CONTAINER_ACCESS
+if [[ "${DOCKSIDE_TEST_CONTAINER_ACCESS}" == "auto" ]]; then
+    echo "ERROR: DOCKSIDE_TEST_CONTAINER_ACCESS=auto is no longer supported." >&2
+    echo "       Use 'ssh' (default) or 'docker'." >&2
+    exit 1
+fi
+if [[ "${DOCKSIDE_TEST_CONTAINER_ACCESS}" != "docker" ]]; then
+    if ! command -v wstunnel >/dev/null 2>&1; then
+        echo "ERROR: wstunnel not found in PATH." >&2
+        echo "       SSH-based devtainer access requires wstunnel." >&2
+        echo "       Install wstunnel, or set DOCKSIDE_TEST_CONTAINER_ACCESS=docker to use" >&2
+        echo "       docker exec instead (bypasses the SSH path; not recommended for CI)." >&2
+        exit 1
+    fi
+fi
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
