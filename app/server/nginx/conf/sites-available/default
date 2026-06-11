@@ -104,10 +104,8 @@ server {
       access_log /var/log/nginx/access.log proxy_http;
     }
 
-    if ($ide_cache_control != "") {
-      proxy_hide_header Cache-Control;
-      add_header Cache-Control $proxy_cache_control always;
-    }
+    proxy_hide_header Cache-Control;
+    add_header Cache-Control $proxy_cache_control always;
 
     proxy_pass_header Authorization;
     proxy_set_header Host $host;
@@ -189,10 +187,8 @@ server {
       access_log /var/log/nginx/access.log proxy_https;
     }
 
-    if ($ide_cache_control != "") {
-      proxy_hide_header Cache-Control;
-      add_header Cache-Control $proxy_cache_control always;
-    }
+    proxy_hide_header Cache-Control;
+    add_header Cache-Control $proxy_cache_control always;
 
     # Enable SNI
     proxy_ssl_server_name on;
