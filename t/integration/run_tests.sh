@@ -214,11 +214,12 @@ export DOCKSIDE_TEST_HARNESS_ID="${DOCKSIDE_TEST_HARNESS_ID:-}"
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
+    local exit_code=$?
     if [[ "${DOCKSIDE_TEST_SKIP_CLEANUP:-0}" != "1" ]]; then
         echo "# Running cleanup..." >&2
         python3 "${INTEGRATION_DIR}/lib/run_tests_main.py" --cleanup 2>/dev/null || true
     fi
-    # harness.sh's own trap handles container teardown
+    exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
