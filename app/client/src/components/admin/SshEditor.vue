@@ -164,21 +164,29 @@
          },
 
          emitUpdate() {
-            // Rebuild publicKeys from textarea: each non-blank line becomes an entry
+            // Rebuild publicKeys from the textarea (one key per non-blank line).
+            // Preserve the existing name for any unchanged line, and give every
+            // other line a guaranteed-unique name (its full comment if present,
+            // else key-N). Keying naively by the comment field collapsed two keys
+            // that shared a comment word into one — silently dropping a key.
             const lines = this.publicKeysText.split('\n').map(l => l.trim()).filter(Boolean);
+            const origByLine = Object.fromEntries(
+               Object.entries((this.ssh && this.ssh.publicKeys) || {}).map(([n, l]) => [l, n]));
             const publicKeys = {};
-            lines.forEach((line, i) => {
-               // Use the key comment as name if present, otherwise index
-               const parts = line.split(/\s+/);
-               const name = parts[2] || `key-${i + 1}`;
+            const used = new Set();
+            let counter = 0;
+            for (const line of lines) {
+               let name = origByLine[line];
+               if (!name || used.has(name)) {
+                  const parts = line.split(/\s+/);
+                  const base = parts.slice(2).join(' ') || `key-${++counter}`;
+                  name = base;
+                  while (used.has(name)) name = `${base}-${++counter}`;
+               }
+               used.add(name);
                publicKeys[name] = line;
-            });
-
-            const updated = {
-               ...this.ssh,
-               publicKeys,
-            };
-            this.$emit('input', updated);
+            }
+            this.$emit('input', { ...this.ssh, publicKeys });
          },
 
          deleteKeypair(name) {
