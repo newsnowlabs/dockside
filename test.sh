@@ -266,11 +266,12 @@ check_perltidy() {
 check_json() {
   local failed=0
 
+  # Note: t/integration/config/{users,roles}.json were removed when the
+  # integration harness moved to creating all users/roles/profiles dynamically
+  # via the admin API (commit 7b2f1bb); they are no longer static config files.
   local json_files=(
     app/client/package.json
     app/client/jsconfig.json
-    t/integration/config/users.json
-    t/integration/config/roles.json
   )
 
   for f in "${json_files[@]}"; do
