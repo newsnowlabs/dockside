@@ -49,10 +49,6 @@ class IdeTests(TestCase):
         if data.get('status') != 1:
             self.admin.start(self.IDE_CONTAINER, wait=True, timeout=180)
 
-    def _get_parent_fqdn(self):
-        data = self.admin.get_container(self.IDE_CONTAINER)
-        return (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN')
-
     def test_01_create_no_ide_override(self):
         name = self._sfx('inttest-ide-noide')
         self.register_cleanup(name)
@@ -65,10 +61,9 @@ class IdeTests(TestCase):
     def test_02_create_with_ide_override(self):
         """Create with openvscode, start, and verify IDE URL is reachable."""
         self._ensure_created_and_started()
-        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.admin.check_service(
-                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
+                self.IDE_CONTAINER, router_prefix='ide'
             )
             self.assert_true(
                 code in (200, 302, 301, 303),
@@ -81,11 +76,9 @@ class IdeTests(TestCase):
         """Viewer cannot access IDE (IDE is always owner/developer mode)."""
         self._ensure_created_and_started()
         self.admin.update(self.IDE_CONTAINER, viewers=self.test_username_viewer)
-        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
-            code, _ = self.viewer.check_service(
-                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
-            )
+            ide_url = self.admin.service_url(self.IDE_CONTAINER, router_prefix='ide')
+            code, _ = self.viewer.check_url(ide_url)
             self.assert_http_status(code, 410, f'viewer got {code} for IDE (expected 410)')
         except APIError as e:
             self.skip(f'Could not reach IDE URL: {e}')
@@ -94,10 +87,9 @@ class IdeTests(TestCase):
         """Named developer (dev1) can access IDE."""
         self._ensure_created_and_started()
         self.admin.update(self.IDE_CONTAINER, developers=self.test_username_dev1)
-        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev1.check_service(
-                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
+                self.IDE_CONTAINER, router_prefix='ide'
             )
             self.assert_true(
                 code in (200, 302, 301, 303),
@@ -111,10 +103,9 @@ class IdeTests(TestCase):
         self._ensure_created_and_started()
         self.admin.update(self.IDE_CONTAINER,
                           developers=f'{self.test_username_dev1},{self.test_username_dev2}')
-        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
             code, _ = self.dev2.check_service(
-                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
+                self.IDE_CONTAINER, router_prefix='ide'
             )
             self.assert_true(
                 code in (200, 302, 301, 303),
@@ -129,11 +120,9 @@ class IdeTests(TestCase):
         self.admin.update(self.IDE_CONTAINER,
                           developers=f'{self.test_username_dev1},{self.test_username_dev2}')
         self.admin.update(self.IDE_CONTAINER, developers=self.test_username_dev1)
-        parent_fqdn = None if self.admin._connect_to else self._get_parent_fqdn()
         try:
-            code, _ = self.dev2.check_service(
-                self.IDE_CONTAINER, router_prefix='ide', parent_fqdn=parent_fqdn
-            )
+            ide_url = self.admin.service_url(self.IDE_CONTAINER, router_prefix='ide')
+            code, _ = self.dev2.check_url(ide_url)
             self.assert_http_status(code, 410, f'dev2 got {code} after being removed (expected 410)')
         except APIError as e:
             self.skip(f'Could not reach IDE URL: {e}')

@@ -332,17 +332,11 @@ class SshTestMixin:
         if data.get('status') != 1:
             raise AssertionError(f'SSH test container {self.SSH_CONTAINER!r} is not running')
 
-    def _get_parent_fqdn(self):
-        data = self.dev1.get_container(self.SSH_CONTAINER)
-        return (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN')
-
     def _ssh_route_status(self, client):
         """Return the SSH router status code, or None if not yet reachable."""
-        parent_fqdn = None if client._connect_to else self._get_parent_fqdn()
         try:
-            code, _ = client.check_service(
-                self.SSH_CONTAINER, router_prefix='ssh', parent_fqdn=parent_fqdn
-            )
+            ssh_url = self.dev1.service_url(self.SSH_CONTAINER, router_prefix='ssh')
+            code, _ = client.check_url(ssh_url)
         except APIError:
             return None
         return code

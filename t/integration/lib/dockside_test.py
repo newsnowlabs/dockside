@@ -480,31 +480,35 @@ class DocksideClient:
         args.append(name)
         return self._run_text(*args)
 
-    def check_service(self, container_name, router_prefix='www',
-                      parent_fqdn=None, timeout=30):
+    def service_url(self, container_name, router_prefix='www'):
+        """
+        Return the canonical service URL for a container router.
+
+        Requires a client that has full access to the container (owner, admin,
+        or named developer) — the server only returns parentFQDN to entitled
+        clients.  Use this to obtain the URL first, then call check_url() with
+        a different (possibly restricted) client to verify access control.
+        """
+        data        = self.get_container(container_name)
+        parent_fqdn = (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN')
+        if not parent_fqdn:
+            raise APIError(
+                f'parentFQDN not available for {container_name!r} '
+                f'— use an entitled client (owner/admin/developer) to call service_url()'
+            )
+        return f'https://{router_prefix}-{container_name}{parent_fqdn}/'
+
+    def check_service(self, container_name, router_prefix='www', timeout=30):
         """
         HTTP GET to the container's router URL using this user's session cookies.
         Returns (status_code, body_bytes).
 
-        URL construction:
-          local/harness: derives domain suffix from server URL hostname
-                         e.g. server https://www.dockside.test → suffix dockside.test
-                         → service URL https://www-<name>.dockside.test/
-          remote:        https://<prefix>-<name><parent_fqdn>/
-                         parent_fqdn must be supplied (e.g. '.myinstance.example.com')
+        The calling client must have full container access so that service_url()
+        can resolve parentFQDN.  To test a restricted client (viewer, removed
+        developer), obtain the URL via an entitled client's service_url() first,
+        then call check_url() directly.
         """
-        if self._connect_to:
-            # local or harness mode: derive suffix from canonical server hostname
-            parsed   = urllib.parse.urlparse(self._server)
-            hostname = parsed.hostname or ''
-            parts    = hostname.split('.', 1)
-            suffix   = parts[1] if len(parts) > 1 else hostname
-            url = f'https://{router_prefix}-{container_name}.{suffix}/'
-        else:
-            # remote mode
-            if parent_fqdn is None:
-                raise APIError('parent_fqdn required in remote mode for check_service')
-            url = f'https://{router_prefix}-{container_name}{parent_fqdn}/'
+        url = self.service_url(container_name, router_prefix)
         return self.check_url(url, timeout=timeout)
 
     def cleanup(self):

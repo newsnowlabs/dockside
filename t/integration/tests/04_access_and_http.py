@@ -14,7 +14,6 @@ Uses two containers:
 
 import sys
 import os
-import urllib.parse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
@@ -52,20 +51,8 @@ class AccessAndHttpTests(TestCase):
     # ── URL helpers ───────────────────────────────────────────────────────────
 
     def _service_url(self, container_name, router_prefix='www'):
-        """
-        Build the canonical service URL for a container.
-        local/harness: https://<prefix>-<name>.<domain-suffix>/
-        remote:        requires parentFQDN from container data
-        """
-        if self.admin._connect_to:
-            hostname = urllib.parse.urlparse(self.admin._server).hostname or ''
-            parts    = hostname.split('.', 1)
-            suffix   = parts[1] if len(parts) > 1 else hostname
-            return f'https://{router_prefix}-{container_name}.{suffix}/'
-        else:
-            data        = self.admin.get_container(container_name)
-            parent_fqdn = (data.get('data') or {}).get('parentFQDN') or data.get('parentFQDN') or ''
-            return f'https://{router_prefix}-{container_name}{parent_fqdn}/'
+        """Build the canonical service URL for a container."""
+        return self.admin.service_url(container_name, router_prefix)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Section A — Initial visibility (no sharing)
