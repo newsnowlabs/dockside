@@ -176,10 +176,17 @@ sub get_server_port ($r, $protocol) {
    # Now check if $User can access services (on any running reservation) with access level $props->{'auth'}
    my $reservationPermissions = $User->reservationPermissions($reservation);
    if( $reservationPermissions->{'auth'}{ $props->{'auth'} } ) {
+      $r->variable('ide_cache_control', _ide_cache_control($reservation));
       return $props->{'uri'};
    }
 
    return $errorCode;
+}
+
+sub _ide_cache_control ($reservation) {
+   my $running_ide = $reservation->data('runningIDE') // '';
+   return '1' if $running_ide =~ /^openvscode/;
+   return '';
 }
 
 # PUBLIC METHODS

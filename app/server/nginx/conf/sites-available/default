@@ -18,6 +18,9 @@ perl_require App.pm;
 perl_set $upstream_http Proxy::http_server_port;
 perl_set $upstream_https Proxy::https_server_port;
 perl_set $upstream_cookie Proxy::upstream_cookie;
+map $host $ide_cache_control {
+  default '';
+}
 
 log_format proxy_http '$host - $upstream_http - $remote_addr - $remote_user [$time_local] ' '"$request" $status $body_bytes_sent ' '"$http_referer" "$http_user_agent"';
 log_format proxy_https '$host - $upstream_https - $remote_addr - $remote_user [$time_local] ' '"$request" $status $body_bytes_sent ' '"$http_referer" "$http_user_agent"';
@@ -103,6 +106,9 @@ server {
       access_log /var/log/nginx/access.log proxy_http;
     }
 
+    proxy_hide_header Cache-Control;
+    add_header Cache-Control $proxy_cache_control always;
+
     proxy_pass_header Authorization;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -125,6 +131,13 @@ server {
 }
 
 # https://www.nginx.com/blog/websocket-nginx/
+
+# For openvscode hosts: add 'immutable' only when upstream itself declares public
+# long-lived assets (content-addressed). All other Cache-Control values pass through.
+map "$ide_cache_control:$upstream_http_cache_control" $proxy_cache_control {
+  "1:public, max-age=31536000"   'public, max-age=31536000, immutable';
+  default                         $upstream_http_cache_control;
+}
 
 map $http_upgrade $connection_upgrade {
   default upgrade;
@@ -175,7 +188,10 @@ server {
       proxy_pass $upstream_https;
       access_log /var/log/nginx/access.log proxy_https;
     }
-    
+
+    proxy_hide_header Cache-Control;
+    add_header Cache-Control $proxy_cache_control always;
+
     # Enable SNI
     proxy_ssl_server_name on;
     proxy_ssl_name $host;
