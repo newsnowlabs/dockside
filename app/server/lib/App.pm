@@ -157,7 +157,10 @@ sub json ($r, $code, $data) {
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->send_http_header("application/json");
 
-   $r->print( JSON::XS->new->utf8->convert_blessed->encode( $data ) );
+   # canonical: sort object keys so every API response has a deterministic key
+   # order (Perl hash order is otherwise randomised per process). This gives
+   # clients — the admin JSON editor and the CLI — stable, diff-friendly output.
+   $r->print( JSON::XS->new->utf8->convert_blessed->canonical->encode( $data ) );
 
    return nginx::OK;
 }
