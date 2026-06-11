@@ -1,13 +1,24 @@
 # Repo Notes
 
-- When changing Perl code under `app/server/lib` or `app/server/bin`, run:
-  - `./test.sh --only perl`
+- `./test.sh` runs the full static suite (Perl compile, Vue build, ESLint, StyleLint,
+  ShellCheck, JSON/YAML, Python compile) — run it regularly, not just for Perl.
+  `./test.sh --only <check>` runs a single check (e.g. `--only perl` while iterating on
+  Perl under `app/server/lib` or `app/server/bin`; `--only vue`, `--only eslint`, …).
 - When validating Perl server changes on this local Dockside host, restart:
   - `sudo s6-svc -t /etc/service/nginx`
   - `sudo s6-svc -t /etc/service/docker-event-daemon`
 - Before running tests that exercise **server** changes, restart the services above —
   the running server is **not** auto-reloaded. Rebuild the Vue bundle
   (`cd app/client && npm run build`) for **client** changes.
+- Integration suite invocation (local mode, SSH container access, real GitHub token):
+  ```
+  DOCKSIDE_TEST_MODE=local DOCKSIDE_TEST_HOST=www-<name>.local.dockside.dev \
+    DOCKSIDE_TEST_CONTAINER_ACCESS=ssh \
+    DOCKSIDE_TEST_GITHUB_TOKEN=$(/opt/dockside/system/latest/bin/gh auth token) \
+    bash t/integration/run_tests.sh [--only NN]
+  ```
+  The full suite can be flaky under load (resource contention); run modules individually
+  with `--only NN` for reliable results.
 
 ## Writing integration tests (hard rules)
 
