@@ -285,39 +285,46 @@ populate_known_hosts() {
 }
 
 populate_ssh_agent_keys() {
-   local SAVEKEYS="0"
-   local DEFAULT_KEY_PATH="$HOME/.ssh/dockside"
-   local KEY_PATH="$DEFAULT_KEY_PATH"
+   # SSH_AGENT_KEYS is a JSON object mapping keypair name -> { public, private }.
+   # Add every keypair's private key to the ssh-agent, each via a transient key file
+   # that is removed immediately after ssh-add (keys live only in the agent, not on disk).
+   local names
+   names=$(echo "$SSH_AGENT_KEYS" | jq -r 'if type == "object" then keys[] else empty end' 2>/dev/null)
 
-   local KEY_PRIVATE=$(echo "$SSH_AGENT_KEYS" | jq -re '.private')
-   local KEY_PUBLIC=$(echo "$SSH_AGENT_KEYS" | jq -re '.public')
-
-   log "SSH_AGENT_KEYS(PUBLIC)=$KEY_PUBLIC"
-   log "SSH_AGENT_KEYS(PRIVATE)=${KEY_PRIVATE:0:36}..."
-
-   if [ "$KEY_PUBLIC" = "null" ] || [ "$KEY_PRIVATE" = "null" ] || [ -z "$KEY_PUBLIC" ] || [ -z "$KEY_PRIVATE" ]; then
-      log "SSH_AGENT_KEYS is null, so not saving keys to '$KEY_PATH'"
+   if [ -z "$names" ]; then
+      log "SSH_AGENT_KEYS has no keypairs; not adding any keys to the ssh-agent"
       return
    fi
 
-   if [ -f "$KEY_PATH" ] && [ -f "$KEY_PATH.pub" ]; then
-      log "Leaving existing keys unchanged in '$KEY_PATH'; adding using temporary path ..."
-      KEY_PATH="$(busybox mktemp dockside.XXXXXX)"
-   fi
+   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
 
-   log "Populating ssh agent keys to '$KEY_PATH' and ssh-agent ..."
+   # Iterate via read (never unquoted) since a keypair name may be '*'.
+   echo "$names" | while IFS= read -r name; do
+      [ -n "$name" ] || continue
 
-   echo "$KEY_PRIVATE" >$KEY_PATH
-   echo "$KEY_PUBLIC" >$KEY_PATH.pub
-   chmod 400 $KEY_PATH $KEY_PATH.pub
+      KEY_PRIVATE=$(echo "$SSH_AGENT_KEYS" | jq -r --arg n "$name" '.[$n].private // empty')
+      KEY_PUBLIC=$(echo "$SSH_AGENT_KEYS" | jq -r --arg n "$name" '.[$n].public // empty')
 
-   $IDE_PATH/bin/ssh-add "$KEY_PATH"
-   $IDE_PATH/bin/ssh-add -L
+      if [ -z "$KEY_PRIVATE" ] || [ -z "$KEY_PUBLIC" ]; then
+         log "Keypair '$name' has no public/private material; skipping"
+         continue
+      fi
 
-   if [ "$SAVEKEYS" != "1" ] || [ "$KEY_PATH" != "$DEFAULT_KEY_PATH" ]; then
-      log "Deleting keys from '$KEY_PATH'"
-      rm -f $KEY_PATH $KEY_PATH.pub
-   fi
+      log "SSH_AGENT_KEYS[$name](PUBLIC)=$KEY_PUBLIC"
+      log "SSH_AGENT_KEYS[$name](PRIVATE)=${KEY_PRIVATE:0:36}..."
+
+      KEY_PATH=$(busybox mktemp "$HOME/.ssh/dockside.XXXXXX")
+      echo "$KEY_PRIVATE" > "$KEY_PATH"
+      echo "$KEY_PUBLIC" > "$KEY_PATH.pub"
+      chmod 400 "$KEY_PATH" "$KEY_PATH.pub"
+
+      log "Adding keypair '$name' to ssh-agent ..."
+      "$IDE_PATH/bin/ssh-add" "$KEY_PATH"
+
+      rm -f "$KEY_PATH" "$KEY_PATH.pub"
+   done
+
+   "$IDE_PATH/bin/ssh-add" -L
 }
 
 find_files_of_type() {
