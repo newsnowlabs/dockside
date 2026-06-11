@@ -147,19 +147,33 @@ sub createProfile ($self, $name, $args) {
    die Exception->new( 'msg' => "Profile '$name' already exists" )
       if -f _profile_file($name);
 
-   # Start from minimal defaults and overlay every supplied arg.  When the
-   # caller posts a full profile body (--from-json / Vue editor), all fields
-   # are present in $args and completely replace the defaults.  When only a
-   # few fields are supplied (--set / --active), the defaults fill in the rest.
-   my $record = {
-      'version' => Profile::CURRENT_VERSION(),
-      'active'  => JSON::false,
-      'images'  => [],
-      'networks' => [],
-   };
+   # When the admin UI posts the whole profile body as a JSON blob under '_json',
+   # that blob is the authoritative record (full replace).  Otherwise start from
+   # minimal defaults and overlay the supplied args (--from-json sends real fields;
+   # --set / --active overlay only a few).  parse_body_args may have already decoded
+   # '_json' to a hashref (form-encoded path) or left it a string (JSON body).
+   my $record;
+   if ( defined $args->{'_json'} ) {
+      $record = ref $args->{'_json'} eq 'HASH'
+         ? $args->{'_json'}
+         : eval { Data::parse_json( $args->{'_json'} ) };
+      die Exception->new( 'msg' => "Invalid profile data: '_json' must be a JSON object" )
+         unless ref $record eq 'HASH';
+      $record->{'version'} //= Profile::CURRENT_VERSION();
+   }
+   else {
+      $record = {
+         'version'  => Profile::CURRENT_VERSION(),
+         'active'   => JSON::false,
+         'images'   => [],
+         'networks' => [],
+      };
+   }
 
-   # 'id' is the filename key and is not stored in the record body.
-   apply_args_to_record( $record, $args, qw(id) );
+   # 'id' is the filename key and '_json' the encoding vehicle; neither is stored
+   # in the record body.  (The UI's _json round-trips an injected 'id'.)
+   apply_args_to_record( $record, $args, qw(id _json) );
+   delete $record->{'id'};
 
    # Default the display name to the profile id when not supplied.
    $record->{'name'} //= $name;
@@ -182,11 +196,11 @@ sub createProfile ($self, $name, $args) {
    return { 'id' => $name, %$record };
 }
 
-# Update an existing profile.  The existing on-disk record is the base; every
-# supplied arg is overlaid on top via apply_args_to_record.  When the caller
-# sends a full profile body (--from-json / Vue editor) all standard fields are
-# present in $args and effectively replace the existing values.  When only a
-# few fields are supplied (--set / --active) only those fields change.
+# Update an existing profile.  When the admin UI posts the whole body under
+# '_json', that decoded blob fully replaces the record (so field deletions take
+# effect) and remaining args overlay it.  Otherwise the existing on-disk record
+# is the base and supplied args overlay it (--set / --active change only those
+# fields; --from-json sends real fields).
 # The update runs inside a cacheReadWrite lock so that no concurrent write can
 # interleave between the read and the write.
 sub updateProfile ($self, $name, $args) {
@@ -198,10 +212,25 @@ sub updateProfile ($self, $name, $args) {
 
    my $record;
    cacheReadWrite( _profile_file($name), sub ($oldData) {
-      $record = Data::parse_json($oldData);
+      # '_json' (the admin UI's full-body blob) replaces the on-disk record so
+      # field deletions take effect; otherwise the on-disk record is the base.
+      # parse_body_args may deliver '_json' pre-decoded (hashref) or as a string.
+      if ( defined $args->{'_json'} ) {
+         $record = ref $args->{'_json'} eq 'HASH'
+            ? $args->{'_json'}
+            : eval { Data::parse_json( $args->{'_json'} ) };
+         die Exception->new( 'msg' => "Invalid profile data: '_json' must be a JSON object" )
+            unless ref $record eq 'HASH';
+         $record->{'version'} //= Profile::CURRENT_VERSION();
+      }
+      else {
+         $record = Data::parse_json($oldData);
+      }
 
-      # 'id' is the filename key and is not stored in the record body.
-      apply_args_to_record( $record, $args, qw(id) );
+      # 'id' is the filename key and '_json' the encoding vehicle; neither is
+      # stored in the record body.
+      apply_args_to_record( $record, $args, qw(id _json) );
+      delete $record->{'id'};
 
       # Coerce 'active' to a JSON boolean (see createProfile for rationale).
       if ( exists $record->{'active'} ) {
