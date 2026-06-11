@@ -1165,7 +1165,7 @@ sub exec ($reservation, $command = undef) {
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
-      "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
+      "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs_all() ),
       @envGit,
       @envOptions,
       @envGhToken,

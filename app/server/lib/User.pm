@@ -229,6 +229,12 @@ sub keypairs ($self, $prefix) {
    return $self->{'ssh'}{'keypairs'}{$prefix};
 }
 
+# All of the user's SSH keypairs as a { name => { public, private } } map.
+# Deployed in full to the devtainer's ssh-agent (see Reservation::exec).
+sub keypairs_all ($self) {
+   return $self->{'ssh'}{'keypairs'} // {};
+}
+
 sub gh_token ($self) {
    return $self->{'gh_token'} // '';
 }
