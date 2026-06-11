@@ -192,16 +192,6 @@ sub _ide_cache_control ($reservation) {
 # PUBLIC METHODS
 # --------------
 
-# perl_set wrapper: returns the ide_cache_control variable set as a side-effect
-# by get_server_port, or '' if not set (non-IDE or unauthenticated requests).
-# NOTE: do NOT call $r->variable('ide_cache_control') here — that reads the same
-# perl_set variable and causes an infinite recursion cycle. This handler is only
-# invoked when get_server_port did NOT pre-set the variable (i.e. error/UI paths),
-# so '' is always the correct fallback.
-sub ide_cache_control_var ($r) {
-   return '';
-}
-
 # Given a local base port number, convert to a host:port pair for http.
 sub http_server_port ($r) {
    return get_server_port($r, 'http');
