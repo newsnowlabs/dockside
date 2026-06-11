@@ -346,6 +346,20 @@ sub removeUser ($self, $username, $args = {}) {
 # them.  After any role mutation, both roles.json AND users.json are reloaded
 # because user permission resolution depends on the current role definitions.
 
+# Validate a role record before persisting.  'permissions' and 'resources', when
+# present, must be JSON objects (hashrefs).  A non-hash value — e.g. a JSON string
+# that slipped through an un-decoded transport, or a malformed client payload —
+# would be written to roles.json and then crash updateDerivedPermissions
+# (%{ $role->{permissions} }) on the next config reload, persistently breaking
+# permission resolution for every user.  Reject it before it reaches disk.
+sub _validate_role_record ($record) {
+   for my $field (qw(permissions resources)) {
+      next unless exists $record->{$field};
+      die Exception->new( 'msg' => "Role field '$field' must be a JSON object" )
+         unless ref $record->{$field} eq 'HASH';
+   }
+}
+
 sub listRoles ($self) {
    die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
       unless $self->has_permission('manageUsers');
@@ -382,6 +396,7 @@ sub createRole ($self, $name, $args) {
 
       $new_role = { 'permissions' => {}, 'resources' => {} };
       apply_args_to_record( $new_role, $args, qw(name) );
+      _validate_role_record($new_role);
 
       $roles->{$name} = $new_role;
       return JSON->new->utf8->pretty->canonical->encode($roles);
@@ -404,6 +419,7 @@ sub updateRole ($self, $name, $args) {
          or die Exception->new( 'msg' => "Role '$name' not found in roles.json" );
 
       apply_args_to_record( $record, $args, qw(name) );
+      _validate_role_record($record);
 
       $roles->{$name} = $record;
       return JSON->new->utf8->pretty->canonical->encode($roles);
