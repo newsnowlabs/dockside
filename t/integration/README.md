@@ -18,6 +18,35 @@ and produce TAP-compatible output.
 | `08_network.py` | Network assignment; harness-only: create/attach/detach networks |
 | `09_ssh.py` | Inbound SSH via wstunnel |
 | `10_ssh_outbound.py` | Outbound self-SSH via the devtainer's integrated ssh-agent |
+| `11_admin_api.py` | Admin CRUD round-trips (role/profile/user/`account`) with persisted-shape assertions, verb enforcement (405), role-record validation |
+
+## Writing tests — hard rules
+
+These tests are a **black-box client of the product, driven only through the `dockside`
+CLI**. Follow these rules so the suite stays consistent and maintainable:
+
+1. **Call the CLI; never import it.** Drive the product via the `DocksideClient` methods in
+   `lib/dockside_test.py` (`_run(...)`, `check_url(...)`, `create`/`update`/`start`/`stop`/
+   `remove`, …), which shell out to `dockside`. Do **not** `import dockside_cli` or call its
+   functions from a test or the harness.
+2. **If the CLI can't do it, upgrade the CLI — don't work around it.** When a test needs a
+   capability the CLI lacks, add the command/flag to `cli/dockside_cli.py` and call it (e.g.
+   the self-service account test uses `dockside account edit`, added for exactly this
+   reason). Never hand-roll raw HTTP against the server, and never copy CLI internals
+   (openers, nest-level / connect-to handling, …) into a test.
+3. **Create fixtures at runtime; never rely on pre-existing state.** All users, roles, and
+   profiles are created by the harness/tests via the CLI during setup and removed during
+   teardown — there are no static `config/users.json` / `config/roles.json` fixtures.
+4. **Browser-only surfaces are out of scope** and are verified manually in the Vue UI — e.g.
+   the profile-editor `_json` blob encoding and the SSH key editor. The CLI sends real
+   fields (never the `_json` wrapper) by design, so the CLI suite covers the field-level
+   contract; the UI encoding is a separate, manual check.
+5. **Harness-local low-level helpers are allowed** (e.g. the anonymous `http_check` for
+   unauthenticated proxy probes) but live in `lib/dockside_test.py` and must be
+   self-contained — they never import the CLI.
+
+After changing **server** code, restart the Dockside services before running the suite (the
+running server is not auto-reloaded); after changing **client** code, rebuild the Vue bundle.
 
 ## Test Modes
 
