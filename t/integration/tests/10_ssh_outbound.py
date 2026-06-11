@@ -31,8 +31,16 @@ from dockside_test import TestCase
 from _ssh_test_common import (
     SshTestMixin,
     _DEV1_KEY,
+    _DEV2_KEY,
     run_in_devtainer,
 )
+
+
+def _key_id(pubkey_text):
+    """Return 'type base64' from a public key line, dropping the comment — ssh-add -L
+    may report a different comment than the .pub file, but the key material is stable."""
+    parts = pubkey_text.split()
+    return ' '.join(parts[:2]) if len(parts) >= 2 else pubkey_text.strip()
 
 
 class SshOutboundTests(SshTestMixin, TestCase):
@@ -83,3 +91,65 @@ class SshOutboundTests(SshTestMixin, TestCase):
             f'Outgoing self-SSH failed; rc={result.returncode} '
             f'stdout={result.stdout!r} stderr={result.stderr!r}'
         )
+
+    _AGENT_LIST_SCRIPT = (
+        'ssh_add="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/ssh-add"; '
+        '[ -x "$ssh_add" ] || ssh_add=ssh-add; '
+        'agent_sock=; '
+        'for s in /tmp/ssh-*/agent.*; do '
+        '  [ -S "$s" ] && SSH_AUTH_SOCK="$s" "$ssh_add" -l >/dev/null 2>&1 && '
+        '  { agent_sock="$s"; break; }; '
+        'done; '
+        'test -n "$agent_sock" || { echo "No ssh-agent socket found in devtainer" >&2; exit 1; }; '
+        'SSH_AUTH_SOCK="$agent_sock" "$ssh_add" -L'
+    )
+
+    def test_02_all_keypairs_in_agent(self):
+        """All of a user's keypairs — not just '*' — are deployed to the agent.
+
+        testdev1 already has the legacy '*' keypair; add a second one, relaunch so
+        launch.sh re-deploys the full keypair map, and assert both keys are in the agent.
+        """
+        if not (os.path.isfile(_DEV1_KEY) and os.path.isfile(_DEV2_KEY)):
+            self.skip('testdev keypairs not available')
+        self._ensure_ssh_container()
+
+        key1 = _key_id(open(_DEV1_KEY + '.pub', encoding='utf-8').read())
+        second_pub = open(_DEV2_KEY + '.pub', encoding='utf-8').read().strip()
+        key2 = _key_id(second_pub)
+        user = self.test_username_dev1
+
+        self.admin._run(
+            'user', 'edit', user,
+            '--set', f'ssh.keypairs.inttest2.public={second_pub}',
+            '--set', f'ssh.keypairs.inttest2.private=@{_DEV2_KEY}',
+        )
+        try:
+            # Relaunch so the IDE-launch exec re-pushes the full keypair map.
+            self.dev1.stop(self.SSH_CONTAINER, wait=True, timeout=60)
+            self.dev1.start(self.SSH_CONTAINER, wait=True, timeout=180)
+
+            preferred = 'docker' if self.test_mode in ('local', 'harness') else 'ssh'
+
+            def _agent_listing_with_both():
+                try:
+                    r = run_in_devtainer(
+                        self.dev1, self.SSH_CONTAINER,
+                        ['bash', '-lc', self._AGENT_LIST_SCRIPT],
+                        private_key_path=_DEV1_KEY, preferred=preferred,
+                        system_bin_dir=self.test_system_bin_dir,
+                    )
+                except Exception:
+                    return None
+                return r.stdout if (key1 in r.stdout and key2 in r.stdout) else None
+
+            listing = self.wait_until(
+                _agent_listing_with_both, timeout=90, interval=3,
+                timeout_msg='ssh-agent did not list both keypairs')
+            self.assert_in(key1, listing, "legacy '*' keypair missing from agent")
+            self.assert_in(key2, listing, 'second keypair missing from agent')
+        finally:
+            try:
+                self.admin._run('user', 'edit', user, '--unset', 'ssh.keypairs.inttest2')
+            except Exception:
+                pass

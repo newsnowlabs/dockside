@@ -3,6 +3,7 @@ Shared helpers for SSH integration tests.
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -115,7 +116,11 @@ def run_host_ssh_via_cli_config(client, devtainer, private_key_path, remote_argv
             alias=ssh_alias,
         )
         config_path = write_cli_ssh_config(tmpdir, config_text)
-        argv = ['ssh', '-F', config_path, ssh_alias] + list(remote_argv)
+        # Join with proper shell quoting so the remote shell sees each argument
+        # as a distinct word.  Without this, bare semicolons in a bash -lc script
+        # are interpreted by the remote /bin/sh before bash ever sees them.
+        remote_cmd = ' '.join(shlex.quote(a) for a in list(remote_argv))
+        argv = ['ssh', '-F', config_path, ssh_alias, remote_cmd]
         debug_ssh_command(argv, config_path)
         return subprocess.run(
             argv,
