@@ -1,8 +1,8 @@
 // Admin API service — users, roles, profiles, and self-service account editing.
 // Follows the same axios pattern as services/container.js.
-// Mutation endpoints (create/update) for users and profiles use POST with a
-// JSON body so large payloads (e.g. profile JSON) don't hit URL length limits.
-// Role mutations remain GET/query-string because role records are small.
+// All state-changing endpoints (create/update/remove/rename for users, roles,
+// and profiles) use POST; the server enforces POST on these routes and returns
+// 405 otherwise.  Reads (list/get) use GET.
 
 import axios from 'axios';
 
@@ -42,7 +42,7 @@ export function updateUser(username, data) {
 }
 
 export function removeUser(username) {
-   return axios.get(`/users/${encodeURIComponent(username)}/remove`).then(r => assertObj(r.data.data, `/users/${username}/remove`));
+   return axios.post(`/users/${encodeURIComponent(username)}/remove`).then(r => assertObj(r.data.data, `/users/${username}/remove`));
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ export function updateRole(name, data) {
 }
 
 export function removeRole(name) {
-   return axios.get(`/roles/${encodeURIComponent(name)}/remove`).then(r => assertObj(r.data.data, `/roles/${name}/remove`));
+   return axios.post(`/roles/${encodeURIComponent(name)}/remove`).then(r => assertObj(r.data.data, `/roles/${name}/remove`));
 }
 
 // ---------------------------------------------------------------------------
@@ -95,12 +95,12 @@ export function updateProfile(id, data) {
 }
 
 export function removeProfile(id) {
-   return axios.get(`/profiles/${encodeURIComponent(id)}/remove`).then(r => assertObj(r.data.data, `/profiles/${id}/remove`));
+   return axios.post(`/profiles/${encodeURIComponent(id)}/remove`).then(r => assertObj(r.data.data, `/profiles/${id}/remove`));
 }
 
 export function renameProfile(id, newName) {
-   return axios.get(`/profiles/${encodeURIComponent(id)}/rename`, {
-      params: { new_name: newName }
+   return axios.post(`/profiles/${encodeURIComponent(id)}/rename`, {
+      new_name: newName
    }).then(r => assertObj(r.data.data, `/profiles/${id}/rename`));
 }
 

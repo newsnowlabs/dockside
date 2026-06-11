@@ -886,7 +886,13 @@ def api_user_update(opener, server, username, fields):
 
 def api_user_remove(opener, server, username):
     url = (server.rstrip('/') + '/users/' + urllib.parse.quote(username, safe='') + '/remove')
-    data = _do_get(opener, url, timeout=30)
+    data = _do_post(opener, url, {}, timeout=30)
+    return data.get('data')
+
+
+def api_me_update(opener, server, fields):
+    """Self-service update of the authenticated user's own account (POST /me/update)."""
+    data = _do_post(opener, server.rstrip('/') + '/me/update', fields, timeout=30)
     return data.get('data')
 
 
@@ -902,22 +908,19 @@ def api_role_get(opener, server, name):
 
 
 def api_role_create(opener, server, fields):
-    qs = _encode_params(fields)
-    data = _do_get(opener, server.rstrip('/') + '/roles/create?' + qs, timeout=30)
+    data = _do_post(opener, server.rstrip('/') + '/roles/create', fields, timeout=30)
     return data.get('data')
 
 
 def api_role_update(opener, server, name, fields):
-    qs = _encode_params(fields)
-    url = (server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='')
-           + '/update?' + qs)
-    data = _do_get(opener, url, timeout=30)
+    url = server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='') + '/update'
+    data = _do_post(opener, url, fields, timeout=30)
     return data.get('data')
 
 
 def api_role_remove(opener, server, name):
     url = server.rstrip('/') + '/roles/' + urllib.parse.quote(name, safe='') + '/remove'
-    data = _do_get(opener, url, timeout=30)
+    data = _do_post(opener, url, {}, timeout=30)
     return data.get('data')
 
 
@@ -945,15 +948,14 @@ def api_profile_update(opener, server, name, fields):
 
 def api_profile_remove(opener, server, name):
     url = (server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='') + '/remove')
-    data = _do_get(opener, url, timeout=30)
+    data = _do_post(opener, url, {}, timeout=30)
     return data.get('data')
 
 
 def api_profile_rename(opener, server, name, new_name):
-    qs = _encode_params({'new_name': new_name})
     url = (server.rstrip('/') + '/profiles/' + urllib.parse.quote(name, safe='')
-           + '/rename?' + qs)
-    data = _do_get(opener, url, timeout=30)
+           + '/rename')
+    data = _do_post(opener, url, {'new_name': new_name}, timeout=30)
     return data.get('data')
 
 
@@ -1471,6 +1473,20 @@ def _add_user_fields(p, create=False):
     p.add_argument('--from-json', metavar='FILE|-',
                    help='Read base record from a JSON file (use - for stdin); '
                         'other flags take precedence')
+
+
+def _add_self_fields(p):
+    """Fields a user may edit on their own account (server whitelist: name/email/gh_token/ssh)."""
+    p.add_argument('--name', metavar='DISPLAY_NAME', help='Display name')
+    p.add_argument('--email', metavar='EMAIL', help='Email address')
+    p.add_argument('--gh-token', dest='gh_token', metavar='TOKEN',
+                   help='GitHub Personal Access Token passed as GH_TOKEN to containers')
+    p.add_argument('--ssh', metavar='JSON', help='Full ssh object as JSON')
+    p.add_argument('--set', metavar='KEY=VALUE', action='append',
+                   help='Set a nested property via dot-notation key (repeatable), e.g. '
+                        '--set ssh.publicKeys.laptop="ssh-ed25519 AAAA... me@host"')
+    p.add_argument('--unset', metavar='KEY', action='append',
+                   help='Delete a nested property via dot-notation key (repeatable)')
 
 
 def _add_role_fields(p):
@@ -2047,6 +2063,39 @@ def _collect_user_fields(args, create=False):
     return fields
 
 
+def _collect_self_fields(args):
+    """Build the fields dict for a self-service account edit (POST /me/update).
+
+    Only personal fields are sent; the server's updateSelf whitelist (name, email,
+    gh_token, ssh) is authoritative and ignores anything else.
+    """
+    fields = {}
+
+    def _set(k, attr):
+        v = getattr(args, attr, None)
+        if v is not None:
+            fields[k] = v
+
+    _set('name',     'name')
+    _set('email',    'email')
+    _set('gh_token', 'gh_token')
+
+    raw = getattr(args, 'ssh', None)
+    if raw is not None:
+        try:
+            fields['ssh'] = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as e:
+            die(f'--ssh is not valid JSON: {e}')
+
+    fields.update(_parse_set_args(getattr(args, 'set', None) or []))
+
+    unset = getattr(args, 'unset', None) or []
+    if unset:
+        fields['_unset'] = unset
+
+    return fields
+
+
 def _collect_role_fields(args, create=False):
     """Build the fields dict for a role create/edit API call."""
     fields = {}
@@ -2323,6 +2372,22 @@ def cmd_user_edit(args):
     except APIError as e:
         die(str(e))
     print(f'User updated: {args.username!r}', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+    else:
+        print(_fmt_detail(record))
+
+
+def cmd_account_edit(args):
+    opener, server = _client(args)
+    fields = _collect_self_fields(args)
+    if not fields:
+        die('Nothing to update – specify at least one flag or --set KEY=VALUE')
+    try:
+        record = api_me_update(opener, server, fields)
+    except APIError as e:
+        die(str(e))
+    print('Account updated', file=sys.stderr)
     if args._fmt in ('json', 'yaml'):
         emit(record, args._fmt)
     else:
@@ -3231,6 +3296,31 @@ def build_parser():
     )
     _add_global_flags(sp)
     sp.set_defaults(func=cmd_whoami)
+
+    # ── account (self-service; no special permission required) ───────────────────
+    account_p = sub.add_parser(
+        'account',
+        help='View or edit your own account (no special permission required)')
+    account_sub = account_p.add_subparsers(dest='account_command', metavar='SUBCOMMAND')
+    account_sub.required = True
+
+    sp = account_sub.add_parser('show', help='Show your own account record (/me)')
+    _add_global_flags(sp)
+    sp.set_defaults(func=cmd_whoami)
+
+    sp = account_sub.add_parser(
+        'edit',
+        help='Edit your own account (display name, email, GitHub token, SSH keys)',
+        description=(
+            'Self-service edit of your own account via /me/update.  Only personal\n'
+            'fields are editable (name, email, gh_token, ssh); role and permissions\n'
+            'are not — the server ignores them on this endpoint.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_global_flags(sp)
+    _add_self_fields(sp)
+    sp.set_defaults(func=cmd_account_edit)
 
     return p
 
