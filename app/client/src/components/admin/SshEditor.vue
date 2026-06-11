@@ -70,9 +70,7 @@
                trim
                :state="newKpNameState"
             />
-            <b-form-invalid-feedback>
-               Name must be letters, digits, hyphens or underscores, and must not already exist.
-            </b-form-invalid-feedback>
+            <b-form-invalid-feedback>{{ newKpNameError }}</b-form-invalid-feedback>
          </b-form-group>
 
          <b-form-group label="Public key" label-for="kp-public">
@@ -136,12 +134,23 @@
 
          newKpNameState() {
             if (!this.newKpName) return null;
-            return /^[A-Za-z0-9_-]+$/.test(this.newKpName) && !this.keypairNames.includes(this.newKpName)
+            return /^[A-Za-z0-9_*-]+$/.test(this.newKpName) && !this.keypairNames.includes(this.newKpName)
                ? true : false;
          },
 
          canAddKeypair() {
             return this.newKpNameState === true && this.newKpPublic.trim() && this.newKpPrivate.trim();
+         },
+
+         // Distinguish the two failure reasons so the message isn't misleading
+         // (e.g. '*' is a valid name, but every user already has a legacy '*' keypair).
+         newKpNameError() {
+            if (!this.newKpName) return '';
+            if (this.keypairNames.includes(this.newKpName))
+               return `A keypair named '${this.newKpName}' already exists.`;
+            if (!/^[A-Za-z0-9_*-]+$/.test(this.newKpName))
+               return "Use only letters, digits, hyphens, underscores or '*'.";
+            return '';
          },
       },
 
