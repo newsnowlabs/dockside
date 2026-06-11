@@ -298,8 +298,25 @@
             // Build the JSON blob (_json) by merging structured fields back into
             // the body.  The server's createProfile/updateProfile will decode _json
             // as the authoritative profile body, so it must be complete.
+            //
+            // JsonEditor may hand back the body as a string (its documented contract,
+            // e.g. when edited in code mode), so coerce to an object before spreading —
+            // otherwise `{...string}` would explode into character-indexed keys and the
+            // server would reject the record.  Invalid JSON surfaces as a clean error
+            // (caught by save()) rather than a corrupt payload.
+            let body = this.profileBody;
+            if (typeof body === 'string') {
+               try {
+                  body = JSON.parse(body);
+               } catch (e) {
+                  throw new Error(`Profile body is not valid JSON: ${e.message}`);
+               }
+            }
+            if (!body || typeof body !== 'object' || Array.isArray(body)) {
+               throw new Error('Profile body must be a JSON object');
+            }
             const fullProfile = {
-               ...this.profileBody,
+               ...body,
                name:        this.form.name,
                description: this.form.description,
                active:      this.form.active,  // boolean (JS) → JSON boolean in _json

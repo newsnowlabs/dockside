@@ -11,7 +11,7 @@
          <span class="json-editor-mode-label">Mode:</span>
          <b-button-group size="sm">
             <b-button
-               v-for="m in ['tree', 'code']"
+               v-for="m in ['tree', 'text']"
                :key="m"
                :variant="currentMode === m ? 'secondary' : 'outline-secondary'"
                @click="currentMode = m"
@@ -26,7 +26,7 @@
     * JsonEditor — thin wrapper around json-editor-vue.
     *
     * Props:  value    (Object|Array|string)
-    *         mode     ('tree' | 'code')  default 'tree'
+    *         mode     ('tree' | 'text')  default 'text'
     *         readonly (Boolean)          default false — shows read-only tree view
     * Emits:  input(newValue)
     *
@@ -43,8 +43,8 @@
          },
          mode: {
             type: String,
-            default: 'tree',
-            validator: v => ['tree', 'code'].includes(v),
+            default: 'text',
+            validator: v => ['tree', 'text'].includes(v),
          },
          readonly: {
             type: Boolean,
@@ -60,7 +60,7 @@
       computed: {
          allowedModes() {
             // In readonly mode hide the mode switcher and lock to tree view
-            return this.readonly ? [] : ['tree', 'code'];
+            return this.readonly ? [] : ['tree', 'text'];
          },
       },
       watch: {
