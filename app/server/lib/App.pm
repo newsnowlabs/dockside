@@ -447,7 +447,9 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       if ( $r->has_request_body(\&_api_body_handler) ) {
          return nginx::OK;
       }
-      return nginx::HTTP_BAD_REQUEST;
+      # A bodyless POST (e.g. a no-arg mutation like remove/start/stop) still needs
+      # dispatching — there is simply nothing to read first.
+      return _api_handler( $r, $User, $querystring, $parentFQDN );
    }
 
    return _api_handler( $r, $User, $querystring, $parentFQDN );
@@ -553,6 +555,18 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
                'authModes' => ['user', 'developer', 'public', 'viewer', 'owner'],
             }
          });
+      }
+
+      ######################################
+      # State-changing admin/self endpoints must use POST.  Mutations must not be
+      # reachable via GET: GET has cacheable/prefetchable/logged side effects, and
+      # the GET arg parser (split_args) does not JSON-decode values, so structured
+      # fields would be corrupted.  Container routes are intentionally NOT enforced
+      # here (their GET→POST migration is staged separately).
+      #
+      if ( $route =~ m!^/(?:me/update|users/create|users/[^/]+/(?:update|remove)|roles/create|roles/[^/]+/(?:update|remove)|profiles/create|profiles/[^/]+/(?:update|remove|rename))/?$!
+           && $r->request_method ne 'POST' ) {
+         return json($r, 405, { 'status' => '405', 'msg' => 'Method Not Allowed: use POST' });
       }
 
       ######################################
@@ -683,7 +697,7 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
 
       if( $route =~ m!^/profiles/([^/]+)/rename/?$! ) {
          my $name = $1;
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $new_name = $args->{'new_name'}
             or die Exception->new( 'msg' => "new_name is required" );
          my $result = $User->renameProfile($name, $new_name, $args);
