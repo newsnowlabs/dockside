@@ -290,7 +290,8 @@ class SshTestMixin:
 
     @classmethod
     def setUpClass(cls):
-        cls.SSH_CONTAINER = cls._sfx(_BASE_SSH_CONTAINER)
+        base = getattr(cls, '_BASE_SSH_CONTAINER', _BASE_SSH_CONTAINER)
+        cls.SSH_CONTAINER = cls._sfx(base)
         cls._setup_ssh_container()
 
     @classmethod

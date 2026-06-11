@@ -46,6 +46,8 @@ def _key_id(pubkey_text):
 class SshOutboundTests(SshTestMixin, TestCase):
     """Outbound SSH via the devtainer's integrated ssh-agent."""
 
+    _BASE_SSH_CONTAINER = 'inttest-outbound-ssh-01'
+
     _SELF_SSH_SCRIPT = (
         "ps auxw | egrep '(ssh|drop)' || true; "
         'agent_sock=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1); '
