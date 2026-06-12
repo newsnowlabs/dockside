@@ -205,10 +205,6 @@ pre-existing roles, users, and profiles for that suffix and only removes
 resources created by the current run. Set `DOCKSIDE_TEST_CLEANUP_REUSED=1` to
 also remove reused test resources for that suffix at the end of the run.
 
-`--cookie-auth ancestors-only` is now deprecated for achieving this test
-behavior. The preferred test-harness pattern is to use isolated per-user
-`--cookie-file` paths and rely on the CLI's normal parent-chain cookie merging.
-
 > N.B. Important: if only `DOCKSIDE_TEST_HOST=...` is set, the runner selects
 **remote** mode. To get local-mode TCP routing to `localhost`, set
 `DOCKSIDE_TEST_MODE=local` explicitly.

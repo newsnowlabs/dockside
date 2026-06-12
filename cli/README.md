@@ -508,7 +508,6 @@ Most authenticated commands share these flags:
 | `--host-header HOST` | `DOCKSIDE_HOST_HEADER` | Override the HTTP Host header |
 | `--connect-to HOST[:PORT]` | `DOCKSIDE_CONNECT_TO` | Override only the TCP target |
 | `--cookie-file PATH` | – | Override the target server’s session cookie file |
-| `--cookie-auth MODE` | – | Cookie loading mode (`all` or `ancestors-only`) |
 | `--debug-http` | – | Print raw HTTP diagnostics where supported |
 
 For exact availability on a specific command, use:
@@ -571,9 +570,8 @@ This is especially important for nested or outer-proxied Dockside deployments:
 - a plain no-cookie HTTP probe is often not representative of how a real routed
   request reaches the target instance
 
-`--cookie-auth ancestors-only` still exists in the CLI as an advanced mode, but
-the integration tests now prefer isolated `--cookie-file` paths as the normal
-way to achieve target-session isolation.
+The integration tests use isolated `--cookie-file` paths per client to achieve
+target-session isolation without affecting the system cookie store.
 
 If you are debugging test behavior, the most relevant commands are usually:
 

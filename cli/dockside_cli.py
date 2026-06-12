@@ -717,7 +717,7 @@ def login(server, username, password, verify_ssl=True,
 def get_authenticated_opener(server, server_entry, username, password,
                               verify_ssl=True, transient=False,
                               extra_cookies=None, host_header=None, connect_to=None,
-                              session_cookie_file=None, cookie_auth='all', cfg=None):
+                              session_cookie_file=None, cfg=None):
     """
     Return an authenticated opener.
 
@@ -727,9 +727,6 @@ def get_authenticated_opener(server, server_entry, username, password,
     session_cookie_file: if set, use this path for the target's session cookies
         instead of the path derived from config.json.  Ancestor cookies are
         still merged from their normal paths in the system config.
-    cookie_auth: 'all' (default) — load both target and ancestor cookies;
-        'ancestors-only' — skip loading the target's stored session before the
-        request/login while still merging ancestors in memory.
     cfg: loaded config dict, used to follow the 'parent' chain.  If None, no
         ancestor cookies are merged.
     """
@@ -743,14 +740,9 @@ def get_authenticated_opener(server, server_entry, username, password,
     nest_level = _compute_nest_level(server) if connect_to else None
 
     if username and password:
-        if cookie_auth == 'ancestors-only':
-            jar = http.cookiejar.MozillaCookieJar()
-            opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to,
-                                            nest_level=nest_level)
-        else:
-            opener = _build_opener(cookie_file, verify_ssl,
-                                   host_header=host_header, connect_to=connect_to,
-                                   nest_level=nest_level)
+        opener = _build_opener(cookie_file, verify_ssl,
+                               host_header=host_header, connect_to=connect_to,
+                               nest_level=nest_level)
         if cfg:
             _merge_ancestor_cookies(opener._jar, cfg, server_entry)
         opener = _login_into_opener(opener, server, username, password,
@@ -758,16 +750,6 @@ def get_authenticated_opener(server, server_entry, username, password,
         if not transient:
             _ensure_config_dir()
             _save_target_cookie_jar(opener._jar, cookie_file)
-        return opener
-    if cookie_auth == 'ancestors-only':
-        # Empty in-memory jar for target; ancestor cookies injected first (with
-        # the target server's domain) so the outer proxy receives and validates
-        # them when requests pass through.
-        jar = http.cookiejar.MozillaCookieJar()
-        opener = _build_opener_from_jar(jar, verify_ssl, host_header, connect_to,
-                                        nest_level=nest_level)
-        if cfg:
-            _merge_ancestor_cookies(jar, cfg, server_entry)
         return opener
     # Load stored cookies
     if not os.path.isfile(cookie_file):
@@ -1397,14 +1379,6 @@ def _add_global_flags(p):
              'the system cookie store.',
     )
     p.add_argument(
-        '--cookie-auth', dest='cookie_auth', metavar='MODE',
-        choices=['all', 'ancestors-only'],
-        default=argparse.SUPPRESS,
-        help='Cookie loading mode: "all" (default) loads target and ancestor cookies; '
-             '"ancestors-only" skips the target\'s stored session and uses only ancestor '
-             'cookies merged in-memory (requires --username/--password).',
-    )
-    p.add_argument(
         '--debug-http', dest='debug_http', action='store_true', default=argparse.SUPPRESS,
         help='Print raw HTTP request/response headers for debugging.',
     )
@@ -1629,14 +1603,12 @@ def _client(args):
                   or os.environ.get('DOCKSIDE_CONNECT_TO'))
     effective_connect_to = connect_to or server_entry.get('connect_to')
     session_cookie_file = getattr(args, 'session_cookie_file', None) or None
-    cookie_auth = getattr(args, 'cookie_auth', 'all') or 'all'
     if getattr(args, 'debug_http', False):
         _enable_debug_http()
     # transient: don't persist the session when using one-shot credentials,
     # unless --cookie-file was given (which provides a dedicated scratch space).
     transient = (username is not None
-                 and session_cookie_file is None
-                 and cookie_auth != 'ancestors-only')
+                 and session_cookie_file is None)
     try:
         opener = get_authenticated_opener(
             server_url, server_entry, username, password,
@@ -1645,7 +1617,6 @@ def _client(args):
             host_header=host_header,
             connect_to=connect_to,
             session_cookie_file=session_cookie_file,
-            cookie_auth=cookie_auth,
             cfg=cfg,
         )
     except APIError as e:
