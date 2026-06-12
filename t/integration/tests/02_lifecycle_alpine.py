@@ -41,10 +41,8 @@ class LifecycleAlpineTests(TestCase):
         )
         self.assert_true(result is not None, 'create returned nothing')
         name = result.get('name') if isinstance(result, dict) else None
-        self.assert_true(
-            name == self.CONTAINER_NAME or result is not None,
-            f'expected container name {self.CONTAINER_NAME!r}'
-        )
+        self.assert_equal(name, self.CONTAINER_NAME,
+                          f'expected container name {self.CONTAINER_NAME!r}')
 
     def test_02_list_contains(self):
         names = self.container_names_in_list(self.admin)
