@@ -81,7 +81,7 @@ class SshOutboundTests(SshTestMixin, TestCase):
                 self.SSH_CONTAINER,
                 ['bash', '-lc', self._SELF_SSH_SCRIPT],
                 private_key_path=_DEV1_KEY,
-                preferred=('docker' if self.test_mode in ('local', 'harness') else 'ssh'),
+                preferred='ssh',
                 system_bin_dir=self.test_system_bin_dir,
             )
         except Exception as exc:
@@ -135,14 +135,12 @@ class SshOutboundTests(SshTestMixin, TestCase):
             self.dev1.stop(self.SSH_CONTAINER, wait=True, timeout=60)
             self.dev1.start(self.SSH_CONTAINER, wait=True, timeout=180)
 
-            preferred = 'docker' if self.test_mode in ('local', 'harness') else 'ssh'
-
             def _agent_listing_with_both():
                 try:
                     r = run_in_devtainer(
                         self.dev1, self.SSH_CONTAINER,
                         ['bash', '-lc', self._AGENT_LIST_SCRIPT],
-                        private_key_path=_DEV1_KEY, preferred=preferred,
+                        private_key_path=_DEV1_KEY, preferred='ssh',
                         system_bin_dir=self.test_system_bin_dir,
                     )
                 except Exception:
