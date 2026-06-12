@@ -63,8 +63,20 @@ class IdeTests(TestCase):
         """Create with openvscode, start, and verify IDE URL is reachable."""
         self._ensure_created_and_started()
         try:
-            code, _ = self.admin.check_service(
-                self.IDE_CONTAINER, router_prefix='ide'
+            # openvscode needs additional time to start inside the container
+            # after the Docker container reaches running state.  Poll until the
+            # backend returns something other than 502 (not ready yet).
+            def _ide_ready():
+                try:
+                    code, _ = self.admin.check_service(
+                        self.IDE_CONTAINER, router_prefix='ide'
+                    )
+                    return code if code != 502 else None
+                except APIError:
+                    return None
+            code = self.wait_until(
+                _ide_ready, timeout=120, interval=3,
+                timeout_msg='IDE backend (openvscode) did not become ready after start',
             )
             self.assert_true(
                 code in (200, 302, 301, 303),
