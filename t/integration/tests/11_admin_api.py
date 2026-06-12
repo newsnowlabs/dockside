@@ -13,6 +13,10 @@ setup scaffolding.  This module asserts the persisted shape end-to-end via the
     their own display name but cannot escalate their role.              [test_04]
   - state-changing endpoints reject GET with 405.                       [test_05]
   - non-object role permissions are rejected, not persisted.            [test_06]
+  - SSH keypair private key is not overwritten when '<redacted>' is
+    POSTed back (shallow-copy snapshot bug).                            [test_07]
+  - gh_token is not overwritten when a masked value is POSTed back
+    (missing restore-on-write).                                         [test_08]
 
 Out of scope here (browser-only contracts, verified manually): the server's _json
 profile-blob decode (the CLI sends real fields by design and never the _json
@@ -126,6 +130,56 @@ class AdminApiTests(TestCase):
         status2, _ = self.admin.check_url(base + '/users/inttest-verbcheck-absent/remove')
         self.assert_http_status(status2, 405,
                                 f'GET /users/<x>/remove returned {status2}, expected 405')
+
+    # ── SSH keypair private key round-trip ──────────────────────────────────────
+
+    def test_07_ssh_keypair_private_roundtrip(self):
+        """_restore_redacted_ssh must not write the '<redacted>' sentinel to disk."""
+        user = self.test_username_dev1
+        kp   = 'inttest-privkey'
+        real_private = 'INTTEST_FAKE_PRIVATE_KEY_ROUNDTRIP_07'
+        real_public  = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY33333 inttest@roundtrip'
+
+        # Store a keypair with a known private key value.
+        self.admin._run('user', 'edit', user,
+                        '--set', f'ssh.keypairs.{kp}.private={real_private}',
+                        '--set', f'ssh.keypairs.{kp}.public={real_public}')
+
+        # Simulate the Vue round-trip: POST back '<redacted>' as the private key.
+        self.admin._run('user', 'edit', user,
+                        '--set', f'ssh.keypairs.{kp}.private=<redacted>',
+                        '--set', f'ssh.keypairs.{kp}.public={real_public}')
+
+        rec = self.admin._run('user', 'get', user, '--sensitive')
+        stored_kps  = ((rec or {}).get('ssh') or {}).get('keypairs') or {}
+        stored_priv = (stored_kps.get(kp) or {}).get('private')
+        self.assert_equal(stored_priv, real_private,
+                          f'private key overwritten by <redacted> sentinel: {stored_priv!r}')
+
+    # ── gh_token round-trip ──────────────────────────────────────────────────────
+
+    def test_08_gh_token_roundtrip(self):
+        """_restore_redacted_gh_token must not write a masked gh_token to disk."""
+        user  = self.test_username_dev1
+        token = 'ghp_IntTestRoundtrip0000000000000008'
+
+        # Set a known gh_token.
+        self.admin._run('user', 'edit', user, '--gh-token', token)
+
+        # GET without --sensitive: the response carries the masked form.
+        rec    = self.admin._run('user', 'get', user)
+        masked = (rec or {}).get('gh_token') or ''
+        self.assert_true('*' in masked,
+                         f'gh_token was not masked in non-sensitive response: {masked!r}')
+
+        # POST the masked value back — simulates a client round-tripping the record.
+        self.admin._run('user', 'edit', user, '--gh-token', masked)
+
+        # The original token must survive.
+        rec2   = self.admin._run('user', 'get', user, '--sensitive')
+        stored = (rec2 or {}).get('gh_token') or ''
+        self.assert_equal(stored, token,
+                          f'gh_token overwritten by masked value: {stored!r}')
 
     # ── role record validation: non-object permissions rejected ─────────────────
 

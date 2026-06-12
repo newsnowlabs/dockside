@@ -61,19 +61,34 @@ sub _user_to_record ($user) {
 # private key would be destroyed.  This sub replaces '<redacted>' with the
 # original key material (or deletes the private field if none was stored).
 #
-# $orig_keypairs — shallow copy of record->ssh->keypairs taken BEFORE
-#                  apply_args_to_record, so the live record can be mutated
-#                  in place without losing the originals.
-sub _restore_redacted_ssh ($record, $orig_keypairs) {
+# $orig_privates — name→scalar map of private key strings taken BEFORE
+#                  apply_args_to_record.  A shallow hashref copy is NOT safe
+#                  because apply_args_to_record mutates nested hashrefs in-place,
+#                  aliasing through the copy and destroying the originals.
+sub _restore_redacted_ssh ($record, $orig_privates) {
    my $kps = ( ( $record->{'ssh'} // {} )->{'keypairs'} // {} );
    for my $kp_name ( keys %$kps ) {
       my $kp = $kps->{$kp_name};
       next unless ref $kp eq 'HASH' && ( $kp->{'private'} // '' ) eq '<redacted>';
-      if ( exists $orig_keypairs->{$kp_name} && exists $orig_keypairs->{$kp_name}{'private'} ) {
-         $kp->{'private'} = $orig_keypairs->{$kp_name}{'private'};
+      if ( exists $orig_privates->{$kp_name} ) {
+         $kp->{'private'} = $orig_privates->{$kp_name};
       } else {
          delete $kp->{'private'};
       }
+   }
+}
+
+# Restore a gh_token that was masked for API output.
+#
+# _sanitise_user_record replaces gh_token with a first-4/last-4 masked form.
+# If that masked value is POSTed back unchanged, writing it would destroy the
+# real token.  Any value containing '*' is treated as a masked sentinel and
+# replaced with the original (or deleted if none existed).
+sub _restore_redacted_gh_token ($record, $orig_token) {
+   if ( ( $record->{'gh_token'} // '' ) =~ /\*/ ) {
+      defined($orig_token)
+         ? ( $record->{'gh_token'} = $orig_token )
+         : delete $record->{'gh_token'};
    }
 }
 
@@ -240,11 +255,17 @@ sub updateUser ($self, $username, $args) {
       $record = $users->{$username}
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
 
-      # Snapshot keypairs BEFORE apply_args_to_record so _restore_redacted_ssh
-      # can recover original private key material from the pre-update record.
-      my $orig_kps = { %{ ( $record->{'ssh'} // {} )->{'keypairs'} // {} } };
+      # Snapshot scalar values BEFORE apply_args_to_record.  A shallow hashref
+      # copy aliases through to nested structures that apply_args_to_record
+      # mutates in-place — snapshot scalars instead to avoid aliasing.
+      my $kps = ( $record->{'ssh'} // {} )->{'keypairs'} // {};
+      my $orig_privates = { map  { $_ => $kps->{$_}{'private'} }
+                            grep { ref $kps->{$_} eq 'HASH' && exists $kps->{$_}{'private'} }
+                            keys %$kps };
+      my $orig_gh_token = $record->{'gh_token'};
       apply_args_to_record( $record, $args, qw(username password sensitive) );
-      _restore_redacted_ssh( $record, $orig_kps );
+      _restore_redacted_ssh( $record, $orig_privates );
+      _restore_redacted_gh_token( $record, $orig_gh_token );
 
       $users->{$username} = $record;
       return JSON->new->utf8->pretty->canonical->encode($users);
@@ -293,9 +314,14 @@ sub updateSelf ($self, $args) {
       $record = $users->{$username}
          or die Exception->new( 'msg' => "User '$username' not found in users.json" );
 
-      my $orig_kps = { %{ ( $record->{'ssh'} // {} )->{'keypairs'} // {} } };
+      my $kps = ( $record->{'ssh'} // {} )->{'keypairs'} // {};
+      my $orig_privates = { map  { $_ => $kps->{$_}{'private'} }
+                            grep { ref $kps->{$_} eq 'HASH' && exists $kps->{$_}{'private'} }
+                            keys %$kps };
+      my $orig_gh_token = $record->{'gh_token'};
       apply_args_to_record( $record, $safe_args );
-      _restore_redacted_ssh( $record, $orig_kps );
+      _restore_redacted_ssh( $record, $orig_privates );
+      _restore_redacted_gh_token( $record, $orig_gh_token );
 
       $users->{$username} = $record;
       return JSON->new->utf8->pretty->canonical->encode($users);
