@@ -60,10 +60,7 @@ class SshTests(SshTestMixin, TestCase):
             self.dev1.update(self.SSH_CONTAINER, developers='')
         except APIError:
             pass
-        try:
-            self._wait_ssh_route_status(self.dev2, 410, timeout=20)
-        except APIError as e:
-            self.skip(f'Could not check SSH service: {e}')
+        self._wait_ssh_route_status(self.dev2, 410, timeout=20)
 
     def test_03_add_dev2_and_ssh_connects(self):
         """After adding dev2 as developer, they can SSH in with their key."""
@@ -93,7 +90,4 @@ class SshTests(SshTestMixin, TestCase):
         self._ensure_ssh_container()
         self.dev1.update(self.SSH_CONTAINER, developers=self.test_username_dev2)
         self.dev1.update(self.SSH_CONTAINER, developers='')
-        try:
-            self._wait_ssh_route_status(self.dev2, 410, timeout=20)
-        except APIError as e:
-            self.skip(f'Could not check SSH service: {e}')
+        self._wait_ssh_route_status(self.dev2, 410, timeout=20)
