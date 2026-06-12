@@ -147,6 +147,13 @@ _EOE_
    );
 }
 
+sub _login_body_handler ($r) { # nginx has_request_body callback — named sub avoids GC of anon coderef
+   my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
+   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+   handle_login_form($r, $parentFQDN) || send_login_page($r);
+   return nginx::OK;
+}
+
 sub handle_login_form ($r, $parentFQDN) { # nginx request object # copy of $parentFQDN
    # Extract credentials from body.
    # Unescape keys and values, for consistency and simplicity.
@@ -279,11 +286,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       # POST request? Then handle login form, and on failure send login page again.
-      if( $r->has_request_body(
-            sub {
-               return handle_login_form($_[0], $parentFQDN) || send_login_page($r);
-            }
-         )) {
+      if( $r->has_request_body(\&_login_body_handler) ) {
          return nginx::OK;
       }
 
