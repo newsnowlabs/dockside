@@ -415,7 +415,9 @@ class DocksideClient:
 
     def list_containers(self):
         result = self._run_readonly('list')
-        return result if isinstance(result, list) else []
+        if not isinstance(result, list):
+            raise APIError(f'list returned unexpected type {type(result).__name__!r}: {result!r}')
+        return result
 
     def get_container(self, name):
         return self._run_readonly('get', name)
