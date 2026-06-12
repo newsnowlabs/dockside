@@ -2618,7 +2618,9 @@ def cmd_check_url(args):
         ctx.check_hostname = False
         ctx.verify_mode    = ssl.CERT_NONE
 
-    # Re-inject server session cookies into a new jar scoped to the target host
+    # Re-inject server session cookies into a new jar scoped to the target host.
+    # urllib won't send a cookie to a different domain than it was set for, but
+    # devtainer URLs (e.g. ide-NAME--HOST) differ from the API server domain.
     target_host = urllib.parse.urlparse(url).hostname or ''
     target_jar  = http.cookiejar.CookieJar()
     for c in opener._jar:

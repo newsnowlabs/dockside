@@ -46,6 +46,10 @@ def _key_id(pubkey_text):
 class SshOutboundTests(SshTestMixin, TestCase):
     """Outbound SSH via the devtainer's integrated ssh-agent."""
 
+    # Each SSH test module must use a distinct base container name.
+    # tearDownClass removes with wait=False, so back-to-back module runs would
+    # hit Docker's "name already in use" error if the prior removal was still
+    # in flight when the next module's setUpClass called create().
     _BASE_SSH_CONTAINER = 'inttest-outbound-ssh-01'
 
     _SELF_SSH_SCRIPT = (

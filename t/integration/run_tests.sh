@@ -237,7 +237,7 @@ fi
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
-    local exit_code=$?
+    local exit_code=$?  # capture before any future cleanup commands can reset it
     exit "$exit_code"
 }
 trap cleanup EXIT INT TERM

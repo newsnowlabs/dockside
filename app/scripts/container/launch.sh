@@ -23,6 +23,8 @@ log() {
    echo "$S$1" >&2
 }
 
+# Wrapper: use the IDE-bundled git binary with its own CA cert store and
+# exec-path so git operations work in containers with self-signed certs.
 git() {
    $IDE_PATH/bin/git -c "http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt" --exec-path="$IDE_PATH/bin" "$@"
 }
