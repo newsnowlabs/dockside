@@ -1319,6 +1319,7 @@ def _fmt_detail(c):
         ('Options',       options_str),
         ('Docker status', docker.get('Status', '')),
         ('Created',       created),
+        ('Launch error',  f'docker create exit code {c["createStatus"]}' if c.get('createStatus') else ''),
     ]
 
     # Append a labelled URL line for each non-passthru router
@@ -2132,11 +2133,27 @@ def cmd_create(args):
             except APIError:
                 pass
         else:
-            print(
-                f'Warning: timed out after {args.timeout}s waiting for '
-                f'{name!r} to start. It may still be launching.',
-                file=sys.stderr,
-            )
+            try:
+                failed_c = next(
+                    (c for c in fetch_containers(opener, server) if c.get('id') == res_id),
+                    None,
+                )
+            except APIError:
+                failed_c = None
+            if failed_c and failed_c.get('status') == -4:
+                reservation = failed_c
+                print(
+                    f'Error: {name!r} failed to launch '
+                    f'(docker create exit code: {failed_c.get("createStatus")}). '
+                    f'Check launch logs for details.',
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f'Warning: timed out after {args.timeout}s waiting for '
+                    f'{name!r} to start. It may still be launching.',
+                    file=sys.stderr,
+                )
 
     if args._fmt in ('json', 'yaml'):
         emit(reservation, args._fmt)

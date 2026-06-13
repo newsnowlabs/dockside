@@ -51,6 +51,10 @@
          padding-left: 20px;
       }
 
+      &.status--4 a {
+         color: #c44;
+      }
+
       &.status--3 a {
          color: #ccc;
       }

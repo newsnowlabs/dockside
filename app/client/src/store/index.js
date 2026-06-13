@@ -22,7 +22,8 @@ const createStore = () => new Vuex.Store({
       welcomeTextStatus: state => state.welcomeTextStatus,
       isSelected: state => state.selectedContainer.name !== undefined,
       haveLaunchingContainers: state => state.containers.some(container =>
-         (container.status == -2 && (container.expiryTime === undefined || container.expiryTime === null || container.expiryTime === ''))
+         (container.status == -2 && (container.expiryTime === undefined || container.expiryTime === null || container.expiryTime === '')) ||
+         container.status == -4
       ),
       haveContainers: state => state.containers.length > 0,
       isEditMode: (state, getters) => getters.isSelected && state.selectedContainer.mode === "edit",
