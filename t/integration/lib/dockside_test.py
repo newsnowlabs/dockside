@@ -565,6 +565,10 @@ class TestCase:
     test_profile_alpine     = 'inttest-alpine'
     test_profile_nginx      = 'inttest-nginx'
     test_profile_bad_image  = 'inttest-bad-image'
+    test_image_alpine       = 'alpine:latest'
+    test_image_nginx        = 'nginx:latest'
+    test_image_debian       = 'debian:latest'
+    test_image_ubuntu       = 'ubuntu:latest'
     test_password_dev     = 'inttest-testpass'
     test_system_bin_dir   = '/opt/dockside/system/latest/bin'
 

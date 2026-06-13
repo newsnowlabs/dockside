@@ -726,6 +726,10 @@ def main():
         test_profile_nginx      = _env_manager.profile_nginx
         test_profile_git        = _env_manager.profile_git
         test_profile_bad_image  = _env_manager.profile_bad_image
+        test_image_alpine       = _prefix_image('alpine:latest')
+        test_image_nginx        = _prefix_image('nginx:latest')
+        test_image_debian       = _prefix_image('debian:latest')
+        test_image_ubuntu       = _prefix_image('ubuntu:latest')
         test_password_dev    = _env_manager.password_dev
         test_system_bin_dir  = os.environ.get(
             'DOCKSIDE_TEST_SYSTEM_BIN_DIR',
@@ -748,6 +752,10 @@ def main():
             'test_profile_nginx':      test_profile_nginx,
             'test_profile_git':        test_profile_git,
             'test_profile_bad_image':  test_profile_bad_image,
+            'test_image_alpine':       test_image_alpine,
+            'test_image_nginx':        test_image_nginx,
+            'test_image_debian':       test_image_debian,
+            'test_image_ubuntu':       test_image_ubuntu,
             'test_password_dev':       test_password_dev,
             'test_system_bin_dir':  test_system_bin_dir,
             '_name_suffix':         suffix,

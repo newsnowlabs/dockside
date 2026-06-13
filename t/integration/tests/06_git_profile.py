@@ -193,7 +193,7 @@ class GitProfileTests(TestCase):
             profile=self.test_profile_git,
             name=name,
             gitURL=GIT_URL,
-            image='debian:latest',
+            image=self.test_image_debian,
         )
         self.assert_true(result is not None)
 
@@ -204,6 +204,6 @@ class GitProfileTests(TestCase):
             profile=self.test_profile_git,
             name=name,
             gitURL=GIT_URL,
-            image='ubuntu:latest',
+            image=self.test_image_ubuntu,
         )
         self.assert_true(result is not None)
