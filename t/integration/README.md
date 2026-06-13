@@ -245,6 +245,13 @@ current CLI config (`DOCKSIDE_CLI_CONFIG`, `DOCKSIDE_CONFIG_DIR`, or
 still verifies the effective admin identity and permissions via `dockside
 whoami` before creating any test resources.
 
+## Output buffering
+
+`run_tests.sh` invokes Python with `-u` (unbuffered) so TAP output lines reach
+the terminal or log file immediately. If you invoke `run_tests_main.py` directly,
+pass `-u` or set `PYTHONUNBUFFERED=1` to avoid lines being held in an 8 KB
+block buffer until it fills or the process exits.
+
 ## Runner Flags
 
 | Flag | Effect |

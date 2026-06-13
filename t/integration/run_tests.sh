@@ -257,4 +257,4 @@ echo "# Server: ${DOCKSIDE_TEST_SERVER_URL}"
 echo "#"
 
 PYTHONPATH="${INTEGRATION_DIR}/lib:${REPO_ROOT}/cli" \
-    python3 "${INTEGRATION_DIR}/lib/run_tests_main.py"
+    python3 -u "${INTEGRATION_DIR}/lib/run_tests_main.py"
