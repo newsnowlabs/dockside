@@ -413,9 +413,9 @@ sub update_container_info ($class) {
             $r->{'status'} = -3;
          }
       }
-      # We have no containerId, which implies no container has yet been launched for this reservation.
+      # We have no containerId: either launch is in-flight (-2) or docker create failed (-4).
       else {
-         $r->{'status'} = -2;
+         $r->{'status'} = ($r->{'createStatus'} ? -4 : -2);
       }
 
       $r->load_launch_logs();      
@@ -580,7 +580,7 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
             'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options ) ],
             'dockerLaunchLogs' => 1
          },
-         [ qw(id name owner profile status containerId) ]
+         [ qw(id name owner profile status containerId createStatus) ]
       );
    }
    else {
@@ -996,28 +996,32 @@ sub launch ($self) {
    # CHILD PROCESS
    # -------------
 
+   my $exitCode;
    try {
 
       flog("Reservation::launch: RUNNING: $cmd");
 
-      # Set PATH required for 'docker run' to launch external credential helpers, like gcloud.
+      # Set PATH required for 'docker create' to launch external credential helpers, like gcloud.
       local $ENV{'PATH'} = $CONFIG->{'docker'}{'PATH'};
       local $ENV{'HOME'} = $CONFIG->{'docker'}{'HOME'} // '/home/dockside';
 
       # Enable this to simulate slow launches.
       # sleep(30);
 
-      # Launch 'docker run' command in a subprocess with pty piped to specified file.
-      my $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
-
-      # 'docker run' has completed, so, log containerId (if launch successful) and exitCode.
+      # Launch 'docker create' command in a subprocess with pty piped to specified file.
+      $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
 
       my $o = get_config("$CONFIG->{'tmpPath'}/r-$id.cid");
       flog("Reservation::launch: containerId='$o'; exitCode=$exitCode");
 
+      if( $exitCode != 0 ) {
+         flog("Reservation::launch: 'docker create' failed with exit code $exitCode");
+         die Exception->new( 'msg' => "docker create failed with exit code $exitCode" );
+      }
+
       if( $o !~ /^([0-9a-f]{12})[0-9a-f]{52}$/i ) {
-         flog("Reservation::launch: 'docker run' failed to output container id");
-         die Exception->new( 'msg' => 'docker run failed to output container id' );
+         flog("Reservation::launch: 'docker create' failed to output container id");
+         die Exception->new( 'msg' => 'docker create failed to output container id' );
       }
 
       # Set containerId in $self
@@ -1027,7 +1031,7 @@ sub launch ($self) {
       $self->update( {
          'containerId' => $self->containerId()
       } );
-      
+
       flog("Reservation::launch: updated reservation db successfully");
 
       # Now the reservation db has been updated with the containerId,
@@ -1041,9 +1045,10 @@ sub launch ($self) {
    }
    catch {
       my $msg = (ref($_) eq 'Exception') ? $_->msg : $_;
-      flog("Reservation::launch: caught exception in 'docker run': '$msg'");
+      flog("Reservation::launch: caught exception in 'docker create': '$msg'");
       $self->update( {
-         'expiryTime' => YYYYMMDDHHMMSS(time)
+         'createStatus' => ($exitCode // 1),
+         'expiryTime'   => YYYYMMDDHHMMSS(time)
       } );
       exit(0);
    };
