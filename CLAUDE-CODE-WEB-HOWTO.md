@@ -28,49 +28,57 @@ a GitHub Action).
   ```
   SSL certificate problem: self-signed certificate in certificate chain
   ```
-- The Docker Hub rate-limit is easily hit. Use `ghcr.io/newsnowlabs/dockside`
-  instead of `newsnowlabs/dockside`.
+- The Docker Hub unauthenticated pull rate-limit is easily hit. Use
+  `ghcr.io/newsnowlabs/dockside` instead of `newsnowlabs/dockside`.
 
 ---
 
 ## Step 1 — Start the Docker daemon
 
 ```bash
+# Kill any stale PID file from a previous session
+kill $(cat /var/run/docker.pid 2>/dev/null) 2>/dev/null
+rm -f /var/run/docker.pid
+
 dockerd --host unix:///var/run/docker.sock &>/tmp/dockerd.log &
-# Wait a few seconds for the socket to appear
-sleep 3
-docker info   # should succeed
+until docker info &>/dev/null 2>&1; do sleep 1; done
 ```
 
 ---
 
-## Step 2 — Use the GHCR image
+## Step 2 — Patch `docker-compose.yml` locally (do not commit these changes)
 
-Set `DOCKSIDE_IMAGE` so `docker compose` picks up the GHCR image:
+> **Important:** The edits below are environment-specific workarounds for the
+> Claude Code remote execution environment. They must be applied to your local
+> working copy of `docker-compose.yml` **but must never be committed or pushed**,
+> as they would break other environments.
 
-```bash
-export DOCKSIDE_IMAGE=ghcr.io/newsnowlabs/dockside:latest
+### 2a — Use the GHCR image (if requested by the user)
+
+The default image in `docker-compose.yml` is `newsnowlabs/dockside:latest`
+(Docker Hub). Switch it to the GHCR image to avoid rate limits, or to use a
+specific tag such as `:feature`:
+
+```yaml
+    image: ${DOCKSIDE_IMAGE:-ghcr.io/newsnowlabs/dockside:feature}
 ```
 
-Or set it inline on every `docker compose` call:
+Always `docker pull` the target image before relaunching — `docker compose up -d`
+reuses the locally cached layer set and will silently run stale code if you skip
+the pull:
 
 ```bash
-DOCKSIDE_IMAGE=ghcr.io/newsnowlabs/dockside:latest docker compose up -d
+docker pull ghcr.io/newsnowlabs/dockside:feature
 ```
 
----
-
-## Step 3 — Fix the TLS CA trust problem
+### 2b — Mount the host CA bundle into the Dockside container
 
 The `--ssl-builtin` startup mode downloads a pre-built Let's Encrypt wildcard
-certificate for `*.local.dockside.dev` from
-`https://storage.googleapis.com/dockside/certs/local.dockside.dev/`. Inside the
+certificate for `*.local.dockside.dev` from Google Cloud Storage. Inside the
 container this download fails because the container does not trust the Anthropic
 egress proxy CA.
 
-**Fix:** mount the host's CA bundle (which already includes the Anthropic CAs)
-into the container as a read-only volume. Add this entry to the `volumes:` list
-in `docker-compose.yml`:
+**Fix:** add a read-only bind mount of the host CA bundle to the `volumes:` list:
 
 ```yaml
     volumes:
@@ -78,22 +86,19 @@ in `docker-compose.yml`:
       - /var/run/docker.sock:/var/run/docker.sock
       - ide:/opt/dockside
       - hostkeys:/opt/dockside/host
-      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro   # <-- add this
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro   # add this
 ```
 
-This is the standard Docker pattern for sharing custom CA certificates with
-containers without rebuilding the image. With this mount in place, `--ssl-builtin`
-works correctly and the certificate is downloaded and installed on startup.
-
-The updated `docker-compose.yml` in this repository already includes this line.
+This is the standard Docker pattern for sharing custom CA certificates with a
+container without rebuilding its image. With this mount in place `--ssl-builtin`
+works correctly and the certificate is downloaded on startup.
 
 ---
 
-## Step 4 — Launch
+## Step 3 — Launch
 
 ```bash
-mkdir -p ~/.dockside
-DOCKSIDE_IMAGE=ghcr.io/newsnowlabs/dockside:latest docker compose up -d
+docker compose up -d
 
 # Read off the auto-generated admin password
 docker compose logs 2>&1 | grep 'Sign in'
@@ -103,6 +108,11 @@ Expected output:
 ```
 dockside  | >>> Sign in with username 'admin' and password '<generated-password>'
 ```
+
+The admin password is written to `~/.dockside/config/passwd` on first launch and
+persists across `docker compose down && up` cycles as long as `~/.dockside` is
+not deleted. Only delete `~/.dockside` if you need a full reset (which generates
+a new password in the logs).
 
 Navigate to `https://www.local.dockside.dev/` and sign in.
 
@@ -114,76 +124,13 @@ Navigate to `https://www.local.dockside.dev/` and sign in.
 
 ## Known issue — CLI `dockside login` returns 500
 
-Running:
-
-```bash
-./cli/dockside login \
-  --server https://www.local.dockside.dev/ \
-  --nickname local \
-  --username admin \
-  --no-verify \
-  --connect-to 127.0.0.1 \
-  --password <password>
-```
-
-currently fails with:
-
-```
-error: Login failed – connection error: Internal Server Error
-```
-
-The nginx error log inside the container shows:
-
-```
-call_sv("") failed: "Undefined subroutine &User::AUTOLOAD called."
-```
-
-This is a server-side Perl bug unrelated to the execution environment. The TCP
-connection and the TLS handshake both succeed; the 500 is returned by the
-Dockside Perl application itself when processing the POST body. A direct `curl`
-form-POST to the same URL returns a correct 302 redirect with session cookies,
-confirming the environment and networking are fine.
+Running `./cli/dockside login ...` against `newsnowlabs/dockside:latest` fails
+with a server-side Perl error (`Undefined subroutine &User::AUTOLOAD`). Use the
+`:feature` image instead, where this is fixed.
 
 ---
 
 ## Running integration tests
-
-### Always pull before relaunching
-
-`docker compose up -d` reuses the locally cached image even if the remote has
-been rebuilt. Always pull explicitly first:
-
-```bash
-docker pull ghcr.io/newsnowlabs/dockside:feature
-docker compose down && docker compose up -d
-```
-
-Forgetting this means tests run against stale server code and features that
-were just merged will appear missing.
-
-### Bake the image into docker-compose.yml
-
-Relying on a shell env-var override (`DOCKSIDE_IMAGE=... docker compose up -d`)
-is error-prone — the override is easily forgotten. Set the default directly in
-`docker-compose.yml`:
-
-```yaml
-image: ${DOCKSIDE_IMAGE:-ghcr.io/newsnowlabs/dockside:feature}
-```
-
-### Stale dockerd PID after session restart
-
-Each new Claude Code web session gets a fresh container. `dockerd` must be
-started manually. If a previous run left `/var/run/docker.pid` behind, a fresh
-`dockerd` start fails silently. Fix:
-
-```bash
-kill $(cat /var/run/docker.pid) 2>/dev/null
-rm -f /var/run/docker.pid
-dockerd --host unix:///var/run/docker.sock &>/tmp/dockerd.log &
-sleep 3
-docker info
-```
 
 ### Run tests from inside the Dockside container
 
@@ -204,43 +151,78 @@ docker exec -u dockside dockside bash -c "
 "
 ```
 
-### Use `PYTHONUNBUFFERED=1` — otherwise you see nothing
+### `PYTHONUNBUFFERED=1` is required for live output
 
 Python blocks stdout when not connected to a TTY. Without `PYTHONUNBUFFERED=1`
-all TAP output (`ok 1`, `not ok 2`, …) queues in-process and only appears at
-process exit — or is lost entirely if the process is killed.
-
-Critically, harness setup messages go to stderr (which is always line-buffered)
-and _do_ appear in real time. This makes a running test suite look like it is
-stuck after "Test environment ready." when it is actually executing tests
-normally.
-
-Always set `PYTHONUNBUFFERED=1` as shown above.
+all TAP lines queue in-process and appear only at exit — or are lost if the
+process is killed. Harness setup messages go to stderr (always line-buffered)
+and do appear in real time, making a running suite look stuck after
+"Test environment ready." when it is actually executing. Always set
+`PYTHONUNBUFFERED=1`.
 
 ### Docker Hub rate limits cause hangs, not fast failures
 
-`docker create` with a Docker Hub image does not fail immediately when rate
-limited. Instead it hangs inside the pull phase until a timeout. Use the GCR
-mirror to avoid this:
+`docker create` with an unmirrored Docker Hub image does not fail immediately
+when rate limited — it hangs inside the pull phase until a timeout. Set:
 
 ```bash
 DOCKSIDE_TEST_IMAGE_REGISTRY=mirror.gcr.io/library
 ```
 
-When set, the test harness rewrites all profile image names to use this prefix
-(e.g. `nginx:latest` → `mirror.gcr.io/library/nginx:latest`). This bypasses
-Docker Hub rate limits and makes container creates complete quickly.
+The harness rewrites all profile image names to use this prefix (e.g.
+`nginx:latest` → `mirror.gcr.io/library/nginx:latest`), bypassing Docker Hub.
 
-Note: this env var is only supported from the `:feature` image at commit
-`895ec51` onwards. If `docker create` is still hanging, you are likely running
-a stale image — pull again.
+### CA certificates are not inherited by launched devtainers
 
-### Admin password persists across relaunches (same `~/.dockside`)
+The Dockside container itself can be given the host CA bundle (see Step 2b
+above), but devtainers that Dockside launches are separate containers and do not
+inherit that mount. This causes two classes of test failure in the Claude Code
+environment:
 
-The auto-generated admin password is written to `~/.dockside/config/passwd` on
-first launch. Subsequent `docker compose down && up` cycles reuse the same
-`~/.dockside` mount and the password remains valid. Only delete `~/.dockside`
-if you need a full reset (which generates a new password printed in the logs).
+- **Git HTTPS clone failures** — `git clone https://github.com/...` inside a
+  devtainer fails with an SSL certificate error because the devtainer's image CA
+  bundle does not include the Anthropic proxy CA.
+- **`apk`/`apt` failures** — Alpine and Debian containers that install packages
+  on startup (`apk update && apk add ...`) hit the same SSL error, so the
+  entrypoint fails before the container is usable.
+
+Three approaches to fix this:
+
+**Option A — Bind-mount the CA bundle via profile `mounts.bind`**
+
+Add a new env var (e.g. `DOCKSIDE_TEST_CA_BUNDLE`) that the test harness uses
+to append a bind mount entry to every profile spec before creating it:
+
+```python
+if _CA_BUNDLE:
+    spec.setdefault('mounts', {}).setdefault('bind', []).append(
+        {'src': _CA_BUNDLE, 'dst': '/etc/ssl/certs/ca-certificates.crt', 'options': 'ro'}
+    )
+```
+
+The bind-mount source is resolved by the Docker daemon against the outer host
+(not the Dockside container), and `/etc/ssl/certs/ca-certificates.crt` on the
+outer host already includes the Anthropic CAs.
+
+Usage: `DOCKSIDE_TEST_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt`
+
+**Option B — `dockerArgs` in the profile**
+
+Equivalent to A, using the raw docker args field instead of the structured
+mounts field:
+
+```python
+spec.setdefault('dockerArgs', []).append(
+    f'--volume={_CA_BUNDLE}:/etc/ssl/certs/ca-certificates.crt:ro'
+)
+```
+
+**Option C — Dockside server-side global mount**
+
+If Dockside's server configuration supports a global `dockerArgs` or `mounts`
+field applied to all containers, the CA bundle mount could be placed there
+rather than in each test profile. This would fix the issue without any harness
+changes and would also benefit non-test containers launched interactively.
 
 ---
 
@@ -250,17 +232,24 @@ if you need a full reset (which generates a new password printed in the logs).
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1. Start Docker daemon if not running
-if ! docker info &>/dev/null 2>&1; then
-  dockerd --host unix:///var/run/docker.sock &>/tmp/dockerd.log &
-  until docker info &>/dev/null 2>&1; do sleep 1; done
-fi
+# 1. Kill stale dockerd PID and restart
+kill $(cat /var/run/docker.pid 2>/dev/null) 2>/dev/null || true
+rm -f /var/run/docker.pid
+dockerd --host unix:///var/run/docker.sock &>/tmp/dockerd.log &
+until docker info &>/dev/null 2>&1; do sleep 1; done
 
-# 2. Create data directory and launch
+# 2. Patch docker-compose.yml locally (do not commit)
+#    - set GHCR image
+sed -i 's|image: \${DOCKSIDE_IMAGE:-newsnowlabs/dockside:latest}|image: ${DOCKSIDE_IMAGE:-ghcr.io/newsnowlabs/dockside:feature}|' docker-compose.yml
+#    - mount host CA bundle
+sed -i '/hostkeys:\/opt\/dockside\/host/a\      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro' docker-compose.yml
+
+# 3. Pull the target image explicitly, then launch
+docker pull ghcr.io/newsnowlabs/dockside:feature
 mkdir -p ~/.dockside
-DOCKSIDE_IMAGE=ghcr.io/newsnowlabs/dockside:latest docker compose up -d
+docker compose up -d
 
-# 3. Wait for startup and print credentials
+# 4. Wait for startup and print credentials
 until docker compose logs 2>&1 | grep -q 'Sign in'; do sleep 2; done
 docker compose logs 2>&1 | grep 'Sign in'
 ```
