@@ -1,7 +1,7 @@
 services:
   dockside:
     container_name: ${DOCKSIDE_NAME:-dockside}
-    image: ${DOCKSIDE_IMAGE:-newsnowlabs/dockside:latest}
+    image: ${DOCKSIDE_IMAGE:-ghcr.io/newsnowlabs/dockside:feature}
     restart: unless-stopped
     attach: false
     command: ["--ssl-builtin"]
