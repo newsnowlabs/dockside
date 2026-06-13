@@ -153,6 +153,21 @@ _NGINX_PROFILE = {
     "dockerArgs": ["--memory=1G", "--pids-limit=4000", "--cpus=1"],
 }
 
+# 127.0.0.1:19999 is chosen because no registry will be listening there;
+# docker create fails immediately with connection-refused, giving a fast,
+# reliable, rate-limit-free launch failure for testing status -4.
+_BAD_IMAGE_PROFILE = {
+    "version": 2,
+    "name": "Integration Test - Bad Image (launch failure)",
+    "active": True,
+    "routers": [],
+    "networks": ["*"],
+    "images": ["127.0.0.1:19999/dockside-test-nonexistent:latest"],
+    "unixusers": ["dockside"],
+    "mounts": {"tmpfs": [], "bind": [], "volume": []},
+    "command": ["/bin/sh", "-c", "sleep infinity"],
+}
+
 
 # ── Developer role spec ────────────────────────────────────────────────────────
 
@@ -305,9 +320,10 @@ class _EnvManager:
         self.user_dev1       = None
         self.user_dev2       = None
         self.user_viewer     = None
-        self.profile_alpine  = None
-        self.profile_nginx   = None
-        self.profile_git     = None
+        self.profile_alpine     = None
+        self.profile_nginx      = None
+        self.profile_git        = None
+        self.profile_bad_image  = None
         self.password_dev    = 'inttest-testpass'
 
     # ── helpers ───────────────────────────────────────────────────────────────
@@ -554,9 +570,10 @@ class _EnvManager:
         )
 
         # Profiles
-        self.profile_alpine = self._ensure_profile('inttest-alpine', _ALPINE_PROFILE)
-        self.profile_nginx  = self._ensure_profile('inttest-nginx',  _NGINX_PROFILE)
-        self.profile_git    = self._ensure_profile('inttest-git',    _GIT_PROFILE)
+        self.profile_alpine     = self._ensure_profile('inttest-alpine',     _ALPINE_PROFILE)
+        self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
+        self.profile_git        = self._ensure_profile('inttest-git',        _GIT_PROFILE)
+        self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
 
@@ -686,9 +703,10 @@ def main():
         test_role_user       = _env_manager.role_user
         test_role_view_all   = _env_manager.role_view_all
         test_role_develop_all = _env_manager.role_develop_all
-        test_profile_alpine  = _env_manager.profile_alpine
-        test_profile_nginx   = _env_manager.profile_nginx
-        test_profile_git     = _env_manager.profile_git
+        test_profile_alpine     = _env_manager.profile_alpine
+        test_profile_nginx      = _env_manager.profile_nginx
+        test_profile_git        = _env_manager.profile_git
+        test_profile_bad_image  = _env_manager.profile_bad_image
         test_password_dev    = _env_manager.password_dev
         test_system_bin_dir  = os.environ.get(
             'DOCKSIDE_TEST_SYSTEM_BIN_DIR',
@@ -707,10 +725,11 @@ def main():
             'test_role_user':       test_role_user,
             'test_role_view_all':   test_role_view_all,
             'test_role_develop_all': test_role_develop_all,
-            'test_profile_alpine':  test_profile_alpine,
-            'test_profile_nginx':   test_profile_nginx,
-            'test_profile_git':     test_profile_git,
-            'test_password_dev':    test_password_dev,
+            'test_profile_alpine':     test_profile_alpine,
+            'test_profile_nginx':      test_profile_nginx,
+            'test_profile_git':        test_profile_git,
+            'test_profile_bad_image':  test_profile_bad_image,
+            'test_password_dev':       test_password_dev,
             'test_system_bin_dir':  test_system_bin_dir,
             '_name_suffix':         suffix,
         }

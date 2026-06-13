@@ -52,12 +52,7 @@ class IdeTests(TestCase):
     def test_01_create_no_ide_override(self):
         name = self._sfx('inttest-ide-noide')
         self.register_cleanup(name)
-        self.admin.create(
-            profile=PROFILE_NAME,
-            name=name,
-        )
-        names = self.container_names_in_list(self.admin)
-        self.assert_in(name, names, 'container not visible after create without --ide')
+        self.create_and_wait(self.admin, PROFILE_NAME, name, timeout=180)
 
     def test_02_create_with_ide_override(self):
         """Create with openvscode, start, and verify IDE URL is reachable."""

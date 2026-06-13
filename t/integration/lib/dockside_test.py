@@ -562,8 +562,9 @@ class TestCase:
     test_role_user        = 'inttest-user-role'
     test_role_view_all    = 'inttest-viewall-role'
     test_role_develop_all = 'inttest-developall-role'
-    test_profile_alpine   = 'inttest-alpine'
-    test_profile_nginx    = 'inttest-nginx'
+    test_profile_alpine     = 'inttest-alpine'
+    test_profile_nginx      = 'inttest-nginx'
+    test_profile_bad_image  = 'inttest-bad-image'
     test_password_dev     = 'inttest-testpass'
     test_system_bin_dir   = '/opt/dockside/system/latest/bin'
 
@@ -680,6 +681,44 @@ class TestCase:
                 return last_value
             time.sleep(interval)
         raise AssertionError(f'{timeout_msg} within {timeout}s (last={last_value!r})')
+
+    def create_and_wait(self, client, profile, name, timeout=20, **kwargs):
+        """Create a container and assert it reaches running state (status == 1).
+
+        Fails immediately with a clear message if the container reaches
+        status -4 (launch-failed), and times out with a useful message
+        if it never starts.  Passes **kwargs through to client.create()
+        for extra fields such as ide=.
+        """
+        result = client.create(profile=profile, name=name, **kwargs)
+        self.assert_true(result is not None, 'create returned nothing')
+        created_name = result.get('name') if isinstance(result, dict) else None
+        self.assert_equal(created_name, name, f'expected container name {name!r}')
+
+        # dockside create --wait (the default) already blocks until running or
+        # fast-fails on status -4, so one poll is usually enough.
+        deadline = time.time() + timeout
+        last_data = None
+        while time.time() < deadline:
+            try:
+                last_data = client.get_container(name)
+            except APIError:
+                last_data = None
+            status = last_data.get('status') if isinstance(last_data, dict) else None
+            if status == 1:
+                return result
+            if status == -4:
+                create_status = last_data.get('createStatus')
+                raise AssertionError(
+                    f'Container {name!r} launch failed (createStatus={create_status!r})'
+                )
+            time.sleep(1)
+
+        status = last_data.get('status') if isinstance(last_data, dict) else None
+        raise AssertionError(
+            f'Container {name!r} did not reach running state within {timeout}s '
+            f'(status={status!r})'
+        )
 
     def wait_running(self, client, name, timeout=120):
         """Poll until container status == 1 or timeout."""

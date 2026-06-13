@@ -35,14 +35,7 @@ class LifecycleAlpineTests(TestCase):
                 pass
 
     def test_01_create(self):
-        result = self.admin.create(
-            profile=self.test_profile_alpine,
-            name=self.CONTAINER_NAME,
-        )
-        self.assert_true(result is not None, 'create returned nothing')
-        name = result.get('name') if isinstance(result, dict) else None
-        self.assert_equal(name, self.CONTAINER_NAME,
-                          f'expected container name {self.CONTAINER_NAME!r}')
+        self.create_and_wait(self.admin, self.test_profile_alpine, self.CONTAINER_NAME)
 
     def test_02_list_contains(self):
         names = self.container_names_in_list(self.admin)
@@ -120,10 +113,53 @@ class LifecycleAlpineDev1Tests(TestCase):
                 pass
 
     def test_07_dev1_can_create_own(self):
-        result = self.dev1.create(
-            profile=self.test_profile_alpine,
-            name=self.DEV_CONTAINER,
+        self.create_and_wait(self.dev1, self.test_profile_alpine, self.DEV_CONTAINER)
+
+
+class CreateFailureTests(TestCase):
+    """Container whose image does not exist reaches status -4 (launch-failed).
+
+    Uses a profile pointing at a localhost registry that is guaranteed not to
+    be running, so docker create fails immediately without any network round-trip
+    to Docker Hub.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.CONTAINER_NAME = cls._sfx('inttest-create-fail-01')
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            cls.admin.remove(cls.CONTAINER_NAME, wait=False)
+        except Exception:
+            pass
+
+    def test_08_bad_image_reaches_launch_failed(self):
+        result = self.admin.create(
+            profile=self.test_profile_bad_image,
+            name=self.CONTAINER_NAME,
         )
-        self.assert_true(result is not None, 'dev1 create returned nothing')
-        names = self.container_names_in_list(self.dev1)
-        self.assert_in(self.DEV_CONTAINER, names)
+        self.assert_true(result is not None, 'create returned nothing')
+        created_name = result.get('name') if isinstance(result, dict) else None
+        self.assert_equal(created_name, self.CONTAINER_NAME,
+                          f'expected container name {self.CONTAINER_NAME!r}')
+
+        def _launch_failed():
+            try:
+                data = self.admin.get_container(self.CONTAINER_NAME)
+            except APIError:
+                return None
+            return data if (data.get('status') if isinstance(data, dict) else None) == -4 else None
+
+        data = self.wait_until(
+            _launch_failed,
+            timeout=30,
+            interval=1,
+            timeout_msg=f'{self.CONTAINER_NAME!r} did not reach launch-failed state (-4)',
+        )
+        create_status = data.get('createStatus') if isinstance(data, dict) else None
+        self.assert_true(
+            create_status,
+            f'createStatus not set on launch failure (got {create_status!r})',
+        )

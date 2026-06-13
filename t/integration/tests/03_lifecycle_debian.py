@@ -39,11 +39,7 @@ class LifecycleDebianTests(TestCase):
                 pass
 
     def test_01_create(self):
-        result = self.admin.create(
-            profile=PROFILE_NAME,
-            name=self.CONTAINER_NAME,
-        )
-        self.assert_true(result is not None, 'create returned nothing')
+        self.create_and_wait(self.admin, PROFILE_NAME, self.CONTAINER_NAME, timeout=180)
 
     def test_02_list_contains(self):
         names = self.container_names_in_list(self.admin)
@@ -113,10 +109,4 @@ class LifecycleDebianDev1Tests(TestCase):
                 pass
 
     def test_07_dev1_can_create_own(self):
-        result = self.dev1.create(
-            profile=PROFILE_NAME,
-            name=self.DEV_CONTAINER,
-        )
-        self.assert_true(result is not None)
-        names = self.container_names_in_list(self.dev1)
-        self.assert_in(self.DEV_CONTAINER, names)
+        self.create_and_wait(self.dev1, PROFILE_NAME, self.DEV_CONTAINER, timeout=180)
