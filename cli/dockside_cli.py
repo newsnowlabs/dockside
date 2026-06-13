@@ -73,7 +73,7 @@ COOKIES_DIR  = os.path.join(CONFIG_DIR, 'cookies')
 
 # ── Status labels ─────────────────────────────────────────────────────────────
 
-STATUS_LABELS = {-3: 'removed', -2: 'prelaunch', -1: 'created', 0: 'exited', 1: 'running'}
+STATUS_LABELS = {-4: 'launch-failed', -3: 'removed', -2: 'prelaunch', -1: 'created', 0: 'exited', 1: 'running'}
 
 # ── YAML serialiser (zero external dependencies) ──────────────────────────────
 
@@ -999,6 +999,11 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
                         if not quiet:
                             print(file=sys.stderr)
                         return True
+                    if target == 1 and status == -4:
+                        # Launch failed; will never reach running.
+                        if not quiet:
+                            print(file=sys.stderr)
+                        return False
                     if target == 0 and status <= 0:
                         if not quiet:
                             print(file=sys.stderr)
