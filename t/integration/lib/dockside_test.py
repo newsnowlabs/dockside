@@ -930,31 +930,36 @@ class TestRunner:
             self._inject_clients(case)
             self._active_cases.append(case)
             label = f'{cls.__name__}.{method_name}'
+            t0 = time.monotonic()
             try:
                 case.setUp()
                 getattr(case, method_name)()
                 case.tearDown()
+                elapsed = time.monotonic() - t0
                 self._passed += 1
-                print(f'ok {self._total} - {label}')
+                print(f'ok {self._total} - {label} # {elapsed:.3f}s')
             except SkipTest as e:
+                elapsed = time.monotonic() - t0
                 case.tearDown()
                 self._skipped += 1
-                print(f'ok {self._total} - {label} # SKIP {e}')
+                print(f'ok {self._total} - {label} # SKIP {e} ({elapsed:.3f}s)')
             except (AssertionError, APIError) as e:
+                elapsed = time.monotonic() - t0
                 try:
                     case.tearDown()
                 except Exception:
                     pass
                 self._failed += 1
-                print(f'not ok {self._total} - {label}')
+                print(f'not ok {self._total} - {label} # {elapsed:.3f}s')
                 print(f'  # {e}')
             except Exception as e:
+                elapsed = time.monotonic() - t0
                 try:
                     case.tearDown()
                 except Exception:
                     pass
                 self._failed += 1
-                print(f'not ok {self._total} - {label}')
+                print(f'not ok {self._total} - {label} # {elapsed:.3f}s')
                 print(f'  # Unexpected error: {e}')
                 for line in traceback.format_exc().splitlines():
                     print(f'  # {line}')
