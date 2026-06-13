@@ -51,9 +51,10 @@ _IMAGE_REGISTRY = os.environ.get('DOCKSIDE_TEST_IMAGE_REGISTRY', '').rstrip('/')
 def _prefix_image(image):
     if not _IMAGE_REGISTRY:
         return image
-    first = image.split('/')[0]
-    if '.' in first or ':' in first:
-        return image
+    if '/' in image:
+        first = image.split('/')[0]
+        if '.' in first or ':' in first:
+            return image  # explicit registry host (e.g. 127.0.0.1:19999/... or gcr.io/...)
     return f'{_IMAGE_REGISTRY}/{image}'
 
 
