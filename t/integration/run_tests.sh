@@ -55,6 +55,12 @@
 #   DOCKSIDE_TEST_SSH_SERVER     Outbound SSH target (default: git@github.com)
 #                                Testdev1's public key must be pre-authorized there.
 #
+#   DOCKSIDE_TEST_IMAGE_REGISTRY  Docker image registry mirror to use instead of
+#                                 Docker Hub for bare image names (e.g. alpine:latest).
+#                                 Images with an explicit registry host are unaffected.
+#                                 Example: mirror.gcr.io/library
+#                                 Useful on hosts with Docker Hub pull-rate limits.
+#
 #   DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY  1 = allow creating/attaching Docker networks
 #                                       0 = disallow (even in harness mode)
 #                                       (unset = use mode default)

@@ -39,6 +39,24 @@ sys.path.insert(0, os.path.join(REPO_ROOT, 'cli'))
 from dockside_test import DocksideClient, TestRunner, APIError
 
 
+# ── Image registry prefix ──────────────────────────────────────────────────────
+# Set DOCKSIDE_TEST_IMAGE_REGISTRY to redirect bare Docker Hub image pulls to a
+# mirror, e.g. DOCKSIDE_TEST_IMAGE_REGISTRY=mirror.gcr.io/library
+# Images that already contain an explicit registry host (first path component
+# contains '.' or ':') are left unchanged.
+
+_IMAGE_REGISTRY = os.environ.get('DOCKSIDE_TEST_IMAGE_REGISTRY', '').rstrip('/')
+
+
+def _prefix_image(image):
+    if not _IMAGE_REGISTRY:
+        return image
+    first = image.split('/')[0]
+    if '.' in first or ':' in first:
+        return image
+    return f'{_IMAGE_REGISTRY}/{image}'
+
+
 # ── Profile templates (embedded; independent of any server's bundled profiles) ─
 
 _ALPINE_PROFILE = {
@@ -55,7 +73,7 @@ _ALPINE_PROFILE = {
         }
     ],
     "networks": ["*"],
-    "images": ["alpine:latest"],
+    "images": [_prefix_image("alpine:latest")],
     "unixusers": ["dockside"],
     "mounts": {
         "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
@@ -84,7 +102,7 @@ _GIT_PROFILE = {
         }
     ],
     "networks": ["*"],
-    "images": ["ubuntu:latest", "debian:latest", "alpine:latest"],
+    "images": [_prefix_image("ubuntu:latest"), _prefix_image("debian:latest"), _prefix_image("alpine:latest")],
     "gitURLs": ["*"],
     "unixusers": ["dockside"],
     "options": [
@@ -137,7 +155,7 @@ _NGINX_PROFILE = {
         }
     ],
     "networks": ["*"],
-    "images": ["nginx:latest"],
+    "images": [_prefix_image("nginx:latest")],
     "unixusers": ["dockside"],
     "mounts": {
         "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],

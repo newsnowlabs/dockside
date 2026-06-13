@@ -109,8 +109,11 @@ bash t/integration/run_tests.sh
 ./build/development/run-local.sh
 
 # Now run tests...
+# DOCKSIDE_TEST_IMAGE_REGISTRY redirects bare Docker Hub image pulls to a mirror,
+# avoiding Docker Hub pull-rate limits common in cloud environments.
 DOCKSIDE_TEST_MODE=local \
 DOCKSIDE_TEST_HOST="https://www.local.dockside.dev/" \
+DOCKSIDE_TEST_IMAGE_REGISTRY=mirror.gcr.io/library \
 ./t/integration/run_tests.sh
 ```
 
@@ -229,6 +232,7 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_CONTAINER_ID` | — | Running Dockside container ID (enables docker-exec SSH tests in non-harness modes) |
 | `DOCKSIDE_TEST_SSH_SERVER` | `git@github.com` | Outbound SSH server for test 09 B |
 | `DOCKSIDE_TEST_CONTAINER_ACCESS` | `auto` | Preferred access method for tests that can inspect a devtainer via either `docker exec` or SSH; ignored if the requested method is unavailable |
+| `DOCKSIDE_TEST_IMAGE_REGISTRY` | — | Registry mirror prefix for bare Docker Hub image names (e.g. `mirror.gcr.io/library`). Images with an explicit registry host are unaffected. Useful on hosts with Docker Hub pull-rate limits. |
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
 | `DOCKSIDE_TEST_NAME_SUFFIX` | `auto` | Suffix for test resource names; `auto` generates a random 6-char hex string |
 | `DOCKSIDE_TEST_CLEANUP_REUSED` | `1` | Also clean up reused test roles/users/profiles for the active suffix, not just resources created by the current run |
