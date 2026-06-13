@@ -10,15 +10,22 @@
 - Before running tests that exercise **server** changes, restart the services above —
   the running server is **not** auto-reloaded. Rebuild the Vue bundle
   (`cd app/client && npm run build`) for **client** changes.
-- Integration suite invocation (local mode, SSH container access, real GitHub token):
+- Integration suite invocation (local mode). Authenticate the CLI once first if not
+  already done — the hostname depends on your environment:
+  - **Personal laptop/server running Dockside:** `www-<name>.local.dockside.dev`
+  - **Inner Dockside dev container inside an outer production Dockside:** your inner
+    container's public hostname (e.g. `www-<name>.staging.dockside.example.com`)
   ```
-  DOCKSIDE_TEST_MODE=local DOCKSIDE_TEST_HOST=www-<name>.local.dockside.dev \
-    DOCKSIDE_TEST_CONTAINER_ACCESS=ssh \
+  dockside login --connect-to 127.0.0.1 --no-verify --nickname local \
+    --server https://www-<name>.<your-domain>/
+  ```
+  Then run (host is inferred from the stored session; GitHub token needed only for module 06):
+  ```
+  DOCKSIDE_TEST_MODE=local \
     DOCKSIDE_TEST_GITHUB_TOKEN=$(/opt/dockside/system/latest/bin/gh auth token) \
     bash t/integration/run_tests.sh [--only NN]
   ```
-  The full suite can be flaky under load (resource contention); run modules individually
-  with `--only NN` for reliable results.
+  Run modules individually with `--only NN` for targeted testing.
 
 ## Runtime environment & testing capability (check at the start of each session)
 
