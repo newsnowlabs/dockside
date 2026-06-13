@@ -146,6 +146,104 @@ confirming the environment and networking are fine.
 
 ---
 
+## Running integration tests
+
+### Always pull before relaunching
+
+`docker compose up -d` reuses the locally cached image even if the remote has
+been rebuilt. Always pull explicitly first:
+
+```bash
+docker pull ghcr.io/newsnowlabs/dockside:feature
+docker compose down && docker compose up -d
+```
+
+Forgetting this means tests run against stale server code and features that
+were just merged will appear missing.
+
+### Bake the image into docker-compose.yml
+
+Relying on a shell env-var override (`DOCKSIDE_IMAGE=... docker compose up -d`)
+is error-prone — the override is easily forgotten. Set the default directly in
+`docker-compose.yml`:
+
+```yaml
+image: ${DOCKSIDE_IMAGE:-ghcr.io/newsnowlabs/dockside:feature}
+```
+
+### Stale dockerd PID after session restart
+
+Each new Claude Code web session gets a fresh container. `dockerd` must be
+started manually. If a previous run left `/var/run/docker.pid` behind, a fresh
+`dockerd` start fails silently. Fix:
+
+```bash
+kill $(cat /var/run/docker.pid) 2>/dev/null
+rm -f /var/run/docker.pid
+dockerd --host unix:///var/run/docker.sock &>/tmp/dockerd.log &
+sleep 3
+docker info
+```
+
+### Run tests from inside the Dockside container
+
+`wstunnel` (required for SSH-based container access) only exists inside the
+Dockside container at `/opt/dockside/system/latest/bin`. Run all integration
+tests via `docker exec`:
+
+```bash
+docker exec -u dockside dockside bash -c "
+  cd /home/dockside/dockside
+  PYTHONUNBUFFERED=1 \
+  DOCKSIDE_TEST_MODE=local \
+  DOCKSIDE_TEST_HOST=www.local.dockside.dev \
+  DOCKSIDE_TEST_CONTAINER_ACCESS=ssh \
+  DOCKSIDE_TEST_IMAGE_REGISTRY=mirror.gcr.io/library \
+  PATH=\$PATH:/opt/dockside/system/latest/bin \
+  bash t/integration/run_tests.sh
+"
+```
+
+### Use `PYTHONUNBUFFERED=1` — otherwise you see nothing
+
+Python blocks stdout when not connected to a TTY. Without `PYTHONUNBUFFERED=1`
+all TAP output (`ok 1`, `not ok 2`, …) queues in-process and only appears at
+process exit — or is lost entirely if the process is killed.
+
+Critically, harness setup messages go to stderr (which is always line-buffered)
+and _do_ appear in real time. This makes a running test suite look like it is
+stuck after "Test environment ready." when it is actually executing tests
+normally.
+
+Always set `PYTHONUNBUFFERED=1` as shown above.
+
+### Docker Hub rate limits cause hangs, not fast failures
+
+`docker create` with a Docker Hub image does not fail immediately when rate
+limited. Instead it hangs inside the pull phase until a timeout. Use the GCR
+mirror to avoid this:
+
+```bash
+DOCKSIDE_TEST_IMAGE_REGISTRY=mirror.gcr.io/library
+```
+
+When set, the test harness rewrites all profile image names to use this prefix
+(e.g. `nginx:latest` → `mirror.gcr.io/library/nginx:latest`). This bypasses
+Docker Hub rate limits and makes container creates complete quickly.
+
+Note: this env var is only supported from the `:feature` image at commit
+`895ec51` onwards. If `docker create` is still hanging, you are likely running
+a stale image — pull again.
+
+### Admin password persists across relaunches (same `~/.dockside`)
+
+The auto-generated admin password is written to `~/.dockside/config/passwd` on
+first launch. Subsequent `docker compose down && up` cycles reuse the same
+`~/.dockside` mount and the password remains valid. Only delete `~/.dockside`
+if you need a full reset (which generates a new password printed in the logs).
+
+---
+
 ## Quick-start script
 
 ```bash
