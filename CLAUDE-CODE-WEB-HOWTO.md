@@ -100,8 +100,8 @@ works correctly and the certificate is downloaded on startup.
 ```bash
 docker compose up -d
 
-# Read off the auto-generated admin password
-docker compose logs 2>&1 | grep 'Sign in'
+# Read off the auto-generated admin password and save it
+docker compose logs 2>&1 | grep 'Sign in' | tee /tmp/dockside-password.txt
 ```
 
 Expected output:
@@ -109,10 +109,21 @@ Expected output:
 dockside  | >>> Sign in with username 'admin' and password '<generated-password>'
 ```
 
-The admin password is written to `~/.dockside/config/passwd` on first launch and
-persists across `docker compose down && up` cycles as long as `~/.dockside` is
-not deleted. Only delete `~/.dockside` if you need a full reset (which generates
-a new password in the logs).
+Save the password to `/tmp/dockside-password.txt` (or another tmpfile) as shown
+above — it is only printed on first launch and is not retrievable from the
+`~/.dockside` config files afterwards.
+
+The password persists across `docker compose down && up` cycles as long as
+`~/.dockside` is not deleted. If the password is lost, the simplest recovery is:
+
+```bash
+rm ~/.dockside/config/passwd
+docker compose restart
+docker compose logs 2>&1 | grep 'Sign in' | tee /tmp/dockside-password.txt
+```
+
+Dockside generates and logs a fresh admin password whenever `passwd` is absent
+on startup.
 
 Navigate to `https://www.local.dockside.dev/` and sign in.
 
