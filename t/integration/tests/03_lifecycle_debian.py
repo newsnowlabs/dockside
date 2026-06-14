@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
-PROFILE_NAME        = '11-debian'
+# The debian profile is created at runtime by the harness (self.test_profile_debian);
+# the suite never depends on a server's bundled profiles.
 _BASE_CONTAINER     = 'inttest-debian-01'
 _BASE_DEV_CONTAINER = 'inttest-debian-dev1'
 
@@ -39,7 +40,7 @@ class LifecycleDebianTests(TestCase):
                 pass
 
     def test_01_create(self):
-        self.create_and_wait(self.admin, PROFILE_NAME, self.CONTAINER_NAME, timeout=180)
+        self.create_and_wait(self.admin, self.test_profile_debian, self.CONTAINER_NAME, timeout=180)
 
     def test_02_list_contains(self):
         names = self.container_names_in_list(self.admin)
@@ -109,4 +110,4 @@ class LifecycleDebianDev1Tests(TestCase):
                 pass
 
     def test_07_dev1_can_create_own(self):
-        self.create_and_wait(self.dev1, PROFILE_NAME, self.DEV_CONTAINER, timeout=180)
+        self.create_and_wait(self.dev1, self.test_profile_debian, self.DEV_CONTAINER, timeout=180)

@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
-PROFILE_NAME        = '11-debian'
+# The debian profile is created at runtime by the harness (self.test_profile_debian);
+# the suite never depends on a server's bundled profiles.
 _BASE_IDE_CONTAINER = 'inttest-ide-01'
 
 
@@ -38,7 +39,7 @@ class IdeTests(TestCase):
     def _ensure_created_and_started(self):
         try:
             self.admin.create(
-                profile=PROFILE_NAME,
+                profile=self.test_profile_debian,
                 name=self.IDE_CONTAINER,
                 ide='openvscode/latest',
             )
@@ -52,7 +53,7 @@ class IdeTests(TestCase):
     def test_01_create_no_ide_override(self):
         name = self._sfx('inttest-ide-noide')
         self.register_cleanup(name)
-        self.create_and_wait(self.admin, PROFILE_NAME, name, timeout=180)
+        self.create_and_wait(self.admin, self.test_profile_debian, name, timeout=180)
 
     def test_02_create_with_ide_override(self):
         """Create with openvscode, start, and verify IDE URL is reachable."""

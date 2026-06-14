@@ -89,6 +89,41 @@ _ALPINE_PROFILE = {
     ],
 }
 
+# Debian counterpart to _ALPINE_PROFILE, used by the lifecycle (03) and IDE (07)
+# modules.  Those modules previously hard-coded the server's bundled '11-debian'
+# profile, which violates the suite's no-pre-existing-fixtures rule and breaks on
+# any server that does not ship that exact profile.  An apt-based image is needed
+# (rather than reusing the alpine fixture) because 07 launches an IDE, whose
+# bootstrap assumes a Debian/Ubuntu userland.
+_DEBIAN_PROFILE = {
+    "version": 2,
+    "name": "Integration Test - Debian",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("debian:latest")],
+    "unixusers": ["dockside"],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo curl); sleep infinity",
+    ],
+}
+
 _GIT_PROFILE = {
     "version": 4,
     "name": "Integration Test - Git Repo",
@@ -340,6 +375,7 @@ class _EnvManager:
         self.user_dev2       = None
         self.user_viewer     = None
         self.profile_alpine     = None
+        self.profile_debian     = None
         self.profile_nginx      = None
         self.profile_git        = None
         self.profile_bad_image  = None
@@ -590,6 +626,7 @@ class _EnvManager:
 
         # Profiles
         self.profile_alpine     = self._ensure_profile('inttest-alpine',     _ALPINE_PROFILE)
+        self.profile_debian     = self._ensure_profile('inttest-debian',     _DEBIAN_PROFILE)
         self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
         self.profile_git        = self._ensure_profile('inttest-git',        _GIT_PROFILE)
         self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
@@ -723,6 +760,7 @@ def main():
         test_role_view_all   = _env_manager.role_view_all
         test_role_develop_all = _env_manager.role_develop_all
         test_profile_alpine     = _env_manager.profile_alpine
+        test_profile_debian     = _env_manager.profile_debian
         test_profile_nginx      = _env_manager.profile_nginx
         test_profile_git        = _env_manager.profile_git
         test_profile_bad_image  = _env_manager.profile_bad_image
@@ -749,6 +787,7 @@ def main():
             'test_role_view_all':   test_role_view_all,
             'test_role_develop_all': test_role_develop_all,
             'test_profile_alpine':     test_profile_alpine,
+            'test_profile_debian':     test_profile_debian,
             'test_profile_nginx':      test_profile_nginx,
             'test_profile_git':        test_profile_git,
             'test_profile_bad_image':  test_profile_bad_image,
