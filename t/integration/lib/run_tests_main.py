@@ -32,6 +32,7 @@ import importlib.util
 import json
 import os
 import random
+import socket
 import sys
 
 SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -698,6 +699,24 @@ def main():
     reuse_user_sessions = os.environ.get('DOCKSIDE_TEST_REUSE_USER_SESSIONS', '0') == '1'
     cleanup_reused = os.environ.get('DOCKSIDE_TEST_CLEANUP_REUSED', '0') == '1'
 
+    # Dockside container id for the network-attach tests (08 test_05/06), which
+    # `docker network connect` a throwaway network to it. Explicit env wins; otherwise,
+    # in local/harness mode we are normally running inside the Dockside container under
+    # test, so auto-detect: entrypoint.sh records the raw id at
+    # /etc/service/nginx/data/ctr-id, and in a Dockside-launched container the hostname
+    # equals the container name (also a valid `docker` reference). Not auto-detected in
+    # remote mode (this process is not in the server's container). Network modification
+    # itself remains gated behind can_modify_networks() (DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY).
+    dockside_container_id = os.environ.get('DOCKSIDE_TEST_CONTAINER_ID', '').strip() or None
+    if not dockside_container_id and test_mode in ('local', 'harness'):
+        try:
+            with open('/etc/service/nginx/data/ctr-id', encoding='utf-8') as _f:
+                dockside_container_id = _f.read().strip() or None
+        except OSError:
+            dockside_container_id = None
+        if not dockside_container_id:
+            dockside_container_id = socket.gethostname() or None
+
     # Network modify override
     env_nm = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()
     allow_network_modify = None
@@ -832,6 +851,7 @@ def main():
             verify_ssl=verify_ssl,
             test_mode=test_mode,
             harness_container_id=harness_id,
+            dockside_container_id=dockside_container_id,
             allow_network_modify=allow_network_modify,
             name_attrs=name_attrs,
             reuse_user_sessions=reuse_user_sessions,

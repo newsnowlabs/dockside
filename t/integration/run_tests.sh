@@ -54,8 +54,10 @@
 #                                      for this suffix at end of run — only safe on an
 #                                      instance you own
 #
-#   DOCKSIDE_TEST_CONTAINER_ID   Running Dockside container ID (enables docker-exec
-#                                SSH tests in non-harness modes)
+#   DOCKSIDE_TEST_CONTAINER_ID   Dockside container id/name for the network-attach tests
+#                                (08 test_05/06). Auto-detected in local/harness mode
+#                                (/etc/service/nginx/data/ctr-id, else hostname); set
+#                                explicitly for an "alongside" run or to override
 #   DOCKSIDE_TEST_SSH_SERVER     Outbound SSH target (default: git@github.com)
 #                                Testdev1's public key must be pre-authorized there.
 #

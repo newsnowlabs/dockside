@@ -820,7 +820,8 @@ class TestRunner:
     def __init__(self, cli_path, server_url, credentials, connect_to=None,
                  verify_ssl=False, test_mode='remote', harness_container_id=None,
                  allow_network_modify=None, name_attrs=None,
-                 reuse_user_sessions=False, use_server_transport=False):
+                 reuse_user_sessions=False, use_server_transport=False,
+                 dockside_container_id=None):
         self._cli_path = cli_path
         self._server_url = server_url
         self._credentials = credentials  # dict: role -> (username, password) or (None, None)
@@ -828,6 +829,9 @@ class TestRunner:
         self._verify_ssl = verify_ssl
         self._test_mode = test_mode
         self._harness_container_id = harness_container_id
+        # Dockside container id for network-attach tests; harness mode uses
+        # harness_container_id, non-harness modes use this (explicit or auto-detected).
+        self._dockside_container_id = dockside_container_id
         self._allow_network_modify = allow_network_modify
         self._name_attrs = name_attrs or {}
         self._reuse_user_sessions = reuse_user_sessions
@@ -944,6 +948,7 @@ class TestRunner:
         case.unauth = self._clients['unauth']
         case.test_mode = self._test_mode
         case.harness_container_id = self._harness_container_id
+        case.dockside_container_id = self._dockside_container_id
         case.allow_network_modify = self._allow_network_modify
         for attr, value in self._name_attrs.items():
             setattr(case, attr, value)
@@ -977,6 +982,7 @@ class TestRunner:
         cls.unauth  = self._clients['unauth']
         cls.test_mode            = self._test_mode
         cls.harness_container_id = self._harness_container_id
+        cls.dockside_container_id = self._dockside_container_id
         cls.allow_network_modify = self._allow_network_modify
         for attr, value in self._name_attrs.items():
             setattr(cls, attr, value)
