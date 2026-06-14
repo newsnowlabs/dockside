@@ -187,6 +187,14 @@ sub createUser ($self, $args) {
    die Exception->new( 'msg' => "User '$username' already exists" )
       if $User::USERS->{$username};
 
+   # Reject an explicitly-assigned role that does not exist: otherwise the user is
+   # stored pointing at a non-existent role and silently resolves to no role-derived
+   # permissions. (An omitted role falls back to the built-in default, so only validate
+   # when one is supplied.)
+   die Exception->new( 'msg' => "Role '$args->{'role'}' does not exist" )
+      if defined $args->{'role'} && length $args->{'role'}
+         && !$User::ROLES->{ $args->{'role'} };
+
    my $new_user;
    cacheReadWrite( $USERS_FILE, sub ($oldData) {
       my $users = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
@@ -248,6 +256,12 @@ sub updateUser ($self, $username, $args) {
       unless $self->has_permission('manageUsers');
    die Exception->new( 'msg' => "User '$username' not found" )
       unless $User::USERS->{$username};
+
+   # Reject reassigning the user to a role that does not exist (see createUser); only
+   # validated when 'role' is part of this edit.
+   die Exception->new( 'msg' => "Role '$args->{'role'}' does not exist" )
+      if defined $args->{'role'} && length $args->{'role'}
+         && !$User::ROLES->{ $args->{'role'} };
 
    my $record;
    cacheReadWrite( $USERS_FILE, sub ($oldData) {
