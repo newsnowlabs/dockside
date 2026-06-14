@@ -32,6 +32,7 @@ import importlib.util
 import json
 import os
 import random
+import signal
 import socket
 import sys
 
@@ -497,19 +498,19 @@ class _EnvManager:
             return args
 
         if existing is not None:
-            # Check role matches; be lenient about resources (just require presence)
+            # Reuse an existing user only by adoption — never mutate a user we did not
+            # create this run. A pre-existing account that merely shares this suffixed
+            # name could be a real user (or a half-created leftover from a buggy run);
+            # (re-)setting its password/name/email/ssh would clobber it. So adopt the
+            # record as-is and rely on it already matching the fixture. If a divergent
+            # leftover (e.g. created without a usable password) breaks dependent tests,
+            # the operator removes it and re-runs — surfaced loudly, not silently
+            # overwritten. (Role is still checked; a mismatch is a hard error below.)
             existing_role = existing.get('role', '')
             if existing_role == role_name:
-                # Always (re-)set the password so that a user created without one
-                # (e.g. by a previous buggy run) gets a usable passwd entry.
-                self._admin._run(
-                    'user', 'edit', name,
-                    '--user-password', self.password_dev,
-                    *_user_set_args(),
-                    *_ssh_set_args()
-                )
                 self._track_reused(self._created_users, name)
-                print(f'# User {name!r}: reusing existing (role matches)', file=sys.stderr)
+                print(f'# User {name!r}: reusing existing as-is (role matches; not mutated)',
+                      file=sys.stderr)
                 return name
             else:
                 print(f'ERROR: User {name!r} exists with role {existing_role!r},'
@@ -775,6 +776,24 @@ def main():
         server_url,
         cleanup_reused=cleanup_reused,
     )
+
+    # TestRunner installs its own SIGINT/SIGTERM handlers, but only after setup()
+    # below. Until then a SIGTERM/SIGHUP during fixture creation would default-
+    # terminate the process and skip the finally: cleanup, leaking the users/roles/
+    # profiles created so far. (SIGINT already raises KeyboardInterrupt and reaches
+    # the finally.) Install an early handler over the env-manager's whole lifetime
+    # that runs the same idempotent cleanup, then restores the default disposition
+    # and re-raises so the process still exits with normal signal semantics.
+    if not skip_cleanup:
+        def _early_emergency_cleanup(signum, _frame):
+            try:
+                _env_manager.cleanup()
+            finally:
+                signal.signal(signum, signal.SIG_DFL)
+                os.kill(os.getpid(), signum)
+        for _sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(_sig, _early_emergency_cleanup)
+
     ok = False
     try:
         _env_manager.setup()
