@@ -135,7 +135,9 @@ class GitProfileTests(TestCase):
         head_sha is the checked-out HEAD commit; pr_head_oid is the requested PR's head
         commit read via gh (against GH_REPO, independent of local branch state). When
         they match, the devtainer genuinely checked out that PR rather than just some
-        non-main ref. pr_head_oid is empty if gh is unavailable/unauthenticated.
+        non-main ref. Both reads run gh/git *inside the devtainer* on purpose: the PR
+        checkout itself relies on gh working there, so a gh that cannot read the PR head
+        is a real failure (handled by the caller), not a reason to skip.
         """
         script = (
             'repo="' + REPO_DIR + '"; '
@@ -156,7 +158,9 @@ class GitProfileTests(TestCase):
                 run_as_user='dockside',
             )
         except (APIError, subprocess.TimeoutExpired) as exc:
-            self.skip(str(exc))
+            raise AssertionError(
+                f'could not exec gh/git inside the devtainer to verify the PR head: {exc}'
+            )
         out = {}
         for line in result.stdout.splitlines():
             if '=' in line:
@@ -234,9 +238,15 @@ class GitProfileTests(TestCase):
         # commit would satisfy it. Confirm via gh that HEAD is actually PR EXPLICIT_PR's
         # head commit, so a checkout of the wrong PR/branch is caught.
         head_sha, pr_head_oid = self._verify_pr_head(name)
-        if not pr_head_oid:
-            self.skip('gh could not read the PR head oid in the devtainer '
-                      '(gh unavailable or unauthenticated)')
+        # An empty pr_head_oid means gh could not read the PR head inside the
+        # devtainer — but the PR checkout itself relies on gh working there, so this
+        # is a failure (gh broken/unauthenticated), not a reason to skip and leave
+        # the weak "HEAD moved off main" check as the only coverage.
+        self.assert_true(
+            pr_head_oid,
+            f'gh could not read PR {EXPLICIT_PR} head oid inside the devtainer — the '
+            f'PR cannot have been checked out (gh unavailable/unauthenticated there)',
+        )
         self.assert_true(
             head_sha and head_sha == pr_head_oid,
             f'devtainer HEAD {head_sha!r} is not PR {EXPLICIT_PR} head {pr_head_oid!r}',
