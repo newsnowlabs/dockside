@@ -2922,13 +2922,18 @@ def build_parser():
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sp.add_argument('--server', '-s', metavar='URL',
+    # Flags that also exist as root-level global flags (server/username/password/
+    # output/no-verify/host-header/connect-to/debug-http) use default=SUPPRESS here so
+    # that omitting them at the subcommand does NOT overwrite a value already parsed at
+    # the root level (e.g. `dockside --no-verify login`). cmd_login reads them all via
+    # getattr(..., fallback), so an absent attribute is handled.
+    sp.add_argument('--server', '-s', metavar='URL', default=argparse.SUPPRESS,
                     help='Dockside server URL  [env: DOCKSIDE_SERVER]')
     sp.add_argument('--nickname', '-n', metavar='NAME',
                     help='Short alias for this server (e.g. prod, staging)')
-    sp.add_argument('--username', '-u', metavar='USER',
+    sp.add_argument('--username', '-u', metavar='USER', default=argparse.SUPPRESS,
                     help='Username  [env: DOCKSIDE_USER]')
-    sp.add_argument('--password', '-p', metavar='PASS',
+    sp.add_argument('--password', '-p', metavar='PASS', default=argparse.SUPPRESS,
                     help='Password  [env: DOCKSIDE_PASSWORD]')
     sp.add_argument('--cookie', metavar='NAME=VALUE', action='append',
                     help='Inject an extra cookie (repeatable). '
@@ -2944,17 +2949,18 @@ def build_parser():
                          'When making requests to this server, cookies from the parent\'s '
                          'session file are automatically merged in-memory so that the outer '
                          'proxy is satisfied. Stored in config.json.')
-    sp.add_argument('--output', '-o', choices=['text', 'json', 'yaml'], default=None,
+    sp.add_argument('--output', '-o', choices=['text', 'json', 'yaml'], default=argparse.SUPPRESS,
                     help='Default output format to store in config for this server')
-    sp.add_argument('--no-verify', action='store_true',
+    sp.add_argument('--no-verify', action='store_true', default=argparse.SUPPRESS,
                     help='Skip SSL certificate verification')
-    sp.add_argument('--host-header', dest='host_header', metavar='HOST',
+    sp.add_argument('--host-header', dest='host_header', metavar='HOST', default=argparse.SUPPRESS,
                     help='Override HTTP Host header sent with every request  '
                          '[env: DOCKSIDE_HOST_HEADER]')
     sp.add_argument('--connect-to', dest='connect_to', metavar='HOST_OR_IP[:PORT]',
+                    default=argparse.SUPPRESS,
                     help='Override TCP connection target while keeping URL hostname for '
                          'TLS SNI and the Host header  [env: DOCKSIDE_CONNECT_TO]')
-    sp.add_argument('--debug-http', dest='debug_http', action='store_true',
+    sp.add_argument('--debug-http', dest='debug_http', action='store_true', default=argparse.SUPPRESS,
                     help='Print raw HTTP request/response traffic for debugging. WARNING: '
                          'this output is secret-bearing — it can include Authorization/Cookie '
                          'headers and request bodies. Do not paste it into bug reports or shared logs.')
