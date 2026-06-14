@@ -17,6 +17,8 @@ REFUSES an invalid request rather than silently accepting it. Driven through the
   Group D — role integrity guards: removeRole refuses a role still assigned to a user
             (no dangling refs); updateRole refuses removing manageUsers from the caller's
             OWN admin-granting role (lock-out via a custom, non-'admin' role + its user).
+  Group E — reads of non-existent entities: getUser / getRole / getProfile must 404 on a
+            name no fixture creates, rather than returning an empty or fabricated record.
 
 If the server does NOT reject one of these, the corresponding test fails — surfacing a
 server-side validation gap rather than letting it pass silently.
@@ -214,3 +216,19 @@ class RejectionTests(TestCase):
         self.assert_api_error(
             lambda: self._adminrole_client._run('role', 'edit', self._admin_role,
                                                 '--set', 'permissions.manageUsers=0'))
+
+    # ── Group E: reads of non-existent entities ─────────────────────────────────
+    # getUser / getRole / getProfile must 404 on a name no fixture creates, rather than
+    # returning an empty or fabricated record.
+
+    def test_19_get_absent_user(self):
+        self.assert_api_error(
+            lambda: self.admin._run('user', 'get', _ABSENT))
+
+    def test_20_get_absent_role(self):
+        self.assert_api_error(
+            lambda: self.admin._run('role', 'get', _ABSENT))
+
+    def test_21_get_absent_profile(self):
+        self.assert_api_error(
+            lambda: self.admin._run('profile', 'get', _ABSENT))
