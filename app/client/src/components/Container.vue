@@ -292,6 +292,14 @@
       },
       created() {
          if(this.isPrelaunchMode) {
+            // fetchLaunchProfiles is async but initialiseForm runs synchronously off the
+            // pre-refresh profile list, and no watcher reconciles form.profile once the
+            // fetch resolves. So if an admin removes or renames the selected profile in the
+            // brief window a launch form is open, a stale profile id can be submitted.
+            // Deliberately not handled: admin profile edits are rare, the window is tiny,
+            // and the failure is non-destructive — the server validates the profile on
+            // launch and returns an error, so the user simply retries. A reconciling watcher
+            // would add reactive complexity for a transient, self-correcting edge case.
             this.$store.dispatch('account/fetchLaunchProfiles');
             this.initialiseForm();
          }
