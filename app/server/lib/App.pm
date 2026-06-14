@@ -106,9 +106,18 @@ sub parse_body_args ($r) {
 
    if ( $ct =~ m{application/json}i && length $body ) {
       my $decoded = eval { JSON::XS->new->utf8->decode($body) };
-      # Guard: only accept a JSON object at the top level.  A non-object body
-      # (array, scalar, malformed JSON) is treated as an empty argument set.
-      return ref($decoded) eq 'HASH' ? $decoded : {};
+      # A declared JSON body that does not decode to an object is a malformed
+      # request, not an empty one: reject it with 400 rather than silently
+      # coercing to {} (which would let a mutation appear to succeed as a no-op).
+      # An empty body never reaches here (guarded by `length $body` above) and so
+      # still parses as an intentionally-empty argument set via the form path.
+      die Exception->new(
+         'msg'    => 'Request body is not a valid JSON object',
+         'dbg'    => 'parse_body_args: application/json body failed to decode to a HASH'
+                     . ( $@ ? ": $@" : '' ),
+         'status' => 400,
+      ) unless ref($decoded) eq 'HASH';
+      return $decoded;
    }
 
    # Form-encoded fallback: split on '=' and '&', URL-decode each token, then
@@ -733,13 +742,18 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       return redirect($r, 302, '/');
    }
    catch {
-      my ($msg, $dbg, $time);
+      my ($msg, $dbg, $time, $status);
       if( ref($_) eq 'Exception' ) {
-         ($msg, $dbg, $time) = ($_->msg(), $_->dbg(), $_->time());
+         ($msg, $dbg, $time, $status) = ($_->msg(), $_->dbg(), $_->time(), $_->status());
       }
       else {
          ($msg, $dbg, $time) = ($_, $_, time);
       }
+
+      # Most API errors carry no specific status and default to 401, preserving
+      # existing behaviour; an Exception may set its own (e.g. 400 for a malformed
+      # body, 403 for a forbidden self-edit).
+      $status //= 401;
 
       # Sanitize regardless of source: an Exception's own msg/dbg can embed secrets
       # (env payloads, private keys, gh_token) from interpolated input or command
@@ -748,13 +762,13 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
 
       my $Time = YYYYMMDDHHMMSS($time);
 
-      flog("Reporting exception at '$Time': msg='$msg'; dbg='$dbg'; content type='$type'");
+      flog("Reporting exception at '$Time': msg='$msg'; dbg='$dbg'; status='$status'; content type='$type'");
 
       if($type eq 'text') {
-         return text($r, 401, "$msg (at $Time)");
+         return text($r, $status, "$msg (at $Time)");
       }
       else {
-         return json($r, 401, { 'status' => '401', 'msg' => "$msg (at $Time)", 'time' => $time });
+         return json($r, $status, { 'status' => "$status", 'msg' => "$msg (at $Time)", 'time' => $time });
       }
    };
 
