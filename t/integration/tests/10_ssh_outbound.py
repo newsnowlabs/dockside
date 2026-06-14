@@ -17,8 +17,9 @@ Both paths perform the same substantive check:
   2. use that agent to SSH to dockside@127.0.0.1
   3. expect the local SSH server in the same devtainer to accept the key
 
-`DOCKSIDE_TEST_CONTAINER_ACCESS=auto|docker|ssh` can request a preferred path.
-The test ignores that preference when the requested mechanism is unavailable.
+`DOCKSIDE_TEST_CONTAINER_ACCESS` selects the path explicitly: `ssh` (default) or
+`docker`. `auto` is rejected by the runner, and an unavailable requested mechanism
+raises rather than silently falling back.
 """
 
 import os

@@ -186,10 +186,11 @@ test user's temp cookie file on later CLI subprocesses after an initial
 credentialed call has seeded it, while retrying only read-only commands with
 explicit credentials if the reused session fails.
 
-When rerunning with a fixed suffix, the harness normally preserves any
-pre-existing roles, users, and profiles for that suffix and only removes
-resources created by the current run. Set `DOCKSIDE_TEST_CLEANUP_REUSED=1` to
-also remove reused test resources for that suffix at the end of the run.
+When rerunning with a fixed suffix, the harness by default
+(`DOCKSIDE_TEST_CLEANUP_REUSED=1`) removes both the resources the current run
+created and any pre-existing reused roles, users, and profiles for that suffix.
+Set `DOCKSIDE_TEST_CLEANUP_REUSED=0` to preserve the reused (pre-existing)
+resources and remove only what the current run created.
 
 > N.B. Important: if only `DOCKSIDE_TEST_HOST=...` is set, the runner selects
 **remote** mode. To get local-mode TCP routing to `localhost`, set
@@ -214,7 +215,7 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_VERIFY_SSL` | `0` | Set `1` to verify SSL certificates |
 | `DOCKSIDE_TEST_CONTAINER_ID` | — | Running Dockside container ID (enables docker-exec SSH tests in non-harness modes) |
 | `DOCKSIDE_TEST_SSH_SERVER` | `git@github.com` | Outbound SSH server for test 09 B |
-| `DOCKSIDE_TEST_CONTAINER_ACCESS` | `auto` | Preferred access method for tests that can inspect a devtainer via either `docker exec` or SSH; ignored if the requested method is unavailable |
+| `DOCKSIDE_TEST_CONTAINER_ACCESS` | `ssh` | Access method for tests that inspect a devtainer: `ssh` (default, via wstunnel) or `docker` (docker exec). `auto` is rejected — choose explicitly. |
 | `DOCKSIDE_TEST_IMAGE_REGISTRY` | — | Registry mirror prefix for bare Docker Hub image names (e.g. `mirror.gcr.io/library`). Images with an explicit registry host are unaffected. Useful on hosts with Docker Hub pull-rate limits. |
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
 | `DOCKSIDE_TEST_NAME_SUFFIX` | `auto` | Suffix for test resource names; `auto` generates a random 6-char hex string |
