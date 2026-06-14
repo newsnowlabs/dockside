@@ -2124,6 +2124,7 @@ def cmd_create(args):
     name   = reservation.get('name', res_id)
     print(f"Devtainer created: {name!r}  (reservation: {res_id})", file=sys.stderr)
 
+    launch_failed = False
     if not args.no_wait:
         print('Waiting for container to start', end='', file=sys.stderr, flush=True)
         ok = wait_for(opener, server, res_id, target=1, timeout=args.timeout)
@@ -2145,6 +2146,7 @@ def cmd_create(args):
                 failed_c = None
             if failed_c and failed_c.get('status') == -4:
                 reservation = failed_c
+                launch_failed = True
                 print(
                     f'Error: {name!r} failed to launch '
                     f'(docker create exit code: {failed_c.get("createStatus")}). '
@@ -2162,6 +2164,12 @@ def cmd_create(args):
         emit(reservation, args._fmt)
     else:
         print(_fmt_detail(reservation))
+
+    # A launch failure (status -4) is a hard error: the reservation detail is
+    # still emitted above for diagnostics, but exit non-zero so `--wait` callers
+    # and automation do not treat a failed launch as success.
+    if launch_failed:
+        sys.exit(1)
 
 
 def cmd_start(args):
@@ -2186,6 +2194,19 @@ def cmd_start(args):
         if ok:
             print(f'{name!r} is running.', file=sys.stderr)
         else:
+            failed_c = None
+            try:
+                failed_c = next((x for x in fetch_containers(opener, server)
+                                 if x.get('id') == res_id), None)
+            except APIError:
+                pass
+            if failed_c and failed_c.get('status') == -4:
+                # A failed (re)launch is a hard error: exit non-zero so callers
+                # do not treat it as a successful start.
+                print(f'Error: {name!r} failed to start '
+                      f'(docker create exit code: {failed_c.get("createStatus")}). '
+                      f'Check launch logs for details.', file=sys.stderr)
+                sys.exit(1)
             print(f'Warning: timed out after {args.timeout}s. '
                   f'{name!r} may still be starting.', file=sys.stderr)
     else:
