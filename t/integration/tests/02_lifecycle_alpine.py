@@ -122,6 +122,10 @@ class CreateFailureTests(TestCase):
     Uses a profile pointing at a localhost registry that is guaranteed not to
     be running, so docker create fails immediately without any network round-trip
     to Docker Hub.
+
+    test_08 asserts the server-side transition to -4 (createStatus recorded);
+    test_09 asserts the CLI's user-facing contract that a *waited* create exits
+    non-zero on that failure rather than silently reporting success.
     """
 
     @classmethod
@@ -136,9 +140,14 @@ class CreateFailureTests(TestCase):
             pass
 
     def test_08_bad_image_reaches_launch_failed(self):
+        # Create with --no-wait so the reservation record is returned (and the CLI
+        # exits 0) regardless of the expected launch failure; this isolates the
+        # server-side -4 transition under test from the CLI's exit-code contract,
+        # which test_09 covers.
         result = self.admin.create(
             profile=self.test_profile_bad_image,
             name=self.CONTAINER_NAME,
+            no_wait=True,
         )
         self.assert_true(result is not None, 'create returned nothing')
         created_name = result.get('name') if isinstance(result, dict) else None
@@ -163,3 +172,12 @@ class CreateFailureTests(TestCase):
             create_status,
             f'createStatus not set on launch failure (got {create_status!r})',
         )
+
+    def test_09_waited_create_exits_nonzero_on_launch_failure(self):
+        # A waited create (the default) must exit non-zero when the launch fails
+        # (-4), so scripts and automation do not mistake a failed launch for
+        # success; the harness surfaces that non-zero exit as APIError.
+        name = self._sfx('inttest-create-fail-wait-09')
+        self.register_cleanup(name)
+        self.assert_api_error(
+            lambda: self.admin.create(profile=self.test_profile_bad_image, name=name))

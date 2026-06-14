@@ -424,8 +424,16 @@ class DocksideClient:
     def get_container(self, name):
         return self._run_readonly('get', name)
 
-    def create(self, **fields):
-        return self._run_mutating('create', *_fields_to_args(fields))
+    def create(self, no_wait=False, **fields):
+        # no_wait maps to the CLI's --no-wait switch (a store_true flag, so it is
+        # not a value-bearing field and cannot go through _fields_to_args).  With
+        # --no-wait the CLI returns the reservation record immediately and exits 0
+        # even if the launch later fails; without it, a launch failure (status -4)
+        # makes the CLI exit non-zero, which the harness surfaces as APIError.
+        args = list(_fields_to_args(fields))
+        if no_wait:
+            args.append('--no-wait')
+        return self._run_mutating('create', *args)
 
     def update(self, name, **fields):
         return self._run_mutating('edit', name, *_fields_to_args(fields))
