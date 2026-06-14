@@ -61,7 +61,11 @@ class SshOutboundTests(SshTestMixin, TestCase):
         'ssh_add_bin="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/ssh-add"; '
         '[ -x "$ssh_bin" ] || ssh_bin=ssh; '
         '[ -x "$ssh_add_bin" ] || ssh_add_bin=ssh-add; '
+        # Fence the agent listing so the test can assert the key came from the agent
+        # (ssh-add -L) and not from the authorized_keys dump that follows.
+        'echo ===AGENTKEYS_BEGIN===; '
         'SSH_AUTH_SOCK="$agent_sock" "$ssh_add_bin" -L || true; '
+        'echo ===AGENTKEYS_END===; '
         'cat ~dockside/.ssh/authorized_keys || true; '
         'SSH_AUTH_SOCK="$agent_sock" '
         '"$ssh_bin" -T '
@@ -88,10 +92,17 @@ class SshOutboundTests(SshTestMixin, TestCase):
         except Exception as exc:
             self.skip(str(exc))
 
+        # Assert the key was listed by the AGENT, not merely present in
+        # authorized_keys: extract only the fenced ssh-add -L section and match on the
+        # key id (type+base64), since the agent may report a different comment.
+        agent_section = ''
+        if '===AGENTKEYS_BEGIN===' in result.stdout and '===AGENTKEYS_END===' in result.stdout:
+            agent_section = (result.stdout.split('===AGENTKEYS_BEGIN===', 1)[1]
+                                          .split('===AGENTKEYS_END===', 1)[0])
         self.assert_in(
-            expected_pubkey, result.stdout,
-            f'Integrated ssh-agent did not report the expected key; '
-            f'stdout={result.stdout!r} stderr={result.stderr!r}'
+            _key_id(expected_pubkey), agent_section,
+            f'Integrated ssh-agent (ssh-add -L) did not list the expected key; '
+            f'agent_section={agent_section!r} stdout={result.stdout!r} stderr={result.stderr!r}'
         )
         self.assert_true(
             result.returncode == 0 and result.stdout.strip().endswith('hello'),
