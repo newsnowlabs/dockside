@@ -54,7 +54,11 @@ class SshOutboundTests(SshTestMixin, TestCase):
     _BASE_SSH_CONTAINER = 'inttest-outbound-ssh-01'
 
     _SELF_SSH_SCRIPT = (
-        "ps auxw | egrep '(ssh|drop)' || true; "
+        # Diagnostic only — confirm ssh-agent and dropbear are running. Use pgrep (match
+        # by process name), NOT `ps | grep`: a ps/grep pipeline echoes this script's own
+        # command line — which contains the ===AGENTKEYS=== markers below — into stdout,
+        # producing spurious marker matches. pgrep -l prints just PID + name.
+        'pgrep -l ssh || true; pgrep -l drop || true; '
         'agent_sock=$(ls /tmp/ssh-*/agent.* 2>/dev/null | head -1); '
         'test -n "$agent_sock" || { echo "No ssh-agent socket found in devtainer" >&2; exit 1; }; '
         'ssh_bin="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/ssh"; '
@@ -95,9 +99,11 @@ class SshOutboundTests(SshTestMixin, TestCase):
         # Assert the key was listed by the AGENT, not merely present in
         # authorized_keys: extract only the fenced ssh-add -L section and match on the
         # key id (type+base64), since the agent may report a different comment.
+        # Take the LAST marker pair, as a safeguard against any stray earlier output (the
+        # diagnostic above is pgrep-based precisely so it does not echo these markers).
         agent_section = ''
         if '===AGENTKEYS_BEGIN===' in result.stdout and '===AGENTKEYS_END===' in result.stdout:
-            agent_section = (result.stdout.split('===AGENTKEYS_BEGIN===', 1)[1]
+            agent_section = (result.stdout.rsplit('===AGENTKEYS_BEGIN===', 1)[-1]
                                           .split('===AGENTKEYS_END===', 1)[0])
         self.assert_in(
             _key_id(expected_pubkey), agent_section,
