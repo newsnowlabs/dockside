@@ -49,7 +49,11 @@
             return this.$route.path.startsWith('/admin');
          },
          isAccountRoute() {
-            return this.$route.path === '/account';
+            // Match by route name, not path equality: Vue Router's non-strict
+            // matching also resolves '/account/' (trailing slash) to this route, and
+            // a bare path === '/account' check would then misclassify it and render
+            // the container layout instead of the account form.
+            return this.$route.name === 'account';
          },
          canAccessAdmin() {
             const p = this.user.permissions.actions;

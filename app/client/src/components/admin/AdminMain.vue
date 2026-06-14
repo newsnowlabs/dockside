@@ -71,7 +71,10 @@
          },
 
          isAccountRoute() {
-            return this.$route.path === '/account';
+            // Match by route name (see App.vue): '/account/' also resolves here under
+            // Vue Router's non-strict matching, and a path === '/account' check would
+            // wrongly treat it as a non-account route.
+            return this.$route.name === 'account';
          },
 
          currentUsername() {
