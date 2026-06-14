@@ -250,9 +250,11 @@ class DocksideClient:
             # Ancestor cookies still come from the system config's parent chain.
             base_tag = username if username else 'anon'
             user_tag = re.sub(r'[^A-Za-z0-9_.-]+', '-', base_tag).strip('-') or 'user'
-            path = os.path.join(tempfile.gettempdir(), f'dockside-sess-{user_tag}.txt')
-            with open(path, 'w', encoding='utf-8'):
-                pass
+            # Securely create a unique per-client cookie file (mkstemp; mode 0600)
+            # rather than a predictable shared path, so concurrent harness runs do
+            # not collide on it and a pre-existing symlink cannot redirect the write.
+            fd, path = tempfile.mkstemp(prefix=f'dockside-sess-{user_tag}-', suffix='.txt')
+            os.close(fd)
             self._session_cookie_file = path
         else:
             self._session_cookie_file = None  # use system config stored session
