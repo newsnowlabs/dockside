@@ -613,6 +613,12 @@ run_nonroot() {
       create_git_repo
       gh_authenticate
       checkout_git_branch_or_pr
+      # .git-repo-ready signals only that the clone/checkout subproc has *finished*, not
+      # that it succeeded — clone/checkout deliberately soft-fail (log a warning rather
+      # than abort), and Dockside does not guarantee an error-free working tree. The sole
+      # consumer is the integration suite (t/integration/tests/06_git_profile.py), which
+      # waits on this sentinel and then verifies the repo state itself. So gating the touch
+      # on a non-empty GIT_URL (rather than on clone success) is intentional, not a bug.
       [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
       populate_vscode_extensions;
       populate_vscode_settings
