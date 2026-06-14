@@ -104,12 +104,15 @@
             <b-form-input :value="form.version" readonly plaintext />
          </b-form-group>
 
-         <!-- JSON body — read-only tree view when not editing, full editor when editing -->
+         <!-- JSON body — tree view when viewing (read-only; easier to scan), text mode
+              when editing or creating (raw JSON is the natural edit surface). Bound to the
+              edit state so the mode follows view↔edit; while editing the user can still
+              switch modes via the editor's own control. -->
          <b-form-group label="Profile body" label-cols="3">
             <JsonEditor
                :value="profileBody"
                :readonly="!isEditMode && !isNew"
-               mode="tree"
+               :mode="(isEditMode || isNew) ? 'text' : 'tree'"
                @input="profileBody = $event"
             />
          </b-form-group>
