@@ -1,6 +1,13 @@
 <template>
    <div class="role-detail">
 
+      <!-- Requested role does not exist (server 404) -->
+      <div v-if="roleNotFound" class="role-not-found">
+         Role '{{ roleName }}' not found.
+      </div>
+
+      <template v-else-if="showForm">
+
       <!-- Header -->
       <div class="detail-header">
          <h5 class="detail-title">
@@ -77,6 +84,8 @@
          @confirm="deleteRole"
       />
 
+      </template>
+
    </div>
 </template>
 
@@ -112,7 +121,7 @@
       },
 
       computed: {
-         ...mapState('admin', ['roles', 'users', 'selected']),
+         ...mapState('admin', ['roles', 'users', 'selected', 'rolesLoaded']),
 
          isNew() {
             return !this.roleName;
@@ -131,6 +140,19 @@
 
          currentRoleRecord() {
             return this.roles.find(r => r.name === this.roleName) || null;
+         },
+
+         // True once the roles list has loaded and the requested role still does
+         // not exist — i.e. a 404 in the server.  Gated on rolesLoaded so we do
+         // not flash "not found" while the list is still being fetched.
+         roleNotFound() {
+            return !this.isNew && this.rolesLoaded && !this.currentRoleRecord;
+         },
+
+         // Whether the editable form / actions should render: the create flow,
+         // or an existing, resolved record.
+         showForm() {
+            return this.isNew || !!this.currentRoleRecord;
          },
 
          // Mirror the server-side guard: prevent deletion of a role that is still
@@ -250,5 +272,14 @@
 
    .save-error {
       font-size: 0.85rem;
+   }
+
+   .role-not-found {
+      padding: 16px;
+      color: #842029;
+      background-color: #f8d7da;
+      border: 1px solid #f5c2c7;
+      border-radius: 4px;
+      font-size: 0.95rem;
    }
 </style>

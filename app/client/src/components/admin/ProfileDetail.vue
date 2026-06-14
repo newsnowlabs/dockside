@@ -1,6 +1,18 @@
 <template>
    <div class="profile-detail">
 
+      <!-- Unknown profile id: the list has loaded and there is no such record.
+           Show only this message — never the editable form, action buttons,
+           JSON editor or delete modal — so a bad id can't masquerade as a record. -->
+      <div v-if="profileNotFound" class="profile-not-found">
+         Profile '{{ profileId }}' not found.
+      </div>
+
+      <!-- Valid record or the create ('new') flow. While the list is still loading
+           for an existing id (not new, no record yet, not yet profilesLoaded) we
+           render nothing here rather than an empty form. -->
+      <template v-else-if="isNew || currentProfileRecord">
+
       <!-- Header -->
       <div class="detail-header">
          <div class="detail-title-wrap">
@@ -139,6 +151,8 @@
          @confirm="deleteProfile"
       />
 
+      </template>
+
    </div>
 </template>
 
@@ -218,7 +232,7 @@
       },
 
       computed: {
-         ...mapState('admin', ['profiles', 'selected']),
+         ...mapState('admin', ['profiles', 'selected', 'profilesLoaded']),
 
          isNew() {
             return !this.profileId;
@@ -243,6 +257,13 @@
 
          currentProfileRecord() {
             return this.profiles.find(p => p.id === this.profileId) || null;
+         },
+
+         // True once the list has loaded and confirmed there is no profile with
+         // this id (and we're not on the create flow). Gated on profilesLoaded so
+         // we don't flash "not found" while the list is still being fetched.
+         profileNotFound() {
+            return !this.isNew && this.profilesLoaded && !this.currentProfileRecord;
          },
 
          hasUnsavedEdits() {
@@ -477,5 +498,15 @@
 
    .save-error {
       font-size: 0.85rem;
+   }
+
+   .profile-not-found {
+      margin-top: 8px;
+      padding: 16px;
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+      color: #6c757d;
+      font-size: 0.95rem;
    }
 </style>

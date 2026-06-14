@@ -1,6 +1,20 @@
 <template>
    <div class="user-detail">
 
+      <!-- Unknown username: the list has loaded and there is no such record.
+           Show only this message — never the editable form, action buttons,
+           SSH editor or delete modal — so a bad username can't masquerade as
+           a record. -->
+      <div v-if="userNotFound" class="user-not-found">
+         User '{{ username }}' not found.
+      </div>
+
+      <!-- Valid record, the create ('new') flow, or the self-edit account view.
+           While the list is still loading for an existing username (not new, not
+           self-edit, no record yet, not yet usersLoaded) we render nothing here
+           rather than an empty form. -->
+      <template v-else-if="isNew || selfEdit || currentUserRecord">
+
       <!-- Header -->
       <div class="detail-header">
          <h5 class="detail-title">
@@ -154,6 +168,8 @@
          @confirm="deleteUser"
       />
 
+      </template>
+
    </div>
 </template>
 
@@ -220,7 +236,7 @@
       },
 
       computed: {
-         ...mapState('admin', ['users', 'roles', 'selected']),
+         ...mapState('admin', ['users', 'roles', 'selected', 'usersLoaded']),
          ...mapGetters('admin', ['isNewItem', 'roleNames']),
 
          isNew() {
@@ -259,6 +275,15 @@
             // refreshed via account/fetchSelf after saves.
             if (this.selfEdit) return this.$store.state.account.currentUser || null;
             return this.users.find(u => u.username === this.username) || null;
+         },
+
+         // True once the users list has loaded and confirmed there is no user with
+         // this username (and we're neither on the create flow nor the self-edit
+         // account view, which sources its record from account.currentUser rather
+         // than admin.users). Gated on usersLoaded so we don't flash "not found"
+         // while the list is still being fetched.
+         userNotFound() {
+            return !this.isNew && !this.selfEdit && this.usersLoaded && !this.currentUserRecord;
          },
 
          rolePermissions() {
@@ -458,5 +483,15 @@
 
    .save-error {
       font-size: 0.85rem;
+   }
+
+   .user-not-found {
+      margin-top: 8px;
+      padding: 16px;
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-radius: 4px;
+      color: #6c757d;
+      font-size: 0.95rem;
    }
 </style>

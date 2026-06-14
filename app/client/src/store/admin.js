@@ -8,6 +8,12 @@ const createState = () => ({
    users:         [],
    roles:         [],
    profiles:      [],
+   // Per-list "first successful fetch completed" flags. The lists fetch asynchronously
+   // (App.vue dispatches admin/fetchAll without awaiting), so detail views must wait for
+   // these before deciding a requested id is genuinely absent rather than still loading.
+   usersLoaded:    false,
+   rolesLoaded:    false,
+   profilesLoaded: false,
    hostResources: null, // { runtimes, networks, IDEs, authModes } — loaded once
    // type: 'user' | 'role' | 'profile' | null; id: string | null; mode: 'view' | 'edit'
    selected: { type: null, id: null, mode: 'view' },
@@ -45,9 +51,9 @@ export default {
       setLoading(state, v)  { state.loading = v; },
       setError(state, v)    { state.error   = v; },
 
-      setUsers(state, list)          { state.users         = list; },
-      setRoles(state, list)          { state.roles         = list; },
-      setProfiles(state, list)       { state.profiles      = list; },
+      setUsers(state, list)          { state.users    = list; state.usersLoaded    = true; },
+      setRoles(state, list)          { state.roles    = list; state.rolesLoaded    = true; },
+      setProfiles(state, list)       { state.profiles = list; state.profilesLoaded = true; },
       setHostResources(state, data)  { state.hostResources = data; },
 
       // splice() is used rather than [...list] replacement to trigger Vue 2
