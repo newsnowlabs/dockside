@@ -68,9 +68,9 @@ dockside login \
   --server https://www-mydev.example.dockside.dev
 
 # Run all tests; remote mode is auto-detected from the stored CLI session.
-# DOCKSIDE_TEST_CONTAINER_ACCESS defaults to 'auto', which in remote mode
-# resolves to 'ssh' when wstunnel is available — exercising the full routing
-# stack for SSH and outbound-SSH tests.
+# DOCKSIDE_TEST_CONTAINER_ACCESS defaults to 'ssh', exercising the full routing
+# stack (nginx -> wstunnel -> devtainer dropbear) for the SSH and outbound-SSH
+# tests; set it to 'docker' to enter the devtainer directly. ('auto' is rejected.)
 bash t/integration/run_tests.sh
 ```
 
@@ -411,19 +411,19 @@ the matching private key into the devtainer's integrated `ssh-agent`.
 
 **`10_ssh_outbound.py` (outbound via integrated ssh-agent):**
 
-`DOCKSIDE_TEST_CONTAINER_ACCESS=auto|docker|ssh` selects how the test enters
-the devtainer.  The two values cover different depths of the routing stack:
+`DOCKSIDE_TEST_CONTAINER_ACCESS=docker|ssh` selects how the test enters the
+devtainer (default `ssh`; `auto` is rejected — choose explicitly).  The two
+values cover different depths of the routing stack:
 
 | Value | How the test enters the devtainer | What routing is exercised |
 |---|---|---|
 | `docker` | `docker exec` directly into the container | In-container only (dropbear, ssh-agent, authorized_keys); nginx and wstunnel are **not** exercised |
 | `ssh` | Host-side `ssh` via a wstunnel ProxyCommand built from `dockside ssh config` | Full stack: nginx routing → wstunnel → devtainer dropbear |
-| `auto` | `docker` if Docker is reachable; otherwise `ssh` | Whichever is resolved above |
 
-`ssh` is the preferred value when available — it tests the complete user-facing
-SSH path.  When running from a Dockside development container, both `ssh` and
-`wstunnel` are available under `/opt/dockside/system/latest/bin`, so `auto`
-resolves to `ssh` automatically.
+`ssh` (the default) is preferred — it tests the complete user-facing SSH path.
+When running from a Dockside development container, both `ssh` and `wstunnel` are
+available under `/opt/dockside/system/latest/bin`, so the full-stack path works
+out of the box.
 
 Both paths run the same in-devtainer check once inside:
 - confirm `ssh-agent` is running and has the expected key loaded
