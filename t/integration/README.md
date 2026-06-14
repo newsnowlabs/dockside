@@ -100,23 +100,6 @@ DOCKSIDE_TEST_HOST='https://www-mydockside.local.dockside.dev/' \
 bash t/integration/run_tests.sh
 ```
 
-### Local mode Inside Vanilla Cloud Environment (e.g. Claude Code for Web)
-```bash
-# Assumes Debian, and that dockerd is installed but not running
-# - installs needed packages
-# - launches Dockside with `--run-dockerd`
-# - authenticates the CLI using auto-generated admin credentials
-./build/development/run-local.sh
-
-# Now run tests...
-# DOCKSIDE_TEST_IMAGE_REGISTRY redirects bare Docker Hub image pulls to a mirror,
-# avoiding Docker Hub pull-rate limits common in cloud environments.
-DOCKSIDE_TEST_MODE=local \
-DOCKSIDE_TEST_HOST="https://www.local.dockside.dev/" \
-DOCKSIDE_TEST_IMAGE_REGISTRY=mirror.gcr.io/library \
-./t/integration/run_tests.sh
-```
-
 ### Local mode via `docker exec`
 Testing from inside the Dockside container itself (e.g. via `docker exec`):
 ```bash
