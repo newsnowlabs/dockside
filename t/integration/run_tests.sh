@@ -243,7 +243,13 @@ fi
 
 # ── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
-    local exit_code=$?  # capture before any future cleanup commands can reset it
+    local exit_code=$?  # capture before any cleanup commands can reset it
+    # This trap replaces the EXIT/INT/TERM trap that harness.sh (sourced in harness
+    # mode) registered for its own teardown, so invoke that teardown here — otherwise
+    # the harness container and temp CLI config are never cleaned up.
+    if declare -F harness_cleanup >/dev/null 2>&1; then
+        harness_cleanup
+    fi
     exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
