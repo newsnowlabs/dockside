@@ -158,7 +158,7 @@ $CONFIG_FILES = {
          my $newNetworks = join(',', sort keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} });
          if ($oldNetworks ne $newNetworks) {
             flog("Data::load: containers.json: Dockside container network list changed ('$oldNetworks' -> '$newNetworks'); invalidating profile cache");
-            delete $CONFIG_FILES->{'profiles/*.json'}{'lastModified'};
+            invalidate_profile_cache();
          }
 
          Reservation->update_container_info();
@@ -246,8 +246,11 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
 
       flog( "Data::load: $p, previously modified at $CONFIG_FILES->{$p}{'lastModified'}, now modified at $lastModified");
 
-      # Get data from files
-      my $data;
+      # Get data from files.  For a glob, default to an empty hashref so that
+      # removing the last matching file reloads as an empty set (the 'process'
+      # callback clears its registry) rather than leaving $data undef, which the
+      # callbacks (e.g. `keys %$c`) would die on.
+      my $data = $isGlob ? {} : undef;
       my $single_key;
       my $file_count = @files;
       try {
@@ -294,10 +297,13 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
 }
 
 # Force the profile glob to reload on the next Data::load call.
-# Needed after profile file deletion or rename, where mtime of remaining
+# Needed after profile file deletion or rename, where the mtime of the remaining
 # files does not change and the cache would otherwise not detect the update.
+# A -1 sentinel is used rather than delete: when the last profile is removed the
+# glob is empty and Data::load computes a max-mtime of 0, which would equal a
+# deleted/defaulted-0 stored value and skip the reload, leaving stale profiles.
 sub invalidate_profile_cache () {
-   delete $CONFIG_FILES->{'profiles/*.json'}{'lastModified'};
+   $CONFIG_FILES->{'profiles/*.json'}{'lastModified'} = -1;
 }
 
 1;
