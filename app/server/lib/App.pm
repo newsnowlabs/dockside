@@ -99,7 +99,10 @@ sub split_args ($queryString) {
 #
 # Two content-type paths:
 #   application/json  — decode the whole body as a JSON object directly.
-#                       Returns {} if the body is not a JSON object.
+#                       A non-empty body that fails to decode to a JSON object
+#                       is rejected with HTTP 400 (see below), not coerced to {};
+#                       an empty body is handled by the form path as an
+#                       intentionally-empty argument set.
 #   form-encoded      — split key=value pairs, URL-unescape each token, then
 #                       JSON-decode each individual value so the result matches
 #                       the shape of the JSON path.  This preserves CLI support:
