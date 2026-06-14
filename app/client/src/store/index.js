@@ -21,6 +21,10 @@ const createStore = () => new Vuex.Store({
    getters: {
       welcomeTextStatus: state => state.welcomeTextStatus,
       isSelected: state => state.selectedContainer.name !== undefined,
+      // -4 (docker-create failed) is treated as "launching" alongside -2, so a failed
+      // launch keeps the potential for fast-polling (although poll times are currently
+      // equal) until the reservation is auto-cleaned away; unlike steady states, -4 is
+      // transient.
       haveLaunchingContainers: state => state.containers.some(container =>
          (container.status == -2 && (container.expiryTime === undefined || container.expiryTime === null || container.expiryTime === '')) ||
          container.status == -4
