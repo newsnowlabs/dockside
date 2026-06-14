@@ -795,16 +795,22 @@ def main():
         )
 
         print('TAP version 13')
+        load_failures = 0
         for fname in test_files:
             path = os.path.join(tests_dir, fname)
             try:
                 mod = _load_module(path)
             except Exception as e:
+                # A module that fails to import is a suite failure, not a silent
+                # skip: record it and force a non-zero exit so a broken or missing
+                # module cannot produce a green run. Other modules still run.
+                load_failures += 1
                 print(f'# ERROR loading {fname}: {e}', file=sys.stderr)
+                print(f'not ok - load {fname}: {e}')
                 continue
             runner.run_module(mod)
 
-        ok = runner.print_summary()
+        ok = runner.print_summary() and load_failures == 0
     finally:
         if skip_cleanup:
             print('# Skipping environment cleanup (--skip-cleanup)', file=sys.stderr)
