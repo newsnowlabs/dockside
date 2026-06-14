@@ -35,6 +35,8 @@
 #                               (unset)  defaults to auto
 #                               auto     generate a random 6-char hex suffix per run
 #                               <string> use this exact string as the suffix
+#                               (empty)  rejected — an empty suffix would let test names
+#                                        collide with un-suffixed real resources
 #
 #   DOCKSIDE_TEST_REUSE_USER_SESSIONS  1 = after each test user's first successful
 #                                      authenticated CLI call, reuse that user's
@@ -45,10 +47,12 @@
 #                                      0/unset = pass explicit credentials on every
 #                                      CLI call for test users
 #
-#   DOCKSIDE_TEST_CLEANUP_REUSED       1/unset = also remove reused test roles/
-#                                      users/profiles for this suffix at end of run
-#                                      0 = remove only resources created by
-#                                      the current run
+#   DOCKSIDE_TEST_CLEANUP_REUSED       0/unset = remove only resources created by the
+#                                      current run (default; never deletes pre-existing
+#                                      resources the run merely reused)
+#                                      1 = ALSO remove reused test roles/users/profiles
+#                                      for this suffix at end of run — only safe on an
+#                                      instance you own
 #
 #   DOCKSIDE_TEST_CONTAINER_ID   Running Dockside container ID (enables docker-exec
 #                                SSH tests in non-harness modes)
@@ -103,8 +107,17 @@ INTEGRATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${INTEGRATION_DIR}/../.." && pwd)"
 
 # ── Default environment ───────────────────────────────────────────────────────
+# Reject an explicitly-empty suffix (set but blank): an empty suffix yields bare
+# resource names that can collide with un-suffixed real resources. Default to auto
+# only when the variable is genuinely unset.
+if [ -n "${DOCKSIDE_TEST_NAME_SUFFIX+set}" ] && [ -z "${DOCKSIDE_TEST_NAME_SUFFIX}" ]; then
+   echo "ERROR: DOCKSIDE_TEST_NAME_SUFFIX is set but empty; use 'auto' or a non-empty string." >&2
+   exit 1
+fi
 : "${DOCKSIDE_TEST_NAME_SUFFIX:=auto}"
-: "${DOCKSIDE_TEST_CLEANUP_REUSED:=1}"
+# Default OFF: a run never deletes pre-existing resources it merely reused. Set to 1
+# only on an instance you own to also clean reused fixtures (see header).
+: "${DOCKSIDE_TEST_CLEANUP_REUSED:=0}"
 export DOCKSIDE_TEST_NAME_SUFFIX
 export DOCKSIDE_TEST_CLEANUP_REUSED
 

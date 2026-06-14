@@ -187,10 +187,16 @@ credentialed call has seeded it, while retrying only read-only commands with
 explicit credentials if the reused session fails.
 
 When rerunning with a fixed suffix, the harness by default
-(`DOCKSIDE_TEST_CLEANUP_REUSED=1`) removes both the resources the current run
-created and any pre-existing reused roles, users, and profiles for that suffix.
-Set `DOCKSIDE_TEST_CLEANUP_REUSED=0` to preserve the reused (pre-existing)
-resources and remove only what the current run created.
+(`DOCKSIDE_TEST_CLEANUP_REUSED=0`) removes only the resources the current run
+created and **preserves** any pre-existing roles, users, and profiles it merely
+reused — so a run can never delete resources it did not create. Set
+`DOCKSIDE_TEST_CLEANUP_REUSED=1` (only on an instance you own) to also remove the
+reused (pre-existing) resources for that suffix at the end of the run.
+
+The suffix itself must be non-empty: `DOCKSIDE_TEST_NAME_SUFFIX` defaults to
+`auto` (a random hex string) when unset, and an explicitly-empty value is
+rejected, because bare un-suffixed names could collide with — and then mutate or
+delete — real resources on a shared instance.
 
 > N.B. Important: if only `DOCKSIDE_TEST_HOST=...` is set, the runner selects
 **remote** mode. To get local-mode TCP routing to `localhost`, set
@@ -218,8 +224,8 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_CONTAINER_ACCESS` | `ssh` | Access method for tests that inspect a devtainer: `ssh` (default, via wstunnel) or `docker` (docker exec). `auto` is rejected — choose explicitly. |
 | `DOCKSIDE_TEST_IMAGE_REGISTRY` | — | Registry mirror prefix for bare Docker Hub image names (e.g. `mirror.gcr.io/library`). Images with an explicit registry host are unaffected. Useful on hosts with Docker Hub pull-rate limits. |
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
-| `DOCKSIDE_TEST_NAME_SUFFIX` | `auto` | Suffix for test resource names; `auto` generates a random 6-char hex string |
-| `DOCKSIDE_TEST_CLEANUP_REUSED` | `1` | Also clean up reused test roles/users/profiles for the active suffix, not just resources created by the current run |
+| `DOCKSIDE_TEST_NAME_SUFFIX` | `auto` | Suffix for test resource names; `auto` generates a random 6-char hex string. An explicitly-empty value is rejected |
+| `DOCKSIDE_TEST_CLEANUP_REUSED` | `0` | When `1`, also remove reused (pre-existing) test roles/users/profiles for the active suffix, not just resources created by the current run — only safe on an instance you own |
 | `DOCKSIDE_TEST_SKIP_CLEANUP` | `0` | Usually set via `--skip-cleanup`; preserves created test roles/users/profiles for investigation |
 | `DOCKSIDE_TEST_GITHUB_TOKEN` | — | GitHub personal access token; enables `06_git_profile.py` test_03 (PR checkout via `gh pr checkout`); test is skipped if unset |
 

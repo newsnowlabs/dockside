@@ -20,6 +20,12 @@ Environment variables (set by run_tests.sh / harness.sh):
                                (unset)  same as 'auto'
                                auto     generate a fresh random 6-char hex suffix
                                <string> use this exact string as the suffix
+                               (empty)  rejected — an empty suffix would let test
+                                        names collide with un-suffixed real resources
+  DOCKSIDE_TEST_CLEANUP_REUSED  1 or 0 (default: 0). When 1, pre-existing roles/users/
+                               profiles that a run reuses are also REMOVED at the end —
+                               only safe on an instance you own; off by default so the
+                               harness never deletes resources it did not create.
 """
 
 import importlib.util
@@ -299,6 +305,13 @@ def _resolve_suffix():
         suffix = '%06x' % random.randrange(0x1000000)
         print(f'# DOCKSIDE_TEST_NAME_SUFFIX=auto → suffix: {suffix}', file=sys.stderr)
         return suffix
+    if not raw:
+        # An empty suffix produces bare names (inttest-dev1, inttest-alpine, ...) that
+        # can collide with un-suffixed real resources; combined with reuse + cleanup
+        # that risks mutating and deleting them. Refuse rather than silently allow it.
+        print('# ERROR: DOCKSIDE_TEST_NAME_SUFFIX is empty. Use "auto" (default) or a '
+              'non-empty string; an empty suffix is not permitted.', file=sys.stderr)
+        sys.exit(1)
     return raw
 
 
@@ -683,7 +696,7 @@ def main():
     harness_id   = os.environ.get('DOCKSIDE_TEST_HARNESS_ID', '').strip() or None
     skip_cleanup = os.environ.get('DOCKSIDE_TEST_SKIP_CLEANUP', '0') == '1'
     reuse_user_sessions = os.environ.get('DOCKSIDE_TEST_REUSE_USER_SESSIONS', '0') == '1'
-    cleanup_reused = os.environ.get('DOCKSIDE_TEST_CLEANUP_REUSED', '1') == '1'
+    cleanup_reused = os.environ.get('DOCKSIDE_TEST_CLEANUP_REUSED', '0') == '1'
 
     # Network modify override
     env_nm = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()
