@@ -308,6 +308,14 @@ sub updateSelf ($self, $args) {
       $safe_args->{$key} = $args->{$key} if $allowed{$top};
    }
 
+   # Field deletions (_unset) are honoured too, but only for whitelisted personal
+   # fields, so a self-service caller cannot delete protected fields (role,
+   # permissions, id, ...) by listing them for removal.
+   if ( ref $args->{'_unset'} eq 'ARRAY' ) {
+      my @unset = grep { $allowed{ (split /\./, $_)[0] } } @{ $args->{'_unset'} };
+      $safe_args->{'_unset'} = \@unset if @unset;
+   }
+
    my $record;
    cacheReadWrite( $USERS_FILE, sub ($oldData) {
       my $users = length( $oldData // '' ) ? Data::parse_json($oldData) : {};
