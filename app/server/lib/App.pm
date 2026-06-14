@@ -281,6 +281,9 @@ sub _login_body_handler ($r) {
    my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
    $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
    handle_login_form($r, $parentFQDN) || send_login_page($r);
+   # Return OK regardless of handle_login_form's result: the body handler must let
+   # nginx flush the buffered 302 redirect. Propagating its truthy success value (1)
+   # would suppress the flush and the client would see RemoteDisconnected.
    return nginx::OK;
 }
 
