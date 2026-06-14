@@ -13,6 +13,7 @@ use JSON;
 use URI::Escape;
 use Try::Tiny;
 use File::Path;
+use Digest::SHA qw(sha256_hex);
 use Util qw(flog wlog run run_pty sanitize_sensitive_text YYYYMMDDHHMMSS);
 use Data qw($CONFIG $VERSION $HOSTINFO $HOSTNAME);
 use Containers;
@@ -50,6 +51,18 @@ sub get_client_asset ($filename) {
    my $contents = <$FH>;
    close $FH;
    return $contents;
+}
+
+# A short, opaque cache-buster for a built client asset: a hash of its mtime+size (a cheap
+# stat, no file read). It changes on every rebuild — including dev rebuilds with no git
+# commit — so an immutable-cached asset URL is refreshed exactly when the file changes.
+# Not the git version: that wouldn't change on a dev rebuild and needlessly reveals the
+# commit (the version is already in window.dockside.version for traceability). Falls back
+# to 'missing' only if the file is absent (a broken deploy — the asset route 404s too, so
+# the value is moot); that just avoids an undef-interpolation warning at page render.
+sub _asset_version ($filename) {
+   my @st = stat("$CONFIG->{'clientDistPath'}/$filename");
+   return @st ? substr( sha256_hex("$st[9]-$st[7]"), 0, 12 ) : 'missing';
 }
 
 sub get_header ($title = undef) {
@@ -407,13 +420,34 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # Enable for verbose request logging:
    # flog("App: route=$route; User=" . $User->username);
 
+   # Serve the Vue client bundle (main.js, main.css) as separate, cacheable assets rather
+   # than inlining them into every page. Placed below the auth gate so they are served to
+   # authenticated users only. nginx gzips the responses on the fly (application/javascript
+   # and text/css are in gzip_types); the ?v= cache-buster on the references below changes
+   # whenever the file changes, so a long immutable max-age is safe. ($route is the path
+   # only — $r->uri — so the ?v= query does not affect this match, and the regex pins the
+   # exact filenames, so there is no path traversal.)
+   if( $route =~ m!^/assets/main\.(js|css)$! ) {
+      my $ext = $1;
+      my %content_type = ( 'js' => 'application/javascript', 'css' => 'text/css' );
+      $r->status(200);
+      $r->header_out('Cache-Control', 'public, max-age=31536000, immutable');
+      $r->send_http_header( $content_type{$ext} );
+      $r->sendfile("$CONFIG->{'clientDistPath'}/main.$ext");
+      return nginx::OK;
+   }
+
    if( $route eq '/' || $route =~ m!^/(container|admin|account)(/|$)! ) {
       ###############################
       # Display main page HTML
       #
       $r->send_http_header("text/html");
       $r->print( get_header() );
-      $r->print( "<style>\n" . get_client_asset('main.css') . "\n</style>\n" );
+      # main.css served as a separate cacheable, gzip-compressible asset (see the
+      # /assets/main.(js|css) route above), not inlined. Render-blocking in <head> like the
+      # inline <style> it replaces, so styles still apply before first paint.
+      my $css_v = _asset_version('main.css');
+      $r->print( qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n} );
 
       # Output permissions for signed-in user
       try {
@@ -448,7 +482,10 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       $r->print('</head>');
       $r->print( '<body data-spy="scroll" data-target=".sidebar">' . "\n" );
       $r->print( "<div id='app'><router-view></router-view></div>\n" );
-      $r->print( "<script>\n" . get_client_asset('main.js') . "</script>\n" );
+      # main.js served as a separate cacheable, gzip-compressible asset (see the
+      # /assets/main.(js|css) route above) instead of inlining ~3.8 MiB into every page.
+      my $js_v = _asset_version('main.js');
+      $r->print( qq{<script src="/assets/main.js?v=$js_v"></script>\n} );
       $r->print("</body></html>\n");
 
       return nginx::OK;
