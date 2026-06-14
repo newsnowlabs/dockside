@@ -78,6 +78,10 @@ sub sanitize_sensitive_text ($text) {
    return $out;
 }
 
+# Build a short, secret-free command summary (binary + verb, plus the network
+# action for docker/podman network commands) for the client-facing error `msg`;
+# the full command line goes only to the `dbg` log, never to the client.
+# See docs/adr/0003-error-reporting-surface.md.
 sub _display_cmd (@cmd) {
    return '' unless @cmd;
 
