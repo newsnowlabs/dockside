@@ -17,7 +17,7 @@ use JSON;
 use Storable qw(dclone);
 use Data qw(invalidate_profile_cache $PROFILES_DIR);
 use Profile;
-use Util qw(flog cacheReadWrite apply_args_to_record);
+use Util qw(flog cacheReadWrite apply_args_to_record lockFile);
 use Exception;
 
 # Profile names that collide with route action words.  A profile named 'update'
@@ -30,6 +30,18 @@ my %RESERVED_NAMES = map { $_ => 1 } qw(new create update remove rename);
 # Returns the filesystem path for a profile by name.
 sub _profile_file ($name) {
    return "$PROFILES_DIR/$name.json";
+}
+
+# Acquire the single advisory lock guarding all profile structural mutations
+# (create/update/rename/remove).  Profiles are one-file-per-profile, so a per-file
+# cacheReadWrite lock cannot serialise create's existence check or a rename across
+# two files; this coarse lock makes each whole check-then-act atomic against the
+# others.  Held via a lexical at each call site, so it releases when that lexical
+# leaves scope (normal return or exception).  Profile mutations are rare,
+# admin-only operations, so the serialisation cost is negligible.  The ".lock"
+# name never matches the profiles/*.json glob, so it is invisible to listing.
+sub _mutation_lock () {
+   return lockFile("$PROFILES_DIR/.lock");
 }
 
 # Validate a proposed profile name.  Dies with a user-visible message if:
@@ -142,6 +154,8 @@ sub createProfile ($self, $name, $args) {
    die Exception->new( 'msg' => "You need the 'manageProfiles' permission" )
       unless $self->has_permission('manageProfiles');
 
+   my $lock = _mutation_lock();   # serialise the whole check-then-act below
+
    _validate_profile_name($name);
 
    die Exception->new( 'msg' => "Profile '$name' already exists" )
@@ -207,6 +221,8 @@ sub updateProfile ($self, $name, $args) {
    die Exception->new( 'msg' => "You need the 'manageProfiles' permission" )
       unless $self->has_permission('manageProfiles');
 
+   my $lock = _mutation_lock();   # serialise against concurrent rename/remove of $name
+
    die Exception->new( 'msg' => "Profile '$name' not found" )
       unless -f _profile_file($name);
 
@@ -255,6 +271,8 @@ sub removeProfile ($self, $name, $args = {}) {
    die Exception->new( 'msg' => "You need the 'manageProfiles' permission" )
       unless $self->has_permission('manageProfiles');
 
+   my $lock = _mutation_lock();   # serialise the not-found check + unlink
+
    die Exception->new( 'msg' => "Profile '$name' not found" )
       unless -f _profile_file($name);
 
@@ -274,6 +292,8 @@ sub removeProfile ($self, $name, $args = {}) {
 sub renameProfile ($self, $name, $new_name, $args = {}) {
    die Exception->new( 'msg' => "You need the 'manageProfiles' permission" )
       unless $self->has_permission('manageProfiles');
+
+   my $lock = _mutation_lock();   # serialise both existence checks + the rename
 
    die Exception->new( 'msg' => "Profile '$name' not found" )
       unless -f _profile_file($name);

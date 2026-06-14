@@ -12,7 +12,7 @@ our @EXPORT_OK = ( qw(
    run run_system clean_pty run_pty
    sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
-   cache cacheReadWrite cloneHash
+   cache cacheReadWrite cloneHash lockFile
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    unique
    apply_args_to_record
@@ -358,6 +358,33 @@ sub cacheReadWrite ($file, $sub = undef, @args) {
       # Re-throw exception.
       die $_;
    };
+}
+
+# Acquire an exclusive advisory lock on $lockfile and return the open handle.
+#
+# Release is implicit and there is deliberately no explicit close: the caller
+# keeps the returned handle in a lexical, and when that lexical goes out of scope
+# Perl drops the last reference and closes the handle, which releases the flock.
+# Because Perl frees a scalar the instant its refcount hits zero, this is
+# deterministic — it fires on normal return, on die (the stack unwind destroys
+# the lexical), and on process/worker exit (the kernel closes the fd). This is
+# the standard Perl filehandle-as-scope-guard idiom; cacheReadWrite() above
+# releases its own handle the same way.
+#
+# Two caveats the caller must honour: hold the handle in a lexical scoped to
+# exactly the region to serialise, and don't copy it into anything longer-lived
+# (a stray copy would keep the lock held past the intended scope).
+#
+# This serialises multi-step "check-then-act" mutations that a single per-file
+# cacheReadWrite lock cannot (an existence check then a write, or a rename
+# spanning two files). The lock file is created on demand and must not be
+# unlinked (unlinking would let two processes lock different inodes for one path).
+sub lockFile ($lockfile) {
+   open( my $LK, ">>", $lockfile )
+      || die Exception->new( 'dbg' => "Cannot open lock file '$lockfile' ($!)" );
+   flock( $LK, LOCK_EX )
+      || do { close $LK; die Exception->new( 'dbg' => "Cannot lock '$lockfile' ($!)" ); };
+   return $LK;
 }
 
 sub cacheEvery ($file, $cacheTime, $sub = undef, @args) {
