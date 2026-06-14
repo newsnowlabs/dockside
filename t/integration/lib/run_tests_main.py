@@ -785,6 +785,10 @@ def main():
             reuse_user_sessions=reuse_user_sessions,
             use_server_transport=use_server_transport,
         )
+        # On SIGINT/SIGTERM the runner re-raises the signal, skipping the finally
+        # below, so give it the env cleanup to still remove dynamic fixtures
+        # (honouring --skip-cleanup).
+        runner._on_emergency = None if skip_cleanup else _env_manager.cleanup
 
         # ── Discover and run test modules ─────────────────────────────────────
         tests_dir  = os.path.join(INTEGRATION_DIR, 'tests')

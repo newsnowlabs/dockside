@@ -794,6 +794,9 @@ class TestRunner:
         self._passed = 0
         self._failed = 0
         self._skipped = 0
+        # Optional callback invoked on SIGINT/SIGTERM (where main()'s finally is
+        # skipped) to tear down dynamic fixtures; set by the runner's owner.
+        self._on_emergency = None
         self._setup_clients()
         self._register_cleanup()
 
@@ -842,6 +845,14 @@ class TestRunner:
     def _register_cleanup(self):
         def _cleanup(signum, _frame):
             self._emergency_cleanup()
+            # main()'s finally (which removes the dynamic users/roles/profiles) is
+            # skipped once we re-raise the signal below, so run the registered
+            # environment cleanup here too; otherwise an interrupted run leaks them.
+            if self._on_emergency:
+                try:
+                    self._on_emergency()
+                except Exception:
+                    pass
             # Restore default handler and re-raise so the process actually exits
             signal.signal(signum, signal.SIG_DFL)
             os.kill(os.getpid(), signum)
