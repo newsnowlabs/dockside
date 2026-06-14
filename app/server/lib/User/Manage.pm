@@ -486,6 +486,39 @@ sub updateRole ($self, $name, $args) {
       apply_args_to_record( $record, $args, qw(name) );
       _validate_role_record($record);
 
+      # Prevent admin lock-out via self-demotion of one's OWN role (parallel to the
+      # updateUser guard): a caller necessarily holds manageUsers to reach here, and
+      # only editing their OWN role can drop their effective manageUsers to zero
+      # (editing any other role leaves the caller's own role — and thus their
+      # capability — untouched).  Evaluate the post-edit effective permission with the
+      # REAL resolution machinery rather than re-implementing it: temporarily install
+      # the new role record into the in-memory roles cache and construct a User from
+      # the caller's own stored user record, so updateDerivedPermissions resolves
+      # manageUsers against the NEW role (the $User::ROLES cache is otherwise stale
+      # until Data::load runs after this write).  Dying here aborts the cacheReadWrite
+      # write, so nothing is persisted.
+      #
+      # Skipped when:
+      #  - the caller's role isn't the one being edited (no self-demotion possible);
+      #  - the caller's role is literally 'admin' (updateDerivedPermissions grants all
+      #    permissions to the 'admin' role-name regardless of its permissions hash, so
+      #    a role edit can never strip it — checking would falsely reject);
+      #  - the caller already holds a user-level manageUsers override of '1' (that
+      #    override wins over the role, so they keep the capability regardless).
+      if ( ( $self->{'role'} // '' ) eq $name
+        && ( $self->{'role'} // '' ) ne 'admin'
+        && ( ( $self->{'_permissions'} // {} )->{'manageUsers'} // '' ) ne '1' )
+      {
+         my $actor_record = _user_to_record( $User::USERS->{ $self->username } );
+         local $User::ROLES->{$name} = $record;
+         my $reresolved = User->new($actor_record);
+         die Exception->new(
+            'msg'    => "You cannot remove the 'manageUsers' permission from your "
+                      . "own role; ask another administrator.",
+            'status' => 403,
+         ) unless $reresolved && $reresolved->has_permission('manageUsers');
+      }
+
       $roles->{$name} = $record;
       return JSON->new->utf8->pretty->canonical->encode($roles);
    } );
