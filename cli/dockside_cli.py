@@ -917,6 +917,9 @@ def api_profile_get(opener, server, name):
     return data.get('data')
 
 
+# Profiles create/update send an application/json body (a profile is a nested
+# structure and may carry the full _json blob); remove/rename carry no structured
+# data, so they use a plain form-encoded POST.
 def api_profile_create(opener, server, fields):
     data = _do_post(opener, server.rstrip('/') + '/profiles/create', fields, timeout=30, as_json=True)
     return data.get('data')
