@@ -300,6 +300,14 @@ populate_ssh_agent_keys() {
 
    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
 
+   # Defence-in-depth secret cleanup: each keypair is written to a transient
+   # dockside.XXXXXX file (and .pub) only long enough to ssh-add it, then removed
+   # in-loop below. A termination signal arriving inside that window would otherwise
+   # strand private-key material on disk, so sweep every transient file (all share the
+   # dockside. prefix) on the common signals and then exit. The trap is cleared once
+   # the keys are loaded so it does not alter the later IDE-supervision phase.
+   trap 'rm -f "$HOME"/.ssh/dockside.* 2>/dev/null; exit 1' INT TERM HUP
+
    # Iterate via read (never unquoted) since a keypair name may be '*'.
    echo "$names" | while IFS= read -r name; do
       [ -n "$name" ] || continue
@@ -325,6 +333,11 @@ populate_ssh_agent_keys() {
 
       rm -f "$KEY_PATH" "$KEY_PATH.pub"
    done
+
+   # Final sweep catches any transient file stranded by a non-signal failure inside the
+   # loop subshell (where the per-iteration rm above would not have run), then disarm.
+   rm -f "$HOME"/.ssh/dockside.* 2>/dev/null
+   trap - INT TERM HUP
 
    "$IDE_PATH/bin/ssh-add" -L
 }
