@@ -260,6 +260,26 @@ class DocksideClient:
             self._session_cookie_file = None  # use system config stored session
         self._cookie_jar = None  # loaded lazily after first _run
 
+    def with_credentials(self, username, password):
+        """Return a sibling client for a different user, sharing this client's
+        connection settings (server, transport, TLS) but with its own credentials
+        and isolated session cookie file.
+
+        Mutation tests that create a dedicated throwaway user use this to act AS that
+        user (e.g. /me/update self-edit) instead of borrowing a shared fixture client.
+        """
+        return DocksideClient(
+            cli_path=self._cli,
+            server_url=self._server,
+            username=username,
+            password=password,
+            connect_to=self._connect_to,
+            verify_ssl=self._verify_ssl,
+            use_cli_admin_creds=False,
+            reuse_explicit_session=self._reuse_explicit_session,
+            use_server_transport=self._use_server_transport,
+        )
+
     def _should_send_credentials(self, force_credentials=False):
         if self._use_cli_admin_creds:
             return False
