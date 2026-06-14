@@ -267,6 +267,23 @@ sub updateUser ($self, $username, $args) {
       _restore_redacted_ssh( $record, $orig_privates );
       _restore_redacted_gh_token( $record, $orig_gh_token );
 
+      # Prevent admin lock-out via self-demotion: a caller (who necessarily holds
+      # manageUsers to reach here) must not strip their OWN manageUsers capability,
+      # whether by changing role or via a permissions override/_unset.  Removal of
+      # the last admin by deletion is already blocked by removeUser's self-deletion
+      # guard, and since the caller is always an admin, self-demotion is the only
+      # remaining path to zero admins.  Evaluate effective permissions on the
+      # post-edit record (role-inherited or explicit '1' both count); dying here
+      # aborts the cacheReadWrite write, so nothing is persisted.
+      if ( $self->username eq $username ) {
+         my $updated = User->new( { %$record, 'username' => $username } );
+         die Exception->new(
+            'msg'    => "You cannot remove your own 'manageUsers' permission; "
+                      . "ask another administrator to make this change",
+            'status' => 403,
+         ) unless $updated && $updated->has_permission('manageUsers');
+      }
+
       $users->{$username} = $record;
       return JSON->new->utf8->pretty->canonical->encode($users);
    } );
