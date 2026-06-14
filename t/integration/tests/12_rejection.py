@@ -14,6 +14,9 @@ REFUSES an invalid request rather than silently accepting it. Driven through the
             (lock-out, the C1-#6 guard) or delete its own account. These act on a
             dedicated throwaway admin-capable user via DocksideClient.with_credentials(),
             never the real admin, so a regression harms only the throwaway.
+  Group D — role integrity guards: removeRole refuses a role still assigned to a user
+            (no dangling refs); updateRole refuses removing manageUsers from the caller's
+            OWN admin-granting role (lock-out via a custom, non-'admin' role + its user).
 
 If the server does NOT reject one of these, the corresponding test fails — surfacing a
 server-side validation gap rather than letting it pass silently.
@@ -52,13 +55,34 @@ class RejectionTests(TestCase):
                        '--set', 'permissions.manageUsers=1')
         cls._admin_client = cls.admin.with_credentials(cls._admin_user, 'inttest-rej-pass')
 
+        # Fixtures for test_18 (updateRole self-lock-out): a CUSTOM admin-capable role
+        # (deliberately NOT named 'admin', so the server's 'admin' role-NAME short-circuit
+        # does not apply) and a user holding it. The user acts on its OWN admin-granting
+        # role via cls._adminrole_client, so a regression in that guard harms only this
+        # throwaway role/user — never the real admin or the built-in 'admin' role.
+        cls._admin_role = cls._sfx('inttest-rej-adminrole')
+        cls.admin._run('role', 'create', cls._admin_role,
+                       '--set', 'permissions.manageUsers=1')
+        cls._adminrole_user = cls._sfx('inttest-rej-adminrole-user')
+        cls.admin._run('user', 'create', cls._adminrole_user,
+                       '--role', cls._admin_role,
+                       '--user-password', 'inttest-rej-pass')
+        cls._adminrole_client = cls.admin.with_credentials(cls._adminrole_user,
+                                                           'inttest-rej-pass')
+
     @classmethod
     def tearDownClass(cls):
-        for name in (cls._user, cls._admin_user):
+        # Remove users before the role they reference: the server refuses to delete a role
+        # still assigned to a user (see test_17), so the role removal would otherwise fail.
+        for name in (cls._user, cls._admin_user, cls._adminrole_user):
             try:
                 cls.admin._run('user', 'remove', '--force', name)
             except Exception:
                 pass
+        try:
+            cls.admin._run('role', 'remove', '--force', cls._admin_role)
+        except Exception:
+            pass
 
     # ── Group A: invalid entity references ──────────────────────────────────────
 
@@ -147,3 +171,46 @@ class RejectionTests(TestCase):
         """removeUser self-deletion guard: an admin must not delete its own account."""
         self.assert_api_error(
             lambda: self._admin_client._run('user', 'remove', '--force', self._admin_user))
+
+    # ── Group D: role integrity guards ──────────────────────────────────────────
+    # The 'admin' built-in role is intentionally NOT exercised by test_18: the server
+    # short-circuits on the role NAME 'admin', so stripping its permissions does not
+    # demote an admin-role user. That short-circuit is a non-rejection behavior and does
+    # not fit this rejection suite's assert_api_error style, so it is left uncovered here.
+
+    def test_17_remove_role_in_use(self):
+        """removeRole must refuse a role still assigned to a user (no dangling refs)."""
+        role = self._sfx('inttest-rej-inuserole')
+        user = self._sfx('inttest-rej-inuser')
+        created_role = False
+        created_user = False
+        try:
+            self.admin._run('role', 'create', role, '--set', 'permissions.manageUsers=0')
+            created_role = True
+            self.admin._run('user', 'create', user,
+                            '--role', role,
+                            '--user-password', 'inttest-rej-pass')
+            created_user = True
+            self.assert_api_error(
+                lambda: self.admin._run('role', 'remove', '--force', role))
+        finally:
+            # Remove the user first so the role is no longer in use, then the role —
+            # so a server gap (wrongly accepting the in-use removal) never leaks fixtures.
+            if created_user:
+                try:
+                    self.admin._run('user', 'remove', '--force', user)
+                except Exception:
+                    pass
+            if created_role:
+                try:
+                    self.admin._run('role', 'remove', '--force', role)
+                except Exception:
+                    pass
+
+    def test_18_admin_cannot_strip_own_admin_role(self):
+        """updateRole self-lock-out: an admin must not remove manageUsers from its OWN
+        admin-granting (custom) role. Exercises a guard added concurrently in the server,
+        so assert only that the request is rejected — not an exact message/status."""
+        self.assert_api_error(
+            lambda: self._adminrole_client._run('role', 'edit', self._admin_role,
+                                                '--set', 'permissions.manageUsers=0'))
