@@ -21,8 +21,9 @@ line. The net effect: internal detail and full command lines — which can inclu
 Client responses expose **only** a sanitised, client-safe `msg`; `dbg` is logged
 server-side and never returned. Concretely:
 
-- The `App.pm` handler returns `"$msg (at $Time)"` (no `dbg`) and runs any
-  non-`Exception` error through **`sanitize_sensitive_text`** (new) before use.
+- The `App.pm` handler returns `"$msg (at $Time)"` (no `dbg`) and runs **every**
+  error's `msg`/`dbg` through **`sanitize_sensitive_text`** (new) — including
+  `Exception` objects, whose own `msg`/`dbg` can also embed secrets.
 - **`sanitize_sensitive_text`** (new, `Util.pm`) redacts `--env=` secret payloads,
   PEM private-key blocks, and JSON/Perl `gh_token` fields.
 - Command-execution errors set a client-safe `msg` built from **`_display_cmd`**

@@ -738,8 +738,13 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
          ($msg, $dbg, $time) = ($_->msg(), $_->dbg(), $_->time());
       }
       else {
-         ($msg, $dbg, $time) = map { sanitize_sensitive_text($_) } ($_, $_, time);
+         ($msg, $dbg, $time) = ($_, $_, time);
       }
+
+      # Sanitize regardless of source: an Exception's own msg/dbg can embed secrets
+      # (env payloads, private keys, gh_token) from interpolated input or command
+      # text, and both are surfaced -- $msg to the client, $dbg to the log.
+      ($msg, $dbg) = map { sanitize_sensitive_text($_) } ($msg, $dbg);
 
       my $Time = YYYYMMDDHHMMSS($time);
 
@@ -769,8 +774,10 @@ sub handler ($r, $protocol) {
          ($msg, $dbg) = ($_->msg(), $_->dbg());
       }
       else {
-         ($msg, $dbg) = map { sanitize_sensitive_text($_) } ($_, $_);
+         ($msg, $dbg) = ($_, $_);
       }
+      # Sanitize regardless of source (see _handler's catch); $msg reaches the client.
+      ($msg, $dbg) = map { sanitize_sensitive_text($_) } ($msg, $dbg);
 
       wlog( "Caught exception: dbg='$dbg'; msg='$msg'");
       flog("Caught exception: dbg='$dbg'; msg='$msg'");
