@@ -37,6 +37,7 @@ class GitProfileTests(TestCase):
         'git_bin="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/git"; '
         '[ -x "$git_bin" ] || git_bin=git; '
         'printf "git_ready=%s\\n" "$(test -f /tmp/dockside/.git-repo-ready && echo 1 || echo 0)"; '
+        'printf "git_failed=%s\\n" "$(test -f /tmp/dockside/.git-repo-failed && echo 1 || echo 0)"; '
         'printf "gitconfig_name=%s\\n" "$("$git_bin" config -f "$home/.gitconfig" --get user.name 2>/dev/null || true)"; '
         'printf "gitconfig_email=%s\\n" "$("$git_bin" config -f "$home/.gitconfig" --get user.email 2>/dev/null || true)"; '
         'printf "repo_exists=%s\\n" "$(test -d "$repo/.git" && echo 1 || echo 0)"; '
@@ -110,8 +111,19 @@ class GitProfileTests(TestCase):
 
     def _wait_git_state(self, name, predicate, timeout_msg, timeout=30):
         self._debug(f'wait state start name={name} timeout={timeout}')
+
+        def _check():
+            state = self._inspect_git_state(name)
+            # launch.sh writes .git-repo-failed when a requested branch/PR checkout
+            # fails; fail fast on it instead of waiting out the timeout.
+            if state.get('git_failed') == '1':
+                raise AssertionError(
+                    f'repo setup reported failure (.git-repo-failed) for {name!r}; '
+                    f'state={state!r}')
+            return state if predicate(state) else False
+
         return self.wait_until(
-            lambda: (lambda state: state if predicate(state) else False)(self._inspect_git_state(name)),
+            _check,
             timeout=timeout,
             interval=1,
             timeout_msg=timeout_msg,

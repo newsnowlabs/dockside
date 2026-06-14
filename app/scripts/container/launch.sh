@@ -206,36 +206,56 @@ gh_authenticate() {
    $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") || log "WARN: gh auth login failed"
 }
 
+# Returns 0 if there was nothing to do or the requested branch/PR was checked out;
+# non-zero if a requested checkout failed (so the caller can abort and signal it).
 checkout_git_branch_or_pr() {
    local BRANCH="${DOCKSIDE_OPTION_BRANCH:-}"
    local PR="${DOCKSIDE_OPTION_PR:-}"
 
-   [ -n "$BRANCH" ] || [ -n "$PR" ] || return
+   [ -n "$BRANCH" ] || [ -n "$PR" ] || return 0
 
    # Only act on the repo that was just cloned via GIT_URL.
    # For pre-populated images (no GIT_URL), branch/PR checkout is the
    # responsibility of the profile command, which can use {option.branch}
    # and {option.pr} placeholders or read the DOCKSIDE_OPTION_* env vars.
-   [ -n "$GIT_URL" ] || return
+   [ -n "$GIT_URL" ] || return 0
 
    local CLONE_DIR
    CLONE_DIR=$(basename "${GIT_URL%.git}")
    local REPO="$HOME/$CLONE_DIR"
 
-   [ -d "$REPO/.git" ] || return
+   [ -d "$REPO/.git" ] || return 0
 
    if [ -n "$PR" ]; then
       log "Checking out PR $PR in $REPO"
       if (cd "$REPO" && $IDE_PATH/bin/gh pr checkout "$PR"); then
          log "Checked out PR $PR via gh in $REPO"
-      else
-         log "gh pr checkout '$PR' failed, trying git fetch fallback"
-         (cd "$REPO" && git fetch origin "refs/pull/$PR/head" && git checkout FETCH_HEAD) || log "WARN: PR $PR checkout failed in $REPO"
+         return 0
       fi
-   else
-      log "Checking out branch $BRANCH in $REPO"
-      (cd "$REPO" && git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH") || log "WARN: git checkout '$BRANCH' failed in repo '$REPO'"
+      log "gh pr checkout '$PR' failed, trying git fetch fallback"
+      if (cd "$REPO" && git fetch origin "refs/pull/$PR/head" && git checkout FETCH_HEAD); then
+         log "Checked out PR $PR via git fetch in $REPO"
+         return 0
+      fi
+      log "WARN: PR $PR checkout failed in $REPO"
+      return 1
    fi
+
+   # Branch: fetch the named branch explicitly, then switch to it. Grouped with `if`
+   # so precedence is unambiguous and — crucially — a branch that does not exist on
+   # origin is a hard failure (the fetch fails) rather than `git checkout -b` silently
+   # creating an empty local branch from the current HEAD.
+   log "Checking out branch $BRANCH in $REPO"
+   if (
+      cd "$REPO" &&
+      git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" &&
+      { git switch "$BRANCH" 2>/dev/null || git switch --track -c "$BRANCH" "origin/$BRANCH"; }
+   ); then
+      log "Checked out branch $BRANCH in $REPO"
+      return 0
+   fi
+   log "WARN: branch '$BRANCH' checkout failed in '$REPO' (does it exist on origin?)"
+   return 1
 }
 
 spawn_ssh_agent() {
@@ -612,14 +632,22 @@ run_nonroot() {
       log "Repo setup subproc started ..."
       create_git_repo
       gh_authenticate
-      checkout_git_branch_or_pr
-      # .git-repo-ready signals only that the clone/checkout subproc has *finished*, not
-      # that it succeeded — clone/checkout deliberately soft-fail (log a warning rather
-      # than abort), and Dockside does not guarantee an error-free working tree. The sole
-      # consumer is the integration suite (t/integration/tests/06_git_profile.py), which
-      # waits on this sentinel and then verifies the repo state itself. So gating the touch
-      # on a non-empty GIT_URL (rather than on clone success) is intentional, not a bug.
-      [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+      # A requested branch/PR checkout failure is a hard error: abort the rest of repo
+      # setup, log it, and write .git-repo-failed instead of the success sentinel so a
+      # consumer can detect it immediately rather than waiting for a timeout.
+      #
+      # On success (or when no branch/PR was requested), write .git-repo-ready. Note this
+      # still signals only that the subproc reached this point for a GIT_URL clone — the
+      # clone itself may have soft-failed (Dockside does not guarantee an error-free
+      # working tree), so .git-repo-ready is gated on a non-empty GIT_URL, and its sole
+      # consumer (t/integration/tests/06_git_profile.py) verifies the repo state itself.
+      if checkout_git_branch_or_pr; then
+         [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+      else
+         log "WARN: branch/PR checkout failed; writing .git-repo-failed and aborting repo setup"
+         touch "$LOG_PATH/.git-repo-failed"
+         exit 1
+      fi
       populate_vscode_extensions;
       populate_vscode_settings
       log "Repo setup subproc finished";
