@@ -91,14 +91,22 @@ echo "# Harness port: ${HOST_PORT}" >&2
 # Wait for HTTPS to be ready using the canonical hostname via --resolve
 echo "# Waiting for HTTPS readiness..." >&2
 deadline=$((SECONDS + 60))
+https_ready=0
 while [[ $SECONDS -lt $deadline ]]; do
     if curl --silent --insecure --max-time 3 \
             --resolve "www.${HARNESS_ZONE}:${HOST_PORT}:127.0.0.1" \
             "https://www.${HARNESS_ZONE}/" >/dev/null 2>&1; then
+        https_ready=1
         break
     fi
     sleep 2
 done
+# The loop also exits on timeout; abort rather than declaring the harness "ready"
+# on a server that never came up (the EXIT trap tears the container down).
+if [[ "$https_ready" -ne 1 ]]; then
+    echo "ERROR: HTTPS not ready within 60s at https://www.${HARNESS_ZONE}/ (port ${HOST_PORT}); aborting." >&2
+    exit 1
+fi
 
 export DOCKSIDE_TEST_SERVER_URL="https://www.${HARNESS_ZONE}"
 export DOCKSIDE_TEST_CONNECT_TO="localhost:${HOST_PORT}"
