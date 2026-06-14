@@ -851,6 +851,11 @@ def main():
         )
 
         print('TAP version 13')
+        # A harness-created test user that cannot authenticate is a broken environment,
+        # not a reason to silently skip its tests: surface each as a failing TAP line and
+        # force a non-zero exit below.
+        for role, reason in getattr(runner, 'auth_failures', []):
+            print(f'not ok - auth {role}: {reason}')
         load_failures = 0
         for fname in test_files:
             path = os.path.join(tests_dir, fname)
@@ -866,7 +871,9 @@ def main():
                 continue
             runner.run_module(mod)
 
-        ok = runner.print_summary() and load_failures == 0
+        ok = (runner.print_summary()
+              and load_failures == 0
+              and not getattr(runner, 'auth_failures', []))
     finally:
         if skip_cleanup:
             print('# Skipping environment cleanup (--skip-cleanup)', file=sys.stderr)

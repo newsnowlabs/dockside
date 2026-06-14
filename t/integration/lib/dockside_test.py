@@ -805,6 +805,11 @@ class TestRunner:
         # Optional callback invoked on SIGINT/SIGTERM (where main()'s finally is
         # skipped) to tear down dynamic fixtures; set by the runner's owner.
         self._on_emergency = None
+        # Test-user clients that failed to authenticate during setup. Every test user
+        # is harness-created, so an auth failure is a real defect, not a reason to
+        # quietly skip coverage: the runner's owner fails the suite when this is
+        # non-empty (see run_tests_main).
+        self.auth_failures = []
         self._setup_clients()
         self._register_cleanup()
 
@@ -822,13 +827,22 @@ class TestRunner:
         )
 
     def _validate_client(self, client, role):
-        """Return client if auth succeeds, _UnavailableClient otherwise."""
+        """Return client if auth succeeds, _UnavailableClient otherwise.
+
+        Records the failure so the suite fails overall: every test user is created by
+        the harness with a known password, so an auth failure means the environment is
+        broken. Tests needing this role still skip individually (informative), but
+        run_tests_main turns a non-empty auth_failures into a non-zero exit so the
+        regression cannot hide as reduced coverage.
+        """
         try:
             client.list_containers()
             return client
         except APIError as e:
             print(f'# WARNING: {role} credentials failed ({e}); '
-                  f'tests requiring {role} will be skipped', file=sys.stderr)
+                  f'tests requiring {role} will be skipped and the suite will fail',
+                  file=sys.stderr)
+            self.auth_failures.append((role, str(e)))
             return _UnavailableClient(role, str(e))
 
     def _setup_clients(self):
