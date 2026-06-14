@@ -88,13 +88,19 @@ if [[ -z "$HOST_PORT" ]]; then
 fi
 echo "# Harness port: ${HOST_PORT}" >&2
 
-# Wait for HTTPS to be ready using the canonical hostname via --resolve
+# Wait for HTTPS to be ready using the canonical hostname. The container
+# publishes 443 on a random host port (HOST_PORT), so the probe must redirect
+# the canonical https port (443, implied by the URL) to 127.0.0.1:HOST_PORT.
+# --connect-to does exactly that while preserving SNI/Host as www.HARNESS_ZONE
+# (the zone the server routes on); --resolve would only match if the URL named
+# HOST_PORT explicitly, which it does not. This mirrors the CLI's transport
+# (DOCKSIDE_TEST_CONNECT_TO=localhost:HOST_PORT) set below.
 echo "# Waiting for HTTPS readiness..." >&2
 deadline=$((SECONDS + 60))
 https_ready=0
 while [[ $SECONDS -lt $deadline ]]; do
     if curl --silent --insecure --max-time 3 \
-            --resolve "www.${HARNESS_ZONE}:${HOST_PORT}:127.0.0.1" \
+            --connect-to "www.${HARNESS_ZONE}:443:127.0.0.1:${HOST_PORT}" \
             "https://www.${HARNESS_ZONE}/" >/dev/null 2>&1; then
         https_ready=1
         break
