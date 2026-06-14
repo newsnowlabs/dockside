@@ -226,6 +226,8 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
 | `DOCKSIDE_TEST_NAME_SUFFIX` | `auto` | Suffix for test resource names; `auto` generates a random 6-char hex string. An explicitly-empty value is rejected |
 | `DOCKSIDE_TEST_CLEANUP_REUSED` | `0` | When `1`, also remove reused (pre-existing) test roles/users/profiles for the active suffix, not just resources created by the current run — only safe on an instance you own |
+| `DOCKSIDE_TEST_VERBOSE` | `0` | Set `1` to print each CLI invocation. **Secret-bearing** — the argv includes `--gh-token`/`--password`; do not share the output |
+| `DOCKSIDE_TEST_DEBUG` | `0` | Set `1` for full diagnostics (CLI argv, raw request/response bodies, generated SSH config). **Secret-bearing** — includes tokens, passwords and session cookies; do not paste into bug reports or shared logs |
 | `DOCKSIDE_TEST_SKIP_CLEANUP` | `0` | Usually set via `--skip-cleanup`; preserves created test roles/users/profiles for investigation |
 | `DOCKSIDE_TEST_GITHUB_TOKEN` | — | GitHub personal access token; enables `06_git_profile.py` test_03 (PR checkout via `gh pr checkout`); test is skipped if unset |
 

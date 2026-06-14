@@ -231,6 +231,8 @@ def debug_ssh_command(argv, config_path):
     except OSError as exc:
         print(f'# DEBUG ssh-config read failed: {exc}', file=sys.stderr)
         return
+    # Secret-bearing: the generated ssh-config carries the session Cookie in its
+    # ProxyCommand (see the module-level DEBUG/VERBOSE warning in dockside_test).
     print('# DEBUG ssh-config begin', file=sys.stderr)
     for line in config_text.splitlines():
         print(f'# DEBUG {line}', file=sys.stderr)

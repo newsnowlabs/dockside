@@ -26,6 +26,19 @@ import urllib.parse
 import urllib.request
 
 
+# DOCKSIDE_TEST_DEBUG / DOCKSIDE_TEST_VERBOSE produce secret-bearing diagnostics: full
+# CLI argv (including --gh-token and --password), raw request/response bodies, and the
+# generated SSH config (which carries the session Cookie in its ProxyCommand). Warn once
+# per run so the output is not pasted into shared logs or bug reports. Owner decision:
+# warn rather than redact — the exposed secrets are the operator's own (cf. the CLI's
+# --debug-http warning).
+if (os.environ.get('DOCKSIDE_TEST_DEBUG', '').strip() == '1'
+        or os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'):
+    print('# WARNING: DOCKSIDE_TEST_DEBUG/VERBOSE output is secret-bearing '
+          '(CLI argv incl. tokens/passwords, request/response bodies, session cookies) — '
+          'do not paste these logs into bug reports or shared channels.', file=sys.stderr)
+
+
 # ── Exceptions ─────────────────────────────────────────────────────────────────
 
 class APIError(Exception):
@@ -320,6 +333,8 @@ class DocksideClient:
         verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
         debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
         if verbose or debug:
+            # Secret-bearing: cmd may include --gh-token / --password (see the
+            # module-level DEBUG/VERBOSE warning).
             print(f'# CMD: {" ".join(cmd)}', file=sys.stderr)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if debug:
@@ -381,6 +396,8 @@ class DocksideClient:
         verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
         debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
         if verbose or debug:
+            # Secret-bearing: cmd may include --gh-token / --password (see the
+            # module-level DEBUG/VERBOSE warning).
             print(f'# CMD: {" ".join(cmd)}', file=sys.stderr)
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if debug:
