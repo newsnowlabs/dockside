@@ -1389,7 +1389,9 @@ def _add_global_flags(p):
     )
     p.add_argument(
         '--debug-http', dest='debug_http', action='store_true', default=argparse.SUPPRESS,
-        help='Print raw HTTP request/response headers for debugging.',
+        help='Print raw HTTP request/response traffic for debugging. WARNING: this '
+             'output is secret-bearing — it can include Authorization/Cookie headers '
+             'and request bodies. Do not paste it into bug reports or shared logs.',
     )
 
 
@@ -2953,7 +2955,9 @@ def build_parser():
                     help='Override TCP connection target while keeping URL hostname for '
                          'TLS SNI and the Host header  [env: DOCKSIDE_CONNECT_TO]')
     sp.add_argument('--debug-http', dest='debug_http', action='store_true',
-                    help='Print raw HTTP request/response headers for debugging.')
+                    help='Print raw HTTP request/response traffic for debugging. WARNING: '
+                         'this output is secret-bearing — it can include Authorization/Cookie '
+                         'headers and request bodies. Do not paste it into bug reports or shared logs.')
     sp.set_defaults(func=cmd_login)
 
     # ── logout ─────────────────────────────────────────────────────────────────
