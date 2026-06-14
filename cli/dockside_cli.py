@@ -400,9 +400,9 @@ def _compute_nest_level(server_url):
     Only injected when --connect-to is used (direct connection bypassing nginx).
     """
     hostname = urllib.parse.urlparse(server_url).hostname or ''
-    first_label = hostname.split('.')[0]        # e.g. 'www-inner--dstest4'
+    first_label = hostname.split('.')[0]        # e.g. 'www-inner--host'
     segments = first_label.split('--')          # split on double-dash separator
-    # The first segment is 'service[-topHost]', e.g. 'www-dstest4' or 'www'.
+    # The first segment is 'service[-topHost]', e.g. 'www-host' or 'www'.
     # (Double-dash separates outer container hops; the service label comes first.)
     m = re.match(r'^(?:.*-(?:wv|mb|webview|minibrowser)-)?[^-]+(-(.+))?$', segments[0])
     has_top_host = bool(m and m.group(2))

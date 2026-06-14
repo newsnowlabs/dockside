@@ -202,7 +202,7 @@ transport flags can be placed either before the command, such as
 `dockside ssh config` prints a reusable `ssh_config` `Host` block with the same
 resolved `ProxyCommand`, `Hostname`, and optional `User`, `IdentityFile`, and
 `ForwardAgent` settings. By default it emits a server-wide host pattern such as
-`Host ssh-*--dstest4.staging.newsnow.co.uk`, so one block can cover multiple
+`Host ssh-*--staging.dockside.example.com`, so one block can cover multiple
 devtainers on the same Dockside server. Use `--alias` to force a specific host
 alias instead.
 
