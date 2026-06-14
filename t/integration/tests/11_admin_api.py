@@ -102,8 +102,18 @@ class AdminApiTests(TestCase):
             os.unlink(path)
         rec = self.admin._run('profile', 'get', self._prof)
         self.assert_true(isinstance(rec, dict), 'profile get did not return an object')
+        # Assert the whole submitted body round-trips, not just images: a partial check
+        # would pass even if create silently dropped most of the body.
         self.assert_in('debian:*', rec.get('images') or [],
                        f'profile body (images) not persisted: {rec!r}')
+        self.assert_equal(rec.get('description'), _PROFILE_BODY['description'],
+                          f'profile body (description) not persisted: {rec!r}')
+        self.assert_true(not rec.get('active'),
+                         f'profile body (active=false) not persisted: {rec.get("active")!r}')
+        self.assert_equal(rec.get('networks') or [], [],
+                          f'profile body (networks) not persisted: {rec!r}')
+        self.assert_equal(rec.get('runtimes') or [], [],
+                          f'profile body (runtimes) not persisted: {rec!r}')
 
     # ── user ssh.publicKeys round-trip ──────────────────────────────────────────
 
