@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from _ssh_test_common import _DEV1_KEY, run_in_devtainer
 
 GIT_URL = 'https://github.com/newsnowlabs/dockside.git'
+GH_REPO = 'newsnowlabs/dockside'  # owner/repo for `gh -R` PR queries
 EXPLICIT_BRANCH = 'gh-pages'
 EXPLICIT_PR = '40'  # closed PR from claude/login-use-current-server-pzpOa → main
 GITHUB_TOKEN = os.environ.get('DOCKSIDE_TEST_GITHUB_TOKEN', '')
@@ -116,6 +117,42 @@ class GitProfileTests(TestCase):
             timeout_msg=timeout_msg,
         )
 
+    def _verify_pr_head(self, name):
+        """Return (head_sha, pr_head_oid) from inside the devtainer.
+
+        head_sha is the checked-out HEAD commit; pr_head_oid is the requested PR's head
+        commit read via gh (against GH_REPO, independent of local branch state). When
+        they match, the devtainer genuinely checked out that PR rather than just some
+        non-main ref. pr_head_oid is empty if gh is unavailable/unauthenticated.
+        """
+        script = (
+            'repo="' + REPO_DIR + '"; '
+            'git_bin="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/git"; '
+            '[ -x "$git_bin" ] || git_bin=git; '
+            'gh_bin="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/gh"; '
+            '[ -x "$gh_bin" ] || gh_bin=gh; '
+            'printf "head_sha=%s\\n" "$("$git_bin" -C "$repo" rev-parse HEAD 2>/dev/null || true)"; '
+            'printf "pr_head_oid=%s\\n" "$(GH_PAGER=cat "$gh_bin" -R ' + GH_REPO
+            + ' pr view ' + EXPLICIT_PR + ' --json headRefOid -q .headRefOid 2>/dev/null || true)"'
+        )
+        try:
+            result = run_in_devtainer(
+                self.dev1, name, ['bash', '-lc', script],
+                private_key_path=_DEV1_KEY,
+                preferred=('docker' if self.test_mode in ('local', 'harness') else 'ssh'),
+                system_bin_dir=self.test_system_bin_dir,
+                run_as_user='dockside',
+            )
+        except (APIError, subprocess.TimeoutExpired) as exc:
+            self.skip(str(exc))
+        out = {}
+        for line in result.stdout.splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                out[key.strip()] = value.strip()
+        self._debug(f'pr head check name={name} {out!r}')
+        return out.get('head_sha', ''), out.get('pr_head_oid', '')
+
     def _assert_gitconfig(self, state):
         self.assert_equal(state.get('gitconfig_name'), 'Integration Test Dev 1')
         self.assert_equal(state.get('gitconfig_email'), 'inttest-dev1@dockside-integration-test.invalid')
@@ -181,9 +218,16 @@ class GitProfileTests(TestCase):
             self._normalize_git_url(state.get('origin_url')),
             self._normalize_git_url(GIT_URL),
         )
+        # The "HEAD moved off main" wait above is necessary but weak — any branch or
+        # commit would satisfy it. Confirm via gh that HEAD is actually PR EXPLICIT_PR's
+        # head commit, so a checkout of the wrong PR/branch is caught.
+        head_sha, pr_head_oid = self._verify_pr_head(name)
+        if not pr_head_oid:
+            self.skip('gh could not read the PR head oid in the devtainer '
+                      '(gh unavailable or unauthenticated)')
         self.assert_true(
-            state.get('head_ref') not in ('', 'ref: refs/heads/main'),
-            f'PR checkout did not move HEAD away from the default branch ref; head_ref={state.get("head_ref")!r}',
+            head_sha and head_sha == pr_head_oid,
+            f'devtainer HEAD {head_sha!r} is not PR {EXPLICIT_PR} head {pr_head_oid!r}',
         )
 
     def test_04_create_debian_with_git_url(self):
