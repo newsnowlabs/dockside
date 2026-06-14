@@ -101,25 +101,24 @@ never reimplement it.
 | GET    | `/users/:name`              | Single user record, CRUD/verbatim shape, masked by default (`sensitive=1` for raw secrets) |
 | POST   | `/users/create`             | Full created user record, CRUD/verbatim shape, masked by default (`sensitive=1` for raw secrets) |
 | POST   | `/users/:name/update`       | Full updated user record, CRUD/verbatim shape, masked by default (`sensitive=1` for raw secrets) |
-| GET    | `/users/:name/remove`       | `{ "username": "..." }` — identifier only (see note on GET mutations below) |
+| POST   | `/users/:name/remove`       | `{ "username": "..." }` — identifier only |
 | GET    | `/roles`                    | Array of all role records, each with a `name` field prepended |
 | GET    | `/roles/:name`              | Single role record `{ "name": "...", "permissions": {...} }` |
 | POST   | `/roles/create`             | Full created role record `{ "name": "...", ...fields }` |
 | POST   | `/roles/:name/update`       | Full updated role record `{ "name": "...", ...fields }` |
-| GET    | `/roles/:name/remove`       | `{ "name": "..." }` — identifier only |
+| POST   | `/roles/:name/remove`       | `{ "name": "..." }` — identifier only |
 | GET    | `/profiles`                 | Array of all profile records, each with an `id` field |
 | GET    | `/profiles/:name`           | Single profile record with `id` field |
 | POST   | `/profiles/create`          | Full created profile record `{ "id": "...", ...fields }` |
 | POST   | `/profiles/:name/update`    | Full updated profile record `{ "id": "...", ...fields }` |
-| GET    | `/profiles/:name/remove`    | `{ "id": "..." }` — identifier only |
-| GET    | `/profiles/:name/rename`    | `{ "id": "<new_name>", "old_id": "<old_name>" }` |
+| POST   | `/profiles/:name/remove`    | `{ "id": "..." }` — identifier only |
+| POST   | `/profiles/:name/rename`    | `{ "id": "<new_name>", "old_id": "<old_name>" }` |
 | GET    | `/resources`                | Host runtimes, networks, IDEs, auth modes — verbatim object |
 
-**Note on GET for remove/rename:** These endpoints are currently
-implemented as GETs for historical simplicity. This violates HTTP
-semantics — mutations should use POST (or DELETE). They should be
-migrated to POST when the opportunity arises; until then, callers must
-not assume they are idempotent or cacheable.
+**Note on remove/rename:** Like all state-changing admin/self routes, these
+require POST; the server returns 405 for a non-POST request. GET is cacheable,
+prefetchable and logged, and its argument parser does not JSON-decode structured
+fields. See `docs/adr/0002-admin-api-post-migration.md`.
 
 ### Self-service account API — any authenticated user
 
