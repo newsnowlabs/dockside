@@ -149,7 +149,10 @@
    // as the 'body' so the admin can edit them in a structured tree view.
    const STRUCTURED_KEYS = ['id', 'name', 'description', 'active', 'version'];
 
-   const RESERVED_NAMES = new Set(['create', 'update', 'remove', 'rename']);
+   // Mirror the server's reserved profile identifiers (Profile::Manage %RESERVED_NAMES):
+   // the route verbs plus 'new', the create-form sentinel. 'new' must be included or the
+   // client accepts an id the server then rejects.
+   const RESERVED_NAMES = new Set(['create', 'update', 'remove', 'rename', 'new']);
 
    const EMPTY_FORM = () => ({
       id:          '',
