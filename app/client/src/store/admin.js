@@ -18,6 +18,7 @@ const createState = () => ({
    // type: 'user' | 'role' | 'profile' | null; id: string | null; mode: 'view' | 'edit'
    selected: { type: null, id: null, mode: 'view' },
    loading:       false,
+   loadingCount:  0,     // in-flight fetches; loading === (loadingCount > 0)
    error:         null,  // admin-list fetch/mutation errors (shown on admin routes)
 });
 
@@ -48,7 +49,13 @@ export default {
    },
 
    mutations: {
-      setLoading(state, v)  { state.loading = v; },
+      // Reference-count concurrent fetches: fetchAll dispatches users/roles/
+      // profiles in parallel, so a single shared boolean would be cleared by the
+      // first to finish while the others are still pending. Track a count and
+      // expose `loading` as "any fetch in flight".
+      beginLoading(state)   { state.loadingCount += 1; state.loading = true; },
+      endLoading(state)     { state.loadingCount = Math.max(0, state.loadingCount - 1);
+                              state.loading = state.loadingCount > 0; },
       setError(state, v)    { state.error   = v; },
 
       setUsers(state, list)          { state.users    = list; state.usersLoaded    = true; },
@@ -116,38 +123,38 @@ export default {
       },
 
       async fetchUsers({ commit }) {
-         commit('setLoading', true);
+         commit('beginLoading');
          try {
             const list = await api.listUsers();
             commit('setUsers', list);
          } catch (e) {
             commit('setError', e.message || 'Failed to load users');
          } finally {
-            commit('setLoading', false);
+            commit('endLoading');
          }
       },
 
       async fetchRoles({ commit }) {
-         commit('setLoading', true);
+         commit('beginLoading');
          try {
             const list = await api.listRoles();
             commit('setRoles', list);
          } catch (e) {
             commit('setError', e.message || 'Failed to load roles');
          } finally {
-            commit('setLoading', false);
+            commit('endLoading');
          }
       },
 
       async fetchProfiles({ commit }) {
-         commit('setLoading', true);
+         commit('beginLoading');
          try {
             const list = await api.listProfiles();
             commit('setProfiles', list);
          } catch (e) {
             commit('setError', e.message || 'Failed to load profiles');
          } finally {
-            commit('setLoading', false);
+            commit('endLoading');
          }
       },
 
