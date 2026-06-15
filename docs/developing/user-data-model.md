@@ -74,10 +74,12 @@ Returned by `GET /me` (`getSelf`). The page-load `window.dockside.user` is a
 - Consumers of this shape must never assume it matches the CRUD shape.
 - The page-load `window.dockside.user` carries only `username`, `name`, `email`,
   `id`, `role`, `role_as_meta` and `permissions.actions`. `GET /me` is a
-  **superset**: it additionally returns the self-service fields `version`,
-  `resources`, `ssh` (keypairs, masked) and `gh_token` (masked) so an
-  account-editing client can read the fields it may write. Do not assume the two
-  are identical.
+  **superset**: it additionally returns `version`, `resources`, `ssh` (keypairs,
+  masked) and `gh_token` (masked). Of these added fields, only `gh_token` and
+  `ssh` are self-editable via `/me/update` (along with `name` and `email`);
+  `resources` and `version` are returned **read-only** here (`resources` is an
+  admin-only write — see the self-service API table below). Do not assume the
+  bootstrap and `/me` shapes are identical.
 
 ### Why they differ
 
@@ -145,10 +147,11 @@ fields. See `docs/adr/0002-admin-api-post-migration.md`.
 `GET /me`; the client-side `account/updateSelf` action does this automatically
 by dispatching `fetchSelf` after a successful update.
 
-`GET /me` returns a **superset** of `window.dockside.user`: the same identity
-and `permissions.actions`/`role_as_meta`, plus the self-editable `resources`,
-`ssh` keypairs (masked), `gh_token` (masked) and `version`. The page-load
-bootstrap omits those self-service fields.
+`GET /me` returns a **superset** of `window.dockside.user`: the same identity and
+`permissions.actions`/`role_as_meta`, plus `version`, `resources`, `ssh` keypairs
+(masked) and `gh_token` (masked). Of the added fields only `ssh` and `gh_token`
+are self-editable (with `name`/`email`); `resources` and `version` are read-only
+here. The page-load bootstrap omits these added fields.
 
 ### URL routing note
 
