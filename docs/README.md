@@ -168,7 +168,7 @@ docker logs dockside 2>&1 | grep 'Sign in'
    ```
    Enter your `admin` credentials when prompted. Your session is saved to `~/.config/dockside/` and reused by subsequent `dockside` commands. See the [Dockside CLI README](../cli/README.md) for full installation options and available commands.
 3. In the Dockside UI, click **Launch**, and pick an example profile (e.g. `Dockside.io`) to launch your first trial devcontainer — this confirms everything is working.
-4. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects. See [**Setup**](#setup) below for a guided overview and [**read full details of the config files here**](setup.md).
+4. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects — through the **Admin UI** (`/admin`), the `dockside` CLI, or by editing the config files directly. See [**Setup**](#setup) below for a guided overview and [**the full configuration reference here**](setup.md).
 
 ### Launch on a public domain with auto-generated SSL
 
@@ -216,7 +216,7 @@ Key workflow points:
 - **[Launching a devcontainer](usage.md#launching-a-devtainer)**: choose a profile, select a Docker image, set your network and runtime, optionally specify a git branch or other profile options, then click **Launch**.
 - **[Using the IDE](usage.md#using-the-dockside-ide)**: open Theia or OpenVSCode Server directly in your browser. AI coding tools (Claude Code, Codex, Copilot) run natively inside the IDE. The bundled `gh` CLI authenticates automatically when you have a `gh_token` configured in your user profile.
 - **[SSH access](extensions/ssh.md#integrated-ssh-server-support)**: one-click SSH from the Dockside UI, or SSH in directly from any terminal. Works with VS Code Remote SSH and JetBrains Remote Development out of the box once SSH client setup is complete.
-- **[Outbound SSH for git operations](extensions/ssh.md#adding-ssh-keys-to-a-users-profile)**: add a user's keypair to their `users.json` record and Dockside automatically loads it into the integrated `ssh-agent` on every devcontainer launch — enabling `git push` / `git pull` to GitHub, GitLab, or any SSH remote from the IDE or terminal, with no manual `ssh-add` required.
+- **[Outbound SSH for git operations](extensions/ssh.md#adding-ssh-keys-to-a-users-profile)**: add a user's keypair(s) — via the Account/Admin UI or the `dockside user` CLI — and Dockside automatically loads them into the integrated `ssh-agent` on every devcontainer launch — enabling `git push` / `git pull` to GitHub, GitLab, or any SSH remote from the IDE or terminal, with no manual `ssh-add` required.
 - **[Sharing and access control](setup.md#router-authaccess-levels)**: share a devcontainer with teammates as developers or viewers, and set per-service access levels (owner-only, team, or public URL).
 
 For the full UI and CLI reference see [Usage](usage.md).
