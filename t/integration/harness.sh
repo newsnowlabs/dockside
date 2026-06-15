@@ -2,21 +2,42 @@
 # harness.sh — Launch a fresh Dockside container for integration testing.
 # Sourced by run_tests.sh when DOCKSIDE_TEST_MODE=harness.
 #
+# Environment inputs:
+#   DOCKSIDE_TEST_IMAGE       (required) Docker image to launch
+#   DOCKSIDE_TEST_HARNESS_ZONE  DNS zone / ssl-zone for the harness container
+#                               (default: dockside.test)
+#   DOCKSIDE_TEST_HARNESS_ISOLATED_CLI_CONFIG
+#                               1/unset = create a temporary CLI config dir,
+#                               add a temporary harness server entry, and use
+#                               the CLI's stored transport settings
+#                               0 = keep legacy direct --connect-to transport
+#
 # Sets and exports:
-#   DOCKSIDE_TEST_HOST         www.localhost
-#   DOCKSIDE_TEST_SERVER_URL   https://localhost:<port>
-#   DOCKSIDE_TEST_HOST_HEADER  www.localhost
+#   DOCKSIDE_TEST_SERVER_URL   https://www.<HARNESS_ZONE>
+#   DOCKSIDE_TEST_CONNECT_TO   localhost:<port>
 #   DOCKSIDE_TEST_ADMIN        admin:<password>
 #   DOCKSIDE_TEST_MODE         harness
 #   DOCKSIDE_TEST_HARNESS_ID   <container id>
+#   DOCKSIDE_CLI_CONFIG        <temp dir> (default isolated mode only)
+#   DOCKSIDE_TEST_USE_SERVER_TRANSPORT
+#                              1 when CLI server config should supply transport
 #
 # Registers a cleanup trap to stop/remove the container on exit.
 
 set -euo pipefail
 
 INTEGRATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${INTEGRATION_DIR}/../.." && pwd)"
 
 harness_cleanup() {
+    if [[ "${DOCKSIDE_TEST_SKIP_CLEANUP:-${SKIP_CLEANUP:-0}}" == "1" ]]; then
+        echo "# Skipping harness teardown (--skip-cleanup)" >&2
+        return
+    fi
+    if [[ -n "${DOCKSIDE_TEST_TEMP_CLI_CONFIG:-}" ]]; then
+        echo "# Removing harness CLI config ${DOCKSIDE_TEST_TEMP_CLI_CONFIG}..." >&2
+        rm -rf "${DOCKSIDE_TEST_TEMP_CLI_CONFIG}" 2>/dev/null || true
+    fi
     if [[ -n "${DOCKSIDE_TEST_HARNESS_ID:-}" ]]; then
         echo "# Stopping harness container ${DOCKSIDE_TEST_HARNESS_ID}..." >&2
         docker stop "${DOCKSIDE_TEST_HARNESS_ID}" 2>/dev/null || true
@@ -26,18 +47,17 @@ harness_cleanup() {
 trap harness_cleanup EXIT INT TERM
 
 IMAGE="${DOCKSIDE_TEST_IMAGE:?DOCKSIDE_TEST_IMAGE must be set for harness mode}"
+HARNESS_ZONE="${DOCKSIDE_TEST_HARNESS_ZONE:-dockside.test}"
 
 echo "# Pulling ${IMAGE}..." >&2
 docker pull "${IMAGE}" >&2
 
-echo "# Starting Dockside harness container..." >&2
+echo "# Starting Dockside harness container (ssl-zone: ${HARNESS_ZONE})..." >&2
 HARNESS_ID=$(docker run --detach \
     --publish 0:443 \
-    --volume "${INTEGRATION_DIR}/config/users.json:/data/config/users.json:ro" \
-    --volume "${INTEGRATION_DIR}/config/roles.json:/data/config/roles.json:ro" \
     --volume /var/run/docker.sock:/var/run/docker.sock \
     "${IMAGE}" \
-    --ssl-selfsigned --ssl-zone localhost --passwd-stdout 2>/dev/null)
+    --ssl-selfsigned --ssl-zone "${HARNESS_ZONE}" --passwd-stdout 2>/dev/null)
 
 export DOCKSIDE_TEST_HARNESS_ID="${HARNESS_ID}"
 echo "# Harness container: ${HARNESS_ID}" >&2
@@ -68,38 +88,60 @@ if [[ -z "$HOST_PORT" ]]; then
 fi
 echo "# Harness port: ${HOST_PORT}" >&2
 
-# Wait for HTTPS to be ready
+# Wait for HTTPS to be ready using the canonical hostname. The container
+# publishes 443 on a random host port (HOST_PORT), so the probe must redirect
+# the canonical https port (443, implied by the URL) to 127.0.0.1:HOST_PORT.
+# --connect-to does exactly that while preserving SNI/Host as www.HARNESS_ZONE
+# (the zone the server routes on); --resolve would only match if the URL named
+# HOST_PORT explicitly, which it does not. This mirrors the CLI's transport
+# (DOCKSIDE_TEST_CONNECT_TO=localhost:HOST_PORT) set below.
 echo "# Waiting for HTTPS readiness..." >&2
 deadline=$((SECONDS + 60))
+https_ready=0
 while [[ $SECONDS -lt $deadline ]]; do
     if curl --silent --insecure --max-time 3 \
-            --header "Host: www.localhost" \
-            "https://localhost:${HOST_PORT}/" >/dev/null 2>&1; then
+            --connect-to "www.${HARNESS_ZONE}:443:127.0.0.1:${HOST_PORT}" \
+            "https://www.${HARNESS_ZONE}/" >/dev/null 2>&1; then
+        https_ready=1
         break
     fi
     sleep 2
 done
+# The loop also exits on timeout; abort rather than declaring the harness "ready"
+# on a server that never came up (the EXIT trap tears the container down).
+if [[ "$https_ready" -ne 1 ]]; then
+    echo "ERROR: HTTPS not ready within 60s at https://www.${HARNESS_ZONE}/ (port ${HOST_PORT}); aborting." >&2
+    exit 1
+fi
 
-# Set passwords for test users
-echo "# Setting test user passwords..." >&2
-docker exec "${HARNESS_ID}" bash -c '
-    APP=/home/dockside/dockside/app/server
-    HASH=$(perl -I "$APP/lib" -MUtil -e "print Util::encrypt_password(\"testpass123\")" 2>/dev/null)
-    if [[ -z "$HASH" ]]; then
-        # Fallback: try dockside password command
-        echo "testpass123" | dockside password testdev1 2>/dev/null || true
-        echo "testpass123" | dockside password testdev2 2>/dev/null || true
-        echo "testpass123" | dockside password testviewer 2>/dev/null || true
-    else
-        printf "testdev1:%s\ntestdev2:%s\ntestviewer:%s\n" \
-            "$HASH" "$HASH" "$HASH" >> /data/config/passwd
-    fi
-' 2>/dev/null || true
-
-export DOCKSIDE_TEST_HOST="www.localhost"
-export DOCKSIDE_TEST_SERVER_URL="https://localhost:${HOST_PORT}"
-export DOCKSIDE_TEST_HOST_HEADER="www.localhost"
+export DOCKSIDE_TEST_SERVER_URL="https://www.${HARNESS_ZONE}"
+export DOCKSIDE_TEST_CONNECT_TO="localhost:${HOST_PORT}"
 export DOCKSIDE_TEST_ADMIN="admin:${ADMIN_PASSWORD}"
 export DOCKSIDE_TEST_MODE="harness"
 
-echo "# Harness ready: ${DOCKSIDE_TEST_SERVER_URL} (Host: ${DOCKSIDE_TEST_HOST_HEADER})" >&2
+HARNESS_ISOLATED_CLI_CONFIG="${DOCKSIDE_TEST_HARNESS_ISOLATED_CLI_CONFIG:-1}"
+if [[ "${HARNESS_ISOLATED_CLI_CONFIG}" != "0" ]]; then
+    HARNESS_CLI_CONFIG="$(mktemp -d /tmp/dockside-harness-cli.XXXXXX)"
+    export DOCKSIDE_TEST_TEMP_CLI_CONFIG="${HARNESS_CLI_CONFIG}"
+    export DOCKSIDE_CLI_CONFIG="${HARNESS_CLI_CONFIG}"
+    export DOCKSIDE_TEST_USE_SERVER_TRANSPORT="1"
+    HARNESS_SERVER_NICKNAME="harness-$(python3 - <<'PY'
+import random
+print('%06x' % random.randrange(0x1000000))
+PY
+)"
+    echo "# Creating isolated harness CLI config at ${HARNESS_CLI_CONFIG}" >&2
+    "${REPO_ROOT}/cli/dockside" login \
+        --server "${DOCKSIDE_TEST_SERVER_URL}" \
+        --nickname "${HARNESS_SERVER_NICKNAME}" \
+        --connect-to "${DOCKSIDE_TEST_CONNECT_TO}" \
+        --no-verify \
+        --username admin \
+        --password "${ADMIN_PASSWORD}" >/dev/null
+    echo "# Harness ready: ${DOCKSIDE_TEST_SERVER_URL} (connect-to: ${DOCKSIDE_TEST_CONNECT_TO}, cli-config: ${HARNESS_CLI_CONFIG}, server: ${HARNESS_SERVER_NICKNAME})" >&2
+else
+    unset DOCKSIDE_CLI_CONFIG || true
+    unset DOCKSIDE_TEST_TEMP_CLI_CONFIG || true
+    export DOCKSIDE_TEST_USE_SERVER_TRANSPORT="0"
+    echo "# Harness ready: ${DOCKSIDE_TEST_SERVER_URL} (connect-to: ${DOCKSIDE_TEST_CONNECT_TO}, legacy direct transport)" >&2
+fi
