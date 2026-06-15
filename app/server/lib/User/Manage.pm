@@ -229,6 +229,9 @@ sub createUser ($self, $args) {
       # hash key, not in the record body; 'password' is written to the separate
       # passwd file; 'sensitive' and 'id' are control params, not record fields.
       apply_args_to_record( $new_user, $args, qw(username password sensitive id) );
+      # Reject non-object permissions/resources before they reach disk (see
+      # _validate_record_objects); users get the same guard roles do.
+      _validate_record_objects($new_user);
 
       $users->{$username} = $new_user;
       return JSON->new->utf8->pretty->canonical->encode($users);
@@ -280,6 +283,9 @@ sub updateUser ($self, $username, $args) {
       apply_args_to_record( $record, $args, qw(username password sensitive) );
       _restore_redacted_ssh( $record, $orig_privates );
       _restore_redacted_gh_token( $record, $orig_gh_token );
+      # Reject non-object permissions/resources before they reach disk (see
+      # _validate_record_objects); users get the same guard roles do.
+      _validate_record_objects($record);
 
       # Prevent admin lock-out via self-demotion: a caller (who necessarily holds
       # manageUsers to reach here) must not strip their OWN manageUsers capability,
@@ -411,16 +417,18 @@ sub removeUser ($self, $username, $args = {}) {
 # them.  After any role mutation, both roles.json AND users.json are reloaded
 # because user permission resolution depends on the current role definitions.
 
-# Validate a role record before persisting.  'permissions' and 'resources', when
-# present, must be JSON objects (hashrefs).  A non-hash value — e.g. a JSON string
-# that slipped through an un-decoded transport, or a malformed client payload —
-# would be written to roles.json and then crash updateDerivedPermissions
-# (%{ $role->{permissions} }) on the next config reload, persistently breaking
-# permission resolution for every user.  Reject it before it reaches disk.
-sub _validate_role_record ($record) {
+# Validate a user or role record before persisting.  'permissions' and
+# 'resources', when present, must be JSON objects (hashrefs).  A non-hash value —
+# e.g. a JSON string that slipped through an un-decoded transport, or a malformed
+# client payload — would be written to disk and then crash permission resolution
+# on the next config reload: for roles updateDerivedPermissions does
+# %{ $role->{permissions} }, and for users permission lookups dereference
+# $user->record->{permissions}{$action}.  Either way it persistently breaks
+# permission resolution, so reject it before it reaches disk.
+sub _validate_record_objects ($record) {
    for my $field (qw(permissions resources)) {
       next unless exists $record->{$field};
-      die Exception->new( 'msg' => "Role field '$field' must be a JSON object" )
+      die Exception->new( 'msg' => "Field '$field' must be a JSON object" )
          unless ref $record->{$field} eq 'HASH';
    }
 }
@@ -461,7 +469,7 @@ sub createRole ($self, $name, $args) {
 
       $new_role = { 'permissions' => {}, 'resources' => {} };
       apply_args_to_record( $new_role, $args, qw(name) );
-      _validate_role_record($new_role);
+      _validate_record_objects($new_role);
 
       $roles->{$name} = $new_role;
       return JSON->new->utf8->pretty->canonical->encode($roles);
@@ -484,7 +492,7 @@ sub updateRole ($self, $name, $args) {
          or die Exception->new( 'msg' => "Role '$name' not found in roles.json" );
 
       apply_args_to_record( $record, $args, qw(name) );
-      _validate_role_record($record);
+      _validate_record_objects($record);
 
       # Prevent admin lock-out via self-demotion of one's OWN role (parallel to the
       # updateUser guard): a caller necessarily holds manageUsers to reach here, and
