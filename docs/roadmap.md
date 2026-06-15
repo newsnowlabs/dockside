@@ -16,8 +16,6 @@ The roadmap for Dockside currently remains highly flexible. We have a list of ca
 
 ### Application Client
 
-- Add UI for managing users, passwords, ssh keys (including deploying keys to devtainers)
-- Add UI for managing profiles
 - Add UI for monitoring/managing host memory/disk space/images
 - Add UI for monitoring/managing container memory/disk space/CPU (via `docker stats`)
 - Improve UI (in-app view) for viewing devtainer stdout/stderr logs, or providing a terminal connection

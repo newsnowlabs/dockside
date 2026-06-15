@@ -168,7 +168,7 @@ docker logs dockside 2>&1 | grep 'Sign in'
    ```
    Enter your `admin` credentials when prompted. Your session is saved to `~/.config/dockside/` and reused by subsequent `dockside` commands. See the [Dockside CLI README](../cli/README.md) for full installation options and available commands.
 3. In the Dockside UI, click **Launch**, and pick an example profile (e.g. `Dockside.io`) to launch your first trial devcontainer — this confirms everything is working.
-4. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects. See [**Setup**](#setup) below for a guided overview and [**read full details of the config files here**](setup.md).
+4. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects — through the **Admin UI** (`/admin`), the `dockside` CLI, or by editing the config files directly. See [**Setup**](#setup) below for a guided overview and [**the full configuration reference here**](setup.md).
 
 ### Launch on a public domain with auto-generated SSL
 
@@ -201,9 +201,9 @@ Dockside configuration lives under `~/.dockside/config/` on the host (mounted at
 
 Getting set up involves three main steps:
 
-- **[Profiles](setup.md#profiles)**: define the types of devcontainer your team can launch — which Docker images, networks, runtimes, and IDE options are available. Dockside ships several example profiles (`alpine.json`, `debian.json`, `dockside.json`, and others) to get you started. Edit them or add new ones to match your own projects and images.
-- **[Users and Roles](setup.md#users)**: register each team member in `users.json` and `passwd`. Assign a role (`admin` or a custom role from `roles.json`) to control what each user can do and which profiles they can deploy.
-- **[SSH keys](extensions/ssh.md)**: add each user's SSH public key to their `users.json` record so Dockside auto-populates `~/.ssh/authorized_keys` in every devcontainer they own or are shared on. Users then follow the one-click **SSH Setup** instructions in the Dockside UI to configure their `~/.ssh/config` and install the [wstunnel](https://github.com/erebe/wstunnel) helper. After that, SSHing into any devcontainer — and using VS Code Remote SSH or JetBrains Remote Development — works seamlessly with no extra steps.
+- **[Profiles](setup.md#profiles)**: define the types of devcontainer your team can launch — which Docker images, networks, runtimes, and IDE options are available. Dockside ships several example profiles (`alpine.json`, `debian.json`, `dockside.json`, and others) to get you started. Manage them through the **Admin UI** (`/admin/profiles`, requires `manageProfiles`) or the `dockside profile` CLI; editing the `.json` files directly remains an advanced/offline option.
+- **[Users and Roles](setup.md#users)**: manage team members and roles through the **Admin UI** (`/admin/users`, `/admin/roles`, requires `manageUsers`) or the `dockside user` / `dockside role` CLI — assign a role (`admin` or a custom role) to control what each user can do and which profiles they can deploy. The `manageUsers` / `manageProfiles` permissions delegate administration to non-`admin` roles. The underlying `users.json` / `passwd` / `roles.json` files can still be edited directly as an advanced/offline method.
+- **[SSH keys](extensions/ssh.md)**: add each user's SSH public key(s) — via the **Account UI** (their own keys), the Admin UI, or the `dockside user` CLI — so Dockside auto-populates `~/.ssh/authorized_keys` in every devcontainer they own or are shared on. Users then follow the one-click **SSH Setup** instructions in the Dockside UI to configure their `~/.ssh/config` and install the [wstunnel](https://github.com/erebe/wstunnel) helper. After that, SSHing into any devcontainer — and using VS Code Remote SSH or JetBrains Remote Development — works seamlessly with no extra steps.
 
 For the full configuration reference see [Configuring and administering Dockside](setup.md), including [config.json](setup.md#configjson), [Roles](setup.md#roles), [Profile routers](setup.md#profile-routers) and [Access control](setup.md#access-control-model).
 
@@ -216,7 +216,7 @@ Key workflow points:
 - **[Launching a devcontainer](usage.md#launching-a-devtainer)**: choose a profile, select a Docker image, set your network and runtime, optionally specify a git branch or other profile options, then click **Launch**.
 - **[Using the IDE](usage.md#using-the-dockside-ide)**: open Theia or OpenVSCode Server directly in your browser. AI coding tools (Claude Code, Codex, Copilot) run natively inside the IDE. The bundled `gh` CLI authenticates automatically when you have a `gh_token` configured in your user profile.
 - **[SSH access](extensions/ssh.md#integrated-ssh-server-support)**: one-click SSH from the Dockside UI, or SSH in directly from any terminal. Works with VS Code Remote SSH and JetBrains Remote Development out of the box once SSH client setup is complete.
-- **[Outbound SSH for git operations](extensions/ssh.md#adding-ssh-keys-to-a-users-profile)**: add a user's keypair to their `users.json` record and Dockside automatically loads it into the integrated `ssh-agent` on every devcontainer launch — enabling `git push` / `git pull` to GitHub, GitLab, or any SSH remote from the IDE or terminal, with no manual `ssh-add` required.
+- **[Outbound SSH for git operations](extensions/ssh.md#adding-ssh-keys-to-a-users-profile)**: add a user's keypair(s) — via the Account/Admin UI or the `dockside user` CLI — and Dockside automatically loads them into the integrated `ssh-agent` on every devcontainer launch — enabling `git push` / `git pull` to GitHub, GitLab, or any SSH remote from the IDE or terminal, with no manual `ssh-add` required.
 - **[Sharing and access control](setup.md#router-authaccess-levels)**: share a devcontainer with teammates as developers or viewers, and set per-service access levels (owner-only, team, or public URL).
 
 For the full UI and CLI reference see [Usage](usage.md).

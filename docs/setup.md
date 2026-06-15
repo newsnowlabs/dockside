@@ -48,7 +48,7 @@ A profile allows the specification of the available user choices for the followi
 
 A profile also allow the specification of Dockside _routers_, which dictate how external HTTP(S) requests are mapped to internal HTTP(S) requests to devtainer services launched from the profile, and what access level(s) a user (who may or may not be a Dockside user) must have in order to access the service.
 
-For insight into the profile object structure, examine the example profiles provided withing `config/profiles/`. To modify the available profiles, simply modify or add to the `.json` files within `config/profiles/`.
+For insight into the profile object structure, examine the example profiles provided within `config/profiles/`. Profiles are normally managed through the **Admin UI** (`/admin/profiles`, requires the `manageProfiles` permission) or the `dockside profile` CLI commands (`list`/`get`/`create`/`edit`/`remove`/`rename`); you can also modify or add `.json` files within `config/profiles/` directly as an advanced/offline method (Dockside auto-reloads them).
 
 The currently-supported root properties within a profile are:
 
@@ -173,7 +173,7 @@ The IDE and SSH routers are always restricted to `owner` or `developer` access. 
 
 ## Users
 
-The `users.json` file describes registered Dockside users. An 'admin' user is the only user specified in the file by default. It is recommended to modify the admin user record with a dedicated username for at least one team admin.
+Dockside users and roles are normally managed through the **Admin UI** (`/admin/users` and `/admin/roles`, requires the `manageUsers` permission) or the `dockside user` / `dockside role` CLI (see below); `users.json` and `passwd` are the underlying store, editable directly as an advanced/offline method. An 'admin' user is the only user specified by default — it is recommended to give at least one team admin a dedicated username.
 
 A user record specifies:
 
@@ -191,10 +191,10 @@ A user record specifies:
     - `auth`: the auth/access levels the user is permitted to specify for a devtainer's router, subject also to the devtainer's profile (object or array)
 - `ssh`:
     - `publicKeys`: a map of named ssh public key strings (e.g. `{ "laptop": "ssh-rsa ..." }`) that will be automatically written to devtainers' `~/.ssh/authorized_keys` files for devtainers owned by, or shared with, the user (as 'developer'); individual keys can be added/removed via the CLI with `--set ssh.publicKeys.keyname="ssh-rsa ..."` and `--set ssh.publicKeys.keyname=`
-    - `keypairs`: an object representing named keypair objects; currently only one keypair per user, with the name `*`, is supported; the keypair object must have two properties, named `public` and `private` with appropriate values (e.g. `{"*": {{"public": "ssh-rsa AAAAAskjha... myname@myteam.com", "private": "-----BEGIN OPENSSH PRIVATE KEY-----\nhsgjhga...\n-----END OPENSSH PRIVATE KEY-----\n"}}}`)
+    - `keypairs`: a map of named keypair objects — an arbitrary `{ name: { public, private } }` map (the name `*` is a valid legacy key name, no longer the only one supported), each entry having `public` and `private` properties. **All** complete pairs are loaded into the devtainer's ssh-agent at launch; an incomplete or malformed entry is skipped, with a warning surfaced in the devtainer terminal. Add/remove via the CLI with `--set ssh.keypairs.<name>.public=...` / `--set ssh.keypairs.<name>.private=@<file>` and `--unset ssh.keypairs.<name>` (e.g. `{"*": {"public": "ssh-ed25519 AAAA... me@team", "private": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n"}, "github": {"public": "...", "private": "..."}}`)
 - `gh_token`: an optional GitHub Personal Access Token (string); when set, the token is passed as the `GH_TOKEN` environment variable into every container launched by or shared with the user, enabling the bundled `gh` CLI to authenticate automatically (e.g. for `gh pr checkout`)
 
-You should add one record to `users.json`, and one record to [`passwd`](#passwords), for each registered user in your team.
+Each team member needs a user record and a password. Create them through the Admin UI or `dockside user create` (which writes both); editing `users.json` and [`passwd`](#passwords) directly is the advanced/offline alternative.
 
 ### Managing users with the CLI
 
@@ -236,6 +236,8 @@ Generic permissions are:
 - `viewAllPrivateContainers`: permission to view all devtainers including private devtainers
 - `developContainers`: permission to develop devtainers that one owns or is a named developer on
 - `developAllContainers`: permission to develop all devtainers irrespective of ownership or named developers
+- `manageUsers`: permission to administer users and roles — the `/admin/users` and `/admin/roles` UI and the `dockside user` / `dockside role` CLI. The server enforces lock-out guards even for a holder: you cannot drop your own `manageUsers` (whether via your user record or your own role), delete your own account, or remove a role that is still in use.
+- `manageProfiles`: permission to administer launch profiles — the `/admin/profiles` UI and the `dockside profile` CLI
 
 Devtainer permissions are:
 

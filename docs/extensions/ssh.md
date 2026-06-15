@@ -63,13 +63,17 @@ Keys held in the agent are available to the IDE, to VS Code extensions, and to a
 
 ### Configuring keypairs for outbound SSH
 
-To authenticate outbound SSH connections from within the IDE or terminal — for example, `git push` / `git pull` to GitHub or GitLab — add the user's keypair to their `users.json` record under `ssh.keypairs`:
+To authenticate outbound SSH connections from within the IDE or terminal — for example, `git push` / `git pull` to GitHub or GitLab — add the user's keypair(s) under `ssh.keypairs` (normally via the Admin UI or the `dockside user` CLI; `users.json` is the underlying store). An arbitrary map of named keypairs is supported — the name `*` is just a common default, not the only allowed name:
 
 ```json
 "ssh": {
   "keypairs": {
     "*": {
       "public":  "ssh-ed25519 AAAA... alice@example.com",
+      "private": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n"
+    },
+    "github": {
+      "public":  "ssh-ed25519 BBBB... alice@github",
       "private": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----\n"
     }
   }
@@ -83,7 +87,7 @@ dockside user edit alice --set ssh.keypairs.*.private=@/Users/alice/.ssh/id_rsa
 dockside user edit alice --unset ssh.keypairs.*.public --unset ssh.keypairs.*.private
 ```
 
-On devcontainer launch, Dockside automatically loads the keypair into the `ssh-agent`. The key is then immediately available to the IDE (for `Git: Push` / `Git: Pull`), to VS Code extensions, and to any terminal command — without any manual `ssh-add` step.
+On devcontainer launch, Dockside automatically loads **every** complete keypair into the `ssh-agent` (an incomplete or invalid entry is skipped, with a warning surfaced in the devtainer terminal). The keys are then immediately available to the IDE (for `Git: Push` / `Git: Pull`), to VS Code extensions, and to any terminal command — without any manual `ssh-add` step.
 
 > **Security notes:**
 > 1. If you share your devcontainer IDE with another user, they will have access to any unencrypted key files present in the container and to any keys currently loaded in the agent. Before sharing with an untrusted team member, run `ssh-add -D` to remove all unencrypted identities from the agent (or `ssh-add -x` to lock it), and ensure any key files on disk are encrypted.
