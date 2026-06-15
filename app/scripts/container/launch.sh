@@ -649,10 +649,47 @@ launch_openvscode() {
    done
 }
 
+# Record a launch-time warning for the user: log it AND append to the per-launch
+# status file under $LOG_PATH, which the user's interactive shells print on login
+# (see install_launch_status_notice), so launch problems surface in the
+# Theia/openvscode/SSH terminal rather than only in the launch log.
+dockside_user_warning() {
+   log "WARNING: $*"
+   echo "DOCKSIDE WARNING: $*" >> "$LOG_PATH/launch-status.txt" 2>/dev/null || true
+}
+
+# Idempotently add a snippet to the user's shell rc files that prints any launch
+# warnings. Covers bash (~/.bashrc) and POSIX/ash/dash login shells (~/.profile),
+# guarded by a marker so relaunches do not duplicate it. run_nonroot runs as
+# $IDE_USER (invoked via su), so the rc files are created/owned by the user.
+install_launch_status_notice() {
+   local marker='# dockside-launch-status'
+   local line="[ -f \"$LOG_PATH/launch-status.txt\" ] && cat \"$LOG_PATH/launch-status.txt\""
+   local rc
+   # Shell coverage: ~/.bashrc for interactive bash (Theia/openvscode terminals);
+   # ~/.profile for login sh/dash/ash (and bash login when there is no ~/.bash_profile).
+   # Only touch rc files that already exist — don't create dotfiles the image/user did
+   # not set up (a lone created ~/.bashrc may not even be sourced), and don't grep a file
+   # that isn't there. The snippet is POSIX, so it is safe in any of these shells.
+   for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+      [ -f "$rc" ] || continue
+      grep -qF "$marker" "$rc" 2>/dev/null && continue
+      printf '\n%s\n%s\n' "$marker" "$line" >> "$rc" 2>/dev/null || true
+   done
+}
+
 run_nonroot() {
    log "User account launch started ..."
+   # Surface launch-time warnings to the user's interactive shells: clear any stale
+   # warnings from a previous launch, then ensure the rc snippet is installed.
+   rm -f "$LOG_PATH/launch-status.txt" 2>/dev/null
+   install_launch_status_notice
    spawn_ssh_agent
-   populate_ssh_agent_keys
+   # A failed key load is non-fatal (the IDE still launches), but no longer silent:
+   # populate_ssh_agent_keys logs + returns non-zero, and we surface it to the user.
+   if ! populate_ssh_agent_keys; then
+      dockside_user_warning "One or more SSH keys could not be loaded into the ssh-agent (see $LOG)."
+   fi
    populate_known_hosts
    (
       log "Repo setup subproc started ..."
@@ -660,7 +697,7 @@ run_nonroot() {
       # before any sentinel is written (checkout_git_branch_or_pr would otherwise
       # return 0 on the absent repo and let .git-repo-ready be touched anyway).
       if ! create_git_repo; then
-         log "WARN: git clone failed; writing .git-repo-failed and aborting repo setup"
+         dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
          touch "$LOG_PATH/.git-repo-failed"
          exit 1
       fi
@@ -678,7 +715,7 @@ run_nonroot() {
       if checkout_git_branch_or_pr; then
          [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
       else
-         log "WARN: branch/PR checkout failed; writing .git-repo-failed and aborting repo setup"
+         dockside_user_warning "Checkout of the requested branch/PR failed; the repository may be on the wrong ref (see $LOG)."
          touch "$LOG_PATH/.git-repo-failed"
          exit 1
       fi
