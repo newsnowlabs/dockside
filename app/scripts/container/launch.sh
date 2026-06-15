@@ -347,8 +347,9 @@ populate_ssh_agent_keys() {
          continue
       fi
 
+      # Log the public key only (it identifies the keypair); never log private
+      # material, not even a prefix — the launch log is not a secret store.
       log "SSH_AGENT_KEYS[$name](PUBLIC)=$KEY_PUBLIC"
-      log "SSH_AGENT_KEYS[$name](PRIVATE)=${KEY_PRIVATE:0:36}..."
 
       KEY_PATH=$(busybox mktemp "$HOME/.ssh/dockside.XXXXXX")
       echo "$KEY_PRIVATE" > "$KEY_PATH"
