@@ -821,24 +821,23 @@ def _encode_params(p):
 
 
 def api_create(opener, server, fields):
-    qs = _encode_params(fields)
-    data = _do_get(opener, server.rstrip('/') + '/containers/create?' + qs, timeout=30)
+    # POST (no state-changing route over GET). Form-encoded body: _do_post JSON-
+    # stringifies structured fields, matching the server's raw split_args parse.
+    data = _do_post(opener, server.rstrip('/') + '/containers/create', fields, timeout=30)
     return data.get('reservation')
 
 
 def api_update(opener, server, res_id, fields):
-    qs = _encode_params(fields)
-    url = (server.rstrip('/') +
-           f'/containers/{urllib.parse.quote(res_id)}/update?' + qs)
-    data = _do_get(opener, url, timeout=30)
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/update'
+    data = _do_post(opener, url, fields, timeout=30)
     return data.get('reservation')
 
 
 def api_control(opener, server, res_id, cmd):
-    """Send start/stop/remove to a devtainer. Returns the updated container list."""
+    """Send start/stop/remove to a devtainer (bodyless POST). Returns the updated container list."""
     url = (server.rstrip('/') +
            f'/containers/{urllib.parse.quote(res_id)}/{urllib.parse.quote(cmd)}')
-    data = _do_get(opener, url, timeout=30)
+    data = _do_post(opener, url, {}, timeout=30)
     return data.get('data') or []
 
 

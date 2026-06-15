@@ -524,11 +524,27 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
    my $type = 'json';
    try {
 
+      ######################################
+      # Container mutation routes must use POST too: no state-changing route may be
+      # reachable via GET (GET is cacheable, prefetchable and logged). Reads
+      # (/containers, .../logs, /resources) stay GET. NB unlike the admin routes
+      # (guard further below), the container args are still parsed RAW via split_args,
+      # not parse_body_args/get_args — createContainerReservation()/set() decode
+      # structured fields (access, options) themselves and treat viewers/developers
+      # as comma-strings, so pre-decoding the body would corrupt them.
+      #
+      if ( $route =~ m!^/containers/(?:create|[^/]+/(?:update|start|stop|remove))/?$!
+           && $r->request_method ne 'POST' ) {
+         return json($r, 405, { 'status' => '405', 'msg' => 'Method Not Allowed: use POST' });
+      }
+
       #############################################
       # Create a Reservation and launch a container
       #
       if( $route =~ m!^/containers/create/?$! ) {
-         my $args = split_args($querystring); # Split querystring-style arguments
+         # POST-only (see the guard above): args arrive in the request body. Parse
+         # raw via split_args (NOT get_args) — see the rationale on the guard above.
+         my $args = { %{ split_args($r->request_body // '') }, %{ split_args($querystring) } };
 
          # Use the current host's parentFQDN string to generate the child
          # container's hostname, if none has been provided.
@@ -543,7 +559,9 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       #
       if( $route =~ m!^/containers/([^\/]+)/update/?$! ) {
          my $id = $1;
-         my $args = split_args($querystring); # Split querystring-style arguments
+         # POST-only (see the container guard above): args in the request body,
+         # parsed raw — see the create handler's note on why not get_args.
+         my $args = { %{ split_args($r->request_body // '') }, %{ split_args($querystring) } };
          $args->{'id'} = $id if $id;
 
          my $reservation = $User->updateContainerReservation($args);
@@ -620,8 +638,8 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       # State-changing admin/self endpoints must use POST.  Mutations must not be
       # reachable via GET: GET has cacheable/prefetchable/logged side effects, and
       # the GET arg parser (split_args) does not JSON-decode values, so structured
-      # fields would be corrupted.  Container routes are intentionally NOT enforced
-      # here (their GET→POST migration is staged separately).
+      # fields would be corrupted.  (Container mutation routes are enforced by the
+      # separate guard at the top of this handler.)
       #
       if ( $route =~ m!^/(?:me/update|users/create|users/[^/]+/(?:update|remove)|roles/create|roles/[^/]+/(?:update|remove)|profiles/create|profiles/[^/]+/(?:update|remove|rename))/?$!
            && $r->request_method ne 'POST' ) {

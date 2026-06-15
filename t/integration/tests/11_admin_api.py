@@ -147,14 +147,26 @@ class AdminApiTests(TestCase):
 
     def test_05_get_on_mutation_is_405(self):
         base = self.admin._server.rstrip('/')
-        # Non-destructive targets (missing name / nonexistent user): the only
-        # pre/post-fix difference is the status — a 4xx app error before, 405 after.
-        status, _ = self.admin.check_url(base + '/roles/create')
-        self.assert_http_status(status, 405,
-                                f'GET /roles/create returned {status}, expected 405')
-        status2, _ = self.admin.check_url(base + '/users/inttest-verbcheck-absent/remove')
-        self.assert_http_status(status2, 405,
-                                f'GET /users/<x>/remove returned {status2}, expected 405')
+        # State-changing routes must reject GET with 405. Non-destructive targets
+        # (missing name / nonexistent id): the only pre/post-fix difference is the
+        # status — a 4xx app error before, 405 after. The method guard fires before
+        # id resolution, so fake ids are fine. Container reads (/containers, .../logs,
+        # /resources) stay GET and are intentionally not listed.
+        mutation_paths = (
+            # admin/self routes (migrated by the admin POST work)
+            '/roles/create',
+            '/users/inttest-verbcheck-absent/remove',
+            # container routes (C8: complete the container GET→POST migration)
+            '/containers/create',
+            '/containers/deadbeef/update',
+            '/containers/deadbeef/start',
+            '/containers/deadbeef/stop',
+            '/containers/deadbeef/remove',
+        )
+        for path in mutation_paths:
+            status, _ = self.admin.check_url(base + path)
+            self.assert_http_status(status, 405,
+                                    f'GET {path} returned {status}, expected 405')
 
     # ── SSH keypair private key round-trip ──────────────────────────────────────
 

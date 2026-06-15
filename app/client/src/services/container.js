@@ -19,26 +19,28 @@ const createReservationArgs = (args) => {
       .join('&');
 };
 
-const createReservationUri = (args) => {
-   return `/containers/create?` + createReservationArgs(args);
-};
-
-const updateReservationUri = (args) => {
-   return `/containers/${encodeURIComponent(args.id)}/update?` + createReservationArgs(args);
-};
-
 const getReservationLogsUri = (args) => {
    return `/containers/${encodeURIComponent(args.id)}/logs?stdout=true&stderr=true&format=text&clean_pty=true&merge=true`;
 };
 
+// Container mutations now go over POST — no state-changing route is reachable via
+// GET (GET is cacheable/prefetchable/logged). The body is the same form-encoded
+// arg string the querystring used to carry, so the server still parses it raw with
+// split_args (the reservation setters decode structured fields themselves): this is
+// a transport-only change.
+const FORM_POST = { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } };
+
 const putContainer = (args) => {
-   const uri = args.id ? updateReservationUri(args) : createReservationUri(args);
-   return axios.get(uri).then(response => response.data);
+   const url = args.id
+      ? `/containers/${encodeURIComponent(args.id)}/update`
+      : `/containers/create`;
+   return axios.post(url, createReservationArgs(args), FORM_POST).then(response => response.data);
 };
 
 const controlContainer = (id, cmd) => {
+   // Bodyless POST (start/stop/remove take no args).
    const url = `/containers/${encodeURIComponent(id)}/${encodeURIComponent(cmd)}`;
-   return axios.get(url).then(response => response.data);
+   return axios.post(url).then(response => response.data);
 };
 
 const getAuthCookies = () => {
@@ -46,4 +48,4 @@ const getAuthCookies = () => {
    return axios.get(url).then(response => response.data);
 };
 
-export { getContainers, putContainer, controlContainer, createReservationUri, getReservationLogsUri, getAuthCookies };
+export { getContainers, putContainer, controlContainer, getReservationLogsUri, getAuthCookies };

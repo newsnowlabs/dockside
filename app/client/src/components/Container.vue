@@ -237,9 +237,9 @@
 
                               <b-button size="sm" variant="outline-success"
                                  v-show="container.permissions.auth.developer && isPrelaunchMode"
-                                 v-on:click="copy(makeLaunchUri())"
+                                 v-on:click="copy(makeLaunchCommand())"
                                  :data-id="container.id"
-                                 >Copy Launch URI</b-button>
+                                 >Copy Launch Command</b-button>
 
                               <b-button size="sm" variant="outline-success"
                                  v-show="container.permissions.auth.developer && isEditMode"
@@ -270,7 +270,7 @@
    import { routing } from '@/components/mixins';
    import copyToClipboard from '@/utilities/copy-to-clipboard';
    import UserTagsInput from '@/components/UserTagsInput';
-   import { putContainer, controlContainer, createReservationUri, getReservationLogsUri } from '@/services/container';
+   import { putContainer, controlContainer, getReservationLogsUri } from '@/services/container';
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';
 
@@ -475,8 +475,36 @@
          showLogs() {
             window.open(getReservationLogsUri({id: this.container.id}) , `docksideLogs_${this.container.id}`);
          },
-         makeLaunchUri() {
-            return `${window.location.protocol}//${window.location.host}` + createReservationUri(this.form);
+         makeLaunchCommand() {
+            // The launch routes are POST-only now (C8: no state-changing route over
+            // GET), so a copy-paste GET URL is no longer valid. Emit the equivalent
+            // `dockside` CLI command instead — it launches via POST and maps the launch
+            // form faithfully (dockside create supports every field here). Values are
+            // POSIX single-quoted so the command is safe to paste into a shell.
+            const f = this.form;
+            const q = v => `'` + String(v).replace(/'/g, `'\\''`) + `'`;
+            const parts = [`dockside create --server ${q(window.location.origin)}`];
+            const add = (flag, v) => { if (v !== undefined && v !== null && v !== '') parts.push(`--${flag} ${q(v)}`); };
+            const addJson = (flag, v) => {
+               if (v === undefined || v === null || v === '') return;
+               const s = (typeof v === 'object') ? JSON.stringify(v) : String(v);
+               if (s === '' || s === '{}') return;
+               parts.push(`--${flag} ${q(s)}`);
+            };
+            add('profile', f.profile);
+            add('name', f.name);
+            add('image', f.image);
+            add('runtime', f.runtime);
+            add('network', f.network);
+            add('ide', f.IDE);
+            add('git-url', f.gitURL);
+            add('description', f.description);
+            add('viewers', f.viewers);
+            add('developers', f.developers);
+            addJson('options', f.options);
+            addJson('access', f.access);
+            if (f.private) parts.push('--private');
+            return parts.join(' ');
          },
          saveOrLaunch() {
             const me = this;
