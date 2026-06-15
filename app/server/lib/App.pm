@@ -136,9 +136,13 @@ sub parse_body_args ($r) {
       return $decoded;
    }
 
-   # Form-encoded fallback: split on '=' and '&', URL-decode each token, then
-   # JSON-decode each value so the result has the same shape as the JSON path.
-   my %flat = map { uri_unescape($_) } split( /[=&]/, $body );
+   # Form-encoded fallback: split on '=' and '&', then for each token translate
+   # '+' to space before percent-decoding (application/x-www-form-urlencoded
+   # encodes a space as '+' and a literal '+' as %2B, so '+'->space must happen
+   # before uri_unescape turns %2B back into '+'), and finally JSON-decode each
+   # value so the result has the same shape as the JSON path.  The first-party
+   # CLI percent-encodes spaces, but other form clients rely on '+'.
+   my %flat = map { ( my $t = $_ ) =~ tr/+/ /; uri_unescape($t) } split( /[=&]/, $body );
    my %decoded;
    for my $key ( keys %flat ) {
       my $v = $flat{$key};
