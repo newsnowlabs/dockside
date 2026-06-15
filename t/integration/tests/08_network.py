@@ -327,18 +327,18 @@ class NetworkTests(TestCase):
             except ValueError:
                 pass
 
-            # Now attempting to create a container on this network should fail
+            # The Dockside container is no longer attached to test_net, so Dockside
+            # must no longer offer it: creating a container on it has to be rejected.
+            # cleanup is registered first so a regression that lets it succeed still
+            # tears the container down.
             name = self._sfx('inttest-net-gone')
             self.register_cleanup(name)
-            try:
-                self.admin.create(
-                    profile=self.test_profile_alpine,
-                    name=name,
-                    network=test_net,
-                )
-                pass
-            except APIError:
-                pass  # Expected: network no longer available
+            self.assert_api_error(
+                self.admin.create,
+                profile=self.test_profile_alpine,
+                name=name,
+                network=test_net,
+            )
 
         finally:
             if attached:
