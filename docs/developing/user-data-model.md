@@ -46,8 +46,8 @@ Returned by `GET /users/:name`, `GET /users`, and all mutation responses
 
 ### Session / bootstrap shape (derived record)
 
-Returned by `GET /me` (`getSelf`) and injected at page load as
-`window.dockside.user`.
+Returned by `GET /me` (`getSelf`). The page-load `window.dockside.user` is a
+**leaner subset** of this shape — see the note after the bullets below.
 
 ```json
 {
@@ -72,6 +72,12 @@ Returned by `GET /me` (`getSelf`) and injected at page load as
   `gh_token` and SSH keys as writable input fields, but its response is
   always masked regardless.
 - Consumers of this shape must never assume it matches the CRUD shape.
+- The page-load `window.dockside.user` carries only `username`, `name`, `email`,
+  `id`, `role`, `role_as_meta` and `permissions.actions`. `GET /me` is a
+  **superset**: it additionally returns the self-service fields `version`,
+  `resources`, `ssh` (keypairs, masked) and `gh_token` (masked) so an
+  account-editing client can read the fields it may write. Do not assume the two
+  are identical.
 
 ### Why they differ
 
@@ -124,7 +130,7 @@ fields. See `docs/adr/0002-admin-api-post-migration.md`.
 
 | Method | Route | Response |
 |--------|-------|----------|
-| GET    | `/me`             | Session user record, derived/bootstrap shape (with `permissions.actions` booleans and `role_as_meta`), always masked |
+| GET    | `/me`             | Session user record: `permissions.actions` booleans + `role_as_meta`, **plus** the self-editable `resources`, `ssh`, `gh_token` and `version` — a superset of the `window.dockside.user` bootstrap; always masked |
 | POST   | `/me/update`      | Full updated user record, **CRUD/verbatim shape**, always masked — same format as the admin user endpoints, not the bootstrap shape; `permissions.actions` is absent |
 | GET    | `/me/profiles`    | Array of launch profile records accessible to the session user |
 
@@ -139,7 +145,10 @@ fields. See `docs/adr/0002-admin-api-post-migration.md`.
 `GET /me`; the client-side `account/updateSelf` action does this automatically
 by dispatching `fetchSelf` after a successful update.
 
-`GET /me` returns the same shape as `window.dockside.user`.
+`GET /me` returns a **superset** of `window.dockside.user`: the same identity
+and `permissions.actions`/`role_as_meta`, plus the self-editable `resources`,
+`ssh` keypairs (masked), `gh_token` (masked) and `version`. The page-load
+bootstrap omits those self-service fields.
 
 ### URL routing note
 
