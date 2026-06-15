@@ -310,6 +310,17 @@ RUN cd $DS_PATH/bin && \
     echo -e "#!$DS_PATH/bin/sh\nexport SSL_CERT_FILE=$DS_PATH/certs/ca-certificates.crt\nexec \"\$(dirname \"\$0\")/gh.orig\" \"\$@\"\n" >gh && \
     chmod 755 gh
 
+# Create a wrapper for `git` (like gh) so terminal and launch git operations use the
+# IDE CA store and exec-path without every caller passing -c/--exec-path. Paths are
+# derived from the wrapper's own location ($0), so they stay correct across version
+# dirs. Re-point the legacy `git-clone` alias at the real binary (git.orig) so its
+# behaviour is unchanged — only `git` itself becomes the wrapper.
+RUN cd $DS_PATH/bin && \
+    mv git git.orig && \
+    ln -sf git.orig git-clone && \
+    echo -e "#!$DS_PATH/bin/sh\nd=\"\$(dirname \"\$0\")\"\nexec \"\$d/git.orig\" -c \"http.sslcainfo=\$d/../certs/ca-certificates.crt\" --exec-path=\"\$d\" \"\$@\"\n" >git && \
+    chmod 755 git
+
 # Create system/latest symlink pointing to the versioned directory
 RUN cd $DS_PATH/.. && ln -sf $DOCKSIDE_VERSION latest
 
@@ -420,6 +431,7 @@ RUN apt-get update && \
         s6 \
         jq \
         kmod \
+        ripgrep \
         logrotate cron- bcron- exim4-
 
 # -----------------------------------------

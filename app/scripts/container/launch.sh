@@ -23,6 +23,13 @@ log() {
    echo "$S$1" >&2
 }
 
+# Use the IDE-bundled git binary. Its CA cert store (http.sslcainfo) and exec-path
+# are baked into that binary's own wrapper script (created in the Dockerfile next to
+# the gh wrapper), so they no longer need to be passed on every call here.
+git() {
+   $IDE_PATH/bin/git "$@"
+}
+
 which() {
    local cmd="$1"
    for p in $(echo $PATH | tr ':' '\012'); do [ -x "$p/$cmd" ] && echo "$p/$cmd" && return 0; done
@@ -168,16 +175,23 @@ launch_sshd() {
 }
 
 create_git_repo() {
-   [ -n "$GIT_URL" ] || return
+   [ -n "$GIT_URL" ] || return 0
 
-   log "- Running: $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL"
-   GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" $IDE_PATH/bin/git -c http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt --exec-path=$IDE_PATH/bin clone $GIT_URL
+   log "- Running: git clone $GIT_URL"
+   # Detect clone failure explicitly: without this the function returned the
+   # status of the trailing gitconfig block, so a failed clone went unnoticed and
+   # the caller went on to touch .git-repo-ready over an absent repository.
+   if ! GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" git clone "$GIT_URL"; then
+      log "ERROR: git clone '$GIT_URL' failed"
+      return 1
+   fi
 
    # If $GIT_URL is an https:// URI, then store sslcainfo in .gitconfig
    if echo "$GIT_URL" | grep -qE '^https?://'; then
       log "Updating ~/.gitconfig with http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt"
-      $IDE_PATH/bin/git config -f $HOME/.gitconfig --add http.sslcainfo $IDE_PATH/certs/ca-certificates.crt
+      git config -f "$HOME/.gitconfig" --add http.sslcainfo "$IDE_PATH/certs/ca-certificates.crt"
    fi
+   return 0
 }
 
 gh_authenticate() {
@@ -200,31 +214,56 @@ gh_authenticate() {
    $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") || log "WARN: gh auth login failed"
 }
 
+# Returns 0 if there was nothing to do or the requested branch/PR was checked out;
+# non-zero if a requested checkout failed (so the caller can abort and signal it).
 checkout_git_branch_or_pr() {
    local BRANCH="${DOCKSIDE_OPTION_BRANCH:-}"
    local PR="${DOCKSIDE_OPTION_PR:-}"
 
-   [ -n "$BRANCH" ] || [ -n "$PR" ] || return
+   [ -n "$BRANCH" ] || [ -n "$PR" ] || return 0
 
    # Only act on the repo that was just cloned via GIT_URL.
    # For pre-populated images (no GIT_URL), branch/PR checkout is the
    # responsibility of the profile command, which can use {option.branch}
    # and {option.pr} placeholders or read the DOCKSIDE_OPTION_* env vars.
-   [ -n "$GIT_URL" ] || return
+   [ -n "$GIT_URL" ] || return 0
 
    local CLONE_DIR
    CLONE_DIR=$(basename "${GIT_URL%.git}")
    local REPO="$HOME/$CLONE_DIR"
 
-   [ -d "$REPO/.git" ] || return
+   [ -d "$REPO/.git" ] || return 0
 
    if [ -n "$PR" ]; then
       log "Checking out PR $PR in $REPO"
-      (cd "$REPO" && $IDE_PATH/bin/gh pr checkout "$PR") || log "WARN: gh pr checkout '$PR' failed in repo '$REPO'"
-   else
-      log "Checking out branch $BRANCH in $REPO"
-      (cd "$REPO" && $IDE_PATH/bin/git checkout "$BRANCH" 2>/dev/null || $IDE_PATH/bin/git checkout -b "$BRANCH") || log "WARN: git checkout '$BRANCH' failed in repo '$REPO'"
+      if (cd "$REPO" && $IDE_PATH/bin/gh pr checkout "$PR"); then
+         log "Checked out PR $PR via gh in $REPO"
+         return 0
+      fi
+      log "gh pr checkout '$PR' failed, trying git fetch fallback"
+      if (cd "$REPO" && git fetch origin "refs/pull/$PR/head" && git checkout FETCH_HEAD); then
+         log "Checked out PR $PR via git fetch in $REPO"
+         return 0
+      fi
+      log "WARN: PR $PR checkout failed in $REPO"
+      return 1
    fi
+
+   # Branch: fetch the named branch explicitly, then switch to it. Grouped with `if`
+   # so precedence is unambiguous and — crucially — a branch that does not exist on
+   # origin is a hard failure (the fetch fails) rather than `git checkout -b` silently
+   # creating an empty local branch from the current HEAD.
+   log "Checking out branch $BRANCH in $REPO"
+   if (
+      cd "$REPO" &&
+      git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" &&
+      { git switch "$BRANCH" 2>/dev/null || git switch --track -c "$BRANCH" "origin/$BRANCH"; }
+   ); then
+      log "Checked out branch $BRANCH in $REPO"
+      return 0
+   fi
+   log "WARN: branch '$BRANCH' checkout failed in '$REPO' (does it exist on origin?)"
+   return 1
 }
 
 spawn_ssh_agent() {
@@ -276,39 +315,78 @@ populate_known_hosts() {
 }
 
 populate_ssh_agent_keys() {
-   local SAVEKEYS="0"
-   local DEFAULT_KEY_PATH="$HOME/.ssh/dockside"
-   local KEY_PATH="$DEFAULT_KEY_PATH"
+   # SSH_AGENT_KEYS is a JSON object mapping keypair name -> { public, private }.
+   # Add every keypair's private key to the ssh-agent, each via a transient key file
+   # that is removed immediately after ssh-add (keys live only in the agent, not on disk).
+   local names
+   names=$(echo "$SSH_AGENT_KEYS" | jq -r 'if type == "object" then keys[] else empty end' 2>/dev/null)
 
-   local KEY_PRIVATE=$(echo "$SSH_AGENT_KEYS" | jq -re '.private')
-   local KEY_PUBLIC=$(echo "$SSH_AGENT_KEYS" | jq -re '.public')
-
-   log "SSH_AGENT_KEYS(PUBLIC)=$KEY_PUBLIC"
-   log "SSH_AGENT_KEYS(PRIVATE)=${KEY_PRIVATE:0:36}..."
-
-   if [ "$KEY_PUBLIC" = "null" ] || [ "$KEY_PRIVATE" = "null" ] || [ -z "$KEY_PUBLIC" ] || [ -z "$KEY_PRIVATE" ]; then
-      log "SSH_AGENT_KEYS is null, so not saving keys to '$KEY_PATH'"
+   if [ -z "$names" ]; then
+      log "SSH_AGENT_KEYS has no keypairs; not adding any keys to the ssh-agent"
       return
    fi
 
-   if [ -f "$KEY_PATH" ] && [ -f "$KEY_PATH.pub" ]; then
-      log "Leaving existing keys unchanged in '$KEY_PATH'; adding using temporary path ..."
-      KEY_PATH="$(busybox mktemp dockside.XXXXXX)"
+   mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+
+   # Defence-in-depth secret cleanup: each keypair is written to a transient
+   # dockside.XXXXXX file (and .pub) only long enough to ssh-add it, then removed
+   # in-loop below. A termination signal arriving inside that window would otherwise
+   # strand private-key material on disk, so sweep every transient file (all share the
+   # dockside. prefix) on the common signals and then exit. The trap is cleared once
+   # the keys are loaded so it does not alter the later IDE-supervision phase.
+   trap 'rm -f "$HOME"/.ssh/dockside.* 2>/dev/null; exit 1' INT TERM HUP
+
+   # Iterate via read (never unquoted) since a keypair name may be '*'. Feed the
+   # loop with process substitution rather than a pipe so it runs in THIS shell and
+   # the add_failures counter survives the loop (a piped 'while' runs in a subshell,
+   # discarding any variable it sets).
+   local name KEY_PRIVATE KEY_PUBLIC KEY_PATH
+   local add_failures=0
+   while IFS= read -r name; do
+      [ -n "$name" ] || continue
+
+      KEY_PRIVATE=$(echo "$SSH_AGENT_KEYS" | jq -r --arg n "$name" '.[$n].private // empty')
+      KEY_PUBLIC=$(echo "$SSH_AGENT_KEYS" | jq -r --arg n "$name" '.[$n].public // empty')
+
+      if [ -z "$KEY_PRIVATE" ] || [ -z "$KEY_PUBLIC" ]; then
+         log "Keypair '$name' has no public/private material; skipping"
+         continue
+      fi
+
+      # Log the public key only (it identifies the keypair); never log private
+      # material, not even a prefix — the launch log is not a secret store.
+      log "SSH_AGENT_KEYS[$name](PUBLIC)=$KEY_PUBLIC"
+
+      KEY_PATH=$(busybox mktemp "$HOME/.ssh/dockside.XXXXXX")
+      echo "$KEY_PRIVATE" > "$KEY_PATH"
+      echo "$KEY_PUBLIC" > "$KEY_PATH.pub"
+      chmod 400 "$KEY_PATH" "$KEY_PATH.pub"
+
+      log "Adding keypair '$name' to ssh-agent ..."
+      # Capture ssh-add's own status: without the 'if' the iteration's exit status
+      # would be the trailing rm, masking an ssh-add failure — and the final
+      # 'ssh-add -L' below succeeds whenever ANY key is loaded, so one failed key
+      # would otherwise go completely unnoticed.
+      if ! "$IDE_PATH/bin/ssh-add" "$KEY_PATH"; then
+         log "ERROR: ssh-add failed for keypair '$name'"
+         add_failures=$((add_failures + 1))
+      fi
+
+      rm -f "$KEY_PATH" "$KEY_PATH.pub"
+   done < <(echo "$names")
+
+   # Final sweep catches any transient file stranded by a non-signal failure inside
+   # the loop (where the per-iteration rm above would not have run), then disarm.
+   rm -f "$HOME"/.ssh/dockside.* 2>/dev/null
+   trap - INT TERM HUP
+
+   "$IDE_PATH/bin/ssh-add" -L
+
+   if [ "$add_failures" -gt 0 ]; then
+      log "ERROR: $add_failures ssh-agent keypair(s) failed to load"
+      return 1
    fi
-
-   log "Populating ssh agent keys to '$KEY_PATH' and ssh-agent ..."
-
-   echo "$KEY_PRIVATE" >$KEY_PATH
-   echo "$KEY_PUBLIC" >$KEY_PATH.pub
-   chmod 400 $KEY_PATH $KEY_PATH.pub
-
-   $IDE_PATH/bin/ssh-add "$KEY_PATH"
-   $IDE_PATH/bin/ssh-add -L
-
-   if [ "$SAVEKEYS" != "1" ] || [ "$KEY_PATH" != "$DEFAULT_KEY_PATH" ]; then
-      log "Deleting keys from '$KEY_PATH'"
-      rm -f $KEY_PATH $KEY_PATH.pub
-   fi
+   return 0
 }
 
 find_files_of_type() {
@@ -491,6 +569,8 @@ launch_nonroot() {
    # Exported env vars made available to run_nonroot:
    export DEVCONTAINER_VSCODE
 
+   # Without -l, su passes all inherited/exported env vars to the child process unchanged,
+   # so only PATH and HOME need to be stated here as they require new values for $IDE_USER.
    $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" $DOCKSIDE_ROOT/launch.sh run_nonroot"
 }
 
@@ -521,8 +601,8 @@ launch_theia() {
       log "Launching and supervising the Theia IDE at $IDE_PATH"
 
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
-         # su will retain exported env vars and set new ones.
-         # So we use 'env -i' to clear all env vars before setting just the ones needed.
+         # Without -l, su passes all inherited/exported env vars through; env -i clears them
+         # so only the vars the IDE launcher needs are explicitly stated.
          $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
       else
          env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
@@ -559,8 +639,8 @@ launch_openvscode() {
       log "Launching and supervising the openvscode IDE at $IIDE_PATH"
 
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
-         # su will retain exported env vars and set new ones.
-         # So we use 'env -i' to clear all env vars before setting just the ones needed.
+         # Without -l, su passes all inherited/exported env vars through; env -i clears them
+         # so only the vars the IDE launcher needs are explicitly stated.
          $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
       else
          env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
@@ -570,16 +650,76 @@ launch_openvscode() {
    done
 }
 
+# Record a launch-time warning for the user: log it AND append to the per-launch
+# status file under $LOG_PATH, which the user's interactive shells print on login
+# (see install_launch_status_notice), so launch problems surface in the
+# Theia/openvscode/SSH terminal rather than only in the launch log.
+dockside_user_warning() {
+   log "WARNING: $*"
+   echo "DOCKSIDE WARNING: $*" >> "$LOG_PATH/launch-status.txt" 2>/dev/null || true
+}
+
+# Idempotently add a snippet to the user's shell rc files that prints any launch
+# warnings. Covers bash (~/.bashrc) and POSIX/ash/dash login shells (~/.profile),
+# guarded by a marker so relaunches do not duplicate it. run_nonroot runs as
+# $IDE_USER (invoked via su), so the rc files are created/owned by the user.
+install_launch_status_notice() {
+   local marker='# dockside-launch-status'
+   local line="[ -f \"$LOG_PATH/launch-status.txt\" ] && cat \"$LOG_PATH/launch-status.txt\""
+   local rc
+   # Shell coverage: ~/.bashrc for interactive bash (Theia/openvscode terminals);
+   # ~/.profile for login sh/dash/ash (and bash login when there is no ~/.bash_profile).
+   # Only touch rc files that already exist — don't create dotfiles the image/user did
+   # not set up (a lone created ~/.bashrc may not even be sourced), and don't grep a file
+   # that isn't there. The snippet is POSIX, so it is safe in any of these shells.
+   for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+      [ -f "$rc" ] || continue
+      grep -qF "$marker" "$rc" 2>/dev/null && continue
+      printf '\n%s\n%s\n' "$marker" "$line" >> "$rc" 2>/dev/null || true
+   done
+}
+
 run_nonroot() {
    log "User account launch started ..."
+   # Surface launch-time warnings to the user's interactive shells: clear any stale
+   # warnings from a previous launch, then ensure the rc snippet is installed.
+   rm -f "$LOG_PATH/launch-status.txt" 2>/dev/null
+   install_launch_status_notice
    spawn_ssh_agent
-   populate_ssh_agent_keys
+   # A failed key load is non-fatal (the IDE still launches), but no longer silent:
+   # populate_ssh_agent_keys logs + returns non-zero, and we surface it to the user.
+   if ! populate_ssh_agent_keys; then
+      dockside_user_warning "One or more SSH keys could not be loaded into the ssh-agent (see $LOG)."
+   fi
    populate_known_hosts
    (
       log "Repo setup subproc started ..."
-      create_git_repo
+      # A failed clone is a hard error: there is no repository to set up, so abort
+      # before any sentinel is written (checkout_git_branch_or_pr would otherwise
+      # return 0 on the absent repo and let .git-repo-ready be touched anyway).
+      if ! create_git_repo; then
+         dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
+         touch "$LOG_PATH/.git-repo-failed"
+         exit 1
+      fi
       gh_authenticate
-      checkout_git_branch_or_pr
+      # A requested branch/PR checkout failure is a hard error: abort the rest of repo
+      # setup, log it, and write .git-repo-failed instead of the success sentinel so a
+      # consumer can detect it immediately rather than waiting for a timeout.
+      #
+      # On success (or when no branch/PR was requested), write .git-repo-ready. With a
+      # hard clone failure now handled above, this signals that a GIT_URL clone
+      # succeeded and any requested branch/PR was checked out; it does NOT wait for the
+      # later VS Code population, and Dockside does not guarantee an otherwise error-free
+      # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
+      # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
+      if checkout_git_branch_or_pr; then
+         [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+      else
+         dockside_user_warning "Checkout of the requested branch/PR failed; the repository may be on the wrong ref (see $LOG)."
+         touch "$LOG_PATH/.git-repo-failed"
+         exit 1
+      fi
       populate_vscode_extensions;
       populate_vscode_settings
       log "Repo setup subproc finished";
