@@ -131,8 +131,17 @@ class SshOutboundTests(SshTestMixin, TestCase):
     def test_02_all_keypairs_in_agent(self):
         """All of a user's keypairs — not just '*' — are deployed to the agent.
 
-        testdev1 already has the legacy '*' keypair; add a second one, relaunch so
-        launch.sh re-deploys the full keypair map, and assert both keys are in the agent.
+        dev1 already has the legacy '*' keypair; transiently add a second one,
+        relaunch so launch.sh re-deploys the full keypair map, and assert both keys
+        are in the agent.
+
+        dev1 may be an ADOPTED pre-existing fixture that setup must never mutate, so
+        the edit here is treated as save-and-restore of dev1's EXACT prior state: we
+        proceed only when the throwaway 'inttest2' keypair is absent (skipping rather
+        than overwriting should a real one exist) and unset it again in the finally,
+        returning dev1 to that verified-absent state. (A dedicated throwaway user is
+        the alternative, but it would have to clone dev1's whole fixture — role,
+        per-user resources, public keys — and launch its own container.)
         """
         if not (os.path.isfile(_DEV1_KEY) and os.path.isfile(_DEV2_KEY)):
             self.skip('testdev keypairs not available')
@@ -142,6 +151,13 @@ class SshOutboundTests(SshTestMixin, TestCase):
         second_pub = open(_DEV2_KEY + '.pub', encoding='utf-8').read().strip()
         key2 = _key_id(second_pub)
         user = self.test_username_dev1
+
+        # Never clobber data on a possibly-adopted dev1: only add inttest2 if absent.
+        prior = self.admin._run('user', 'get', user)
+        prior_keypairs = ((prior.get('ssh') or {}).get('keypairs')) or {}
+        if 'inttest2' in prior_keypairs:
+            self.skip("dev1 already has an 'inttest2' keypair; "
+                      "refusing to overwrite an adopted fixture")
 
         self.admin._run(
             'user', 'edit', user,
@@ -171,6 +187,7 @@ class SshOutboundTests(SshTestMixin, TestCase):
             self.assert_in(key1, listing, "legacy '*' keypair missing from agent")
             self.assert_in(key2, listing, 'second keypair missing from agent')
         finally:
+            # Restore dev1 to its verified prior state (inttest2 absent).
             try:
                 self.admin._run('user', 'edit', user, '--unset', 'ssh.keypairs.inttest2')
             except Exception:
