@@ -132,7 +132,7 @@ fields. See `docs/adr/0002-admin-api-post-migration.md`.
 
 | Method | Route | Response |
 |--------|-------|----------|
-| GET    | `/me`             | Session user record: `permissions.actions` booleans + `role_as_meta`, **plus** the self-editable `resources`, `ssh`, `gh_token` and `version` — a superset of the `window.dockside.user` bootstrap; always masked |
+| GET    | `/me`             | Session user record: `permissions.actions` booleans + `role_as_meta`, **plus** `resources`, `ssh`, `gh_token` and `version` — a superset of the `window.dockside.user` bootstrap; of the added fields only `ssh` and `gh_token` are self-editable (`resources`/`version` are read-only here); always masked |
 | POST   | `/me/update`      | Full updated user record, **CRUD/verbatim shape**, always masked — same format as the admin user endpoints, not the bootstrap shape; `permissions.actions` is absent |
 | GET    | `/me/profiles`    | Array of launch profile records accessible to the session user |
 
