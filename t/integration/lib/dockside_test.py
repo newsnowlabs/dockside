@@ -504,7 +504,14 @@ class DocksideClient:
     def check_url(self, url, timeout=30):
         """
         Fetch url using the CLI check-url command with this user's session cookies.
-        Cookies are injected for the target domain regardless of the server domain.
+
+        Session cookies are attached only for targets inside the deployment's domain
+        tree over HTTPS (the server host or a subdomain sharing its parent domain —
+        where devtainer router hostnames live); off-domain or HTTP targets get none
+        unless --allow-cross-domain-cookies is passed. The domain check is a
+        label-count heuristic, NOT public-suffix-aware (a server at dockside.co.uk
+        would accept evil.co.uk), so it is not a security boundary on such domains.
+        Redirects are not followed.
         Returns (status_code, body_bytes).
         """
         result = self._run_readonly('check-url', '--no-redirect', '--timeout', str(timeout), url)

@@ -2623,6 +2623,14 @@ def _host_in_server_domain(target_host, server_host):
     third-party host returns False so session cookies are never attached to it.
     The shared parent must contain a dot, so a server sitting at a 2-label apex
     (example.com) never widens the match to every *.com host.
+
+    LIMITATION: this is a label-count heuristic, NOT public-suffix-aware. For a
+    server under a multi-label public suffix — e.g. dockside.co.uk, whose parent
+    is co.uk — it would accept a sibling registered under that suffix
+    (evil.co.uk). It is a best-effort guard against the common mistyped/hostile
+    single-host case, not a substitute for a configured cookie domain or a
+    public-suffix list. A deployment on such a domain should treat
+    --allow-cross-domain-cookies (off by default) as the trust boundary.
     """
     target_host = (target_host or '').lower().rstrip('.')
     server_host = (server_host or '').lower().rstrip('.')
@@ -3362,7 +3370,10 @@ def build_parser():
             'Dockside deployment\'s domain tree (the server host or a subdomain\n'
             'sharing its parent domain, where devtainers live) and reached over\n'
             'HTTPS — so a mistyped or hostile URL cannot leak a live session to\n'
-            'an arbitrary host.  Pass --allow-cross-domain-cookies to override.\n\n'
+            'an arbitrary host.  Pass --allow-cross-domain-cookies to override.\n'
+            'NOTE: the domain check is a label-count heuristic, not public-suffix\n'
+            'aware (a server at dockside.co.uk would accept evil.co.uk); on such a\n'
+            'domain treat --allow-cross-domain-cookies as the real trust boundary.\n\n'
             'Redirects are NOT followed by default (the 3xx status is reported as-is),\n'
             'so an attached session cookie is never carried onto a redirect target;\n'
             'pass --follow-redirects to follow them.\n\n'
