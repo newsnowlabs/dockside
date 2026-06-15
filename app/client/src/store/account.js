@@ -12,6 +12,12 @@ const createState = () => ({
    // bootstrap window.dockside.profiles object.
    launchProfiles: window.dockside.profiles,
 
+   // Directory of users/roles offered by the container-sharing autocomplete
+   // (UserTagsInput) — seeded from the bootstrap window.dockside.viewers and kept
+   // reactive so admin user mutations and self-edits made in this session are
+   // reflected without a full reload. A mutable copy so splice/push stay reactive.
+   viewers: [...(window.dockside.viewers || [])],
+
    // Error shown on the /account page when a self-edit refresh fails.
    accountError:   null,
 });
@@ -38,6 +44,26 @@ export default {
       setAccountError(state, v) {
          state.accountError = v;
       },
+
+      // Keep the shared viewers directory (consumed by UserTagsInput) in sync. name
+      // falls back to the username when absent/empty (as the server bootstrap does),
+      // since UserTagsInput lowercases it for autocomplete.
+      upsertViewer(state, { username, name, role }) {
+         const entry = { username, name: name || username, role };
+         const idx = state.viewers.findIndex(v => v.username === username);
+         if (idx >= 0) state.viewers.splice(idx, 1, entry);
+         else          state.viewers.push(entry);
+      },
+      removeViewer(state, username) {
+         state.viewers = state.viewers.filter(v => v.username !== username);
+      },
+      // Replace the whole directory from an authoritative user list (e.g. after
+      // admin/fetchUsers). This repairs staleness from changes the per-mutation
+      // sync can't see — made via the CLI, another browser tab, or direct config
+      // edits — by rebuilding from server state on the next admin list fetch.
+      setViewers(state, users) {
+         state.viewers = (users || []).map(u => ({ username: u.username, name: u.name || u.username, role: u.role }));
+      },
    },
 
    actions: {
@@ -53,7 +79,11 @@ export default {
       // the admin users list so the admin view stays consistent.
       async updateSelf({ commit, dispatch, state }, data) {
          commit('setAccountError', null);
-         await accountApi.updateSelf(data);
+         const record = await accountApi.updateSelf(data);
+         // Reflect a self display-name/role change in the shared viewers directory from
+         // the POST response — username is unchanged (not self-editable) and name/role
+         // come from the saved record — so it stays correct even if the GET below fails.
+         commit('upsertViewer', { username: state.currentUser.username, name: record.name, role: record.role });
          try {
             await dispatch('fetchSelf');
          } catch (e) {

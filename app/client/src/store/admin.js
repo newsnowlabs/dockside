@@ -127,6 +127,9 @@ export default {
          try {
             const list = await api.listUsers();
             commit('setUsers', list);
+            // Rebuild the shared sharing-autocomplete directory from authoritative
+            // server state, repairing any staleness the per-mutation sync can't see.
+            commit('account/setViewers', list, { root: true });
          } catch (e) {
             commit('setError', e.message || 'Failed to load users');
          } finally {
@@ -174,6 +177,8 @@ export default {
          commit('setError', null);
          const record = await api.createUser(data);
          commit('upsertUser', record);
+         // Keep the shared sharing-autocomplete directory current in this session.
+         commit('account/upsertViewer', record, { root: true });
          return record;
       },
 
@@ -181,6 +186,7 @@ export default {
          commit('setError', null);
          const record = await api.updateUser(username, data);
          commit('upsertUser', record);
+         commit('account/upsertViewer', record, { root: true });
          // If the admin just edited their own user record, refresh the account module
          // so the header and other session-derived UI reflect the updated name/email.
          // Failure is non-fatal (save already succeeded) but surfaced so the user
@@ -199,6 +205,7 @@ export default {
          commit('setError', null);
          await api.removeUser(username);
          commit('removeUser', username);
+         commit('account/removeViewer', username, { root: true });
       },
 
       // -----------------------------------------------------------------------

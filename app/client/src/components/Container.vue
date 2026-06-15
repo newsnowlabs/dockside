@@ -285,7 +285,6 @@
       },
       data() {
          return {
-            userName: (window.dockside.viewers.find(viewer => viewer.username === this.container.meta.owner) || []).name,
             form: {
             }
          };
@@ -311,6 +310,14 @@
             'isPrelaunchMode'
          ]),
          ...mapState({ profiles: state => state.account.launchProfiles }),
+         // Resolve the owner's display name from the reactive viewers directory so it
+         // reflects admin user create/rename made in the same session; fall back to
+         // the username when the owner has no directory entry.
+         userName() {
+            const owner = this.container.meta.owner;
+            const entry = this.$store.state.account.viewers.find(v => v.username === owner);
+            return (entry && entry.name) || owner;
+         },
          profileNames() {
             // Guard against launchProfiles being null/undefined.  This can happen
             // transiently if the server returns a non-data response (e.g. a 302
