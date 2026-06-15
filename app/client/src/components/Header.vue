@@ -64,7 +64,11 @@
             return this.$route.path.startsWith('/admin');
          },
          isAccountRoute() {
-            return this.$route.path === '/account';
+            // Match by route name (as App.vue does), not exact path: Vue Router
+            // also matches a trailing slash ('/account/'), which a path === '/account'
+            // test would miss — leaving the header showing container-page actions on
+            // the account layout.
+            return this.$route.name === 'account';
          },
          canAccessAdmin() {
             const p = this.user.permissions.actions;
