@@ -58,8 +58,6 @@
 #                                (08 test_05/06). Auto-detected in local/harness mode
 #                                (/etc/service/nginx/data/ctr-id, else hostname); set
 #                                explicitly for an "alongside" run or to override
-#   DOCKSIDE_TEST_SSH_SERVER     Outbound SSH target (default: git@github.com)
-#                                Testdev1's public key must be pre-authorized there.
 #
 #   DOCKSIDE_TEST_IMAGE_REGISTRY  Docker image registry mirror to use instead of
 #                                 Docker Hub for bare image names (e.g. alpine:latest).

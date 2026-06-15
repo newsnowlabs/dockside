@@ -19,6 +19,7 @@ and produce TAP-compatible output.
 | `09_ssh.py` | Inbound SSH via wstunnel |
 | `10_ssh_outbound.py` | Outbound self-SSH via the devtainer's integrated ssh-agent |
 | `11_admin_api.py` | Admin CRUD round-trips (role/profile/user/`account`) with persisted-shape assertions, verb enforcement (405), role-record validation |
+| `12_rejection.py` | Negative paths: rejected launches and disallowed constrained values (image/runtime/unixuser/network/IDE); absent-resource edit/remove/get; self-protection (own manageUsers / admin role / account) and removal of an in-use role |
 
 ## Writing tests — hard rules
 
@@ -220,7 +221,6 @@ avoiding dependence on public routing from inside the Dockside container.
 | `DOCKSIDE_TEST_HARNESS_ISOLATED_CLI_CONFIG` | `1` | In harness mode, create a temporary `DOCKSIDE_CLI_CONFIG` and temporary server entry so the CLI's stored transport settings drive test traffic; set `0` for legacy direct `--connect-to` transport |
 | `DOCKSIDE_TEST_VERIFY_SSL` | `0` | Set `1` to verify SSL certificates |
 | `DOCKSIDE_TEST_CONTAINER_ID` | auto in `local`/`harness` | The Dockside container's id or name, used by the network-attach tests (08 `test_05`/`test_06`) to `docker network connect` a throwaway network to it. In `local`/`harness` mode it is auto-detected (from `/etc/service/nginx/data/ctr-id`, else the hostname, which equals the container name in a Dockside-launched container); set it explicitly for an "alongside" run or to override. Only used when network modification is enabled, and only when the reachable docker daemon manages that container (not under a sysbox-runc inner daemon) |
-| `DOCKSIDE_TEST_SSH_SERVER` | `git@github.com` | Outbound SSH server for test 09 B |
 | `DOCKSIDE_TEST_CONTAINER_ACCESS` | `ssh` | Access method for tests that inspect a devtainer: `ssh` (default, via wstunnel) or `docker` (docker exec). `auto` is rejected — choose explicitly. |
 | `DOCKSIDE_TEST_IMAGE_REGISTRY` | — | Registry mirror prefix for bare Docker Hub image names (e.g. `mirror.gcr.io/library`). Images with an explicit registry host are unaffected. Useful on hosts with Docker Hub pull-rate limits. |
 | `DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY` | mode default | `1` = allow creating/attaching Docker networks; `0` = disallow |
