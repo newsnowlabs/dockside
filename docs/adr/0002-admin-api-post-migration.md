@@ -37,9 +37,13 @@ problems:
    editor and producing noisy diffs in CLI `-o json` output. Sorted order also matches
    the on-disk profile/role writes.
 
-**Migration order (forward-compatible):** the server accepts both verbs until
-enforcement lands, so consumers (CLI, Vue) can adopt POST before the server enforces it
-— avoiding any window where a mutation 405s.
+**Roll-out within this merge:** the curated series lands atomically — the server's POST
+enforcement (the 405 guard, commit C1) and the POST-only clients (CLI in C2, Vue in C3)
+merge together. There is therefore **no "accept both verbs" transition** and no window
+where a client is ahead of the server: a GET on an admin/self mutation route is rejected
+from the moment the series lands. (A staged rollout that temporarily accepted both verbs
+would only be needed if the server and clients shipped in separate releases, which they
+do not here.)
 
 **Completion (this merge, C7):** the container routes (`/containers/create`,
 `/containers/<id>/{update,start,stop,remove}`) are added to the enforcement guard and

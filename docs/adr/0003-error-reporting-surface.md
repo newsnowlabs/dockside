@@ -26,10 +26,11 @@ server-side and never returned. Concretely:
   `Exception` objects, whose own `msg`/`dbg` can also embed secrets.
 - **`sanitize_sensitive_text`** (new, `Util.pm`) redacts `--env=` secret payloads,
   PEM private-key blocks, and JSON/Perl `gh_token` fields.
-- Command-execution errors set a client-safe `msg` built from **`_display_cmd`**
-  (new) — an abbreviated, argument-free summary (binary + verb, plus the network
-  action for `docker network …`) — while the full (sanitised) command goes only
-  to `dbg`.
+- **`run_system`** sets a client-safe `msg` built from **`_display_cmd`** (new) —
+  an abbreviated, argument-free summary (binary + verb, plus the network action for
+  `docker network …`) — while the full (sanitised) command goes only to `dbg`. (The
+  legacy interpolated-string `run` path reports only the exit code in `msg` and does
+  not surface the command at all, so `_display_cmd` applies to `run_system`, not both.)
 - Command execution moves from interpolated string `run("… $cmd …")` to array-form
   `run_system($bin, @args)`, removing shell parsing (defence in depth).
 
