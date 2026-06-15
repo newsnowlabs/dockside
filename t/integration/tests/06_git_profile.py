@@ -81,7 +81,11 @@ class GitProfileTests(TestCase):
                 system_bin_dir=self.test_system_bin_dir,
                 run_as_user='dockside',
             )
-        except (APIError, subprocess.TimeoutExpired) as exc:
+        except APIError as exc:
+            # APIError = the requested container-access mechanism is unavailable
+            # (docker/ssh not present) — a legitimate skip. A TimeoutExpired or any
+            # other error while inspecting an already-running container is a
+            # regression, so let it propagate and fail rather than skip.
             self.skip(str(exc))
         self._debug(
             f'inspect done name={name} rc={result.returncode} '
