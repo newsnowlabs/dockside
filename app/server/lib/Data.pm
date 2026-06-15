@@ -3,14 +3,23 @@ package Data;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO);
+our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO invalidate_profile_cache
+   $CONFIG_PATH $USERS_FILE $ROLES_FILE $PASSWD_FILE $PROFILES_DIR);
 
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
 use Util qw(flog cacheReadWrite get_config call_socket_json_api);
 
-my $CONFIG_PATH = '/data/config';
+# Single source of truth for all persistent config storage paths.
+# Exported so that User::Manage and Profile::Manage can reference these
+# constants directly rather than each independently hard-coding '/data/config'.
+# Any future relocation of the config root requires only a change here.
+our $CONFIG_PATH  = '/data/config';
+our $USERS_FILE   = "$CONFIG_PATH/users.json";
+our $ROLES_FILE   = "$CONFIG_PATH/roles.json";
+our $PASSWD_FILE  = "$CONFIG_PATH/passwd";
+our $PROFILES_DIR = "$CONFIG_PATH/profiles";
 
 # Load in the container ID of this Dockside container and the inner-dockerd flag.
 # See entrypoint.sh for details
@@ -149,7 +158,7 @@ $CONFIG_FILES = {
          my $newNetworks = join(',', sort keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} });
          if ($oldNetworks ne $newNetworks) {
             flog("Data::load: containers.json: Dockside container network list changed ('$oldNetworks' -> '$newNetworks'); invalidating profile cache");
-            delete $CONFIG_FILES->{'profiles/*.json'}{'lastModified'};
+            invalidate_profile_cache();
          }
 
          Reservation->update_container_info();
@@ -237,8 +246,11 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
 
       flog( "Data::load: $p, previously modified at $CONFIG_FILES->{$p}{'lastModified'}, now modified at $lastModified");
 
-      # Get data from files
-      my $data;
+      # Get data from files.  For a glob, default to an empty hashref so that
+      # removing the last matching file reloads as an empty set (the 'process'
+      # callback clears its registry) rather than leaving $data undef, which the
+      # callbacks (e.g. `keys %$c`) would die on.
+      my $data = $isGlob ? {} : undef;
       my $single_key;
       my $file_count = @files;
       try {
@@ -282,6 +294,16 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
          flog("Data::load: error parsing '$p': '$_'");
       };
    }
+}
+
+# Force the profile glob to reload on the next Data::load call.
+# Needed after profile file deletion or rename, where the mtime of the remaining
+# files does not change and the cache would otherwise not detect the update.
+# A -1 sentinel is used rather than delete: when the last profile is removed the
+# glob is empty and Data::load computes a max-mtime of 0, which would equal a
+# deleted/defaulted-0 stored value and skip the reload, leaving stale profiles.
+sub invalidate_profile_cache () {
+   $CONFIG_FILES->{'profiles/*.json'}{'lastModified'} = -1;
 }
 
 1;

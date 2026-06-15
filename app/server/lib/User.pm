@@ -9,8 +9,11 @@ use Storable qw(dclone);
 use Data qw($CONFIG);
 use Util qw(flog wlog TO_JSON generate_auth_cookie_values encrypt_password cacheReadWrite);
 use User::Manage qw(
-   listUsers getUser createUser updateUser removeUser
+   listUsers getUser getSelf createUser updateUser updateSelf removeUser
    listRoles getRole createRole updateRole removeRole
+);
+use Profile::Manage qw(
+   listProfiles getProfile createProfile updateProfile removeProfile renameProfile
 );
 use Reservation;
 
@@ -56,7 +59,8 @@ my @GENERAL_PERMISSIONS = (
    'viewAllPrivateContainers', # Permission to view all containers including private containers
    'developContainers', # Permission to develop containers that one owns or is a named developer on
    'developAllContainers', # Permission to develop all containers irrespective of ownership or named developers
-   'manageUsers' # Permission to create/update/remove/list users and roles
+   'manageUsers',    # Permission to create/update/remove/list users and roles
+   'manageProfiles'  # Permission to create/update/remove/rename/list profiles
 );
 
 my @CONTAINER_PERMISSIONS = (
@@ -223,6 +227,12 @@ sub authorized_keys ($self) {
 
 sub keypairs ($self, $prefix) {
    return $self->{'ssh'}{'keypairs'}{$prefix};
+}
+
+# All of the user's SSH keypairs as a { name => { public, private } } map.
+# Deployed in full to the devtainer's ssh-agent (see Reservation::exec).
+sub keypairs_all ($self) {
+   return $self->{'ssh'}{'keypairs'} // {};
 }
 
 sub gh_token ($self) {
@@ -424,8 +434,9 @@ sub can_use_resource ($self, $resourceType, $resource) {
 
 sub profiles ($self) {
    my %userProfiles = map {
-      $self->can_use_resource('profiles', $_) ?
-         ($_ => Profile->load($_)->cloneWithConstraints($self->derivedResourceConstraints)->sanitise) :
+      my $p = Profile->load($_);
+      ($self->can_use_resource('profiles', $_) && $p->{'active'}) ?
+         ($_ => $p->cloneWithConstraints($self->derivedResourceConstraints)->sanitise) :
          ()
    } (Profile->names);
 
@@ -898,8 +909,10 @@ sub updateContainerReservation ($self, $args) {
    # Store the changes if all updates are successful
    $reservation->store();
 
-   # Apply any network changes
-   $reservation->update_network();
+   # Only reconcile Docker network attachment when the requested network changed.
+   if( ($origReservation->data('network') // '') ne ($reservation->data('network') // '') ) {
+      $reservation->update_network();
+   }
 
    # Only if the reservation is running
    if($reservation->is_running) {

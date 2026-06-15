@@ -13,8 +13,10 @@ use JSON;
 use URI::Escape;
 use Try::Tiny;
 use File::Path;
-use Util qw(flog wlog run run_pty YYYYMMDDHHMMSS);
-use Data qw($CONFIG $VERSION);
+use Digest::SHA qw(sha256_hex);
+use Util qw(flog wlog run run_pty sanitize_sensitive_text YYYYMMDDHHMMSS);
+use Data qw($CONFIG $VERSION $HOSTINFO $HOSTNAME);
+use Containers;
 use Profile;
 use Reservation;
 use Request;
@@ -51,6 +53,18 @@ sub get_client_asset ($filename) {
    return $contents;
 }
 
+# A short, opaque cache-buster for a built client asset: a hash of its mtime+size (a cheap
+# stat, no file read). It changes on every rebuild — including dev rebuilds with no git
+# commit — so an immutable-cached asset URL is refreshed exactly when the file changes.
+# Not the git version: that wouldn't change on a dev rebuild and needlessly reveals the
+# commit (the version is already in window.dockside.version for traceability). Falls back
+# to 'missing' only if the file is absent (a broken deploy — the asset route 404s too, so
+# the value is moot); that just avoids an undef-interpolation warning at page render.
+sub _asset_version ($filename) {
+   my @st = stat("$CONFIG->{'clientDistPath'}/$filename");
+   return @st ? substr( sha256_hex("$st[9]-$st[7]"), 0, 12 ) : 'missing';
+}
+
 sub get_header ($title = undef) {
    return get_asset('header.html') . 
       "   <title>" . ($title // 'Dockside - A dev and staging environment in one - From NewsNow Labs') . "</title>\n" .
@@ -78,12 +92,104 @@ sub split_args ($queryString) {
    return { map { $_ // '' } %hash };
 }
 
+# Parse a POST request body into a normalised hashref whose values are always
+# decoded Perl structures (numbers, booleans, hashrefs, arrayrefs) — never raw
+# JSON strings.  This single normalisation point means apply_args_to_record()
+# in Util.pm never needs to distinguish between content types.
+#
+# Two content-type paths:
+#   application/json  — decode the whole body as a JSON object directly.
+#                       A non-empty body that fails to decode to a JSON object
+#                       is rejected with HTTP 400 (see below), not coerced to {};
+#                       an empty body is handled by the form path as an
+#                       intentionally-empty argument set.
+#   form-encoded      — split key=value pairs, URL-unescape each token, then
+#                       JSON-decode each individual value so the result matches
+#                       the shape of the JSON path.  This preserves CLI support:
+#                       the CLI sends form-encoded bodies whose values are
+#                       JSON-stringified (e.g. permissions='{"actions":{...}}').
+#                       Plain string values that are not valid JSON are kept as-is.
+#
+# Edge case: a key without a value in form-encoded input (e.g. "key1&key2=v")
+# produces a hash entry with an undef value.  apply_args_to_record() skips
+# undef-valued keys, so this is handled safely downstream.
+#
+# Special key '_unset': must be a JSON array of dotted-path keys to delete from
+# the record.  If decoding fails or yields a non-array, it defaults to [].
+sub parse_body_args ($r) {
+   my $body = $r->request_body // '';
+   my $ct   = $r->header_in('Content-Type') // '';
+
+   if ( $ct =~ m{application/json}i && length $body ) {
+      my $decoded = eval { JSON::XS->new->utf8->decode($body) };
+      # A declared JSON body that does not decode to an object is a malformed
+      # request, not an empty one: reject it with 400 rather than silently
+      # coercing to {} (which would let a mutation appear to succeed as a no-op).
+      # An empty body never reaches here (guarded by `length $body` above) and so
+      # still parses as an intentionally-empty argument set via the form path.
+      die Exception->new(
+         'msg'    => 'Request body is not a valid JSON object',
+         'dbg'    => 'parse_body_args: application/json body failed to decode to a HASH'
+                     . ( $@ ? ": $@" : '' ),
+         'status' => 400,
+      ) unless ref($decoded) eq 'HASH';
+      return $decoded;
+   }
+
+   # Form-encoded fallback: split on '=' and '&', then for each token translate
+   # '+' to space before percent-decoding (application/x-www-form-urlencoded
+   # encodes a space as '+' and a literal '+' as %2B, so '+'->space must happen
+   # before uri_unescape turns %2B back into '+'), and finally JSON-decode each
+   # value so the result has the same shape as the JSON path.  The first-party
+   # CLI percent-encodes spaces, but other form clients rely on '+'.
+   my %flat = map { ( my $t = $_ ) =~ tr/+/ /; uri_unescape($t) } split( /[=&]/, $body );
+   my %decoded;
+   for my $key ( keys %flat ) {
+      my $v = $flat{$key};
+      if ( $key eq '_unset' ) {
+         # _unset must be a JSON array of dotted-path keys; treat decode failure
+         # or a non-array result as an empty list so callers see a safe value.
+         my $list = eval { decode_json($v) };
+         $decoded{$key} = ( ref $list eq 'ARRAY' ) ? $list : [];
+      }
+      elsif ( defined $v && length $v ) {
+         # Attempt JSON decode; fall back to plain string if $v is not valid JSON.
+         # This covers both simple scalars ("alice") and structured values
+         # ('{"actions":{"manageUsers":true}}') sent by the CLI.
+         my $d = eval { decode_json($v) };
+         $decoded{$key} = $@ ? $v : $d;
+      }
+      else {
+         # Empty or undef value: pass through as-is.
+         $decoded{$key} = $v;
+      }
+   }
+   return \%decoded;
+}
+
+# Return a merged args hashref for the request.
+# For POST requests the body is parsed (via parse_body_args) and merged with
+# any query-string args; query-string values take precedence on collision so
+# that routing parameters cannot be silently overridden by a crafted body.
+# For non-POST requests only the query-string is used.
+sub get_args ($r, $querystring) {
+   if ( $r->request_method eq 'POST' ) {
+      my $body_args = parse_body_args($r);
+      my $qs_args   = split_args($querystring);
+      return { %$body_args, %$qs_args };   # query-string wins on collision
+   }
+   return split_args($querystring);
+}
+
 sub json ($r, $code, $data) {
    $r->status($code);
    $r->header_out( 'Cache-Control', 'no-store' );
    $r->send_http_header("application/json");
 
-   $r->print( JSON::XS->new->utf8->convert_blessed->encode( $data ) );
+   # canonical: sort object keys so every API response has a deterministic key
+   # order (Perl hash order is otherwise randomised per process). This gives
+   # clients — the admin JSON editor and the CLI — stable, diff-friendly output.
+   $r->print( JSON::XS->new->utf8->convert_blessed->canonical->encode( $data ) );
 
    return nginx::OK;
 }
@@ -147,13 +253,6 @@ _EOE_
    );
 }
 
-sub _login_body_handler ($r) { # nginx has_request_body callback — named sub avoids GC of anon coderef
-   my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
-   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
-   handle_login_form($r, $parentFQDN) || send_login_page($r);
-   return nginx::OK;
-}
-
 sub handle_login_form ($r, $parentFQDN) { # nginx request object # copy of $parentFQDN
    # Extract credentials from body.
    # Unescape keys and values, for consistency and simplicity.
@@ -191,6 +290,37 @@ sub handle_login_form ($r, $parentFQDN) { # nginx request object # copy of $pare
    }
 
    # Fallthrough: try return code will be returned here.
+}
+
+# ---------------------------------------------------------------------------
+# Named body-handler callbacks for has_request_body().
+#
+# nginx's XS binding for has_request_body() stores the callback's raw code
+# pointer (CV*) without calling SvREFCNT_inc.  When the callback is an
+# anonymous sub, its refcount drops to zero as soon as _handler() returns
+# nginx::OK, freeing the CV.  When nginx's event loop later invokes the
+# callback (after the request body has been read asynchronously), it holds a
+# dangling pointer → call_sv("") failed → HTTP 500.
+#
+# Named subs are always anchored in the package symbol table, so their CV is
+# never freed regardless of whether nginx increments the refcount.
+# ---------------------------------------------------------------------------
+
+sub _login_body_handler ($r) {
+   my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
+   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+   handle_login_form($r, $parentFQDN) || send_login_page($r);
+   # Return OK regardless of handle_login_form's result: the body handler must let
+   # nginx flush the buffered 302 redirect. Propagating its truthy success value (1)
+   # would suppress the flush and the client would see RemoteDisconnected.
+   return nginx::OK;
+}
+
+sub _api_body_handler ($r) {
+   my $parentFQDN = $r->header_in('Host'); $parentFQDN =~ s!^[^\-\.]+!!;
+   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+   my $User = Request->authenticate( { 'cookie' => $r->header_in("Cookie"), 'protocol' => 'https' } );
+   return _api_handler($r, $User, $r->args, $parentFQDN);
 }
 
 sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'https'
@@ -297,13 +427,34 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # Enable for verbose request logging:
    # flog("App: route=$route; User=" . $User->username);
 
-   if( $route eq '/' || $route =~ m!^/container/! ) {
+   # Serve the Vue client bundle (main.js, main.css) as separate, cacheable assets rather
+   # than inlining them into every page. Placed below the auth gate so they are served to
+   # authenticated users only. nginx gzips the responses on the fly (application/javascript
+   # and text/css are in gzip_types); the ?v= cache-buster on the references below changes
+   # whenever the file changes, so a long immutable max-age is safe. ($route is the path
+   # only — $r->uri — so the ?v= query does not affect this match, and the regex pins the
+   # exact filenames, so there is no path traversal.)
+   if( $route =~ m!^/assets/main\.(js|css)$! ) {
+      my $ext = $1;
+      my %content_type = ( 'js' => 'application/javascript', 'css' => 'text/css' );
+      $r->status(200);
+      $r->header_out('Cache-Control', 'public, max-age=31536000, immutable');
+      $r->send_http_header( $content_type{$ext} );
+      $r->sendfile("$CONFIG->{'clientDistPath'}/main.$ext");
+      return nginx::OK;
+   }
+
+   if( $route eq '/' || $route =~ m!^/(container|admin|account)(/|$)! ) {
       ###############################
       # Display main page HTML
       #
       $r->send_http_header("text/html");
       $r->print( get_header() );
-      $r->print( "<style>\n" . get_client_asset('main.css') . "\n</style>\n" );
+      # main.css served as a separate cacheable, gzip-compressible asset (see the
+      # /assets/main.(js|css) route above), not inlined. Render-blocking in <head> like the
+      # inline <style> it replaces, so styles still apply before first paint.
+      my $css_v = _asset_version('main.css');
+      $r->print( qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n} );
 
       # Output permissions for signed-in user
       try {
@@ -314,7 +465,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
                         {
                            # FIXME: set 'user' => $User, after simply either (a) changing User object definition to make 'permissions' the derivedPermissions; or (b) the Vue app to check user.derivedPermissions.
                            'user'    => {
-                              'username' => $User->username,
+                              %{ $User->details() }, # username, name, email, id
                               'role' => $User->role, # User's role
                               'role_as_meta' => $User->role_as_meta, # User's role in metadata format
                               'permissions' => { 'actions' => $User->permissions() } # User's permissions
@@ -338,7 +489,10 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       $r->print('</head>');
       $r->print( '<body data-spy="scroll" data-target=".sidebar">' . "\n" );
       $r->print( "<div id='app'><router-view></router-view></div>\n" );
-      $r->print( "<script>\n" . get_client_asset('main.js') . "</script>\n" );
+      # main.js served as a separate cacheable, gzip-compressible asset (see the
+      # /assets/main.(js|css) route above) instead of inlining ~3.8 MiB into every page.
+      my $js_v = _asset_version('main.js');
+      $r->print( qq{<script src="/assets/main.js?v=$js_v"></script>\n} );
       $r->print("</body></html>\n");
 
       return nginx::OK;
@@ -348,6 +502,25 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # AJAX SERVICES
    #
 
+   if ( $r->request_method eq 'POST' ) {
+      if ( $r->has_request_body(\&_api_body_handler) ) {
+         return nginx::OK;
+      }
+      # A bodyless POST (e.g. a no-arg mutation like remove/start/stop) still needs
+      # dispatching — there is simply nothing to read first.
+      return _api_handler( $r, $User, $querystring, $parentFQDN );
+   }
+
+   return _api_handler( $r, $User, $querystring, $parentFQDN );
+}
+
+# ---------------------------------------------------------------------------
+# _api_handler — dispatches all authenticated API requests.
+# Called directly for GET; called from within a has_request_body() callback
+# for POST (at which point $r->request_body is populated and get_args() works).
+# ---------------------------------------------------------------------------
+sub _api_handler ($r, $User, $querystring, $parentFQDN) {
+   my $route = $r->uri;
    my $type = 'json';
    try {
 
@@ -422,6 +595,59 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       ######################################
+      # Host resources — runtimes, networks, IDEs, auth modes
+      # Used by the admin UI to populate resource suggestion lists.
+      #
+
+      if( $route =~ m!^/resources/?$! ) {
+         die Exception->new( 'msg' => "You need the 'manageUsers' or 'manageProfiles' permission" )
+            unless $User->has_permission('manageUsers') || $User->has_permission('manageProfiles');
+         my @networks = sort { $a cmp $b } keys %{ (Containers->containers // {})->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} };
+         my @runtimes = sort { $a cmp $b } keys %{ ($HOSTINFO->{'docker'} // {})->{'Runtimes'} // {} };
+         my @IDEs     = @{ $HOSTINFO->{'IDEs'} // [] };
+         return json($r, 200, {
+            'status' => '200',
+            'data'   => {
+               'runtimes'  => \@runtimes,
+               'networks'  => \@networks,
+               'IDEs'      => \@IDEs,
+               'authModes' => ['user', 'developer', 'public', 'viewer', 'owner'],
+            }
+         });
+      }
+
+      ######################################
+      # State-changing admin/self endpoints must use POST.  Mutations must not be
+      # reachable via GET: GET has cacheable/prefetchable/logged side effects, and
+      # the GET arg parser (split_args) does not JSON-decode values, so structured
+      # fields would be corrupted.  Container routes are intentionally NOT enforced
+      # here (their GET→POST migration is staged separately).
+      #
+      if ( $route =~ m!^/(?:me/update|users/create|users/[^/]+/(?:update|remove)|roles/create|roles/[^/]+/(?:update|remove)|profiles/create|profiles/[^/]+/(?:update|remove|rename))/?$!
+           && $r->request_method ne 'POST' ) {
+         return json($r, 405, { 'status' => '405', 'msg' => 'Method Not Allowed: use POST' });
+      }
+
+      ######################################
+      # Account (self-service) — any authenticated user
+      #
+
+      if( $route =~ m!^/me/?$! ) {
+         my $record = $User->getSelf();
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/me/update/?$! ) {
+         my $args = get_args($r, $querystring);
+         my $record = $User->updateSelf($args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/me/profiles/?$! ) {
+         return json($r, 200, { 'status' => '200', 'data' => $User->profiles() });
+      }
+
+      ######################################
       # User management
       #
 
@@ -431,7 +657,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       if( $route =~ m!^/users/create/?$! ) {
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->createUser($args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
@@ -445,7 +671,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
 
       if( $route =~ m!^/users/([^/]+)/update/?$! ) {
          my $username = $1;
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->updateUser($username, $args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
@@ -466,7 +692,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       }
 
       if( $route =~ m!^/roles/create/?$! ) {
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $name = $args->{'name'}
             or die Exception->new( 'msg' => "name is required" );
          my $record = $User->createRole($name, $args);
@@ -481,7 +707,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
 
       if( $route =~ m!^/roles/([^/]+)/update/?$! ) {
          my $name = $1;
-         my $args = split_args($querystring);
+         my $args = get_args($r, $querystring);
          my $record = $User->updateRole($name, $args);
          return json($r, 200, { 'status' => '200', 'data' => $record });
       }
@@ -489,6 +715,51 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       if( $route =~ m!^/roles/([^/]+)/remove/?$! ) {
          my $name = $1;
          my $result = $User->removeRole($name);
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
+      ######################################
+      # Profile management
+      #
+
+      if( $route =~ m!^/profiles/?$! ) {
+         my $args = split_args($querystring);
+         return json($r, 200, { 'status' => '200', 'data' => $User->listProfiles($args) });
+      }
+
+      if( $route =~ m!^/profiles/create/?$! ) {
+         my $args = get_args($r, $querystring);
+         my $id = $args->{'id'}
+            or die Exception->new( 'msg' => "id is required" );
+         my $record = $User->createProfile($id, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/?$! && $r->request_method eq 'GET' ) {
+         my $name = $1;
+         my $args = split_args($querystring);
+         return json($r, 200, { 'status' => '200', 'data' => $User->getProfile($name, $args) });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/update/?$! ) {
+         my $name = $1;
+         my $args = get_args($r, $querystring);
+         my $record = $User->updateProfile($name, $args);
+         return json($r, 200, { 'status' => '200', 'data' => $record });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/remove/?$! ) {
+         my $name = $1;
+         my $result = $User->removeProfile($name);
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
+      if( $route =~ m!^/profiles/([^/]+)/rename/?$! ) {
+         my $name = $1;
+         my $args = get_args($r, $querystring);
+         my $new_name = $args->{'new_name'}
+            or die Exception->new( 'msg' => "new_name is required" );
+         my $result = $User->renameProfile($name, $new_name, $args);
          return json($r, 200, { 'status' => '200', 'data' => $result });
       }
 
@@ -515,17 +786,33 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       return redirect($r, 302, '/');
    }
    catch {
-      my ($msg, $dbg, $time) = ref($_) eq 'Exception' ? ($_->msg(), $_->dbg(), $_->time()) : ($_, $_, time);
+      my ($msg, $dbg, $time, $status);
+      if( ref($_) eq 'Exception' ) {
+         ($msg, $dbg, $time, $status) = ($_->msg(), $_->dbg(), $_->time(), $_->status());
+      }
+      else {
+         ($msg, $dbg, $time) = ($_, $_, time);
+      }
+
+      # Most API errors carry no specific status and default to 401, preserving
+      # existing behaviour; an Exception may set its own (e.g. 400 for a malformed
+      # body, 403 for a forbidden self-edit).
+      $status //= 401;
+
+      # Sanitize regardless of source: an Exception's own msg/dbg can embed secrets
+      # (env payloads, private keys, gh_token) from interpolated input or command
+      # text, and both are surfaced -- $msg to the client, $dbg to the log.
+      ($msg, $dbg) = map { sanitize_sensitive_text($_) } ($msg, $dbg);
 
       my $Time = YYYYMMDDHHMMSS($time);
 
-      flog("Reporting exception at '$Time': msg='$msg'; dbg='$dbg'; content type='$type'");
+      flog("Reporting exception at '$Time': msg='$msg'; dbg='$dbg'; status='$status'; content type='$type'");
 
       if($type eq 'text') {
-         return text($r, 401, "$msg - $dbg (at $Time)");
+         return text($r, $status, "$msg (at $Time)");
       }
       else {
-         return json($r, 401, { 'status' => '401', 'msg' => "$msg - $dbg (at $Time)", 'time' => $time });
+         return json($r, $status, { 'status' => "$status", 'msg' => "$msg (at $Time)", 'time' => $time });
       }
    };
 
@@ -540,7 +827,15 @@ sub handler ($r, $protocol) {
       return _handler($r, $protocol);
    }
    catch {
-      my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
+      my ($msg, $dbg);
+      if( ref($_) ) {
+         ($msg, $dbg) = ($_->msg(), $_->dbg());
+      }
+      else {
+         ($msg, $dbg) = ($_, $_);
+      }
+      # Sanitize regardless of source (see _handler's catch); $msg reaches the client.
+      ($msg, $dbg) = map { sanitize_sensitive_text($_) } ($msg, $dbg);
 
       wlog( "Caught exception: dbg='$dbg'; msg='$msg'");
       flog("Caught exception: dbg='$dbg'; msg='$msg'");

@@ -20,6 +20,13 @@ sub code ($self) {
    return $self->{'code'};
 }
 
+# Optional HTTP status the API dispatcher should return for this exception.
+# App.pm's catch defaults to 401 when this is unset, so existing call sites are
+# unaffected; set it (e.g. 400, 403) where a more specific status is warranted.
+sub status ($self) {
+   return $self->{'status'};
+}
+
 sub msg ($self) {
    return $self->{'msg'} // 'Internal error';
 }
@@ -38,10 +45,11 @@ sub time ($self) {
 #
 # e.g.
 #
-# die Exception->new( 
+# die Exception->new(
 #   'msg' => 'Error such-and-such occurred',
 #   'dbg' => 'Error such-and-such occurred with debug information X, Y and Z',  [optional]
 #   'code' => <error-id>                                                        [optional]
+#   'status' => <http-status>                                                   [optional]
 # )
 
 sub new ($class, %args) {
@@ -53,6 +61,7 @@ sub new ($class, %args) {
       'code' => $args{'code'},
       'msg' => $args{'msg'},
       'dbg' => $args{'dbg'},
+      'status' => $args{'status'},
       'time' => Time::HiRes::time
    }, ( ref($class) || $class );
 

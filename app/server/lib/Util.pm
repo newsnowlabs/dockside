@@ -10,10 +10,12 @@ our @EXPORT_OK = ( qw(
    call_socket_api call_socket_json_api
    get_uri
    run run_system clean_pty run_pty
+   sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
-   cache cacheReadWrite cloneHash
+   cache cacheReadWrite cloneHash lockFile
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    unique
+   apply_args_to_record
    ));
 
 use POSIX qw(strftime);
@@ -56,6 +58,41 @@ sub wlog ($m) {
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
    
    print STDERR $dt . " [dockside] " . $m . "\n";
+}
+
+sub sanitize_sensitive_text ($text) {
+   return '' unless defined $text;
+
+   my $out = $text;
+
+   # Redact explicit env payloads that can carry secrets into docker exec calls.
+   $out =~ s/--env=(OWNER_DETAILS|SSH_AGENT_KEYS|GH_TOKEN)=[^\n]*/--env=$1=<redacted>/g;
+
+   # Redact PEM private-key blocks if they appear in any other context.
+   $out =~ s/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----/<redacted-private-key>/sg;
+
+   # Redact JSON-style gh_token fields.
+   $out =~ s/("gh_token"\s*:\s*")[^"]*"/$1<redacted>"/g;
+   $out =~ s/('gh_token'\s*=>\s*')[^']*'/$1<redacted>'/g;
+
+   return $out;
+}
+
+# Build a short, secret-free command summary (binary + verb, plus the network
+# action for docker/podman network commands) for the client-facing error `msg`;
+# the full command line goes only to the `dbg` log, never to the client.
+# See docs/adr/0003-error-reporting-surface.md.
+sub _display_cmd (@cmd) {
+   return '' unless @cmd;
+
+   my @summary = ($cmd[0]);
+   if( @cmd >= 2 ) {
+      push @summary, $cmd[1];
+   }
+   if( @cmd >= 3 && $cmd[0] =~ m!/(?:docker|podman)$! && $cmd[1] eq 'network' ) {
+      push @summary, $cmd[2];
+   }
+   return join(' ', grep { defined($_) && $_ ne '' } @summary);
 }
 
 sub get_config ($path) {
@@ -153,8 +190,15 @@ sub run ($cmd, $unsafe = undef) {
    my $in = `$cmd`;
 
    unless($unsafe) {
-      die Exception->new( 'dbg' => sprintf( "Error running '%s': message '%s', exit code %d", $cmd, $!, $? >> 8 )) if( $? == -1 ) || ( $? >> 8 ) != 0;
-      die Exception->new( 'dbg' => sprintf( "Error running '%s': died with signal %d, %s coredump", ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without' )) if( $? & 127 );
+      my $safe_cmd = sanitize_sensitive_text($cmd);
+      die Exception->new(
+         'msg' => sprintf("Internal error - Error running command: exit code %d", $? >> 8),
+         'dbg' => sprintf("Error running '%s': message '%s', exit code %d", $safe_cmd, $!, $? >> 8)
+      ) if( $? == -1 ) || ( $? >> 8 ) != 0;
+      die Exception->new(
+         'msg' => 'Internal error - Command died with signal',
+         'dbg' => sprintf("Error running '%s': died with signal %d, %s coredump", $safe_cmd, ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without')
+      ) if( $? & 127 );
    }
 
    return $in;
@@ -166,14 +210,21 @@ sub run_system (@cmd) {
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
 
-   my $cmd = join(' ', @cmd);
+   my $cmd = join(' ', map { sanitize_sensitive_text($_) } @cmd);
+   my $display_cmd = _display_cmd(@cmd);
 
    flog("run_system: $cmd");
 
    my $exitCode = system(@cmd);
 
-   die Exception->new( 'dbg' => sprintf( "Error running '%s': gave '%s' and exit code %d", $cmd, $!, $? >> 8 )) if( $? == -1 ) || ( $? >> 8 ) != 0;
-   die Exception->new( 'dbg' => sprintf( "Error running '%s': died with signal %d, %s coredump", ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without' )) if( $? & 127 );
+   die Exception->new(
+      'msg' => sprintf("Internal error - Error running '%s': exit code %d", $display_cmd, $? >> 8),
+      'dbg' => sprintf( "Error running '%s': gave '%s' and exit code %d", $cmd, $!, $? >> 8 )
+   ) if( $? == -1 ) || ( $? >> 8 ) != 0;
+   die Exception->new(
+      'msg' => sprintf("Internal error - Error running '%s': signal %d", $display_cmd, ( $? & 127 )),
+      'dbg' => sprintf( "Error running '%s': died with signal %d, %s coredump", $cmd, ( $? & 127 ), ( $? & 128 ) ? 'with' : 'without' )
+   ) if( $? & 127 );
 
    return $? >> 8;
 }
@@ -307,6 +358,33 @@ sub cacheReadWrite ($file, $sub = undef, @args) {
       # Re-throw exception.
       die $_;
    };
+}
+
+# Acquire an exclusive advisory lock on $lockfile and return the open handle.
+#
+# Release is implicit and there is deliberately no explicit close: the caller
+# keeps the returned handle in a lexical, and when that lexical goes out of scope
+# Perl drops the last reference and closes the handle, which releases the flock.
+# Because Perl frees a scalar the instant its refcount hits zero, this is
+# deterministic — it fires on normal return, on die (the stack unwind destroys
+# the lexical), and on process/worker exit (the kernel closes the fd). This is
+# the standard Perl filehandle-as-scope-guard idiom; cacheReadWrite() above
+# releases its own handle the same way.
+#
+# Two caveats the caller must honour: hold the handle in a lexical scoped to
+# exactly the region to serialise, and don't copy it into anything longer-lived
+# (a stray copy would keep the lock held past the intended scope).
+#
+# This serialises multi-step "check-then-act" mutations that a single per-file
+# cacheReadWrite lock cannot (an existence check then a write, or a rename
+# spanning two files). The lock file is created on demand and must not be
+# unlinked (unlinking would let two processes lock different inodes for one path).
+sub lockFile ($lockfile) {
+   open( my $LK, ">>", $lockfile )
+      || die Exception->new( 'dbg' => "Cannot open lock file '$lockfile' ($!)" );
+   flock( $LK, LOCK_EX )
+      || do { close $LK; die Exception->new( 'dbg' => "Cannot lock '$lockfile' ($!)" ); };
+   return $LK;
 }
 
 sub cacheEvery ($file, $cacheTime, $sub = undef, @args) {
@@ -468,6 +546,66 @@ sub validate_auth_cookie ($options, $name, $salt) { # cookie: <value>; protocol:
 sub unique (@values) {
    my %k = map { $_ => 1 } grep { defined($_) && $_ ne '' } @values;
    return keys %k;
+}
+
+# Apply args into a record hashref in place.
+#
+# All values in $args must already be decoded Perl structures (not raw JSON
+# strings) — parse_body_args() in App.pm normalises both application/json and
+# form-encoded request bodies to this shape before dispatch reaches here.
+#
+# Keys support dot-notation for nested paths (e.g. "permissions.actions.foo").
+# Keys in @skip (e.g. 'username', 'password') are silently ignored, allowing
+# callers to pass the full $args without allowing modification of protected fields.
+# Keys with undef values are also skipped (defensive against malformed input).
+# The special key '_unset' is reserved for the delete pass and never written.
+#
+# Processing order: keys are sorted shallowest-first (fewest dots first) so
+# that a bulk-replace of a parent (e.g. permissions={...}) is applied before
+# any dotted children of that parent.  This prevents a top-level key from
+# silently clobbering a deeper key set in the same call.
+#
+# Intermediate nodes that don't exist are created as empty hashrefs so a dotted
+# path like "a.b.c" works even when "a" or "a.b" is absent from $record.
+#
+# _unset pass: after all set operations, each key listed in $args->{_unset}
+# (an arrayref of dotted-path strings) is deleted from the record.  Traversal
+# stops safely if any intermediate node is missing or not a hashref, leaving
+# the record unchanged for that path — the final delete is guarded by
+# 'if ref $ref eq 'HASH'' to prevent errors when traversal stopped early.
+sub apply_args_to_record ($record, $args, @skip) {
+   my %skip = map { $_ => 1 } @skip;
+
+   for my $key ( sort { scalar( split /\./, $a ) <=> scalar( split /\./, $b ) } keys %$args ) {
+      next if $skip{$key};
+      next if $key eq '_unset';
+      next unless defined $args->{$key};   # skip undef values (see parse_body_args edge case)
+
+      my @parts = split( /\./, $key );
+      my $ref   = $record;
+      for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
+         # Auto-vivify intermediate nodes so dotted paths work on sparse records.
+         $ref->{$part} //= {};
+         $ref = $ref->{$part};
+      }
+      $ref->{ $parts[-1] } = $args->{$key};
+   }
+
+   if ( ref $args->{_unset} eq 'ARRAY' ) {
+      for my $key ( @{ $args->{_unset} } ) {
+         my @parts = split( /\./, $key );
+         my $ref   = $record;
+         for my $part ( @parts[ 0 .. $#parts - 1 ] ) {
+            # Stop traversal if any intermediate node is absent or not a hashref.
+            # $ref is left pointing to the last successfully traversed hashref.
+            # The final 'if ref $ref eq HASH' guard makes the delete a no-op when
+            # traversal stopped before reaching the deepest-level hash.
+            last unless ref $ref eq 'HASH' && exists $ref->{$part};
+            $ref = $ref->{$part};
+         }
+         delete $ref->{ $parts[-1] } if ref $ref eq 'HASH';
+      }
+   }
 }
 
 1;

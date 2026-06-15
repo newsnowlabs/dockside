@@ -12,7 +12,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri);
+use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri sanitize_sensitive_text);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
 ################################################################################
@@ -193,11 +193,13 @@ sub meta ($self, $key, @rest) {
    }
    elsif( $key =~ /^(viewers|developers)$/ ) {
 
-      # $value can be a comma-separated list of items of form either '<username>' or 'role:<role>' or ''
+      # $value can be a comma-separated list of items of form either
+      # '<username>' or 'role:<role>' or ''. Accept the same character set
+      # supported by user/role creation: letters, digits, hyphens, underscores.
       my @values = split(/,/, $value);
 
       # Check if all values match the regex
-      if( (grep { /^(role:)?[a-z][a-z0-9]+$/ } @values) == @values ) {
+      if( (grep { /^(?:role:)?[A-Za-z0-9_-]+$/ } @values) == @values ) {
          # TODO: check that username(s) and role(s) provided are valid
          $self->{'meta'}{$key} = $value || '';
       }
@@ -411,9 +413,9 @@ sub update_container_info ($class) {
             $r->{'status'} = -3;
          }
       }
-      # We have no containerId, which implies no container has yet been launched for this reservation.
+      # We have no containerId: either launch is in-flight (-2) or docker create failed (-4).
       else {
-         $r->{'status'} = -2;
+         $r->{'status'} = ($r->{'createStatus'} ? -4 : -2);
       }
 
       $r->load_launch_logs();      
@@ -575,10 +577,10 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description IDE ) ],
             'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
-            'data' => [ qw( FQDN parentFQDN image runtime unixuser gitURL runningIDE options ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options ) ],
             'dockerLaunchLogs' => 1
          },
-         [ qw(id name owner profile status containerId) ]
+         [ qw(id name owner profile status containerId createStatus) ]
       );
    }
    else {
@@ -825,20 +827,47 @@ sub meta_has_user ($self, $key, $user) {
    return $self->meta($key) =~ /(?:^|,)\Q$user\E(?:,|$)/;
 }
 
+# Return the reservations whose owner/viewers/developers reference $identifier, as a
+# list of { id, name, fields => [...] } hashes. Lets a caller stop a user or role being
+# (re)created with a name still referenced by a reservation — which would otherwise
+# silently inherit that reservation's stale grant (privilege confusion on identifier
+# reuse), since reservation metadata stores these as plain unvalidated strings that
+# authorization later compares directly against the caller's username/role.
+# Scans the FULL store via load({}) (deliberately unfiltered — not User::reservations,
+# which filters by a caller's visibility). $kind is 'user' (match the owner, and a bare
+# username in viewers/developers) or 'role' (match 'role:<name>' in viewers/developers;
+# roles are never owners). 'fields' lists EVERY field a reservation references the
+# identifier through (a user can be owner AND viewer AND developer), so the caller
+# can report them all rather than just the first.
+sub referencing_reservations ($class, $identifier, $kind) {
+   my $token = ($kind eq 'role') ? "role:$identifier" : $identifier;
+   my @refs;
+   for my $r ( @{ $class->load( {} ) } ) {
+      my @fields;
+      push @fields, 'owner'
+         if $kind eq 'user' && ( $r->meta('owner') // '' ) eq $identifier;
+      push @fields, 'viewers'    if $r->meta_has_user( 'viewers',    $token );
+      push @fields, 'developers' if $r->meta_has_user( 'developers', $token );
+      push @refs, { 'id' => $r->{'id'}, 'name' => $r->{'name'}, 'fields' => \@fields }
+         if @fields;
+   }
+   return @refs;
+}
+
 ################################################################################
 # RESERVATION CONTROL METHODS
 #
 
 sub action ($self, $action, $args = {}) {
-   my $command;
+   my @command;
    if($action eq 'start') {
-      $command = 'start';
+      @command = ('start');
    }
    elsif($action eq 'stop') {
-      $command = 'stop';
+      @command = ('stop');
    }
    elsif($action eq 'remove') {
-      $command = 'rm --volumes';
+      @command = ('rm', '--volumes');
    }
    elsif($action eq 'getLogs') {
       return $self->load_container_logs({
@@ -852,24 +881,40 @@ sub action ($self, $action, $args = {}) {
    }
 
    my $containerId = $self->containerId();
-   return run("$CONFIG->{'docker'}{'bin'} $command $containerId");
+   return run_system($CONFIG->{'docker'}{'bin'}, @command, $containerId);
 }
 
 sub update_network ($self) {
    my $network = $self->data('network');
    my $containerId = $self->{'containerId'};
+   my $attached = $self->{'inspect'}{'Networks'} // {};
 
-   flog("update_network: $network");
+   flog(sprintf(
+      "update_network: reservationId=%s containerId=%s desired=%s attached=[%s]",
+      $self->id() // '',
+      $containerId // '',
+      defined($network) ? $network : '<undef>',
+      join(', ', sort keys %$attached),
+   ));
+
+   # If the container is already attached only to the requested network,
+   # there is nothing to do.
+   if( $network && $attached->{$network} && scalar(keys %$attached) == 1 ) {
+      flog("update_network: no-op; already attached only to desired network '$network'");
+      return;
+   }
 
    # Disconnect all existing networks, except requested one.
-   foreach my $oldNetwork (keys %{$self->{'inspect'}{'Networks'}}) {
-      next if $network eq $oldNetwork;
-      run("$CONFIG->{'docker'}{'bin'} network disconnect $oldNetwork $containerId");
+   foreach my $oldNetwork (keys %$attached) {
+      next if ($network // '') eq ($oldNetwork // '');
+      flog("update_network: disconnecting network '$oldNetwork' from container '$containerId'");
+      run_system($CONFIG->{'docker'}{'bin'}, 'network', 'disconnect', $oldNetwork, $containerId);
    }
 
    # Connect requested network, if not existing
-   if(!$self->{'inspect'}{'Networks'}{$network}) {
-      run("$CONFIG->{'docker'}{'bin'} network connect $network $containerId");
+   if($network && !$attached->{$network}) {
+      flog("update_network: connecting network '$network' to container '$containerId'");
+      run_system($CONFIG->{'docker'}{'bin'}, 'network', 'connect', $network, $containerId);
    }
 }
 
@@ -978,28 +1023,32 @@ sub launch ($self) {
    # CHILD PROCESS
    # -------------
 
+   my $exitCode;
    try {
 
       flog("Reservation::launch: RUNNING: $cmd");
 
-      # Set PATH required for 'docker run' to launch external credential helpers, like gcloud.
+      # Set PATH required for 'docker create' to launch external credential helpers, like gcloud.
       local $ENV{'PATH'} = $CONFIG->{'docker'}{'PATH'};
       local $ENV{'HOME'} = $CONFIG->{'docker'}{'HOME'} // '/home/dockside';
 
       # Enable this to simulate slow launches.
       # sleep(30);
 
-      # Launch 'docker run' command in a subprocess with pty piped to specified file.
-      my $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
-
-      # 'docker run' has completed, so, log containerId (if launch successful) and exitCode.
+      # Launch 'docker create' command in a subprocess with pty piped to specified file.
+      $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
 
       my $o = get_config("$CONFIG->{'tmpPath'}/r-$id.cid");
       flog("Reservation::launch: containerId='$o'; exitCode=$exitCode");
 
+      if( $exitCode != 0 ) {
+         flog("Reservation::launch: 'docker create' failed with exit code $exitCode");
+         die Exception->new( 'msg' => "docker create failed with exit code $exitCode" );
+      }
+
       if( $o !~ /^([0-9a-f]{12})[0-9a-f]{52}$/i ) {
-         flog("Reservation::launch: 'docker run' failed to output container id");
-         die Exception->new( 'msg' => 'docker run failed to output container id' );
+         flog("Reservation::launch: 'docker create' failed to output container id");
+         die Exception->new( 'msg' => 'docker create failed to output container id' );
       }
 
       # Set containerId in $self
@@ -1009,7 +1058,7 @@ sub launch ($self) {
       $self->update( {
          'containerId' => $self->containerId()
       } );
-      
+
       flog("Reservation::launch: updated reservation db successfully");
 
       # Now the reservation db has been updated with the containerId,
@@ -1023,9 +1072,16 @@ sub launch ($self) {
    }
    catch {
       my $msg = (ref($_) eq 'Exception') ? $_->msg : $_;
-      flog("Reservation::launch: caught exception in 'docker run': '$msg'");
+      flog("Reservation::launch: caught exception in 'docker create': '$msg'");
+      # Any exception reaching here means the create FAILED, so createStatus must
+      # be non-zero — status() maps a non-zero createStatus to -4 (failed) but a
+      # zero to -2 (launch in flight).  'docker create' can exit 0 yet still fail
+      # afterwards (e.g. no/garbled container id parsed from the output, which dies
+      # above with $exitCode still 0); use || not // so that post-command failure
+      # records 1 rather than the misleading success value 0.
       $self->update( {
-         'expiryTime' => YYYYMMDDHHMMSS(time)
+         'createStatus' => ($exitCode || 1),
+         'expiryTime'   => YYYYMMDDHHMMSS(time)
       } );
       exit(0);
    };
@@ -1101,10 +1157,10 @@ sub exec ($reservation, $command = undef) {
          "--env=SSHD_ENABLE=1"
       );
 
-      flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
+      flog(sanitize_sensitive_text("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
          join(' ', @Command) . "' for owner '$owner', developers '" .
          join(',', @usernames) . "', owner details '$user_details', keys '$keys_json'"
-      );
+      ));
    }
    else {   
       flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command '" .
@@ -1147,7 +1203,7 @@ sub exec ($reservation, $command = undef) {
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
-      "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs('*') ),
+      "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs_all() ),
       @envGit,
       @envOptions,
       @envGhToken,
