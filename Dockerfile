@@ -354,6 +354,8 @@ RUN export \
         BUNDELF_CODE_PATH="$OPT_PATH/ide/openvscode/$OPENVSCODE_VERSION" \
         BUNDELF_LIBPATH_TYPE="relative" && \
     /tmp/make-bundelf-bundle.sh --bundle && \
+    find $BUNDELF_CODE_PATH/openvscode/out -type f \( -name "*.js" -o -name "*.css" \) \
+         -size +1k -print0 | xargs -0 -r -P$(nproc) gzip -9 -k && \
     cd $BUNDELF_CODE_PATH/.. && \
     ln -s $OPENVSCODE_VERSION latest && \
     cp -a /tmp/bin $OPENVSCODE_VERSION/ && \
