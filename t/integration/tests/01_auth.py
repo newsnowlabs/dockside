@@ -8,8 +8,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
-PROFILE_NAME = '10-alpine'
-
 
 class AuthTests(TestCase):
     """Authentication and basic permission checks."""
@@ -31,16 +29,13 @@ class AuthTests(TestCase):
         self.assert_true(isinstance(result, list), 'viewer list should return a list')
 
     def test_05_unauthenticated_list_fails(self):
-        # unauth client is None — simulate by using wrong credentials
-        # Create a temporary client with bad credentials
         from dockside_test import DocksideClient
-        import os
         bad = DocksideClient(
             cli_path=self.admin._cli,
             server_url=self.admin._server,
             username='nobody',
             password='wrongpass',
-            host_header=self.admin._host_header,
+            connect_to=self.admin._connect_to,
             verify_ssl=self.admin._verify_ssl,
         )
         self.assert_api_error(bad.list_containers)
@@ -53,18 +48,18 @@ class AuthTests(TestCase):
             server_url=self.admin._server,
             username='nobody',
             password='wrongpass',
-            host_header=self.admin._host_header,
+            connect_to=self.admin._connect_to,
             verify_ssl=self.admin._verify_ssl,
         )
         self.assert_api_error(
-            bad.create, profile=PROFILE_NAME, name='inttest-noauth-create'
+            bad.create, profile=self.test_profile_alpine, name='inttest-noauth-create'
         )
         bad.cleanup()
 
     def test_07_viewer_cannot_create(self):
-        # testviewer has no createContainerReservation permission
+        # viewer has no createContainerReservation permission
         self.assert_api_error(
             self.viewer.create,
-            profile=PROFILE_NAME,
+            profile=self.test_profile_alpine,
             name='inttest-viewer-create-fail',
         )

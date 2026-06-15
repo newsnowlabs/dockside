@@ -27,8 +27,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError
 
-PROFILE_NAME = '10-alpine'
-
 
 def _docker_networks():
     """Return list of docker network names visible on the host."""
@@ -50,8 +48,47 @@ def _docker_available():
         return False
 
 
+def _docker_manages_container(ctr):
+    """True if the docker daemon reachable here manages container `ctr`.
+
+    A Dockside container launched with runc / io.containerd.runc.v2 + a bind-mounted
+    /var/run/docker.sock talks to the host daemon, which DOES manage it. One launched
+    with sysbox-runc instead runs an independent inner dockerd (per entrypoint.sh) that
+    does NOT manage the Dockside container — so a network cannot be attached to it from
+    here. This guard lets the network-attach tests skip cleanly in that case rather than
+    create a network and then fail on connect.
+    """
+    try:
+        r = subprocess.run(['docker', 'container', 'inspect', ctr],
+                           capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 class NetworkTests(TestCase):
     """Network availability and assignment tests."""
+
+    # Test networks currently connected to the Dockside container, as (net, container)
+    # pairs. tearDownClass disconnects/removes any that remain — and the harness routes
+    # SIGINT/SIGTERM through tearDownClass (emergency cleanup), so an interrupted run
+    # never leaves a test network attached to the container. These tests only ever touch
+    # their own throwaway 'inttest-net-*' networks, never the container's existing ones.
+    _attached_networks = []
+
+    @classmethod
+    def tearDownClass(cls):
+        while cls._attached_networks:
+            net, ctr = cls._attached_networks.pop()
+            subprocess.run(['docker', 'network', 'disconnect', net, ctr],
+                           capture_output=True, timeout=15)
+            subprocess.run(['docker', 'network', 'rm', net],
+                           capture_output=True, timeout=15)
+
+    def _dockside_container(self):
+        """Resolve the Dockside container to attach test networks to: harness mode's id,
+        else the explicit/auto-detected non-harness id. None if neither is known."""
+        return self.harness_container_id or getattr(self, 'dockside_container_id', None)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -61,10 +98,6 @@ class NetworkTests(TestCase):
         Returns list of network name strings, or None if unsupported.
         """
         try:
-            # The form endpoint or list endpoint may expose available networks.
-            # We probe by creating a container with a bogus network and parsing
-            # the error, or by looking at a successful container's network field.
-            # More robustly: get the first container we know about and note its network.
             containers = self.admin.list_containers()
             networks = set()
             for c in containers:
@@ -79,7 +112,7 @@ class NetworkTests(TestCase):
     def _create_and_cleanup(self, name, **kwargs):
         self.register_cleanup(name)
         return self.admin.create(
-            profile=PROFILE_NAME,
+            profile=self.test_profile_alpine,
             name=name,
             **kwargs
         )
@@ -88,7 +121,7 @@ class NetworkTests(TestCase):
 
     def test_01_create_default_network(self):
         """Create without --network; container should be assigned a network."""
-        name = 'inttest-net-default'
+        name = self._sfx('inttest-net-default')
         self._create_and_cleanup(name)
         data = self.admin.get_container(name)
         network = (data.get('data') or {}).get('network') or data.get('network')
@@ -97,17 +130,15 @@ class NetworkTests(TestCase):
 
     def test_02_create_on_discovered_network(self):
         """Create on a network currently known to Dockside (first available)."""
-        # Create a container first to discover available networks
-        seed_name = 'inttest-net-seed'
+        seed_name = self._sfx('inttest-net-seed')
         self._create_and_cleanup(seed_name)
         seed_data = self.admin.get_container(seed_name)
         network = (seed_data.get('data') or {}).get('network') or seed_data.get('network')
         if not network:
             self.skip('Could not discover available network from existing container')
 
-        name = 'inttest-net-explicit'
+        name = self._sfx('inttest-net-explicit')
         self._create_and_cleanup(name)
-        # Re-edit to set network explicitly
         try:
             self.admin.update(name, network=network)
         except APIError as e:
@@ -118,7 +149,7 @@ class NetworkTests(TestCase):
 
     def test_03_network_persists_after_edit(self):
         """Network field persists after an unrelated edit."""
-        name = 'inttest-net-persist'
+        name = self._sfx('inttest-net-persist')
         self._create_and_cleanup(name)
         data = self.admin.get_container(name)
         network = (data.get('data') or {}).get('network') or data.get('network')
@@ -133,13 +164,11 @@ class NetworkTests(TestCase):
         Switch network via edit (requires at least two available networks).
         Skips gracefully if only one network is available.
         """
-        # Discover available networks
-        seed_name = 'inttest-net-switch-seed'
+        seed_name = self._sfx('inttest-net-switch-seed')
         self._create_and_cleanup(seed_name)
         seed_data = self.admin.get_container(seed_name)
         net_a = (seed_data.get('data') or {}).get('network') or seed_data.get('network')
 
-        # Look for a second network from existing containers
         all_containers = self.admin.list_containers()
         net_b = None
         for c in all_containers:
@@ -153,7 +182,7 @@ class NetworkTests(TestCase):
         if not net_b:
             self.skip('Only one network available; cannot test network switch')
 
-        name = 'inttest-net-switch'
+        name = self._sfx('inttest-net-switch')
         self._create_and_cleanup(name)
         try:
             self.admin.update(name, network=net_b)
@@ -170,59 +199,83 @@ class NetworkTests(TestCase):
         Create a unique Docker network, attach it to the Dockside container,
         verify it appears in available networks, then clean up.
         Requires: can_modify_networks() == True AND docker CLI available AND
-                  harness_container_id known.
+                  a Dockside container id (harness or explicit/auto-detected).
         """
         if not self.can_modify_networks():
             self.skip('Network modification not enabled for this mode '
                       '(set DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1 to enable)')
         if not _docker_available():
             self.skip('docker CLI not available')
-        if not self.harness_container_id:
-            self.skip('harness_container_id not set; cannot attach network to Dockside container')
+        ctr = self._dockside_container()
+        if not ctr:
+            self.skip('no Dockside container id known (set DOCKSIDE_TEST_CONTAINER_ID) '
+                      'to attach a network to the Dockside container')
+        if not _docker_manages_container(ctr):
+            self.skip(f'docker daemon reachable here does not manage container {ctr!r} '
+                      '(e.g. a sysbox-runc inner dockerd); cannot attach a network to it')
 
         test_net = f'inttest-net-{uuid.uuid4().hex[:8]}'
-        created = False
+        created  = False
         attached = False
         try:
-            # Create the test network
             r = subprocess.run(['docker', 'network', 'create', test_net],
                                capture_output=True, timeout=15)
             if r.returncode != 0:
                 self.skip(f'docker network create failed: {r.stderr.decode()}')
             created = True
 
-            # Attach to Dockside container
             r = subprocess.run(
-                ['docker', 'network', 'connect', test_net, self.harness_container_id],
+                ['docker', 'network', 'connect', test_net, ctr],
                 capture_output=True, timeout=15
             )
             if r.returncode != 0:
                 self.skip(f'docker network connect failed: {r.stderr.decode()}')
             attached = True
+            self._attached_networks.append((test_net, ctr))  # for emergency teardown
 
-            # Verify it appears in available networks (create a test container to probe)
-            probe_name = 'inttest-net-probe'
+            probe_name = self._sfx('inttest-net-probe')
             self.register_cleanup(probe_name)
+
+            # Discovery is asynchronous: docker-event-daemon must notice the network
+            # connected to the Dockside container and rewrite containers.json, the Perl
+            # app must reload it, and Profile::applyDefaultsAndFilters must re-read the
+            # in-memory host networks before the new network is offered for a reservation.
+            # So retry the create until it is accepted (or time out), rather than assuming
+            # it is usable the instant after `docker network connect`.
+            def _create_probe_on_test_net():
+                try:
+                    self.admin.create(
+                        profile=self.test_profile_alpine,
+                        name=probe_name,
+                        network=test_net,
+                    )
+                    return True
+                except APIError:
+                    return False  # not yet discovered by Dockside; retry
             try:
-                self.admin.create(
-                    profile=PROFILE_NAME,
-                    name=probe_name,
-                    network=test_net,
-                )
-                probe_data = self.admin.get_container(probe_name)
-                actual_net = ((probe_data.get('data') or {}).get('network')
-                              or probe_data.get('network'))
-                self.assert_equal(actual_net, test_net,
-                                  f'probe container not on test network: {actual_net!r}')
-            except APIError as e:
-                self.skip(f'Could not create devtainer on test network: {e}')
+                self.wait_until(
+                    _create_probe_on_test_net, timeout=45, interval=3,
+                    timeout_msg='Dockside did not make the attached test network '
+                                'available for a reservation')
+            except AssertionError as e:
+                self.skip(str(e))
+
+            probe_data = self.admin.get_container(probe_name)
+            actual_net = ((probe_data.get('data') or {}).get('network')
+                          or probe_data.get('network'))
+            self.assert_equal(actual_net, test_net,
+                              f'probe container not on test network: {actual_net!r}')
 
         finally:
             if attached:
                 subprocess.run(
-                    ['docker', 'network', 'disconnect', test_net, self.harness_container_id],
+                    ['docker', 'network', 'disconnect', test_net, ctr],
                     capture_output=True, timeout=15
                 )
+                try:
+                    self._attached_networks.remove((test_net, ctr))
+                except ValueError:
+                    pass
             if created:
                 subprocess.run(['docker', 'network', 'rm', test_net],
                                capture_output=True, timeout=15)
@@ -236,11 +289,17 @@ class NetworkTests(TestCase):
             self.skip('Network modification not enabled for this mode')
         if not _docker_available():
             self.skip('docker CLI not available')
-        if not self.harness_container_id:
-            self.skip('harness_container_id not set')
+        ctr = self._dockside_container()
+        if not ctr:
+            self.skip('no Dockside container id known (set DOCKSIDE_TEST_CONTAINER_ID) '
+                      'to attach a network to the Dockside container')
+        if not _docker_manages_container(ctr):
+            self.skip(f'docker daemon reachable here does not manage container {ctr!r} '
+                      '(e.g. a sysbox-runc inner dockerd); cannot attach a network to it')
 
         test_net = f'inttest-net-{uuid.uuid4().hex[:8]}'
-        created = False
+        created  = False
+        attached = False
         try:
             r = subprocess.run(['docker', 'network', 'create', test_net],
                                capture_output=True, timeout=15)
@@ -249,35 +308,48 @@ class NetworkTests(TestCase):
             created = True
 
             r = subprocess.run(
-                ['docker', 'network', 'connect', test_net, self.harness_container_id],
+                ['docker', 'network', 'connect', test_net, ctr],
                 capture_output=True, timeout=15
             )
             if r.returncode != 0:
                 self.skip(f'docker network connect failed')
+            attached = True
+            self._attached_networks.append((test_net, ctr))  # for emergency teardown
 
             # Detach immediately
             subprocess.run(
-                ['docker', 'network', 'disconnect', test_net, self.harness_container_id],
+                ['docker', 'network', 'disconnect', test_net, ctr],
                 capture_output=True, timeout=15
             )
-
-            # Now attempting to create a container on this network should fail
-            name = 'inttest-net-gone'
-            self.register_cleanup(name)
+            attached = False
             try:
-                self.admin.create(
-                    profile=PROFILE_NAME,
-                    name=name,
-                    network=test_net,
-                )
-                # If it succeeded, that's also acceptable (Dockside may not validate
-                # network at create time — it validates at start time)
-                # Just verify the name is in list
+                self._attached_networks.remove((test_net, ctr))
+            except ValueError:
                 pass
-            except APIError:
-                pass  # Expected: network no longer available
+
+            # The Dockside container is no longer attached to test_net, so Dockside
+            # must no longer offer it: creating a container on it has to be rejected.
+            # cleanup is registered first so a regression that lets it succeed still
+            # tears the container down.
+            name = self._sfx('inttest-net-gone')
+            self.register_cleanup(name)
+            self.assert_api_error(
+                self.admin.create,
+                profile=self.test_profile_alpine,
+                name=name,
+                network=test_net,
+            )
 
         finally:
+            if attached:
+                subprocess.run(
+                    ['docker', 'network', 'disconnect', test_net, ctr],
+                    capture_output=True, timeout=15
+                )
+                try:
+                    self._attached_networks.remove((test_net, ctr))
+                except ValueError:
+                    pass
             if created:
                 subprocess.run(['docker', 'network', 'rm', test_net],
                                capture_output=True, timeout=15)
