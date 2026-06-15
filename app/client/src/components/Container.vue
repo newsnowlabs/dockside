@@ -284,19 +284,24 @@
          container: Object
       },
       data() {
-         let profiles = window.dockside.profiles;
-         let profileNames = Object.keys(profiles).sort();
-
          return {
-            userName: (window.dockside.viewers.find(viewer => viewer.username === this.container.meta.owner) || []).name,
-            profiles: profiles,
-            profileNames: profileNames,
             form: {
             }
          };
       },
       created() {
-         if(this.isPrelaunchMode) this.initialiseForm();
+         if(this.isPrelaunchMode) {
+            // fetchLaunchProfiles is async but initialiseForm runs synchronously off the
+            // pre-refresh profile list, and no watcher reconciles form.profile once the
+            // fetch resolves. So if an admin removes or renames the selected profile in the
+            // brief window a launch form is open, a stale profile id can be submitted.
+            // Deliberately not handled: admin profile edits are rare, the window is tiny,
+            // and the failure is non-destructive — the server validates the profile on
+            // launch and returns an error, so the user simply retries. A reconciling watcher
+            // would add reactive complexity for a transient, self-correcting edge case.
+            this.$store.dispatch('account/fetchLaunchProfiles');
+            this.initialiseForm();
+         }
       },
       computed: {
          ...mapGetters([
@@ -304,8 +309,23 @@
             'isEditMode',
             'isPrelaunchMode'
          ]),
-         ...mapState([
-         ]),
+         ...mapState({ profiles: state => state.account.launchProfiles }),
+         // Resolve the owner's display name from the reactive viewers directory so it
+         // reflects admin user create/rename made in the same session; fall back to
+         // the username when the owner has no directory entry.
+         userName() {
+            const owner = this.container.meta.owner;
+            const entry = this.$store.state.account.viewers.find(v => v.username === owner);
+            return (entry && entry.name) || owner;
+         },
+         profileNames() {
+            // Guard against launchProfiles being null/undefined.  This can happen
+            // transiently if the server returns a non-data response (e.g. a 302
+            // redirect during a restart) and assertDataObject in account.js throws,
+            // leaving the store's launchProfiles at its last known-good value or the
+            // bootstrap value.  The || {} prevents Object.keys from throwing.
+            return Object.keys(this.profiles || {}).sort();
+         },
          runtimes() {
             return (this.profile && this.profile.runtimes) ? this.profile.runtimes : [];
          },

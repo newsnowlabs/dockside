@@ -39,6 +39,11 @@
          refresh() {
             let timeout = 500;
             let thisTime = new Date().getTime();
+            // The launching/idle ternary exists to facilitate a faster refresh cadence
+            // while a container is launching (haveLaunchingContainers, which also counts
+            // the transient -4 launch-failed state). Both arms are intentionally 1000ms
+            // for now, so behaviour is identical today; the split is kept so enabling
+            // faster launch-time polling is a one-number change, not a refactor.
             if(thisTime > this.lastTime + ((this.haveLaunchingContainers ? 1000 : 1000)-100)) {
                this.$store.dispatch('updateContainers', this.haveLaunchingContainers).finally(() => {
                   this.lastTime = thisTime;

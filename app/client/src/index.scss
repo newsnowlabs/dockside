@@ -25,3 +25,16 @@ $theme-colors: (
       }
    }
 }
+
+// Admin form layout: narrow label column and tighter spacing.
+// Scoped to .admin-main to avoid overriding Bootstrap grid elsewhere.
+.admin-main {
+   .col-3 {
+      flex: 0 0 15% !important;
+      max-width: 15% !important;
+   }
+
+   .form-group {
+      margin-bottom: 0.5rem;
+   }
+}

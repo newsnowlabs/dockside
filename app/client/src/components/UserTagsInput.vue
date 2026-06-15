@@ -32,12 +32,18 @@
       },
       data() {
          return {
-            allUsers: window.dockside.viewers, // FIXME Make a viewers/users service and provide an accessor to this global data within it
             currentInput: '',
             selectedUserIds: ''
          };
       },
       computed: {
+         // Reactive viewers/roles directory from the account store (seeded from the
+         // window.dockside.viewers bootstrap). Reading it from the store rather than the
+         // frozen global means admin user mutations and self-edits made in this session
+         // are reflected here without a full page reload.
+         allUsers() {
+            return this.$store.state.account.viewers;
+         },
          userNameToUserIDMap() {
             return this.allUsers.reduce((obj, item) => {
                obj[item.name] = item.username;
@@ -57,7 +63,15 @@
          // selectedUserIds property contains a comma-separated string of user IDs, so this computed property represents those IDs as an array of obejcts
          selectedUsers: {
             get() {
-               return this.value ? this.value.split(',').map(userId => this.generateInternalTagRepresentation(this.userIDToUserNameMap[userId], userId)) : [];
+               return this.value ? this.value.split(',').map(userId => {
+                  // Stable label when the id isn't in the directory (a deleted user, or a
+                  // role with no current users): the username for a user id, '<name> (Role)'
+                  // for a 'role:<name>' id. Never undefined — the tags library treats an
+                  // undefined text as malformed and can drop the userId.
+                  const label = this.userIDToUserNameMap[userId]
+                     || (userId.startsWith('role:') ? this.roleName(userId.slice(5)) : userId);
+                  return this.generateInternalTagRepresentation(label, userId);
+               }) : [];
             },
             set(userObjs) {
                this.selectedUserIds = userObjs.map(user => user.userId).join(',');

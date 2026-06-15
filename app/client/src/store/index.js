@@ -1,10 +1,16 @@
 import Vuex from 'vuex';
 import { getContainers } from '@/services/container';
+import adminModule   from '@/store/admin';
+import accountModule from '@/store/account';
 
 const welcomeTextStatusLocalStorageKey = '/dockside/welcomeTextStatus';
 
 const createStore = () => new Vuex.Store({
    strict: process.env.NODE_ENV !== 'production',
+   modules: {
+      admin:   adminModule,
+      account: accountModule,
+   },
    state: {
       selectedContainer: { name: undefined, mode: 'view' },
       containersFilter: 'shared',
@@ -15,8 +21,13 @@ const createStore = () => new Vuex.Store({
    getters: {
       welcomeTextStatus: state => state.welcomeTextStatus,
       isSelected: state => state.selectedContainer.name !== undefined,
+      // -4 (docker-create failed) is treated as "launching" alongside -2, so a failed
+      // launch keeps the potential for fast-polling (although poll times are currently
+      // equal) until the reservation is auto-cleaned away; unlike steady states, -4 is
+      // transient.
       haveLaunchingContainers: state => state.containers.some(container =>
-         (container.status == -2 && (container.expiryTime === undefined || container.expiryTime === null || container.expiryTime === ''))
+         (container.status == -2 && (container.expiryTime === undefined || container.expiryTime === null || container.expiryTime === '')) ||
+         container.status == -4
       ),
       haveContainers: state => state.containers.length > 0,
       isEditMode: (state, getters) => getters.isSelected && state.selectedContainer.mode === "edit",
