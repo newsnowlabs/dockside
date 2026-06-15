@@ -220,6 +220,15 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 # ── DocksideClient ─────────────────────────────────────────────────────────────
 
+# Every DocksideClient that creates a temp cookie file registers itself here, so the
+# signal path (TestRunner._emergency_cleanup) can remove ALL of their files — not just
+# the runner's fixed set. with_credentials() siblings are held on test classes and are
+# absent from the runner's _clients map, but they land here. (Normal exit is covered by
+# each client's own atexit registration; this list is for the signal path, where atexit
+# does not run.)
+_ALL_CLIENTS = []
+
+
 class DocksideClient:
     """
     Per-user Dockside client.
@@ -275,6 +284,9 @@ class DocksideClient:
             # TestRunner._emergency_cleanup, because atexit handlers do not run once
             # a caught signal is re-raised to the default handler.
             atexit.register(self.cleanup)
+            # Also record it for the signal path (see _ALL_CLIENTS above), which atexit
+            # cannot cover and which the runner's fixed _clients map misses for siblings.
+            _ALL_CLIENTS.append(self)
         else:
             self._session_cookie_file = None  # use system config stored session
         self._cookie_jar = None  # loaded lazily after first _run
@@ -934,6 +946,10 @@ class TestRunner:
             os.kill(os.getpid(), signum)
         signal.signal(signal.SIGINT, _cleanup)
         signal.signal(signal.SIGTERM, _cleanup)
+        # SIGHUP too, so a dropped terminal also tears down client temp files (and
+        # fixtures); otherwise SIGHUP would fall through to run_tests_main's earlier
+        # handler, which cleans fixtures but not the per-client cookie files.
+        signal.signal(signal.SIGHUP, _cleanup)
         atexit.register(self._emergency_cleanup)
 
     def _emergency_cleanup(self):
@@ -949,10 +965,11 @@ class TestRunner:
                 except Exception:
                     pass
         self._active_class_teardowns.clear()
-        # Remove each client's credential-bearing temp cookie file. atexit will
-        # not run on the signal path (we re-raise to SIG_DFL), so do it here too;
-        # cleanup() is idempotent so the normal-exit atexit pass is harmless.
-        for client in self._clients.values():
+        # Remove every client's credential-bearing temp cookie file. atexit does not
+        # run on the signal path (we re-raise to SIG_DFL), so do it here; iterate the
+        # module-level registry rather than self._clients so with_credentials() siblings
+        # are covered too. cleanup() is idempotent, so the normal-exit atexit pass is harmless.
+        for client in list(_ALL_CLIENTS):
             try:
                 client.cleanup()
             except Exception:
