@@ -2901,6 +2901,52 @@ def cmd_whoami(args):
                 print(f'  {k}: {json.dumps(v)}')
 
 
+def cmd_account_show(args):
+    """Show your own account record (/me), including the self-editable fields.
+
+    `whoami` is the quick "who am I + effective permissions" view; `account show`
+    is the companion to `account edit`, so its text output also lists the fields
+    that command can change — display name, email, GitHub token and SSH keypairs.
+    Secrets (gh_token, private keys) arrive already masked from the server.
+    JSON/YAML output emits the full record either way.
+    """
+    opener, server = _client(args)
+    try:
+        data = _do_get(opener, server.rstrip('/') + '/me/')
+    except APIError as e:
+        die(str(e))
+    record = data.get('data') or {}
+
+    if args._fmt in ('json', 'yaml'):
+        emit(record, args._fmt)
+        return
+
+    print(f"username:  {record.get('username', '')}")
+    print(f"id:        {record.get('id', '')}")
+    print(f"role:      {record.get('role', '')}")
+    print(f"name:      {record.get('name', '')}")
+    print(f"email:     {record.get('email', '')}")
+    gh_token = record.get('gh_token')
+    if gh_token:
+        print(f"gh_token:  {gh_token}")
+    keypairs = ((record.get('ssh') or {}).get('keypairs')) or {}
+    if keypairs:
+        print('ssh keypairs:')
+        for name in sorted(keypairs):
+            pub = ((keypairs[name] or {}).get('public') or '').strip()
+            print(f'  {name}: {pub}' if pub else f'  {name}')
+    perms = (record.get('permissions') or {}).get('actions') or {}
+    if perms:
+        print('permissions:')
+        for k, v in sorted(perms.items()):
+            print(f'  {k}: {v}')
+    resources = record.get('resources') or {}
+    if resources:
+        print('resources:')
+        for k, v in sorted(resources.items()):
+            print(f'  {k}: {json.dumps(v)}')
+
+
 # ── Argument parser ───────────────────────────────────────────────────────────
 
 EPILOG = """\
@@ -3385,7 +3431,7 @@ def build_parser():
 
     sp = account_sub.add_parser('show', help='Show your own account record (/me)')
     _add_global_flags(sp)
-    sp.set_defaults(func=cmd_whoami)
+    sp.set_defaults(func=cmd_account_show)
 
     sp = account_sub.add_parser(
         'edit',
