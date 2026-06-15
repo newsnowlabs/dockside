@@ -28,7 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
-from dockside_test import APIError, TestCase
+from dockside_test import CapabilityUnavailable, TestCase
 from _ssh_test_common import (
     SshTestMixin,
     _DEV1_KEY,
@@ -93,11 +93,11 @@ class SshOutboundTests(SshTestMixin, TestCase):
                 preferred='ssh',
                 system_bin_dir=self.test_system_bin_dir,
             )
-        except APIError as exc:
-            # APIError here means the requested container-access mechanism is
-            # genuinely unavailable (no ssh/wstunnel/docker, or no key) — a real
-            # skip. Any OTHER exception is a regression in SSH routing, agent setup
-            # or command execution once the container is up, and must fail.
+        except CapabilityUnavailable as exc:
+            # CapabilityUnavailable = the container-access mechanism is genuinely
+            # unavailable (no ssh/wstunnel/docker, or no key) — a real skip. A plain
+            # APIError (e.g. a proxy-spec/config regression) or any other exception is
+            # a real failure once the container is up, and now propagates.
             self.skip(str(exc))
 
         # Assert the key was listed by the AGENT, not merely present in

@@ -46,6 +46,15 @@ class APIError(Exception):
     pass
 
 
+class CapabilityUnavailable(APIError):
+    """Raised when a host capability a test needs is genuinely unavailable (e.g. the
+    docker/ssh/wstunnel binary or a key is missing) — the one case where skipping is
+    legitimate. Subclasses APIError so existing `except APIError` handlers still catch
+    it, but lets skip sites catch ONLY this and let real API/CLI regressions (plain
+    APIError) propagate and fail instead of being downgraded to skips."""
+    pass
+
+
 class SkipTest(Exception):
     """Raised by a test to skip itself gracefully."""
     pass

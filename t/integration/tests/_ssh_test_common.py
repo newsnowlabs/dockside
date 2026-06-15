@@ -11,7 +11,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 
-from dockside_test import APIError
+from dockside_test import APIError, CapabilityUnavailable
 
 _INTEGRATION_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 _SSH_DIR = os.path.join(_INTEGRATION_DIR, 'config', 'ssh')
@@ -135,16 +135,25 @@ def run_in_devtainer(client, devtainer, remote_argv, private_key_path=None,
 
     preferred: docker|ssh
     Returns subprocess.CompletedProcess.
-    Raises APIError if the requested method is unavailable.
+    Raises CapabilityUnavailable if the requested method is genuinely unavailable
+    (a missing host tool or key — a legitimate skip); any other failure (e.g. a
+    container-id lookup that fails while docker IS available, or a proxy-spec/config
+    regression in the SSH path) raises plain APIError so the caller fails rather
+    than skips.
     """
     access = requested_container_access_method(preferred)
 
     argv = list(remote_argv)
 
     if access == 'docker':
+        if not docker_available():
+            raise CapabilityUnavailable(
+                'Requested docker-exec container access is unavailable: docker not found')
         devtainer_id = devtainer_container_id(client, devtainer)
         if not devtainer_id:
-            raise APIError('Requested docker-exec container access is unavailable')
+            # docker IS available but the container id could not be resolved — that is a
+            # regression once the test container should be running, not a capability gap.
+            raise APIError(f'could not resolve docker container id for {devtainer!r}')
         docker_argv = ['docker', 'exec']
         if run_as_user:
             docker_argv.extend(['-u', run_as_user])
@@ -159,12 +168,12 @@ def run_in_devtainer(client, devtainer, remote_argv, private_key_path=None,
     else:
         if not ssh_available():
             warn_missing_host_tool('ssh')
-            raise APIError('Requested SSH container access is unavailable: ssh not found')
+            raise CapabilityUnavailable('Requested SSH container access is unavailable: ssh not found')
         if not wstunnel_available():
             warn_missing_host_tool('wstunnel')
-            raise APIError('Requested SSH container access is unavailable: wstunnel not found')
+            raise CapabilityUnavailable('Requested SSH container access is unavailable: wstunnel not found')
         if not private_key_path or not os.path.isfile(private_key_path):
-            raise APIError('Requested SSH container access is unavailable: no private key')
+            raise CapabilityUnavailable('Requested SSH container access is unavailable: no private key')
         if debug_enabled():
             print(f'# DEBUG run_in_devtainer backend=ssh devtainer={devtainer}',
                   file=sys.stderr)

@@ -16,7 +16,7 @@ import json
 import subprocess
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
-from dockside_test import TestCase, APIError
+from dockside_test import TestCase, APIError, CapabilityUnavailable
 sys.path.insert(0, os.path.dirname(__file__))
 from _ssh_test_common import _DEV1_KEY, run_in_devtainer
 
@@ -81,11 +81,12 @@ class GitProfileTests(TestCase):
                 system_bin_dir=self.test_system_bin_dir,
                 run_as_user='dockside',
             )
-        except APIError as exc:
-            # APIError = the requested container-access mechanism is unavailable
-            # (docker/ssh not present) — a legitimate skip. A TimeoutExpired or any
-            # other error while inspecting an already-running container is a
-            # regression, so let it propagate and fail rather than skip.
+        except CapabilityUnavailable as exc:
+            # CapabilityUnavailable = the container-access mechanism is genuinely
+            # unavailable (docker/ssh/wstunnel or key missing) — a legitimate skip. A
+            # plain APIError (e.g. a container-id or proxy/config regression), a
+            # TimeoutExpired, or any other error while inspecting an already-running
+            # container now propagates and fails rather than being skipped.
             self.skip(str(exc))
         self._debug(
             f'inspect done name={name} rc={result.returncode} '
