@@ -174,16 +174,23 @@ launch_sshd() {
 }
 
 create_git_repo() {
-   [ -n "$GIT_URL" ] || return
+   [ -n "$GIT_URL" ] || return 0
 
    log "- Running: git clone $GIT_URL"
-   GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" git clone "$GIT_URL"
+   # Detect clone failure explicitly: without this the function returned the
+   # status of the trailing gitconfig block, so a failed clone went unnoticed and
+   # the caller went on to touch .git-repo-ready over an absent repository.
+   if ! GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" git clone "$GIT_URL"; then
+      log "ERROR: git clone '$GIT_URL' failed"
+      return 1
+   fi
 
    # If $GIT_URL is an https:// URI, then store sslcainfo in .gitconfig
    if echo "$GIT_URL" | grep -qE '^https?://'; then
       log "Updating ~/.gitconfig with http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt"
       git config -f "$HOME/.gitconfig" --add http.sslcainfo "$IDE_PATH/certs/ca-certificates.crt"
    fi
+   return 0
 }
 
 gh_authenticate() {
@@ -630,17 +637,25 @@ run_nonroot() {
    populate_known_hosts
    (
       log "Repo setup subproc started ..."
-      create_git_repo
+      # A failed clone is a hard error: there is no repository to set up, so abort
+      # before any sentinel is written (checkout_git_branch_or_pr would otherwise
+      # return 0 on the absent repo and let .git-repo-ready be touched anyway).
+      if ! create_git_repo; then
+         log "WARN: git clone failed; writing .git-repo-failed and aborting repo setup"
+         touch "$LOG_PATH/.git-repo-failed"
+         exit 1
+      fi
       gh_authenticate
       # A requested branch/PR checkout failure is a hard error: abort the rest of repo
       # setup, log it, and write .git-repo-failed instead of the success sentinel so a
       # consumer can detect it immediately rather than waiting for a timeout.
       #
-      # On success (or when no branch/PR was requested), write .git-repo-ready. Note this
-      # still signals only that the subproc reached this point for a GIT_URL clone — the
-      # clone itself may have soft-failed (Dockside does not guarantee an error-free
-      # working tree), so .git-repo-ready is gated on a non-empty GIT_URL, and its sole
-      # consumer (t/integration/tests/06_git_profile.py) verifies the repo state itself.
+      # On success (or when no branch/PR was requested), write .git-repo-ready. With a
+      # hard clone failure now handled above, this signals that a GIT_URL clone
+      # succeeded and any requested branch/PR was checked out; it does NOT wait for the
+      # later VS Code population, and Dockside does not guarantee an otherwise error-free
+      # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
+      # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
       if checkout_git_branch_or_pr; then
          [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
       else
