@@ -1046,8 +1046,14 @@ sub launch ($self) {
    catch {
       my $msg = (ref($_) eq 'Exception') ? $_->msg : $_;
       flog("Reservation::launch: caught exception in 'docker create': '$msg'");
+      # Any exception reaching here means the create FAILED, so createStatus must
+      # be non-zero — status() maps a non-zero createStatus to -4 (failed) but a
+      # zero to -2 (launch in flight).  'docker create' can exit 0 yet still fail
+      # afterwards (e.g. no/garbled container id parsed from the output, which dies
+      # above with $exitCode still 0); use || not // so that post-command failure
+      # records 1 rather than the misleading success value 0.
       $self->update( {
-         'createStatus' => ($exitCode // 1),
+         'createStatus' => ($exitCode || 1),
          'expiryTime'   => YYYYMMDDHHMMSS(time)
       } );
       exit(0);
