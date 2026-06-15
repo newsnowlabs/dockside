@@ -2672,7 +2672,8 @@ def cmd_check_url(args):
     parsed      = urllib.parse.urlparse(url)
     target_host = parsed.hostname or ''
     server_host = urllib.parse.urlparse(_server).hostname or ''
-    attach_cookies = getattr(args, 'allow_cross_domain_cookies', False) or (
+    allow_cross = getattr(args, 'allow_cross_domain_cookies', False)
+    attach_cookies = allow_cross or (
         (parsed.scheme or '').lower() == 'https'
         and _host_in_server_domain(target_host, server_host)
     )
@@ -2685,7 +2686,10 @@ def cmd_check_url(args):
                 port=None, port_specified=False,
                 domain=target_host, domain_specified=True, domain_initial_dot=False,
                 path='/', path_specified=True,
-                secure=False, expires=c.expires, discard=c.discard,
+                # The gated path is HTTPS-only, so mark the cookie secure: a redirect that
+                # downgrades to HTTP on the same host then cannot carry it. Only the explicit
+                # --allow-cross-domain-cookies override loosens this to allow HTTP.
+                secure=(not allow_cross), expires=c.expires, discard=c.discard,
                 comment=c.comment, comment_url=c.comment_url, rest=rest,
             ))
     else:
@@ -2697,7 +2701,15 @@ def cmd_check_url(args):
         )
 
     handlers = [urllib.request.HTTPCookieProcessor(target_jar)]
-    if getattr(args, 'no_redirect', False):
+    # check-url does NOT follow redirects by default: it is a diagnostic (report the
+    # actual status of the requested URL, including a 3xx) and — with cookies attached —
+    # not following guarantees the session cookie is never carried onto a redirect target.
+    # --follow-redirects opts in; --no-redirect is still accepted (now the default).
+    follow_redirects = (getattr(args, 'follow_redirects', False)
+                        and not getattr(args, 'no_redirect', False))
+    if follow_redirects:
+        handlers.append(urllib.request.HTTPRedirectHandler())
+    else:
         class _NoRedir(urllib.request.HTTPRedirectHandler):
             def redirect_request(self, *a, **kw):
                 return None
@@ -2708,8 +2720,6 @@ def cmd_check_url(args):
             def http_error_303(self, req, fp, code, msg, hdrs):
                 raise urllib.error.HTTPError(req.full_url, code, msg, hdrs, fp)
         handlers.append(_NoRedir())
-    else:
-        handlers.append(urllib.request.HTTPRedirectHandler())
     if connect_to:
         handlers.append(_ConnectToHandler(connect_to, ctx, debuglevel=_HTTP_DEBUG_LEVEL))
     else:
@@ -3353,6 +3363,9 @@ def build_parser():
             'sharing its parent domain, where devtainers live) and reached over\n'
             'HTTPS — so a mistyped or hostile URL cannot leak a live session to\n'
             'an arbitrary host.  Pass --allow-cross-domain-cookies to override.\n\n'
+            'Redirects are NOT followed by default (the 3xx status is reported as-is),\n'
+            'so an attached session cookie is never carried onto a redirect target;\n'
+            'pass --follow-redirects to follow them.\n\n'
             'Use --connect-to to route TCP to a local port while keeping the\n'
             'canonical hostname for TLS SNI (local/harness testing).'
         ),
@@ -3360,8 +3373,12 @@ def build_parser():
     )
     _add_global_flags(sp)
     sp.add_argument('url', metavar='URL', help='HTTPS URL to fetch')
+    sp.add_argument('--follow-redirects', dest='follow_redirects', action='store_true',
+                    help='Follow HTTP redirects (off by default; an attached session '
+                         'cookie is not carried onto a redirect target)')
     sp.add_argument('--no-redirect', dest='no_redirect', action='store_true',
-                    help='Do not follow HTTP redirects; return the 3xx status directly')
+                    help='Do not follow HTTP redirects (the default); return the 3xx status '
+                         'directly. Accepted for back-compat; overrides --follow-redirects')
     sp.add_argument('--timeout', type=int, default=30, metavar='SECS',
                     help='Request timeout in seconds (default: 30)')
     sp.add_argument('--allow-cross-domain-cookies', dest='allow_cross_domain_cookies',
