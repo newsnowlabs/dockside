@@ -29,10 +29,22 @@
    import VueTagsInput from '@johmun/vue-tags-input';
 
    /**
+    * Map a single resource value to '1' (allowed) or '0' (denied).
+    *
+    * Default-deny: only an explicit affirmative value grants access.  This must
+    * NOT use plain truthiness — the server may serialise a denial as the string
+    * "0", which is truthy in JS, so `v ? '1' : '0'` would silently promote a
+    * denied resource to a grant the moment its record was edited.
+    */
+   function grantState(v) {
+      return (v === 1 || v === '1' || v === true || v === 'true') ? '1' : '0';
+   }
+
+   /**
     * Normalise a resource value to an internal map { key: '1'|'0' }
-    *   ["a","b"]       → { a: "1", b: "1" }
-    *   { a: 1, b: 0 }  → { a: "1", b: "0" }
-    *   undefined/null  → {}
+    *   ["a","b"]         → { a: "1", b: "1" }
+    *   { a: 1, b: "0" }  → { a: "1", b: "0" }
+    *   undefined/null    → {}
     */
    function normalise(val) {
       if (!val) return {};
@@ -41,7 +53,7 @@
       }
       if (typeof val === 'object') {
          return Object.fromEntries(
-            Object.entries(val).map(([k, v]) => [k, v ? '1' : '0'])
+            Object.entries(val).map(([k, v]) => [k, grantState(v)])
          );
       }
       return {};
