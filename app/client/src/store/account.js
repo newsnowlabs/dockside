@@ -16,7 +16,11 @@ const createState = () => ({
    // (UserTagsInput) — seeded from the bootstrap window.dockside.viewers and kept
    // reactive so admin user mutations and self-edits made in this session are
    // reflected without a full reload. A mutable copy so splice/push stay reactive.
-   viewers: [...(window.dockside.viewers || [])],
+   // Normalize name to username here too (matching upsertViewer/setViewers): the
+   // server bootstrap only falls back for an undef name, so an empty-string name
+   // survives — and a non-admin session never runs fetchUsers to repair it, leaving
+   // a blank autocomplete label that can't be matched or distinguished.
+   viewers: (window.dockside.viewers || []).map(v => ({ ...v, name: v.name || v.username })),
 
    // Error shown on the /account page when a self-edit refresh fails.
    accountError:   null,
