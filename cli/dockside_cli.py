@@ -2614,6 +2614,30 @@ def cmd_profile_rename(args):
         emit(result, args._fmt)
 
 
+def _host_in_server_domain(target_host, server_host):
+    """True if target_host belongs to the same Dockside deployment as server_host.
+
+    That means the server host itself, or a sibling/subdomain that shares the
+    server's parent domain (one label stripped) — which is where devtainer router
+    hostnames live (e.g. ide-NAME--HOST under the same parent zone). An arbitrary
+    third-party host returns False so session cookies are never attached to it.
+    The shared parent must contain a dot, so a server sitting at a 2-label apex
+    (example.com) never widens the match to every *.com host.
+    """
+    target_host = (target_host or '').lower().rstrip('.')
+    server_host = (server_host or '').lower().rstrip('.')
+    if not target_host or not server_host:
+        return False
+    if target_host == server_host:
+        return True
+    if '.' not in server_host:
+        return False
+    parent = server_host.split('.', 1)[1]
+    if '.' not in parent:
+        return False
+    return target_host == parent or target_host.endswith('.' + parent)
+
+
 def cmd_check_url(args):
     """
     Fetch a URL using the current session's cookies and report the HTTP status.
@@ -2639,19 +2663,38 @@ def cmd_check_url(args):
 
     # Re-inject server session cookies into a new jar scoped to the target host.
     # urllib won't send a cookie to a different domain than it was set for, but
-    # devtainer URLs (e.g. ide-NAME--HOST) differ from the API server domain.
-    target_host = urllib.parse.urlparse(url).hostname or ''
-    target_jar  = http.cookiejar.CookieJar()
-    for c in opener._jar:
-        rest = dict(getattr(c, '_rest', {}))
-        target_jar.set_cookie(http.cookiejar.Cookie(
-            version=c.version, name=c.name, value=c.value,
-            port=None, port_specified=False,
-            domain=target_host, domain_specified=True, domain_initial_dot=False,
-            path='/', path_specified=True,
-            secure=False, expires=c.expires, discard=c.discard,
-            comment=c.comment, comment_url=c.comment_url, rest=rest,
-        ))
+    # devtainer URLs (e.g. ide-NAME--HOST) differ from the API server domain, so
+    # we re-scope each cookie to the target host.  SECURITY: only do this when the
+    # target is inside the Dockside deployment's domain tree (the server host or a
+    # subdomain sharing its parent domain) AND reached over HTTPS, so a mistyped or
+    # hostile URL cannot exfiltrate a live session cookie to an arbitrary host.
+    # --allow-cross-domain-cookies forces the unconditional old behaviour.
+    parsed      = urllib.parse.urlparse(url)
+    target_host = parsed.hostname or ''
+    server_host = urllib.parse.urlparse(_server).hostname or ''
+    attach_cookies = getattr(args, 'allow_cross_domain_cookies', False) or (
+        (parsed.scheme or '').lower() == 'https'
+        and _host_in_server_domain(target_host, server_host)
+    )
+    target_jar = http.cookiejar.CookieJar()
+    if attach_cookies:
+        for c in opener._jar:
+            rest = dict(getattr(c, '_rest', {}))
+            target_jar.set_cookie(http.cookiejar.Cookie(
+                version=c.version, name=c.name, value=c.value,
+                port=None, port_specified=False,
+                domain=target_host, domain_specified=True, domain_initial_dot=False,
+                path='/', path_specified=True,
+                secure=False, expires=c.expires, discard=c.discard,
+                comment=c.comment, comment_url=c.comment_url, rest=rest,
+            ))
+    else:
+        print(
+            f'# check-url: withholding session cookies from {target_host or url!r}: '
+            f'outside the Dockside domain ({server_host!r}) or not HTTPS. '
+            f'Pass --allow-cross-domain-cookies to attach them anyway.',
+            file=sys.stderr,
+        )
 
     handlers = [urllib.request.HTTPCookieProcessor(target_jar)]
     if getattr(args, 'no_redirect', False):
@@ -3259,8 +3302,11 @@ def build_parser():
         help='Fetch a URL using the current session and report the HTTP status',
         description=(
             'Make an HTTP GET to URL using the current session cookies.\n\n'
-            'Cookies are injected for the target domain regardless of the server\n'
-            'domain — use this to check devtainer sub-domain URLs from scripts.\n\n'
+            'Session cookies are attached only when the target is inside the\n'
+            'Dockside deployment\'s domain tree (the server host or a subdomain\n'
+            'sharing its parent domain, where devtainers live) and reached over\n'
+            'HTTPS — so a mistyped or hostile URL cannot leak a live session to\n'
+            'an arbitrary host.  Pass --allow-cross-domain-cookies to override.\n\n'
             'Use --connect-to to route TCP to a local port while keeping the\n'
             'canonical hostname for TLS SNI (local/harness testing).'
         ),
@@ -3272,6 +3318,10 @@ def build_parser():
                     help='Do not follow HTTP redirects; return the 3xx status directly')
     sp.add_argument('--timeout', type=int, default=30, metavar='SECS',
                     help='Request timeout in seconds (default: 30)')
+    sp.add_argument('--allow-cross-domain-cookies', dest='allow_cross_domain_cookies',
+                    action='store_true',
+                    help='Attach session cookies even when the target is outside the '
+                         'Dockside domain tree or not HTTPS (unsafe; can leak the session)')
     sp.set_defaults(func=cmd_check_url)
 
     # ── ssh ───────────────────────────────────────────────────────────────────
