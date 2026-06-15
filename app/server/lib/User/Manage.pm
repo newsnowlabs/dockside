@@ -390,8 +390,11 @@ sub removeUser ($self, $username, $args = {}) {
    die Exception->new( 'msg' => "User '$username' not found" )
       unless $User::USERS->{$username};
    # Prevent self-deletion: an admin who deletes their own account would lose
-   # access and could leave no admin behind to recover.
-   die Exception->new( 'msg' => "Cannot remove your own account" )
+   # access and could leave no admin behind to recover.  403 (Forbidden), matching
+   # the manageUsers self-demotion guards — the caller is authenticated, the action
+   # is simply not allowed; without an explicit status it would default to 401 and
+   # mislead clients into treating it as an expired session.
+   die Exception->new( 'status' => 403, 'msg' => "Cannot remove your own account" )
       if $self->username eq $username;
 
    cacheReadWrite( $USERS_FILE, sub ($oldData) {
