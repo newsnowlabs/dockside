@@ -649,9 +649,16 @@ class _EnvManager:
         print('# Test environment ready.', file=sys.stderr)
 
     def cleanup(self):
-        """Remove only resources created by this run (not pre-existing ones)."""
+        """Remove only resources created by this run (not pre-existing ones).
+
+        Best-effort: a failure on one resource is logged and the rest are still
+        attempted. Returns the number of resources that could NOT be removed so
+        the caller can surface a distinct status — a green test run that
+        nevertheless leaks fixtures is neither a clean pass nor a test failure.
+        """
         if not (self._created_users or self._created_roles or self._created_profiles):
-            return
+            return 0
+        failures = 0
         print('# Cleaning up test environment...', file=sys.stderr)
         # Remove in reverse-dependency order: users → roles → profiles
         for name in self._created_users:
@@ -659,19 +666,23 @@ class _EnvManager:
                 self._admin._run('user', 'remove', '--force', name)
                 print(f'# Removed user {name!r}', file=sys.stderr)
             except APIError as e:
+                failures += 1
                 print(f'# Warning: could not remove user {name!r}: {e}', file=sys.stderr)
         for name in self._created_roles:
             try:
                 self._admin._run('role', 'remove', '--force', name)
                 print(f'# Removed role {name!r}', file=sys.stderr)
             except APIError as e:
+                failures += 1
                 print(f'# Warning: could not remove role {name!r}: {e}', file=sys.stderr)
         for name in self._created_profiles:
             try:
                 self._admin._run('profile', 'remove', '--force', name)
                 print(f'# Removed profile {name!r}', file=sys.stderr)
             except APIError as e:
+                failures += 1
                 print(f'# Warning: could not remove profile {name!r}: {e}', file=sys.stderr)
+        return failures
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -795,6 +806,7 @@ def main():
             signal.signal(_sig, _early_emergency_cleanup)
 
     ok = False
+    cleanup_failed = 0
     try:
         _env_manager.setup()
 
@@ -917,9 +929,18 @@ def main():
         if skip_cleanup:
             print('# Skipping environment cleanup (--skip-cleanup)', file=sys.stderr)
         else:
-            _env_manager.cleanup()
+            cleanup_failed = _env_manager.cleanup()
 
-    sys.exit(0 if ok else 1)
+    # Exit codes: 1 = a test/load/auth failure (dominates); 2 = tests passed but
+    # one or more test resources could not be removed (leaked fixtures — distinct
+    # so CI can tell a leak apart from a real failure); 0 = clean pass.
+    if not ok:
+        sys.exit(1)
+    if cleanup_failed:
+        print(f'# WARNING: {cleanup_failed} test resource(s) could not be removed; '
+              'environment may need manual cleanup', file=sys.stderr)
+        sys.exit(2)
+    sys.exit(0)
 
 
 if __name__ == '__main__':
