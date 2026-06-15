@@ -163,12 +163,18 @@ class SshOutboundTests(SshTestMixin, TestCase):
             self.skip("dev1 already has an 'inttest2' keypair; "
                       "refusing to overwrite an adopted fixture")
 
-        self.admin._run(
-            'user', 'edit', user,
-            '--set', f'ssh.keypairs.inttest2.public={second_pub}',
-            '--set', f'ssh.keypairs.inttest2.private=@{_DEV2_KEY}',
-        )
+        # Mutate INSIDE the try so the finally always attempts the restore — even if the
+        # edit's client call raises after the change already applied server-side. Mark the
+        # attempt before issuing it, for the same reason.
+        attempted_set = False
+        restore_error = None
         try:
+            attempted_set = True
+            self.admin._run(
+                'user', 'edit', user,
+                '--set', f'ssh.keypairs.inttest2.public={second_pub}',
+                '--set', f'ssh.keypairs.inttest2.private=@{_DEV2_KEY}',
+            )
             # Relaunch so the IDE-launch exec re-pushes the full keypair map.
             self.dev1.stop(self.SSH_CONTAINER, wait=True, timeout=60)
             self.dev1.start(self.SSH_CONTAINER, wait=True, timeout=180)
@@ -191,8 +197,16 @@ class SshOutboundTests(SshTestMixin, TestCase):
             self.assert_in(key1, listing, "legacy '*' keypair missing from agent")
             self.assert_in(key2, listing, 'second keypair missing from agent')
         finally:
-            # Restore dev1 to its verified prior state (inttest2 absent).
-            try:
-                self.admin._run('user', 'edit', user, '--unset', 'ssh.keypairs.inttest2')
-            except Exception:
-                pass
+            # Restore dev1 to its verified prior state (inttest2 absent). A failure here
+            # would leave an adopted fixture mutated, so record it and fail below — but
+            # do not raise in the finally, which would mask a failure from the body.
+            if attempted_set:
+                try:
+                    self.admin._run('user', 'edit', user, '--unset', 'ssh.keypairs.inttest2')
+                except Exception as exc:
+                    restore_error = exc
+                    print(f'# ERROR: failed to restore dev1 (remove inttest2 keypair): {exc}',
+                          file=sys.stderr)
+        self.assert_true(
+            restore_error is None,
+            f'failed to restore dev1 after test; inttest2 keypair may persist: {restore_error}')
