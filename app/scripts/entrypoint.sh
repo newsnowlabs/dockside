@@ -407,11 +407,10 @@ if [ -d "${OPT_PATH}.img" ]; then
       log "- [INSTALL] bin/"
       cp -a "${OPT_PATH}.img/bin/." "$OPT_PATH/bin/"
 
-      # launch.sh installed last: its presence as a real file is the readiness signal for
-      # child dev containers. Use cp -L to dereference the image symlink so the installed
-      # file is real (not a symlink), satisfying the sentinel contract.
+      # launch.sh installed last: its presence is the readiness signal for child dev
+      # containers. A premature docker exec fails cleanly (ENOENT) until this completes.
       log "- [INSTALL] launch.sh"
-      cp -L "${OPT_PATH}.img/launch.sh" "$OPT_PATH/launch.sh.new"
+      cp -a "${OPT_PATH}.img/launch.sh" "$OPT_PATH/launch.sh.new"
       mv -f "$OPT_PATH/launch.sh.new" "$OPT_PATH/launch.sh"
 
       log "- Done."
