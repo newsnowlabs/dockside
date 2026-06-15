@@ -83,6 +83,8 @@ Checks performed include:
 - `shellcheck` — Bash script validation (severity: error)
 - `json` — JSON/YAML validation on key config files
 
+`./test.sh` is the **static/build** suite (no running server required). Live behaviour — the server API, the `dockside` CLI, devtainer launch/SSH, and the container lifecycle — is exercised by the **integration suite** under `t/integration/` (`bash t/integration/run_tests.sh`), which drives the product through the `dockside` CLI against a real Dockside instance in `local`, `remote`, or `harness` mode. What it can safely exercise depends on the environment (for example, only a `mountIDE:false` container can test this repo's `launch.sh`/IDE changes end-to-end). See [`t/integration/README.md`](../../t/integration/README.md) for the modes, runtime-fixture model, and safety constraints.
+
 ## Rebuilding documentation
 
 To rebuild the documentation html, run:
