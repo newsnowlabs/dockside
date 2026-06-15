@@ -8,7 +8,8 @@ For use on a local machine, on-premises server, VM or cloud instance where you w
 mkdir -p ~/.dockside && \
 docker run -it --name dockside \
   -v ~/.dockside:/data \
-  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
+  --mount=type=volume,src=dockside_ide,dst=/opt/dockside \
+  --mount=type=volume,src=dockside_hostkeys,dst=/opt/dockside/host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
   --security-opt=apparmor=unconfined \
@@ -27,7 +28,8 @@ If you already hold a wildcard SSL certificate for `<my-domain>`, place `fullcha
 mkdir -p ~/.dockside && \
 docker run -d --name dockside \
   -v ~/.dockside:/data \
-  --mount=type=volume,src=dockside-ssh-hostkeys,dst=/opt/dockside/host \
+  --mount=type=volume,src=dockside_ide,dst=/opt/dockside \
+  --mount=type=volume,src=dockside_hostkeys,dst=/opt/dockside/host \
   -v <certsdir>:/data/certs \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -p 443:443 -p 80:80 \
