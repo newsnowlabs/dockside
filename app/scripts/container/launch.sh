@@ -335,8 +335,13 @@ populate_ssh_agent_keys() {
    # the keys are loaded so it does not alter the later IDE-supervision phase.
    trap 'rm -f "$HOME"/.ssh/dockside.* 2>/dev/null; exit 1' INT TERM HUP
 
-   # Iterate via read (never unquoted) since a keypair name may be '*'.
-   echo "$names" | while IFS= read -r name; do
+   # Iterate via read (never unquoted) since a keypair name may be '*'. Feed the
+   # loop with process substitution rather than a pipe so it runs in THIS shell and
+   # the add_failures counter survives the loop (a piped 'while' runs in a subshell,
+   # discarding any variable it sets).
+   local name KEY_PRIVATE KEY_PUBLIC KEY_PATH
+   local add_failures=0
+   while IFS= read -r name; do
       [ -n "$name" ] || continue
 
       KEY_PRIVATE=$(echo "$SSH_AGENT_KEYS" | jq -r --arg n "$name" '.[$n].private // empty')
@@ -357,17 +362,30 @@ populate_ssh_agent_keys() {
       chmod 400 "$KEY_PATH" "$KEY_PATH.pub"
 
       log "Adding keypair '$name' to ssh-agent ..."
-      "$IDE_PATH/bin/ssh-add" "$KEY_PATH"
+      # Capture ssh-add's own status: without the 'if' the iteration's exit status
+      # would be the trailing rm, masking an ssh-add failure — and the final
+      # 'ssh-add -L' below succeeds whenever ANY key is loaded, so one failed key
+      # would otherwise go completely unnoticed.
+      if ! "$IDE_PATH/bin/ssh-add" "$KEY_PATH"; then
+         log "ERROR: ssh-add failed for keypair '$name'"
+         add_failures=$((add_failures + 1))
+      fi
 
       rm -f "$KEY_PATH" "$KEY_PATH.pub"
-   done
+   done < <(echo "$names")
 
-   # Final sweep catches any transient file stranded by a non-signal failure inside the
-   # loop subshell (where the per-iteration rm above would not have run), then disarm.
+   # Final sweep catches any transient file stranded by a non-signal failure inside
+   # the loop (where the per-iteration rm above would not have run), then disarm.
    rm -f "$HOME"/.ssh/dockside.* 2>/dev/null
    trap - INT TERM HUP
 
    "$IDE_PATH/bin/ssh-add" -L
+
+   if [ "$add_failures" -gt 0 ]; then
+      log "ERROR: $add_failures ssh-agent keypair(s) failed to load"
+      return 1
+   fi
+   return 0
 }
 
 find_files_of_type() {
