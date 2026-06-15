@@ -827,6 +827,33 @@ sub meta_has_user ($self, $key, $user) {
    return $self->meta($key) =~ /(?:^|,)\Q$user\E(?:,|$)/;
 }
 
+# Return the reservations whose owner/viewers/developers reference $identifier, as a
+# list of { id, name, fields => [...] } hashes. Lets a caller stop a user or role being
+# (re)created with a name still referenced by a reservation — which would otherwise
+# silently inherit that reservation's stale grant (privilege confusion on identifier
+# reuse), since reservation metadata stores these as plain unvalidated strings that
+# authorization later compares directly against the caller's username/role.
+# Scans the FULL store via load({}) (deliberately unfiltered — not User::reservations,
+# which filters by a caller's visibility). $kind is 'user' (match the owner, and a bare
+# username in viewers/developers) or 'role' (match 'role:<name>' in viewers/developers;
+# roles are never owners). 'fields' lists EVERY field a reservation references the
+# identifier through (a user can be owner AND viewer AND developer), so the caller
+# can report them all rather than just the first.
+sub referencing_reservations ($class, $identifier, $kind) {
+   my $token = ($kind eq 'role') ? "role:$identifier" : $identifier;
+   my @refs;
+   for my $r ( @{ $class->load( {} ) } ) {
+      my @fields;
+      push @fields, 'owner'
+         if $kind eq 'user' && ( $r->meta('owner') // '' ) eq $identifier;
+      push @fields, 'viewers'    if $r->meta_has_user( 'viewers',    $token );
+      push @fields, 'developers' if $r->meta_has_user( 'developers', $token );
+      push @refs, { 'id' => $r->{'id'}, 'name' => $r->{'name'}, 'fields' => \@fields }
+         if @fields;
+   }
+   return @refs;
+}
+
 ################################################################################
 # RESERVATION CONTROL METHODS
 #

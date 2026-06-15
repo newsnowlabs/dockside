@@ -177,6 +177,26 @@ sub getSelf ($self, $args = {}) {
    return $record;
 }
 
+# Reject creating a user or role whose identifier is still referenced by an existing
+# reservation: re-using a deleted identifier's name would silently grant the new
+# identity that reservation's stale owner/viewers/developers access (privilege confusion
+# on identifier reuse). The reservation-store scan and metadata knowledge live in
+# Reservation::referencing_reservations; here we apply only the create-time reject
+# policy. The converse invariant + locking (B1.5b) is a larger follow-on.
+sub _reject_if_referenced_by_reservation ($identifier, $kind) {
+   require Reservation;
+   my @refs = Reservation->referencing_reservations( $identifier, $kind );
+   return unless @refs;
+   my $detail = join( ', ',
+      map { ( $_->{'name'} // $_->{'id'} // '?' ) . ' (' . join( '/', @{ $_->{'fields'} } ) . ')' } @refs );
+   die Exception->new(
+      'status' => 409,
+      'msg'    => "Cannot create $kind '$identifier': it is still referenced by "
+                . "reservation(s) $detail — remove or reassign those references first "
+                . "to avoid granting stale access.",
+   );
+}
+
 sub createUser ($self, $args) {
    die Exception->new( 'msg' => "You need the 'manageUsers' permission" )
       unless $self->has_permission('manageUsers');
@@ -201,6 +221,10 @@ sub createUser ($self, $args) {
    die Exception->new( 'msg' => "Role '$args->{'role'}' does not exist" )
       if defined $args->{'role'} && length $args->{'role'}
          && !$User::ROLES->{ $args->{'role'} };
+
+   # Reject a username still referenced by a reservation's owner/viewers/developers:
+   # re-using a deleted user's name would silently inherit those stale grants.
+   _reject_if_referenced_by_reservation($username, 'user');
 
    my $new_user;
    cacheReadWrite( $USERS_FILE, sub ($oldData) {
@@ -470,6 +494,10 @@ sub createRole ($self, $name, $args) {
       if $RESERVED_NAMES{$name};
    die Exception->new( 'msg' => "Role '$name' already exists" )
       if $User::ROLES->{$name};
+
+   # Reject a role name still referenced by a reservation (as 'role:<name>'): re-using
+   # a deleted role's name would silently inherit those stale grants.
+   _reject_if_referenced_by_reservation($name, 'role');
 
    my $new_role;
    cacheReadWrite( $ROLES_FILE, sub ($oldData) {
