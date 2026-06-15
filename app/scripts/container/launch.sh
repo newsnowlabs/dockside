@@ -23,10 +23,11 @@ log() {
    echo "$S$1" >&2
 }
 
-# Wrapper: use the IDE-bundled git binary with its own CA cert store and
-# exec-path so git operations work in containers with self-signed certs.
+# Use the IDE-bundled git binary. Its CA cert store (http.sslcainfo) and exec-path
+# are baked into that binary's own wrapper script (created in the Dockerfile next to
+# the gh wrapper), so they no longer need to be passed on every call here.
 git() {
-   $IDE_PATH/bin/git -c "http.sslcainfo=$IDE_PATH/certs/ca-certificates.crt" --exec-path="$IDE_PATH/bin" "$@"
+   $IDE_PATH/bin/git "$@"
 }
 
 which() {
