@@ -345,6 +345,10 @@ if [ -d "${OPT_PATH}.img" ]; then
     writeable)
       log "- Shared IDE volume is writeable."
 
+      # Remove any existing launcher (real file or symlink) and any stale .new so that
+      # docker exec calls fail cleanly (ENOENT) during populate rather than hitting a stale binary.
+      rm -f "$OPT_PATH/launch.sh" "$OPT_PATH/launch.sh.new"
+
       # IDE version dirs: copy new ones only, preserving existing (running devtainers may still use them)
       for ide in "${OPT_PATH}.img/ide"/*; do
 
@@ -404,11 +408,11 @@ if [ -d "${OPT_PATH}.img" ]; then
       cp -a "${OPT_PATH}.img/bin/." "$OPT_PATH/bin/"
 
       # launch.sh installed last: its presence as a real file is the readiness signal for
-      # child dev containers. A premature docker exec fails cleanly (ENOENT) until this completes.
+      # child dev containers. Use cp -L to dereference the image symlink so the installed
+      # file is real (not a symlink), satisfying the sentinel contract.
       log "- [INSTALL] launch.sh"
-      cp -a "${OPT_PATH}.img/launch.sh" "$OPT_PATH/launch.sh.new"
-      [ -h "$OPT_PATH/launch.sh" ] && rm "$OPT_PATH/launch.sh"
-      mv "$OPT_PATH/launch.sh.new" "$OPT_PATH/launch.sh"
+      cp -L "${OPT_PATH}.img/launch.sh" "$OPT_PATH/launch.sh.new"
+      mv -f "$OPT_PATH/launch.sh.new" "$OPT_PATH/launch.sh"
 
       log "- Done."
       ;;
