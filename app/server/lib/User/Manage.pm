@@ -16,6 +16,13 @@ use Data qw($USERS_FILE $ROLES_FILE $PASSWD_FILE);
 use Util qw(encrypt_password cacheReadWrite apply_args_to_record);
 use Exception;
 
+# Names that cannot be used for a user or role because they collide with the
+# REST route action words: a user named 'create' would be shadowed by the static
+# /users/create route (and 'new' is the client's create-form route token).  Same
+# set Profile::Manage reserves and the Vue client mirrors, kept identical across
+# all three collections for consistency.
+my %RESERVED_NAMES = map { $_ => 1 } qw(new create update remove rename);
+
 ################################################################################
 # PRIVATE HELPERS
 
@@ -178,10 +185,10 @@ sub createUser ($self, $args) {
       or die Exception->new( 'msg' => "username is required" );
    die Exception->new( 'msg' => "Invalid username: use only letters, digits, hyphens, underscores" )
       unless $username =~ /^[A-Za-z0-9_-]+$/;
-   # 'new' is reserved because it is used as a route token (GET /users/new);
-   # without this check a user named 'new' would be unreachable via the API.
+   # Reserve the route action words and 'new' (see %RESERVED_NAMES): such a name
+   # would collide with a static /users/... route and be unreachable via the API.
    die Exception->new( 'msg' => "Username '$username' is reserved" )
-      if $username eq 'new';
+      if $RESERVED_NAMES{$username};
    # Fast pre-check against the in-memory cache; the definitive check inside
    # cacheReadWrite holds the file lock and therefore eliminates the TOCTOU race.
    die Exception->new( 'msg' => "User '$username' already exists" )
@@ -454,9 +461,10 @@ sub createRole ($self, $name, $args) {
       unless $self->has_permission('manageUsers');
    die Exception->new( 'msg' => "Invalid role name: use only letters, digits, hyphens, underscores" )
       unless $name =~ /^[A-Za-z0-9_-]+$/;
-   # 'new' is reserved as a route token (GET /roles/new) — same reason as users.
+   # Reserve the route action words and 'new' (see %RESERVED_NAMES) — same reason
+   # as users.
    die Exception->new( 'msg' => "Role name '$name' is reserved" )
-      if $name eq 'new';
+      if $RESERVED_NAMES{$name};
    die Exception->new( 'msg' => "Role '$name' already exists" )
       if $User::ROLES->{$name};
 
