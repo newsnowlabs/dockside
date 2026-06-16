@@ -12,7 +12,7 @@
   "dependencies": {
     "@johmun/vue-tags-input": "^2.1.0",
     "@trevoreyre/autocomplete-vue": "^2.4.1",
-    "axios": "^1.7.7",
+    "axios": "^1.18.0",
     "json-editor-vue": "^0.18.1",
     "bootstrap": "^4.6.2",
     "bootstrap-vue": "^2.23.1",
@@ -31,7 +31,7 @@
     "eslint-loader": "^3.0.3",
     "eslint-plugin-vue": "^6.1.2",
     "mini-css-extract-plugin": "^0.9.0",
-    "sass": "^1.54.0",
+    "sass": "^1.101.0",
     "sass-loader": "^8.0.2",
     "stylelint": "^13.0.0",
     "stylelint-webpack-plugin": "^1.2.1",
