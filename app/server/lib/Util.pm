@@ -7,7 +7,7 @@ our @EXPORT_OK = ( qw(
    flog wlog
    get_config
    trim is_true
-   call_socket_api call_socket_json_api
+   call_socket_api call_socket_json_api docker_container_path_exists
    get_uri
    run run_system clean_pty run_pty
    sanitize_sensitive_text
@@ -123,7 +123,7 @@ sub is_true ($value) {
 
 sub call_socket_json_api ($socket, $path) {
 
-   my $result = call_socket_api->($socket, $path);
+   my $result = call_socket_api($socket, $path);
 
    unless($result) {
       die Exception->new( 'dbg' => "Unable to execute Docker API call $path" );
@@ -144,23 +144,55 @@ sub call_socket_json_api ($socket, $path) {
    return $object;
 }
 
-sub call_socket_api ($socket, $path) {
+sub call_socket_api ($socket, $path, $opts = {}) {
    my $ua = Mojo::UserAgent->new();
 
-   my $socketPath = $socket . $path;
+   my $method = uc($opts->{'method'} // 'GET');
    my $uri = 'http+unix://' . uri_escape($socket) . $path;
 
-   flog("call_socket_api: $uri");
+   flog("call_socket_api: $method $uri");
 
    my $result;
    try {
-      $result = $ua->get($uri => {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'})->result;
+      my $headers = {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'};
+
+      if($method eq 'GET') {
+         $result = $ua->get($uri => $headers)->result;
+      }
+      elsif($method eq 'HEAD') {
+         $result = $ua->head($uri => $headers)->result;
+      }
+      else {
+         die Exception->new( 'dbg' => "Unsupported Docker API method '$method' for $path" );
+      }
    }
    catch {
       return undef;
    };
 
    return $result;
+}
+
+sub docker_container_path_exists ($socket, $containerId, $containerPath) {
+   my $path = sprintf(
+      '/containers/%s/archive?path=%s',
+      uri_escape($containerId),
+      uri_escape($containerPath)
+   );
+
+   my $result = call_socket_api($socket, $path, { 'method' => 'HEAD' });
+
+   unless($result) {
+      die Exception->new( 'dbg' => "Unable to execute Docker API path check: $path", 'msg' => "Unable to check container path" );
+   }
+
+   return 1 if $result->is_success;
+   return 0 if $result->code == 404;
+
+   die Exception->new(
+      'dbg' => sprintf("Docker API path check '$path' failed, response code %d, error '%s'", $result->code, $result->message),
+      'msg' => "Unable to check container path"
+   );
 }
 
 sub get_uri ($uri) {

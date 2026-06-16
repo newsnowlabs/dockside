@@ -1108,12 +1108,11 @@ sub exec ($reservation, $command = undef) {
       # This could involve stopping the current IDE process and starting the new one
 
       flog("exec: restarting IDE for reservationId=$reservationId, containerId=$containerId");
-      run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', $reservation->unixuser(), $containerId, @Command);
 
-      # Assuming (for now) update was successful ...
-      # Update data.runningIDE to match meta.IDE.
-      flog("exec: updating selected IDE for reservationId=$reservationId, containerId=$containerId");
+      # Store before exec so the UI reflects the intended IDE immediately.
       $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+
+      run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', $reservation->unixuser(), $containerId, @Command);
 
       return 1;
    }
@@ -1200,6 +1199,10 @@ sub exec ($reservation, $command = undef) {
       join(' ', @Command)
    );
 
+   # Store before exec so the UI reflects the intended IDE immediately,
+   # including during any retry window before the exec succeeds.
+   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
@@ -1213,9 +1216,6 @@ sub exec ($reservation, $command = undef) {
       $containerId,
       @Command
    );
-
-   # Update data.runningIDE to match meta.IDE.
-   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
 
    return 1;
 }

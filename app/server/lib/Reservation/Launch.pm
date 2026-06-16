@@ -307,6 +307,11 @@ sub ide_command ($self) {
    return map { $self->_placeholders($_) } @command;
 }
 
+sub ide_command_launcher ($self) {
+   my @command = $self->ide_command();
+
+   return $command[0];
+}
 
 sub ide_command_env ($self) {
    my $env = $self->{'ide'}{'env'} // {};

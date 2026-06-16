@@ -907,6 +907,10 @@ sub updateContainerReservation ($self, $args) {
    }
 
    # Store the changes if all updates are successful
+   if(!$reservation->is_running) {
+      $reservation->data('runningIDE', $reservation->meta('IDE'));
+   }
+
    $reservation->store();
 
    # Only reconcile Docker network attachment when the requested network changed.
@@ -955,6 +959,10 @@ sub controlContainer ($self, $cmd, $id, $args = {}) {
    }
 
    # Execute the requested command.
+   if($cmd eq 'start' && !$container->is_running) {
+      $container->data('runningIDE', $container->meta('IDE'))->store();
+   }
+
    return $container->action($cmd, $args);
 }
 
@@ -985,6 +993,8 @@ sub createContainerReservation ($self, $args) {
       $self->set($reservation, $m, $args->{$m}) || 
          die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
    }
+
+   $reservation->data('runningIDE', $reservation->meta('IDE'));
 
    # Test if we can construct the command line; on failure, we'll throw an error.
    $reservation->cmdline();

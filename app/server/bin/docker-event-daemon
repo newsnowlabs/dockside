@@ -55,12 +55,20 @@ use IO::Async::Loop;
 use IO::Async::Protocol::LineStream;
 use IO::Async::Timer::Periodic;
 
-use Util qw(cacheReadWrite flog call_socket_api run_system unique);
+use Util qw(cacheReadWrite flog call_socket_api docker_container_path_exists);
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
 use Containers;
 use User;
+
+# mountIDE:false Dockside devtainers populate their own /opt/dockside volume
+# during entrypoint startup. Defer IDE launch until the configured launcher path
+# exists instead of retrying docker exec failures.
+my $LAUNCH_READY_MAX_WAIT = 60; # seconds
+my $LAUNCH_READY_INTERVAL = 1;  # seconds between Docker API readiness checks
+
+my %pendingLaunch;  # containerId => { deadline => epoch, nextTime => epoch, launcher => path, reservationId => id }
 
 my $SIGNAL_RECEIVED = 0;
 my $STOP_EVENT_LOOP = sub { };
@@ -71,6 +79,48 @@ $SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = sub {
    $SIGNAL_RECEIVED = 1;
    $STOP_EVENT_LOOP->();
 };
+
+sub launcher_wait_path ($reservation) {
+   return undef if $reservation->profileObject->should_mount_ide;
+
+   return $reservation->ide_command_launcher();
+}
+
+sub launcher_path_exists ($reservation, $launcher) {
+   return docker_container_path_exists(
+      $CONFIG->{'docker'}{'socket'},
+      $reservation->containerId,
+      $launcher
+   );
+}
+
+sub queue_pending_launch ($reservation, $context, $launcher) {
+   my $containerId = $reservation->containerId;
+
+   # The container is running but the IDE is not yet launched. Until it is,
+   # route UI IDE links according to the requested IDE, not any previous value.
+   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+
+   $pendingLaunch{$containerId} = {
+      deadline      => time() + $LAUNCH_READY_MAX_WAIT,
+      nextTime      => time() + $LAUNCH_READY_INTERVAL,
+      launcher      => $launcher,
+      reservationId => $reservation->id,
+   };
+
+   flog("$context: delaying IDE launch for reservationId=" . $reservation->id . " with containerId=$containerId: launcher '$launcher' is not present yet");
+}
+
+sub launch_or_queue_until_launcher_ready ($reservation, $context) {
+   my $launcher = launcher_wait_path($reservation);
+
+   if(defined($launcher) && $launcher ne '' && !launcher_path_exists($reservation, $launcher)) {
+      queue_pending_launch($reservation, $context, $launcher);
+      return undef;
+   }
+
+   return $reservation->exec();
+}
 
 # Updates the container state by retrieving the current container list
 # from the Docker API and merging it with the existing container data.
@@ -228,16 +278,19 @@ sub onContainerStart ($id, $eventCount) {
 
    flog("onContainerStart #$eventCount: we manage reservationId=$reservationId with containerId=$containerId");
 
+   # Clear any stale pending launch entry from a previous start of the same container.
+   delete $pendingLaunch{$containerId};
+
+   my $launched;
    try {
-      $reservation->exec();
+      $launched = launch_or_queue_until_launcher_ready($reservation, "onContainerStart #$eventCount");
    }
    catch {
       my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
       flog("onContainerStart #$eventCount: failed to launch IDE for reservationId=$reservationId with containerId=$containerId: dbg='$dbg'; msg='$msg'");
-      return undef;
    };
 
-   return 1;
+   return $launched ? 1 : undef;
 }
 
 # Classifies a raw Docker event and dispatches to the appropriate handler.
@@ -260,6 +313,13 @@ sub onEvent ($event, $eventCount) {
    }
 
    if( $type eq 'container' && $action =~ /^(stop|create|destroy)$/ ) {
+      # %pendingLaunch is keyed by the 12-char Reservation->containerId; Docker container
+      # events carry the full-length Actor ID, so normalise before the lookup or the
+      # cancellation misses and the daemon keeps waiting on a stopped container.
+      my $cid = substr($id // '', 0, 12);
+      if ($action =~ /^(stop|destroy)$/ && delete $pendingLaunch{$cid}) {
+         flog("onEvent #$eventCount: cancelled pending IDE launch for $action containerId=$cid");
+      }
       return 1; # Container lifecycle change; state refresh needed.
    }
 
@@ -323,6 +383,57 @@ sub eventHandler {
          catch {
             flog("eventHandler::on_tick: caught exception: " . (ref($_) ? $_->dbg : $_));
          };
+
+         # Start any pending IDE launches whose launcher path has appeared.
+         if (%pendingLaunch) {
+            try {
+               for my $cid (keys %pendingLaunch) {
+                  my $entry = $pendingLaunch{$cid};
+                  next if time() < $entry->{'nextTime'};
+
+                  if (time() >= $entry->{'deadline'}) {
+                     flog("eventHandler:tick: giving up on pending IDE launch for reservationId=" . $entry->{'reservationId'} . " with containerId=$cid after ${LAUNCH_READY_MAX_WAIT}s waiting for launcher '" . $entry->{'launcher'} . "'");
+                     delete $pendingLaunch{$cid};
+                     next;
+                  }
+
+                  flog("eventHandler:tick: checking pending IDE launch for reservationId=" . $entry->{'reservationId'} . " with containerId=$cid");
+
+                  Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+
+                  my $reservations = Reservation->load({ 'containerId' => $cid });
+                  if (!@$reservations) {
+                     flog("eventHandler:tick: containerId=$cid no longer managed; cancelling pending IDE launch");
+                     delete $pendingLaunch{$cid};
+                     next;
+                  }
+
+                  my $reservation = $reservations->[0];
+                  my $launcher = launcher_wait_path($reservation) // $entry->{'launcher'};
+
+                  if(defined($launcher) && $launcher ne '' && !launcher_path_exists($reservation, $launcher)) {
+                     flog("eventHandler:tick: launcher '$launcher' still not present for reservationId=" . $reservation->id . " with containerId=$cid");
+                     $entry->{'launcher'} = $launcher;
+                     $entry->{'nextTime'} = time() + $LAUNCH_READY_INTERVAL;
+                     next;
+                  }
+
+                  try {
+                     $reservation->exec();
+                     flog("eventHandler:tick: pending IDE launch succeeded for reservationId=" . $reservation->id . " with containerId=$cid");
+                     delete $pendingLaunch{$cid};
+                  }
+                  catch {
+                     my $dbg = ref($_) ? $_->dbg() : $_;
+                     flog("eventHandler:tick: pending IDE launch failed after launcher became ready for reservationId=" . $reservation->id . " with containerId=$cid; cancelling pending launch: $dbg");
+                     delete $pendingLaunch{$cid};
+                  };
+               }
+            }
+            catch {
+               flog("eventHandler::on_tick::pendingLaunch: caught exception: " . (ref($_) ? $_->dbg : $_));
+            };
+         }
       },
    );
    
