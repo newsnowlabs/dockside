@@ -244,9 +244,13 @@ sub onContainerStart ($id, $eventCount) {
    catch {
       my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
       flog("onContainerStart #$eventCount: failed to launch IDE for reservationId=$reservationId with containerId=$containerId: dbg='$dbg'; msg='$msg'");
-      if ($EXEC_RETRY_MAX > 0) {
-         flog("onContainerStart #$eventCount: scheduling retry for containerId=$containerId");
+      my ($exitCode) = ($dbg =~ /exit code (\d+)/);
+      if ($EXEC_RETRY_MAX > 0 && defined($exitCode) && ($exitCode == 126 || $exitCode == 127)) {
+         flog("onContainerStart #$eventCount: scheduling retry for containerId=$containerId (exit code $exitCode; launch.sh likely not yet ready)");
          $pendingExec{$containerId} = { attempts => 1, nextTime => time() + $EXEC_RETRY_INTERVAL };
+      }
+      else {
+         flog("onContainerStart #$eventCount: not retrying for containerId=$containerId: non-transient failure (exit code " . ($exitCode // 'unknown') . ")");
       }
       return undef;
    };
@@ -376,9 +380,16 @@ sub eventHandler {
                   }
                   catch {
                      my $dbg = ref($_) ? $_->dbg() : $_;
-                     flog("eventHandler:tick: exec retry attempt $entry->{'attempts'} failed for containerId=$cid: $dbg");
-                     $entry->{'attempts'}++;
-                     $entry->{'nextTime'} = time() + $EXEC_RETRY_INTERVAL;
+                     my ($exitCode) = ($dbg =~ /exit code (\d+)/);
+                     if (!defined($exitCode) || ($exitCode != 126 && $exitCode != 127)) {
+                        flog("eventHandler:tick: exec retry attempt $entry->{'attempts'} for containerId=$cid: permanent failure (exit code " . ($exitCode // 'unknown') . "); cancelling retries: $dbg");
+                        delete $pendingExec{$cid};
+                     }
+                     else {
+                        flog("eventHandler:tick: exec retry attempt $entry->{'attempts'} failed for containerId=$cid (exit code $exitCode): $dbg");
+                        $entry->{'attempts'}++;
+                        $entry->{'nextTime'} = time() + $EXEC_RETRY_INTERVAL;
+                     }
                   };
                }
             }
