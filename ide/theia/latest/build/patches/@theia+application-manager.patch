@@ -1,8 +1,8 @@
 diff --git a/node_modules/@theia/application-manager/lib/generator/frontend-generator.js b/node_modules/@theia/application-manager/lib/generator/frontend-generator.js
-index a92e044..2ae80c6 100644
+index 5fdfc5a..acd75d7 100644
 --- a/node_modules/@theia/application-manager/lib/generator/frontend-generator.js
 +++ b/node_modules/@theia/application-manager/lib/generator/frontend-generator.js
-@@ -69,7 +69,13 @@ require('reflect-metadata');
+@@ -74,7 +74,13 @@ ${this.emitStartupLog('loading modules...')}
  const { Container } = require('@theia/core/shared/inversify');
  const { FrontendApplicationConfigProvider } = require('@theia/core/lib/browser/frontend-application-config-provider');
  
