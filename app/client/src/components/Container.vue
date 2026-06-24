@@ -218,8 +218,8 @@
                                  >Stop</b-button>
 
                               <b-button size="sm" variant="outline-danger"
-                                 v-show="container.permissions.actions.removeContainer && !isEditMode && !isPrelaunchMode && container.status >= -1 && container.status <= 0" 
-                                 v-on:click="action('remove')"
+                                 v-show="canRemove"
+                                 v-on:click="confirmRemove"
                                  :data-id="container.id"
                                  >Remove</b-button>
 
@@ -259,6 +259,15 @@
                </div>
             </b-card-body>
          </b-card>
+
+         <ConfirmModal
+            v-show="canRemove"
+            :id="removeConfirmId"
+            :title="'Remove devtainer ' + container.name"
+            :message="'Are you sure you want to remove devtainer \'' + container.name + '\'? This cannot be undone.'"
+            confirm-label="Remove"
+            @confirm="action('remove')"
+         />
       </div>
    </form>
 </template>
@@ -270,6 +279,7 @@
    import { routing } from '@/components/mixins';
    import copyToClipboard from '@/utilities/copy-to-clipboard';
    import UserTagsInput from '@/components/UserTagsInput';
+   import ConfirmModal from '@/components/shared/ConfirmModal';
    import { putContainer, controlContainer, getReservationLogsUri } from '@/services/container';
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';
@@ -278,6 +288,7 @@
       name: 'Container',
       components: {
          UserTagsInput,
+         ConfirmModal,
          Autocomplete
       },
       props: {
@@ -368,6 +379,14 @@
          },
          hasWildcardGitURLs() {
            return ((this.profile && this.profile.gitURLs) ? this.profile.gitURLs.filter(x => x.includes("*")) : []).length > 0;
+         },
+         canRemove() {
+            return this.container.permissions.actions.removeContainer &&
+               !this.isEditMode && !this.isPrelaunchMode &&
+               this.container.status >= -1 && this.container.status <= 0;
+         },
+         removeConfirmId() {
+            return `reservation-remove-${this.container.id}`;
          }
       },
       methods: {
@@ -402,6 +421,9 @@
          },
          copy(value) {
             copyToClipboard(value);
+         },
+         confirmRemove() {
+            this.$bvModal.show(`confirm-modal-${this.removeConfirmId}`);
          },
          makeUri(router) {
             const protocol = router.https ? 'https' : 'http';
@@ -448,12 +470,6 @@
          },
          action(command) {
             const me = this;
-
-            // if(command === 'remove') {
-            //    if( prompt("Type 'destroy' to permanently delete this container", '') !== 'destroy' ) {
-            //       return;
-            //    }
-            // }
 
             controlContainer(this.container.id, command)
                .then(data => {

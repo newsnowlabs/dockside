@@ -15,7 +15,6 @@ FROM alpine:${SYSTEM_ALPINE_VERSION} AS base
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
-ARG DOCKSIDE_VERSION
 
 # Create:
 # - a BASH_ENV script targeting the desired versions of IDE for the platform,
@@ -34,13 +33,13 @@ ENV BASH_ENV=/tmp/dockside/bash-env
 # under https://github.com/erebe/wstunnel/blob/master/LICENSE.
 RUN <<EOF
 if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
-    THEIA_VERSION="1.66.1"
+    THEIA_VERSION="1.68.2"
     THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"
     OPENVSCODE_VERSION="1.109.5"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-x64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
-    THEIA_VERSION="1.66.1"
+    THEIA_VERSION="1.68.2"
     THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"
     OPENVSCODE_VERSION="1.109.5"
@@ -73,9 +72,6 @@ export THEIA_BUILD_EXTRA_PACKAGES="$THEIA_BUILD_EXTRA_PACKAGES"
 export OPENVSCODE_VERSION="$OPENVSCODE_VERSION"
 export OPENVSCODE_BINARY="$OPENVSCODE_BINARY"
 export OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="$OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES"
-
-export DOCKSIDE_VERSION="$DOCKSIDE_VERSION"
-export DS_PATH=$OPT_PATH/system/$DOCKSIDE_VERSION
 
 echo "Running command with environment:" >&2
 echo "- TARGETPLATFORM=\$TARGETPLATFORM" >&2
@@ -121,7 +117,7 @@ EOF
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1
 ENV PUPPETEER_SKIP_DOWNLOAD=1
-ENV NODE_OPTIONS="--max-old-space-size=8192"
+ENV NODE_OPTIONS="--max-old-space-size=16384"
 ENV YARN_CACHE_FOLDER=/root/.cache/yarn
 
 FROM theia-build-env AS theia-build
@@ -210,7 +206,7 @@ FROM theia-ide AS theia-ide-plugins
 # - <publisher>.<name>-<ver> : download plugin directly from implied URL (faster and fully cacheable)
 
 # All small plugins
-ARG VSIX_PLUGINS="vscode.bat@1.95.3 vscode.clojure@1.95.3 vscode.coffeescript@1.95.3 vscode.configuration-editing@1.95.3 vscode.cpp@1.95.3 vscode.csharp@1.95.3 vscode.css@1.95.3 vscode.dart@1.95.3 vscode.debug-auto-launch@1.95.3 vscode.debug-server-ready@1.95.3 vscode.diff@1.95.3 vscode.docker@1.95.3 vscode.emmet@1.95.3 vscode.fsharp@1.95.3 vscode.git@1.95.3 vscode.git-base@1.95.3 vscode.github@1.95.3 vscode.github-authentication@1.95.3 vscode.go@1.95.3 vscode.groovy@1.95.3 vscode.grunt@1.95.3 vscode.gulp@1.95.3 vscode.handlebars@1.95.3 vscode.hlsl@1.95.3 vscode.html@1.95.3 vscode.ini@1.95.3 vscode.ipynb@1.95.3 vscode.jake@1.95.3 vscode.java@1.95.3 vscode.javascript@1.95.3 vscode.json@1.95.3 vscode.julia@1.95.3 vscode.latex@1.95.3 vscode.less@1.95.3 vscode.log@1.95.3 vscode.lua@1.95.3 vscode.make@1.95.3 vscode.markdown@1.95.3 vscode.markdown-math@1.95.3 vscode.media-preview@1.95.3 vscode.merge-conflict@1.95.3 vscode.builtin-notebook-renderers@1.95.3 vscode.npm@1.95.3 vscode.objective-c@1.95.3 vscode.perl@1.95.3 vscode.php@1.95.3 vscode.powershell@1.95.3 vscode.python@1.95.3 vscode.pug@1.95.3 vscode.r@1.95.3 vscode.razor@1.95.3 vscode.references-view@1.95.3 vscode.restructuredtext@1.95.3 vscode.ruby@1.95.3 vscode.rust@1.95.3 vscode.scss@1.95.3 vscode.search-result@1.95.3 vscode.shaderlab@1.95.3 vscode.shellscript@1.95.3 vscode.simple-browser@1.95.3 vscode.sql@1.95.3 vscode.swift@1.95.3 vscode.theme-abyss@1.95.3 vscode.theme-defaults@1.95.3 vscode.theme-kimbie-dark@1.95.3 vscode.theme-monokai@1.95.3 vscode.theme-monokai-dimmed@1.95.3 vscode.theme-quietlight@1.95.3 vscode.theme-red@1.95.3 vscode.vscode-theme-seti@1.95.3 vscode.theme-solarized-dark@1.95.3 vscode.theme-solarized-light@1.95.3 vscode.theme-tomorrow-night-blue@1.95.3 vscode.tunnel-forwarding@1.95.3 vscode.typescript@1.95.3 vscode.vb@1.95.3 vscode.xml@1.95.3 vscode.yaml@1.95.3 ms-vscode.js-debug-companion ms-vscode.js-debug github.vscode-pull-request-github openai.chatgpt Anthropic.claude-code"
+ARG VSIX_PLUGINS="vscode.bat@1.95.3 vscode.clojure@1.95.3 vscode.coffeescript@1.95.3 vscode.configuration-editing@1.95.3 vscode.cpp@1.95.3 vscode.csharp@1.95.3 vscode.css@1.95.3 vscode.dart@1.95.3 vscode.debug-auto-launch@1.95.3 vscode.debug-server-ready@1.95.3 vscode.diff@1.95.3 vscode.docker@1.95.3 vscode.emmet@1.95.3 vscode.fsharp@1.95.3 vscode.git@1.95.3 vscode.git-base@1.95.3 vscode.github@1.95.3 vscode.github-authentication@1.95.3 vscode.go@1.95.3 vscode.groovy@1.95.3 vscode.grunt@1.95.3 vscode.gulp@1.95.3 vscode.handlebars@1.95.3 vscode.hlsl@1.95.3 vscode.html@1.95.3 vscode.ini@1.95.3 vscode.ipynb@1.95.3 vscode.jake@1.95.3 vscode.java@1.95.3 vscode.javascript@1.95.3 vscode.json@1.95.3 vscode.julia@1.95.3 vscode.latex@1.95.3 vscode.less@1.95.3 vscode.log@1.95.3 vscode.lua@1.95.3 vscode.make@1.95.3 vscode.markdown@1.95.3 vscode.markdown-math@1.95.3 vscode.media-preview@1.95.3 vscode.merge-conflict@1.95.3 vscode.builtin-notebook-renderers@1.95.3 vscode.npm@1.95.3 vscode.objective-c@1.95.3 vscode.perl@1.95.3 vscode.php@1.95.3 vscode.powershell@1.95.3 vscode.python@1.95.3 vscode.pug@1.95.3 vscode.r@1.95.3 vscode.razor@1.95.3 vscode.references-view@1.95.3 vscode.restructuredtext@1.95.3 vscode.ruby@1.95.3 vscode.rust@1.95.3 vscode.scss@1.95.3 vscode.search-result@1.95.3 vscode.shaderlab@1.95.3 vscode.shellscript@1.95.3 vscode.simple-browser@1.95.3 vscode.sql@1.95.3 vscode.swift@1.95.3 vscode.theme-abyss@1.95.3 vscode.theme-defaults@1.95.3 vscode.theme-kimbie-dark@1.95.3 vscode.theme-monokai@1.95.3 vscode.theme-monokai-dimmed@1.95.3 vscode.theme-quietlight@1.95.3 vscode.theme-red@1.95.3 vscode.vscode-theme-seti@1.95.3 vscode.theme-solarized-dark@1.95.3 vscode.theme-solarized-light@1.95.3 vscode.theme-tomorrow-night-blue@1.95.3 vscode.tunnel-forwarding@1.95.3 vscode.typescript@1.95.3 vscode.vb@1.95.3 vscode.xml@1.95.3 vscode.yaml@1.95.3 ms-vscode.js-debug-companion ms-vscode.js-debug github.vscode-pull-request-github"
 
 # Large plugins: enable if needed
 # ARG VSIX_PLUGINS_LARGE="vscode.css-language-features@1.95.3 vscode.html-language-features@1.95.3 vscode.json-language-features@1.95.3 vscode.markdown-language-features@1.95.3 vscode.php-language-features@1.95.3 vscode.typescript-language-features@1.95.3"
@@ -276,7 +272,9 @@ _EOE_
 # Patch all binaries and dynamic libraries for full portability.
 FROM base AS system
 
+ARG OPT_PATH
 ARG DOCKSIDE_VERSION
+ENV DS_PATH=$OPT_PATH/system/$DOCKSIDE_VERSION
 
 # The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
 ENV BASH_ENV=/tmp/dockside/bash-env
@@ -354,6 +352,8 @@ RUN export \
         BUNDELF_CODE_PATH="$OPT_PATH/ide/openvscode/$OPENVSCODE_VERSION" \
         BUNDELF_LIBPATH_TYPE="relative" && \
     /tmp/make-bundelf-bundle.sh --bundle && \
+    find $BUNDELF_CODE_PATH/openvscode/out -type f \( -name "*.js" -o -name "*.css" \) \
+         -size +1k -print0 | xargs -0 -r -P$(nproc) gzip -9 -k && \
     cd $BUNDELF_CODE_PATH/.. && \
     ln -s $OPENVSCODE_VERSION latest && \
     cp -a /tmp/bin $OPENVSCODE_VERSION/ && \
@@ -475,6 +475,7 @@ LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 ENV DEBIAN_FRONTEND=noninteractive
 
 ARG OPT_PATH
+ARG OPT_IMG_PATH=${OPT_PATH}.img
 ARG THEIA_PATH=$OPT_PATH/ide/theia
 ARG VSCODE_PATH=$OPT_PATH/ide/openvscode
 ARG DS_PATH=$OPT_PATH/system
@@ -486,9 +487,9 @@ ARG HOME=/home/dockside
 # BUNDLE INTEGRATION
 #
 COPY --from=base /tmp/dockside /tmp/dockside
-COPY --from=system $DS_PATH $DS_PATH/
-COPY --from=theia-ide-plugins $THEIA_PATH $THEIA_PATH/
-COPY --from=openvscode-ide $VSCODE_PATH $VSCODE_PATH/
+COPY --from=system $DS_PATH $OPT_IMG_PATH/system/
+COPY --from=theia-ide-plugins $THEIA_PATH $OPT_IMG_PATH/ide/theia/
+COPY --from=openvscode-ide $VSCODE_PATH $OPT_IMG_PATH/ide/openvscode/
 
 # ---------------------------------------------
 # COPY REMAINING GIT REPO CONTENTS TO THE IMAGE
@@ -508,13 +509,13 @@ RUN cp -a ~/$APP/build/development/dot-theia .vscode && \
 # Last things for root user
 USER root
 RUN . /tmp/dockside/bash-env && \
-    mkdir -p $OPT_PATH/bin $OPT_PATH/host && \
-    cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_PATH/bin/ && \
-    ln -sfr $OPT_PATH/bin/launch.sh $OPT_PATH/launch.sh && \
+    mkdir -p $OPT_IMG_PATH/bin $OPT_IMG_PATH/host $OPT_PATH && \
+    cp -a $HOME/$APP/app/scripts/container/launch.sh $OPT_IMG_PATH/bin/ && \
+    ln -sfr $OPT_IMG_PATH/bin/launch.sh $OPT_IMG_PATH/launch.sh && \
     ln -sf $HOME/$APP/app/scripts/entrypoint.sh /entrypoint.sh && \
     ln -sf $HOME/$APP/app/server/bin/password-wrapper /usr/local/bin/password && \
     ln -sf $HOME/$APP/app/server/bin/upgrade /usr/local/bin/upgrade && \
-    chown -R root:root $OPT_PATH/bin/ && \
+    chown -R root:root $OPT_IMG_PATH/bin/ && \
     # For backwards compatibility with legacy config.json /home/newsnow paths
     ln -sf $HOME /home/newsnow && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
@@ -543,11 +544,10 @@ RUN apt-get update && \
 # COPY --from=vsix-plugins --chown=$USER:$USER /root/theia-plugins $HOME/theia-plugins/
 
 # -----------------------------------------------
-# Relocate /opt/dockside content to /opt/dockside.img so the entrypoint
-# can copy it into the named volume at /opt/dockside on container start.
-# This enables safe in-place upgrades: launch a new container against the
-# same named volume and  it will be brought up to date automatically.
-RUN mv $OPT_PATH $OPT_PATH.img && mkdir -p $OPT_PATH
+# Keep /opt/dockside as an empty volume mount point. Image-baked IDE,
+# system, and launcher content is assembled directly in /opt/dockside.img
+# so large bundle trees are not retained once at each path in separate
+# image layers.
 
 # -----------------------------------------------
 # Cause the creation of a volume at /opt/dockside

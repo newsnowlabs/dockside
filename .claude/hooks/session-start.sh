@@ -13,3 +13,6 @@ if git rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
 else
   echo "Repository is not shallow, skipping unshallow."
 fi
+
+# Inject how-to into context
+cat .claude/CLAUDE-WEB.md

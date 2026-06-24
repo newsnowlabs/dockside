@@ -13,7 +13,7 @@ use Reservation::Launch;
 use Containers;
 use Profile;
 use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri sanitize_sensitive_text);
-use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
+use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
 # CURRENT VERSION
@@ -236,9 +236,9 @@ sub meta ($self, $key, @rest) {
       $self->{'meta'}{$key} = $value;
    }
    elsif($key eq 'IDE') {
-      # Allow: theia|openvscode|theia/<version>|openvscode/<version>
-      # where <version> is a valid semver version string or 'latest'.
-      if( $value !~ m!^(?:theia|openvscode)(?:/(?:\d+\.\d+\.\d+|latest))?$! ) {
+      # IDE names mirror Data.pm discovery: <ideType>/<version>, with path
+      # components restricted enough to prevent traversal/hidden components.
+      if( !valid_ide_name($value) ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid IDE '$value'" );
       }
 

@@ -3,7 +3,7 @@ package Data;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO invalidate_profile_cache
+our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO invalidate_profile_cache valid_ide_name
    $CONFIG_PATH $USERS_FILE $ROLES_FILE $PASSWD_FILE $PROFILES_DIR);
 
 use JSON;
@@ -38,6 +38,10 @@ sub parse_json ($json) {
    s!//[^"]*$!!gm;
 
    return from_json( $_, { 'relaxed' => 1 } );
+}
+
+sub valid_ide_name ($ide) {
+   return defined($ide) && $ide =~ m!\A[^./\0][^/\0]*/[^./\0][^/\0]*\z!;
 }
 
 ####################################################################################################
@@ -174,7 +178,13 @@ $CONFIG_FILES = {
          # Available IDEs on the host system
          if( -d "$CONFIG->{'ide'}{'fullPath'}" ) {
             my $globPath = "$CONFIG->{'ide'}{'fullPath'}/*/*";
-            my @hostIDEs = map { s!^.*/([^/]+/[^/]+)$!$1!; $_; } <"$globPath">; # Strip off all but final <ideType>/<version>
+            my $ideRoot = $CONFIG->{'ide'}{'fullPath'};
+            # Strip off all but final <ideType>/<version>, and only surface
+            # entries that are safe to feed back into $DOCKSIDE_ROOT/ide/$IDE.
+            my @hostIDEs = map {
+               my ($ide) = $_ =~ m!\A\Q$ideRoot\E/([^/\0]+/[^/\0]+)\z!;
+               defined($ide) && -d $_ && valid_ide_name($ide) ? $ide : ();
+            } <"$globPath">;
             $HOSTINFO->{'IDEs'} = \@hostIDEs;
          }
       }
