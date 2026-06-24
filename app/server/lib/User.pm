@@ -907,6 +907,7 @@ sub updateContainerReservation ($self, $args) {
    }
 
    # Store the changes if all updates are successful
+   # (if container is not running runningIDE should mirror requested IDE immediately)
    if(!$reservation->is_running) {
       $reservation->data('runningIDE', $reservation->meta('IDE'));
    }
