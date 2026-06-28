@@ -6,6 +6,7 @@ ARG OPENVSCODE_DEBIAN_VERSION=bookworm-slim
 ARG SYSTEM_ALPINE_VERSION=3.22
 ARG DOCKSIDE_NODE_VERSION=22
 ARG DOCKSIDE_DEBIAN_VERSION=bookworm-slim
+ARG WSTUNNEL_V10_VERSION=10.5.5
 
 ################################################################################
 # SET UP 'BASE' BUILD ENVIRONMENT
@@ -15,6 +16,7 @@ FROM alpine:${SYSTEM_ALPINE_VERSION} AS base
 
 ARG OPT_PATH
 ARG TARGETPLATFORM
+ARG WSTUNNEL_V10_VERSION
 
 # Create:
 # - a BASH_ENV script targeting the desired versions of IDE for the platform,
@@ -36,18 +38,21 @@ if [ "${TARGETPLATFORM}" = "linux/amd64" ]; then
     THEIA_VERSION="1.68.2"
     THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64"
+    WSTUNNEL_V10_BINARY="https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_V10_VERSION}/wstunnel_${WSTUNNEL_V10_VERSION}_linux_amd64.tar.gz"
     OPENVSCODE_VERSION="1.109.5"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-x64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
     THEIA_VERSION="1.68.2"
     THEIA_VERSION_DIR="latest"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64"
+    WSTUNNEL_V10_BINARY="https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_V10_VERSION}/wstunnel_${WSTUNNEL_V10_VERSION}_linux_aarch64.tar.gz"
     OPENVSCODE_VERSION="1.109.5"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-arm64.tar.gz"
 elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then
     THEIA_VERSION="1.35.0"
     THEIA_BUILD_EXTRA_PACKAGES="ripgrep"
     WSTUNNEL_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7"
+    WSTUNNEL_V10_BINARY="https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_V10_VERSION}/wstunnel_${WSTUNNEL_V10_VERSION}_linux_armv6.tar.gz"
     OPENVSCODE_VERSION="1.109.5"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-armhf.tar.gz"
     OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="libatomic1"
@@ -62,6 +67,7 @@ cat <<_EOE_ >$BASH_ENV
 export TARGETPLATFORM="$TARGETPLATFORM"
 
 export WSTUNNEL_BINARY="$WSTUNNEL_BINARY"
+export WSTUNNEL_V10_BINARY="$WSTUNNEL_V10_BINARY"
 
 export THEIA_VERSION="$THEIA_VERSION"
 export THEIA_VERSION_DIR="$THEIA_VERSION_DIR"
@@ -76,6 +82,7 @@ export OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="$OPENVSCODE_BUILD_DEBIAN_EXTRA_PA
 echo "Running command with environment:" >&2
 echo "- TARGETPLATFORM=\$TARGETPLATFORM" >&2
 echo "- WSTUNNEL_BINARY=\$WSTUNNEL_BINARY" >&2
+echo "- WSTUNNEL_V10_BINARY=\$WSTUNNEL_V10_BINARY" >&2
 echo "- THEIA_VERSION=\$THEIA_VERSION THEIA_BUILD_PATH=\$THEIA_BUILD_PATH THEIA_PATH=\$THEIA_PATH" >&2
 echo "- OPENVSCODE_BINARY=\$OPENVSCODE_BINARY" >&2
 _EOE_
@@ -299,7 +306,8 @@ RUN cd $DS_PATH/bin && \
     ln -sf git git-clone && \
     ln -sf git-remote-http git-remote-https && \
     cp -a /etc/ssl/certs $DS_PATH/ && \
-    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel
+    curl -SsL -o wstunnel $WSTUNNEL_BINARY && chmod 755 wstunnel && \
+    curl -SsL "$WSTUNNEL_V10_BINARY" | tar -xzO wstunnel > wstunnel-v10 && chmod 755 wstunnel-v10
 
 # Create a wrapper for `gh` that sets SSL_CERT_FILE as needed
 # so providing fully working terminal access to gh

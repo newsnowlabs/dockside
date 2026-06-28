@@ -119,6 +119,13 @@ sub get_server_port ($r, $protocol) {
    # returns: its URI; and required authorisation level.
    my $props = $reservation->lookup_container_uri($host, $prefix, $domain, $protocol);
 
+   # For the SSH router, route wstunnel v10 upgrade requests (/v1/...) to the v10
+   # server port (2223) rather than the v6 server port (2222).
+   if ($prefix eq 'ssh' && defined($props->{'uri'}) && $r->uri =~ m{^/v1(?:/|\z)}) {
+      my $v10port = $CONFIG->{'ssh'}{'v10port'} // 2223;
+      $props->{'uri'} =~ s/:\d+$/:$v10port/;
+   }
+
    # Identify a user, and its available levels of authorisation.
    my $User = Request->authenticate( { 'cookie' => $r->header_in("Cookie"), 'protocol' => $protocol } );
 
