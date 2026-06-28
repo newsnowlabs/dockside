@@ -175,7 +175,7 @@ launch_sshd() {
 
    if [ -x "$(which wstunnel-v10 2>/dev/null)" ]; then
       log "(3/3) Launching wstunnel v10 on port 2223"
-      wstunnel-v10 server ws://0.0.0.0:2223 --restrict-to 127.0.0.1:$DROPBEAR_PORT >$LOG_PATH/wstunnel-v10.log 2>&1 &
+      wstunnel-v10 server ws://0.0.0.0:2223 --restrict-to=127.0.0.1:$DROPBEAR_PORT --log-lvl=info >$LOG_PATH/wstunnel-v10.log 2>&1 &
    fi
 }
 
