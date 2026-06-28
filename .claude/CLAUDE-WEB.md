@@ -146,10 +146,23 @@ with a server-side Perl error (`Undefined subroutine &User::AUTOLOAD`). Use the
 ### Run tests from inside the Dockside container
 
 `wstunnel` (required for SSH-based container access) only exists inside the
-Dockside container at `/opt/dockside/system/latest/bin`. Run all integration
-tests via `docker exec`:
+Dockside container at `/opt/dockside/system/latest/bin`. The recommended way is
+to authenticate the CLI first and then run via `docker exec`:
 
 ```bash
+# Authenticate the CLI (one-time; persists in ~/.dockside/... inside the container)
+docker exec -u dockside dockside bash -c "
+  cd /home/dockside/dockside
+  ./cli/dockside login \
+    --connect-to 127.0.0.1 \
+    --no-verify \
+    --nickname local \
+    --server https://www.local.dockside.dev/ \
+    --username admin \
+    --password \"\$(cat /tmp/dockside-password.txt | grep -o \"'[^']*'\" | tr -d \"'\")\"
+"
+
+# Run all tests
 docker exec -u dockside dockside bash -c "
   cd /home/dockside/dockside
   PYTHONUNBUFFERED=1 \

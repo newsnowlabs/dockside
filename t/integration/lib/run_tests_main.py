@@ -7,12 +7,6 @@ Invoked by run_tests.sh. Discovers and runs test modules.
 Environment variables (set by run_tests.sh / harness.sh):
   DOCKSIDE_TEST_MODE         local|remote|harness
   DOCKSIDE_TEST_SERVER_URL   Full https URL (canonical, set by run_tests.sh)
-  DOCKSIDE_TEST_CONNECT_TO   TCP override: 'host[:port]' (set for local/harness)
-  DOCKSIDE_TEST_USE_SERVER_TRANSPORT
-                             1 to rely on CLI server config transport instead
-                             of passing --connect-to on every CLI call
-  DOCKSIDE_TEST_ADMIN        username:password  (if unset, uses stored CLI session)
-  DOCKSIDE_TEST_VERIFY_SSL   0 or 1 (default: 0)
   DOCKSIDE_TEST_ONLY         prefix filter (e.g. '04')
   DOCKSIDE_TEST_HARNESS_ID   Harness container ID (harness mode)
   DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY  1 or 0 (override default per-mode behaviour)
@@ -701,10 +695,7 @@ def main():
         sys.exit(1)
 
     server_url   = os.environ.get('DOCKSIDE_TEST_SERVER_URL', '')
-    connect_to   = os.environ.get('DOCKSIDE_TEST_CONNECT_TO', '').strip() or None
-    use_server_transport = os.environ.get('DOCKSIDE_TEST_USE_SERVER_TRANSPORT', '0') == '1'
     test_mode    = os.environ.get('DOCKSIDE_TEST_MODE', 'remote')
-    verify_ssl   = os.environ.get('DOCKSIDE_TEST_VERIFY_SSL', '0') == '1'
     only_prefix  = os.environ.get('DOCKSIDE_TEST_ONLY', '').strip()
     harness_id   = os.environ.get('DOCKSIDE_TEST_HARNESS_ID', '').strip() or None
     skip_cleanup = os.environ.get('DOCKSIDE_TEST_SKIP_CLEANUP', '0') == '1'
@@ -741,31 +732,12 @@ def main():
         print('ERROR: DOCKSIDE_TEST_SERVER_URL not set', file=sys.stderr)
         sys.exit(1)
 
-    # ── Admin credentials / session ───────────────────────────────────────────
-    admin_env = os.environ.get('DOCKSIDE_TEST_ADMIN', '').strip()
-    if admin_env:
-        admin_user, _, admin_pass = admin_env.partition(':')
-        admin_creds = (admin_user.strip(), admin_pass.strip())
-    else:
-        # No explicit credentials — use the stored CLI session
-        print('# DOCKSIDE_TEST_ADMIN not set; using stored CLI session for admin',
-              file=sys.stderr)
-        admin_creds = (None, None)  # session_only mode
-
-    # Build admin client (used for pre-flight + env setup).
-    # use_cli_admin_creds=True when no explicit credentials are provided,
-    # meaning the developer has pre-authenticated via 'dockside login'.
-    # use_cli_admin_creds=False (default) when explicit credentials are supplied
-    # (harness mode and explicit-creds dev use).
+    # Admin always uses the stored CLI session established by 'dockside login'.
+    admin_creds = (None, None)
     admin_client = DocksideClient(
         cli_path=cli_path,
         server_url=server_url,
-        username=admin_creds[0],
-        password=admin_creds[1],
-        connect_to=connect_to,
-        verify_ssl=verify_ssl,
-        use_cli_admin_creds=(admin_creds[0] is None),
-        use_server_transport=use_server_transport,
+        use_cli_admin_creds=True,
     )
 
     # Pre-flight: verify admin has required permissions (via dockside whoami)
@@ -878,15 +850,12 @@ def main():
             cli_path=cli_path,
             server_url=server_url,
             credentials=credentials,
-            connect_to=connect_to,
-            verify_ssl=verify_ssl,
             test_mode=test_mode,
             harness_container_id=harness_id,
             dockside_container_id=dockside_container_id,
             allow_network_modify=allow_network_modify,
             name_attrs=name_attrs,
             reuse_user_sessions=reuse_user_sessions,
-            use_server_transport=use_server_transport,
         )
         # On SIGINT/SIGTERM the runner re-raises the signal, skipping the finally
         # below, so give it the env cleanup to still remove dynamic fixtures

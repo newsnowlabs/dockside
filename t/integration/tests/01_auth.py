@@ -35,8 +35,6 @@ class AuthTests(TestCase):
             server_url=self.admin._server,
             username='nobody',
             password='wrongpass',
-            connect_to=self.admin._connect_to,
-            verify_ssl=self.admin._verify_ssl,
         )
         self.assert_api_error(bad.list_containers)
         bad.cleanup()
@@ -48,8 +46,6 @@ class AuthTests(TestCase):
             server_url=self.admin._server,
             username='nobody',
             password='wrongpass',
-            connect_to=self.admin._connect_to,
-            verify_ssl=self.admin._verify_ssl,
         )
         self.assert_api_error(
             bad.create, profile=self.test_profile_alpine, name='inttest-noauth-create'
