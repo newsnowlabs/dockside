@@ -4,14 +4,14 @@
    <b-modal id="sshinfo-modal" size="lg" v-model="showModal" @show="onModalShow" title="How to set up SSH" centered>
       <b-tabs>
 
-         <b-tab title="wstunnel v10" active>
+         <b-tab title="wstunnel v10+" active>
             <b-alert show variant="warning" class="mt-3 py-2">
-               This method uses wstunnel v10 directly. You create a credentials file once; wstunnel reads it automatically at each connection.
+               This method uses wstunnel v10+ directly. You create a credentials file once; wstunnel reads it automatically at each connection.
                No additional tooling is required beyond wstunnel itself.
             </b-alert>
             <p>Download a
             <a href="https://github.com/erebe/wstunnel/releases" target="_blank" v-b-tooltip title="Open wstunnel releases in new tab"><code>wstunnel</code></a>
-            v10 binary for your platform and add it to your <code>PATH</code>.</p>
+            v10+ binary for your platform and add it to your <code>PATH</code>.</p>
             <p>Run the following to create the credentials file:</p>
             <div class="code-block">
                <pre>{{ setupScript }}</pre>
@@ -36,7 +36,7 @@
                then let it call wstunnel, and gain full CLI functionality too. Requires
                <a href="https://www.python.org/downloads/" target="_blank">Python 3.6+</a>.
             </b-alert>
-            <p>Download a <a href="https://github.com/erebe/wstunnel/releases" target="_blank">wstunnel v10</a> binary for your platform
+            <p>Download a <a href="https://github.com/erebe/wstunnel/releases" target="_blank">wstunnel v10+</a> binary for your platform
             and the <a href="https://raw.githubusercontent.com/newsnowlabs/dockside/main/cli/dockside" target="_blank">Dockside CLI</a>
             (single Python file) and add them to your <code>PATH</code>. Then log in:</p>
             <div class="code-block">
@@ -61,11 +61,11 @@
             <b-alert show variant="warning" class="mt-3 py-2">
                This method embeds your authentication cookie in <code>~/.ssh/config</code> and exposes it in the process list.
                It is provided for existing wstunnel v6 users who need to renew their credentials, although upgrade to
-               wstunnel v10+ is now recommended. New users should use the <strong>wstunnel v10</strong> or <strong>Dockside CLI</strong> tab instead.
+               wstunnel v10+ is now recommended. New users should use the <strong>wstunnel v10+</strong> or <strong>Dockside CLI</strong> tab instead.
             </b-alert>
-            <p>Download a <a href="https://github.com/erebe/wstunnel" target="_blank"><code>wstunnel</code></a>
+            <p>Download one of the following <code>wstunnel v6</code>
             (<a href="https://github.com/erebe/wstunnel/blob/master/LICENSE" target="_blank">LICENSE</a>)
-            v6 binary and add it to your <code>PATH</code>:</p>
+            binaries and add it to your <code>PATH</code>:</p>
             <ul>
                <li>Linux:
                   <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64" target="_blank">amd64/x86_64 v6.0</a>,
