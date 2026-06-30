@@ -7,6 +7,7 @@ Zero external dependencies - requires only Python 3.6+.
 import argparse
 import copy
 import datetime
+import fnmatch
 import getpass
 import http.cookiejar
 import json
@@ -1211,23 +1212,25 @@ def _write_wstunnel_headers_file(key, cookie_header, host_override=None, nest_le
 def _server_entry_from_ssh_hostname(ssh_hostname, cfg):
     """Return (server_url, server_entry) for the Dockside server owning an SSH alias.
 
-    SSH aliases have the form ssh-<devtainer>.<domain> where <domain> is the
-    shared domain (e.g. staging.newsnow.co.uk), while the server URL uses a
-    subdomain of that domain (e.g. www.staging.newsnow.co.uk).  We therefore
-    match any configured server whose URL hostname ends with .<domain> or
-    equals <domain> exactly.
+    SSH aliases encode nesting: ssh-<container>--<nesting>.<domain> maps to the
+    server at www-<nesting>.<domain>, while ssh-<container>.<domain> maps to
+    www.<domain>.  We match using each server's wildcard host pattern and pick
+    the most specific (longest pattern) to handle nested servers correctly.
     """
     if not ssh_hostname.startswith('ssh-') or '.' not in ssh_hostname[4:]:
         return None, None
-    ssh_domain = ssh_hostname.split('.', 1)[1]
+    best_url, best_entry, best_len = None, None, -1
     for s in cfg.get('servers', []):
         url = s.get('url', '')
         h = urllib.parse.urlparse(url).hostname or ''
-        if h == ssh_domain or h.endswith('.' + ssh_domain):
-            url = _normalise_server_url(url)
-            s['url'] = url
-            return url, s
-    return None, None
+        if not h:
+            continue
+        pattern = _wildcard_host_pattern(h)
+        if fnmatch.fnmatch(ssh_hostname, pattern) and len(pattern) > best_len:
+            best_len = len(pattern)
+            best_url = _normalise_server_url(url)
+            best_entry = {**s, 'url': best_url}
+    return best_url, best_entry
 
 
 def _build_ssh_proxy_command(cookie_header, websocket_url, nest_level=None, tls_sni=None):
