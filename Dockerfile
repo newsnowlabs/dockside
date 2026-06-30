@@ -306,8 +306,8 @@ RUN cd $DS_PATH/bin && \
     ln -sf git git-clone && \
     ln -sf git-remote-http git-remote-https && \
     cp -a /etc/ssl/certs $DS_PATH/ && \
-    curl -SsL -o wstunnel $WSTUNNEL_V6_BINARY && chmod 755 wstunnel && \
-    curl -SsL "$WSTUNNEL_BINARY" | tar -xzO wstunnel > wstunnel-v10 && chmod 755 wstunnel-v10
+    curl -SsL -o wstunnel-v6 $WSTUNNEL_V6_BINARY && chmod 755 wstunnel-v6 && \
+    curl -SsL "$WSTUNNEL_BINARY" | tar -xzO wstunnel > wstunnel && chmod 755 wstunnel
 
 # Create a wrapper for `gh` that sets SSL_CERT_FILE as needed
 # so providing fully working terminal access to gh
