@@ -1157,10 +1157,11 @@ def _check_wstunnel_binary(binary):
         )
     except Exception as e:
         die(f'Failed to run wstunnel binary {binary!r}: {e}')
-    m = re.search(r'\b(\d+)\.\d+', output)
-    if m and int(m.group(1)) < 10:
+    m = re.search(r'(?<![.\d])(\d+)\.\d+', output)
+    if not m or int(m.group(1)) < 10:
+        version_str = f'v{m.group(1)}.x' if m else 'unknown version'
         die(
-            f'wstunnel v{m.group(1)}.x found at {binary!r}; v10+ is required.\n'
+            f'wstunnel {version_str} found at {binary!r}; v10+ is required.\n'
             'Download wstunnel v10+ from https://github.com/erebe/wstunnel/releases\n'
             'or use --wstunnel /path/to/binary if v10 is installed under a different name.'
         )
@@ -1175,6 +1176,8 @@ def _write_wstunnel_headers_file(key, cookie_header, host_override=None, nest_le
     needed for nginx routing and X-Nest-Level for correct depth-of-nesting
     resolution (bypassing the outer proxy that would normally set it).
     """
+    if '/' in key:
+        die(f'Invalid wstunnel headers key {key!r}: must not contain path separators')
     wstunnel_dir = os.path.join(CONFIG_DIR, 'wstunnel')
     if os.path.islink(wstunnel_dir):
         die(f"wstunnel headers directory {wstunnel_dir!r} is a symlink – refusing to use it")
@@ -1185,11 +1188,23 @@ def _write_wstunnel_headers_file(key, cookie_header, host_override=None, nest_le
         lines.append(f'Host: {host_override}')
     if nest_level:
         lines.append(f'X-Nest-Level: {nest_level}')
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    content = ('\n'.join(lines) + '\n').encode()
+    fd, tmp_path = tempfile.mkstemp(dir=wstunnel_dir)
     try:
-        os.write(fd, ('\n'.join(lines) + '\n').encode())
-    finally:
+        os.fchmod(fd, 0o600)
+        os.write(fd, content)
         os.close(fd)
+        os.rename(tmp_path, path)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -1265,6 +1280,7 @@ def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
         'connect_to': connect_to or '',
         'nest_level': nest_level or '',
         'proxy_command': proxy_command,
+        'cookie_header': cookie_header,
     }
 
 
@@ -2902,7 +2918,7 @@ def cmd_check_url(args):
 
 
 def cmd_ssh_proxy_command(args):
-    """Print a ProxyCommand line for a devtainer's ssh router."""
+    """Print a ProxyCommand line for a devtainer's ssh router (deprecated: use ssh config)."""
     opener, server = _client(args)
     try:
         containers = fetch_containers(opener, server)
@@ -2915,6 +2931,13 @@ def cmd_ssh_proxy_command(args):
         )
     except APIError as e:
         die(str(e))
+
+    wstunnel_binary = getattr(args, 'wstunnel_binary', None)
+    ssh_alias = result.get('ssh_alias', '')
+    if wstunnel_binary:
+        result['proxy_command'] = f'dockside ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy {ssh_alias}'
+    else:
+        result['proxy_command'] = f'dockside ssh exec-proxy {ssh_alias}'
 
     if args._fmt in ('json', 'yaml'):
         emit(result, args._fmt)
@@ -2979,6 +3002,37 @@ def cmd_ssh_config(args):
         print(result['ssh_config'])
 
 
+def _build_wstunnel_client_argv(binary, ssh_alias, server_url, cookie_header, connect_to):
+    """Return (argv, headers_path) for a wstunnel v10 client invocation.
+
+    connect_to is the raw --connect-to value (host or host:port); pass None
+    for a direct connection where the SSH alias is the WebSocket target.
+    """
+    if connect_to:
+        ws_url = _connect_to_websocket_target(connect_to)
+        nest_level = _compute_nest_level(server_url) or None
+        headers_path = _write_wstunnel_headers_file(
+            ssh_alias, cookie_header, host_override=ssh_alias, nest_level=nest_level
+        )
+        argv = [binary, 'client',
+                '--log-lvl=error',
+                '--http-headers-file', headers_path,
+                '--tls-sni-override', ssh_alias,
+                '-L', 'stdio://127.0.0.1:22',
+                ws_url]
+    else:
+        server_hostname = urllib.parse.urlparse(server_url).hostname or ssh_alias
+        port = urllib.parse.urlparse(server_url).port
+        ws_url = 'wss://' + ssh_alias + (f':{port}' if port else '')
+        headers_path = _write_wstunnel_headers_file(server_hostname, cookie_header)
+        argv = [binary, 'client',
+                '--log-lvl=error',
+                '--http-headers-file', headers_path,
+                '-L', 'stdio://127.0.0.1:22',
+                ws_url]
+    return argv, headers_path
+
+
 def cmd_ssh_exec_proxy(args):
     """Exec wstunnel v10 as the SSH ProxyCommand for a devtainer hostname.
 
@@ -3028,27 +3082,9 @@ def cmd_ssh_exec_proxy(args):
     _check_wstunnel_binary(wstunnel_binary)
 
     connect_to = server_entry.get('connect_to')
-    if connect_to:
-        ws_url = _connect_to_websocket_target(connect_to)
-        nest_level = _compute_nest_level(server_url) or None
-        headers_path = _write_wstunnel_headers_file(
-            ssh_hostname, cookie_header, host_override=ssh_hostname, nest_level=nest_level
-        )
-        argv = [wstunnel_binary, 'client',
-                '--log-lvl=error',
-                '--http-headers-file', headers_path,
-                '--tls-sni-override', ssh_hostname,
-                '-L', 'stdio://127.0.0.1:22',
-                ws_url]
-    else:
-        port = urllib.parse.urlparse(server_url).port
-        ws_url = 'wss://' + ssh_hostname + (f':{port}' if port else '')
-        headers_path = _write_wstunnel_headers_file(server_hostname, cookie_header)
-        argv = [wstunnel_binary, 'client',
-                '--log-lvl=error',
-                '--http-headers-file', headers_path,
-                '-L', 'stdio://127.0.0.1:22',
-                ws_url]
+    argv, _ = _build_wstunnel_client_argv(
+        wstunnel_binary, ssh_hostname, server_url, cookie_header, connect_to
+    )
     os.execvp(wstunnel_binary, argv)
 
 
@@ -3098,45 +3134,16 @@ def cmd_ssh(args):
     ssh_alias = spec.get('ssh_alias')
     ssh_hostname = spec.get('hostname')
     ssh_user = spec.get('ssh_user')
-    if not ssh_alias or not ssh_hostname:
+    cookie_header = spec.get('cookie_header') or ''
+    if not ssh_alias or not ssh_hostname or not cookie_header:
         die('CLI did not resolve a usable SSH proxy spec')
 
-    # Build v10 wstunnel ProxyCommand inline: we already have the opener and
-    # server, so write the headers file directly rather than delegating to
-    # exec-proxy (which would need to reverse-resolve the server from the alias).
-    try:
-        cookie_header = _merged_ssh_cookie_header(opener, server)
-    except APIError as e:
-        die(str(e))
     wstunnel_binary = getattr(args, 'wstunnel_binary', None) or 'wstunnel'
     _check_wstunnel_binary(wstunnel_binary)
     connect_to = getattr(args, '_connect_to_effective', None)
-    if connect_to:
-        # connect_to: TCP goes to connect_to address; SNI + Host + X-Nest-Level for routing.
-        ws_url = _connect_to_websocket_target(connect_to)
-        nest_level = _compute_nest_level(server) or None
-        headers_path = _write_wstunnel_headers_file(
-            ssh_alias, cookie_header, host_override=ssh_alias, nest_level=nest_level
-        )
-        wstunnel_argv = [
-            wstunnel_binary, 'client',
-            '--log-lvl=error',
-            '--http-headers-file', headers_path,
-            '--tls-sni-override', ssh_alias,
-            '-L', 'stdio://127.0.0.1:22',
-            ws_url,
-        ]
-    else:
-        port = urllib.parse.urlparse(server).port
-        ws_url = 'wss://' + ssh_alias + (f':{port}' if port else '')
-        headers_path = _write_wstunnel_headers_file(ssh_hostname, cookie_header)
-        wstunnel_argv = [
-            wstunnel_binary, 'client',
-            '--log-lvl=error',
-            '--http-headers-file', headers_path,
-            '-L', 'stdio://127.0.0.1:22',
-            ws_url,
-        ]
+    wstunnel_argv, _ = _build_wstunnel_client_argv(
+        wstunnel_binary, ssh_alias, server, cookie_header, connect_to,
+    )
     proxy_command = shlex.join(wstunnel_argv)
 
     destination = f'{ssh_user}@{ssh_alias}' if ssh_user else ssh_alias
