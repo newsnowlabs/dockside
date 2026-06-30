@@ -1249,8 +1249,12 @@ def _build_ssh_proxy_command(cookie_header, websocket_url, nest_level=None, tls_
     return shlex.join(argv)
 
 
-def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
-    """Resolve the pieces needed for an SSH ProxyCommand for a container."""
+def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None, skip_cookie=False):
+    """Resolve the pieces needed for an SSH ProxyCommand for a container.
+
+    Pass skip_cookie=True when the caller already has a valid wstunnel headers
+    file and wants to avoid the /getAuthCookies round-trip.
+    """
     ssh_alias = _ssh_alias(container)
     if not ssh_alias:
         die(f"Devtainer {container.get('name')!r} does not expose an 'ssh' router")
@@ -1263,13 +1267,17 @@ def _resolve_ssh_proxy_spec(opener, server, container, connect_to=None):
     else:
         websocket_url = f'wss://{server_hostname}'
         tls_sni = None
-    cookie_header = _merged_ssh_cookie_header(opener, server)
-    proxy_command = _build_ssh_proxy_command(
-        cookie_header,
-        websocket_url,
-        nest_level=nest_level,
-        tls_sni=tls_sni,
-    )
+    if skip_cookie:
+        cookie_header = ''
+        proxy_command = ''
+    else:
+        cookie_header = _merged_ssh_cookie_header(opener, server)
+        proxy_command = _build_ssh_proxy_command(
+            cookie_header,
+            websocket_url,
+            nest_level=nest_level,
+            tls_sni=tls_sni,
+        )
     return {
         'devtainer': container.get('name', ''),
         'ssh_user': ssh_user,
@@ -3002,7 +3010,21 @@ def cmd_ssh_config(args):
         print(result['ssh_config'])
 
 
-def _build_wstunnel_client_argv(binary, ssh_alias, server_url, cookie_header, connect_to):
+def _wstunnel_headers_path(ssh_alias, server_url, connect_to):
+    """Return (key, path) for the wstunnel headers file without writing it.
+
+    In connect_to mode the key is the SSH alias (per-devtainer, because the
+    Host header must vary).  Otherwise it is the server hostname (shared by
+    all devtainers on that server).
+    """
+    if connect_to:
+        key = ssh_alias or ''
+    else:
+        key = urllib.parse.urlparse(server_url).hostname or (ssh_alias or '')
+    return key, os.path.join(CONFIG_DIR, 'wstunnel', key)
+
+
+def _build_wstunnel_client_argv(binary, ssh_alias, server_url, cookie_header, connect_to, existing_path=None):
     """Return (argv, headers_path) for a wstunnel v10 client invocation.
 
     connect_to is the raw --connect-to value (host or host:port); pass None
@@ -3010,10 +3032,13 @@ def _build_wstunnel_client_argv(binary, ssh_alias, server_url, cookie_header, co
     """
     if connect_to:
         ws_url = _connect_to_websocket_target(connect_to)
-        nest_level = _compute_nest_level(server_url) or None
-        headers_path = _write_wstunnel_headers_file(
-            ssh_alias, cookie_header, host_override=ssh_alias, nest_level=nest_level
-        )
+        if existing_path:
+            headers_path = existing_path
+        else:
+            nest_level = _compute_nest_level(server_url) or None
+            headers_path = _write_wstunnel_headers_file(
+                ssh_alias, cookie_header, host_override=ssh_alias, nest_level=nest_level
+            )
         argv = [binary, 'client',
                 '--log-lvl=error',
                 '--http-headers-file', headers_path,
@@ -3024,7 +3049,7 @@ def _build_wstunnel_client_argv(binary, ssh_alias, server_url, cookie_header, co
         server_hostname = urllib.parse.urlparse(server_url).hostname or ssh_alias
         port = urllib.parse.urlparse(server_url).port
         ws_url = 'wss://' + ssh_alias + (f':{port}' if port else '')
-        headers_path = _write_wstunnel_headers_file(server_hostname, cookie_header)
+        headers_path = existing_path or _write_wstunnel_headers_file(server_hostname, cookie_header)
         argv = [binary, 'client',
                 '--log-lvl=error',
                 '--http-headers-file', headers_path,
@@ -3058,6 +3083,17 @@ def cmd_ssh_exec_proxy(args):
             f'Run: dockside login --server https://{server_hostname}'
         )
 
+    connect_to = server_entry.get('connect_to')
+    _, headers_path = _wstunnel_headers_path(ssh_hostname, server_url, connect_to)
+
+    if os.path.isfile(headers_path):
+        _check_wstunnel_binary(wstunnel_binary)
+        argv, _ = _build_wstunnel_client_argv(
+            wstunnel_binary, ssh_hostname, server_url, None, connect_to,
+            existing_path=headers_path,
+        )
+        os.execvp(wstunnel_binary, argv)
+
     verify = not server_entry.get('no_verify', False)
     try:
         opener = get_authenticated_opener(
@@ -3081,7 +3117,6 @@ def cmd_ssh_exec_proxy(args):
 
     _check_wstunnel_binary(wstunnel_binary)
 
-    connect_to = server_entry.get('connect_to')
     argv, _ = _build_wstunnel_client_argv(
         wstunnel_binary, ssh_hostname, server_url, cookie_header, connect_to
     )
@@ -3119,6 +3154,14 @@ def cmd_ssh(args):
         return cmd_ssh_config(args)
 
     opener, server = _client(args)
+    connect_to = getattr(args, '_connect_to_effective', None)
+
+    # For the common non-connect_to case the headers key is the server hostname,
+    # which is knowable before container resolution.  Check now so we can skip
+    # the /getAuthCookies round-trip inside _resolve_ssh_proxy_spec.
+    _, pre_headers_path = _wstunnel_headers_path(None, server, connect_to)
+    have_file = not connect_to and os.path.isfile(pre_headers_path)
+
     try:
         containers = fetch_containers(opener, server)
         container = resolve(containers, args.ssh_target)
@@ -3126,7 +3169,8 @@ def cmd_ssh(args):
             opener,
             server,
             container,
-            connect_to=getattr(args, '_connect_to_effective', None),
+            connect_to=connect_to,
+            skip_cookie=have_file,
         )
     except APIError as e:
         die(str(e))
@@ -3134,15 +3178,21 @@ def cmd_ssh(args):
     ssh_alias = spec.get('ssh_alias')
     ssh_hostname = spec.get('hostname')
     ssh_user = spec.get('ssh_user')
+
+    # For connect_to the key is the SSH alias, only known after spec resolution.
+    if connect_to and ssh_alias:
+        _, pre_headers_path = _wstunnel_headers_path(ssh_alias, server, connect_to)
+        have_file = os.path.isfile(pre_headers_path)
+
     cookie_header = spec.get('cookie_header') or ''
-    if not ssh_alias or not ssh_hostname or not cookie_header:
+    if not ssh_alias or not ssh_hostname or (not have_file and not cookie_header):
         die('CLI did not resolve a usable SSH proxy spec')
 
     wstunnel_binary = getattr(args, 'wstunnel_binary', None) or 'wstunnel'
     _check_wstunnel_binary(wstunnel_binary)
-    connect_to = getattr(args, '_connect_to_effective', None)
     wstunnel_argv, _ = _build_wstunnel_client_argv(
         wstunnel_binary, ssh_alias, server, cookie_header, connect_to,
+        existing_path=pre_headers_path if have_file else None,
     )
     proxy_command = shlex.join(wstunnel_argv)
 
