@@ -16,6 +16,7 @@ import ssl
 import sys
 import socket
 import shlex
+import subprocess
 import tempfile
 import time
 import http.client
@@ -1140,6 +1141,80 @@ def _merged_ssh_cookie_header(opener, server):
     return target_cookie_header
 
 
+def _check_wstunnel_binary(binary):
+    """Verify binary is wstunnel v10+; die with a helpful message for v6 or missing binary."""
+    try:
+        result = subprocess.run(
+            [binary, '--version'],
+            capture_output=True, text=True, timeout=5,
+        )
+        output = (result.stdout + result.stderr).strip()
+    except FileNotFoundError:
+        die(
+            f'{binary!r} not found.\n'
+            'Download wstunnel v10+ from https://github.com/erebe/wstunnel/releases\n'
+            'or use --wstunnel /path/to/binary if installed under a different name.'
+        )
+    except Exception as e:
+        die(f'Failed to run wstunnel binary {binary!r}: {e}')
+    m = re.search(r'\b(\d+)\.\d+', output)
+    if m and int(m.group(1)) < 10:
+        die(
+            f'wstunnel v{m.group(1)}.x found at {binary!r}; v10+ is required.\n'
+            'Download wstunnel v10+ from https://github.com/erebe/wstunnel/releases\n'
+            'or use --wstunnel /path/to/binary if v10 is installed under a different name.'
+        )
+
+
+def _write_wstunnel_headers_file(key, cookie_header, host_override=None, nest_level=None):
+    """Write a wstunnel v10 http-headers file keyed by `key`; return its path.
+
+    `key` is normally the server hostname (shared across all devtainers on that
+    server).  Pass `host_override` and `nest_level` when the TCP target
+    (connect_to) differs from the logical SSH hostname: the Host header is
+    needed for nginx routing and X-Nest-Level for correct depth-of-nesting
+    resolution (bypassing the outer proxy that would normally set it).
+    """
+    wstunnel_dir = os.path.join(CONFIG_DIR, 'wstunnel')
+    if os.path.islink(wstunnel_dir):
+        die(f"wstunnel headers directory {wstunnel_dir!r} is a symlink – refusing to use it")
+    os.makedirs(wstunnel_dir, mode=0o700, exist_ok=True)
+    path = os.path.join(wstunnel_dir, key)
+    lines = [f'Cookie: {cookie_header}']
+    if host_override:
+        lines.append(f'Host: {host_override}')
+    if nest_level:
+        lines.append(f'X-Nest-Level: {nest_level}')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, ('\n'.join(lines) + '\n').encode())
+    finally:
+        os.close(fd)
+    return path
+
+
+def _server_entry_from_ssh_hostname(ssh_hostname, cfg):
+    """Return (server_url, server_entry) for the Dockside server owning an SSH alias.
+
+    SSH aliases have the form ssh-<devtainer>.<domain> where <domain> is the
+    shared domain (e.g. staging.newsnow.co.uk), while the server URL uses a
+    subdomain of that domain (e.g. www.staging.newsnow.co.uk).  We therefore
+    match any configured server whose URL hostname ends with .<domain> or
+    equals <domain> exactly.
+    """
+    if not ssh_hostname.startswith('ssh-') or '.' not in ssh_hostname[4:]:
+        return None, None
+    ssh_domain = ssh_hostname.split('.', 1)[1]
+    for s in cfg.get('servers', []):
+        url = s.get('url', '')
+        h = urllib.parse.urlparse(url).hostname or ''
+        if h == ssh_domain or h.endswith('.' + ssh_domain):
+            url = _normalise_server_url(url)
+            s['url'] = url
+            return url, s
+    return None, None
+
+
 def _build_ssh_proxy_command(cookie_header, websocket_url, nest_level=None, tls_sni=None):
     """
     Build a ProxyCommand line suitable for use inside ssh_config.
@@ -1221,6 +1296,50 @@ def _ssh_config_host_pattern(ssh_alias):
     if not ssh_alias.startswith('ssh-'):
         return ssh_alias
     return re.sub(r'^ssh-(?:.*?(?=--|\.))', 'ssh-*', ssh_alias, count=1) if re.search(r'--|\.', ssh_alias[4:]) else 'ssh-*'
+
+
+def _wildcard_host_pattern(server_hostname):
+    """
+    Derive the ssh_config Host wildcard pattern from a Dockside server hostname.
+
+    Dockside encodes nesting in the first DNS label:
+      www.example.com            -> ssh-*.example.com
+      www-inner.example.com      -> ssh-*--inner.example.com
+      www-b--inner.example.com   -> ssh-*--b--inner.example.com
+
+    The rule: replace the 'www' prefix with 'ssh-*'; the single dash that
+    separates 'www' from the nesting suffix becomes a double dash (--) in SSH
+    aliases, so 'www-<nesting>' becomes 'ssh-*--<nesting>'.
+    """
+    first_label, _, rest = server_hostname.partition('.')
+    dash_pos = first_label.find('-')
+    if dash_pos >= 0:
+        # '-inner' or '-b--inner' etc. — prepend an extra '-' to get '--inner'
+        wildcard_label = 'ssh-*-' + first_label[dash_pos:]
+    else:
+        wildcard_label = 'ssh-*'
+    return f'{wildcard_label}.{rest}' if rest else wildcard_label
+
+
+def _build_wildcard_ssh_config_block(server_url, wstunnel_binary=None, forward_agent=False):
+    """Build a per-server wildcard ssh_config Host block using dockside ssh exec-proxy."""
+    server_hostname = urllib.parse.urlparse(server_url).hostname or ''
+    if not server_hostname:
+        raise APIError('Cannot determine server hostname from URL')
+    host_pattern = _wildcard_host_pattern(server_hostname)
+    if wstunnel_binary:
+        proxy_cmd = f'dockside ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy %n'
+    else:
+        proxy_cmd = 'dockside ssh exec-proxy %n'
+    lines = [
+        '# Requires wstunnel v10+ in PATH (https://github.com/erebe/wstunnel/releases)',
+        f'Host {host_pattern}',
+        f'    ProxyCommand {proxy_cmd}',
+        f'    Hostname {server_hostname}',
+    ]
+    if forward_agent:
+        lines.append('    ForwardAgent yes')
+    return '\n'.join(lines)
 
 
 # ── Text rendering ────────────────────────────────────────────────────────────
@@ -2804,17 +2923,47 @@ def cmd_ssh_proxy_command(args):
 
 
 def cmd_ssh_config(args):
-    """Print an ssh_config Host block for a devtainer SSH router."""
+    """Print an ssh_config Host block: wildcard server block (no devtainer) or per-devtainer block."""
+    devtainer = getattr(args, 'devtainer', None)
+    wstunnel_binary = getattr(args, 'wstunnel_binary', None)
+
+    if not devtainer:
+        # Wildcard block — needs server URL only, no auth required
+        cfg = load_config()
+        server_ref = getattr(args, 'server', None) or os.environ.get('DOCKSIDE_SERVER')
+        if server_ref:
+            server_entry = _find_server(cfg, server_ref)
+            server_url = _normalise_server_url(server_entry['url'] if server_entry else server_ref)
+        else:
+            server_entry = _current_server(cfg)
+            if not server_entry:
+                die("No server configured. Run 'dockside login' or use --server.")
+            server_url = _normalise_server_url(server_entry['url'])
+        try:
+            config_block = _build_wildcard_ssh_config_block(
+                server_url,
+                wstunnel_binary=wstunnel_binary,
+                forward_agent=getattr(args, 'forward_agent', False),
+            )
+        except APIError as e:
+            die(str(e))
+        print(config_block)
+        return
+
     opener, server = _client(args)
     try:
         containers = fetch_containers(opener, server)
-        container = resolve(containers, args.devtainer)
+        container = resolve(containers, devtainer)
         result = _resolve_ssh_proxy_spec(
             opener,
             server,
             container,
             connect_to=getattr(args, '_connect_to_effective', None),
         )
+        if wstunnel_binary:
+            result['proxy_command'] = f'dockside ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy %n'
+        else:
+            result['proxy_command'] = 'dockside ssh exec-proxy %n'
         result['ssh_config'] = _build_ssh_config_block(
             result,
             identity_file=getattr(args, 'identity_file', None),
@@ -2830,15 +2979,96 @@ def cmd_ssh_config(args):
         print(result['ssh_config'])
 
 
+def cmd_ssh_exec_proxy(args):
+    """Exec wstunnel v10 as the SSH ProxyCommand for a devtainer hostname.
+
+    Called by OpenSSH as: ProxyCommand dockside ssh exec-proxy %n
+    where %n expands to the SSH alias (e.g. ssh-foo--host.example.com).
+    """
+    ssh_hostname = args.exec_proxy_hostname
+    wstunnel_binary = getattr(args, 'wstunnel_binary', None) or 'wstunnel'
+
+    if not ssh_hostname.startswith('ssh-') or '.' not in ssh_hostname[4:]:
+        die(
+            f'exec-proxy expects a full SSH hostname like ssh-DEVTAINER.DOMAIN '
+            f'(expanded by OpenSSH %n), not {ssh_hostname!r}.\n'
+            f'To SSH directly to a devtainer by name, use: dockside ssh {ssh_hostname}'
+        )
+
+    cfg = load_config()
+    server_url, server_entry = _server_entry_from_ssh_hostname(ssh_hostname, cfg)
+    if not server_entry:
+        server_hostname = ssh_hostname.split('.', 1)[1] if '.' in ssh_hostname else ssh_hostname
+        die(
+            f'No configured Dockside server for {server_hostname!r}. '
+            f'Run: dockside login --server https://{server_hostname}'
+        )
+
+    verify = not server_entry.get('no_verify', False)
+    try:
+        opener = get_authenticated_opener(
+            server_url, server_entry, None, None,
+            verify_ssl=verify,
+            cfg=cfg,
+        )
+    except SystemExit:
+        raise
+    except Exception as e:
+        die(str(e))
+
+    try:
+        cookie_header = _merged_ssh_cookie_header(opener, server_url)
+    except APIError as e:
+        die(str(e))
+
+    server_hostname = urllib.parse.urlparse(server_url).hostname
+    if not cookie_header:
+        die(f'No authentication cookie for {server_hostname!r}. Run: dockside login --server {server_url}')
+
+    _check_wstunnel_binary(wstunnel_binary)
+
+    connect_to = server_entry.get('connect_to')
+    if connect_to:
+        ws_url = _connect_to_websocket_target(connect_to)
+        nest_level = _compute_nest_level(server_url) or None
+        headers_path = _write_wstunnel_headers_file(
+            ssh_hostname, cookie_header, host_override=ssh_hostname, nest_level=nest_level
+        )
+        argv = [wstunnel_binary, 'client',
+                '--log-lvl=error',
+                '--http-headers-file', headers_path,
+                '--tls-sni-override', ssh_hostname,
+                '-L', 'stdio://127.0.0.1:22',
+                ws_url]
+    else:
+        port = urllib.parse.urlparse(server_url).port
+        ws_url = 'wss://' + ssh_hostname + (f':{port}' if port else '')
+        headers_path = _write_wstunnel_headers_file(server_hostname, cookie_header)
+        argv = [wstunnel_binary, 'client',
+                '--log-lvl=error',
+                '--http-headers-file', headers_path,
+                '-L', 'stdio://127.0.0.1:22',
+                ws_url]
+    os.execvp(wstunnel_binary, argv)
+
+
 def cmd_ssh(args):
     """
     SSH convenience wrapper.
 
     Supported forms:
       dockside ssh DEVTAINER [SSH-ARGS...]
-      dockside ssh config DEVTAINER
-      dockside ssh proxy-command DEVTAINER
+      dockside ssh config [DEVTAINER]
+      dockside ssh exec-proxy HOSTNAME
+      dockside ssh proxy-command DEVTAINER  (deprecated)
     """
+    if args.ssh_target == 'exec-proxy':
+        if not args.ssh_rest:
+            die('ssh exec-proxy requires HOSTNAME')
+        if len(args.ssh_rest) > 1:
+            die('ssh exec-proxy accepts exactly one HOSTNAME argument')
+        args.exec_proxy_hostname = args.ssh_rest[0]
+        return cmd_ssh_exec_proxy(args)
     if args.ssh_target == 'proxy-command':
         if not args.ssh_rest:
             die('ssh proxy-command requires DEVTAINER')
@@ -2847,11 +3077,9 @@ def cmd_ssh(args):
         args.devtainer = args.ssh_rest[0]
         return cmd_ssh_proxy_command(args)
     if args.ssh_target == 'config':
-        if not args.ssh_rest:
-            die('ssh config requires DEVTAINER')
         if len(args.ssh_rest) > 1:
-            die('ssh config accepts exactly one DEVTAINER argument')
-        args.devtainer = args.ssh_rest[0]
+            die('ssh config accepts at most one DEVTAINER argument')
+        args.devtainer = args.ssh_rest[0] if args.ssh_rest else None
         return cmd_ssh_config(args)
 
     opener, server = _client(args)
@@ -2869,10 +3097,47 @@ def cmd_ssh(args):
 
     ssh_alias = spec.get('ssh_alias')
     ssh_hostname = spec.get('hostname')
-    proxy_command = spec.get('proxy_command')
     ssh_user = spec.get('ssh_user')
-    if not ssh_alias or not ssh_hostname or not proxy_command:
+    if not ssh_alias or not ssh_hostname:
         die('CLI did not resolve a usable SSH proxy spec')
+
+    # Build v10 wstunnel ProxyCommand inline: we already have the opener and
+    # server, so write the headers file directly rather than delegating to
+    # exec-proxy (which would need to reverse-resolve the server from the alias).
+    try:
+        cookie_header = _merged_ssh_cookie_header(opener, server)
+    except APIError as e:
+        die(str(e))
+    wstunnel_binary = getattr(args, 'wstunnel_binary', None) or 'wstunnel'
+    _check_wstunnel_binary(wstunnel_binary)
+    connect_to = getattr(args, '_connect_to_effective', None)
+    if connect_to:
+        # connect_to: TCP goes to connect_to address; SNI + Host + X-Nest-Level for routing.
+        ws_url = _connect_to_websocket_target(connect_to)
+        nest_level = _compute_nest_level(server) or None
+        headers_path = _write_wstunnel_headers_file(
+            ssh_alias, cookie_header, host_override=ssh_alias, nest_level=nest_level
+        )
+        wstunnel_argv = [
+            wstunnel_binary, 'client',
+            '--log-lvl=error',
+            '--http-headers-file', headers_path,
+            '--tls-sni-override', ssh_alias,
+            '-L', 'stdio://127.0.0.1:22',
+            ws_url,
+        ]
+    else:
+        port = urllib.parse.urlparse(server).port
+        ws_url = 'wss://' + ssh_alias + (f':{port}' if port else '')
+        headers_path = _write_wstunnel_headers_file(ssh_hostname, cookie_header)
+        wstunnel_argv = [
+            wstunnel_binary, 'client',
+            '--log-lvl=error',
+            '--http-headers-file', headers_path,
+            '-L', 'stdio://127.0.0.1:22',
+            ws_url,
+        ]
+    proxy_command = shlex.join(wstunnel_argv)
 
     destination = f'{ssh_user}@{ssh_alias}' if ssh_user else ssh_alias
     remote_args = list(getattr(args, 'ssh_rest', None) or [])
@@ -3400,16 +3665,20 @@ def build_parser():
     # ── ssh ───────────────────────────────────────────────────────────────────
     sp = sub.add_parser(
         'ssh',
-        help='Connect to a devtainer ssh router or print its ProxyCommand',
+        help='Connect to a devtainer SSH router, or manage SSH config and credentials',
         description=(
             'SSH helper for devtainer routes.\n\n'
             'All Dockside CLI options must appear before DEVTAINER. Anything after\n'
             'DEVTAINER is passed through to ssh unchanged.\n\n'
             'Direct connect:\n'
             '  dockside ssh DEVTAINER [SSH-ARGS...]\n\n'
-            'Config block:\n'
+            'Server wildcard config block (add to ~/.ssh/config):\n'
+            '  dockside ssh config\n\n'
+            'Per-devtainer config block:\n'
             '  dockside ssh config DEVTAINER\n\n'
-            'Low-level proxy command:\n'
+            'Runtime ProxyCommand (called by OpenSSH via ProxyCommand dockside ssh exec-proxy %n):\n'
+            '  dockside ssh exec-proxy HOSTNAME\n\n'
+            'Print raw ProxyCommand string (deprecated):\n'
             '  dockside ssh proxy-command DEVTAINER'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3421,16 +3690,20 @@ def build_parser():
                     help='Enable SSH agent forwarding for direct ssh or ssh config output')
     sp.add_argument('--alias', dest='ssh_alias_override', metavar='HOST_ALIAS',
                     help='Override the Host alias used by ssh config output')
+    sp.add_argument('--wstunnel', dest='wstunnel_binary', metavar='PATH',
+                    help='Path to wstunnel v10+ binary (default: wstunnel in PATH). '
+                         'When used with "ssh config", the path is embedded in the '
+                         'ProxyCommand so SSH uses it at connect time.')
     sp.add_argument(
         'ssh_target',
         metavar='DEVTAINER',
-        help='DEVTAINER identifier, or the literal subcommand name "config" or "proxy-command"',
+        help='DEVTAINER identifier, or subcommand: "config", "exec-proxy", or "proxy-command" (deprecated)',
     )
     sp.add_argument(
         'ssh_rest',
         nargs=argparse.REMAINDER,
         metavar='SSH-ARGS',
-        help='SSH args for direct connect, or DEVTAINER for proxy-command; all Dockside options must come before DEVTAINER',
+        help='SSH args for direct connect; or DEVTAINER/HOSTNAME for subcommands',
     )
     sp.set_defaults(func=cmd_ssh)
 
