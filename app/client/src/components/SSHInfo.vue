@@ -177,7 +177,7 @@ chmod 600 ~/.config/dockside/wstunnel-manual/${this.sshHostname}`;
          },
          textB() {
             return `Host ${this.sshWildcardHost}
-   ProxyCommand wstunnel client --log-lvl=error --http-headers-file ~/.config/dockside/wstunnel-manual/%h -L stdio:127.0.0.1:%p wss://%n${this.sshPort}
+   ProxyCommand wstunnel client --log-lvl=error --http-headers-file ~/.config/dockside/wstunnel-manual/%h -L stdio://127.0.0.1:%p wss://%n${this.sshPort}
    Hostname ${this.sshHostname}
    ForwardAgent yes`;
          },
