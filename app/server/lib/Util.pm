@@ -208,10 +208,19 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
          if (my ($y,$mo,$d,$h,$mi,$s) = ($stat->{'mtime'} // '') =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/) {
             $mtime = timegm($s, $mi, $h, $d, $mo - 1, $y - 1900);
          }
+         else {
+            flog("docker_container_path_exists: could not parse mtime from stat header for $path: '" . ($stat->{'mtime'} // '<missing>') . "'");
+         }
       }
       catch {
          flog("docker_container_path_exists: failed to parse X-Docker-Container-Path-Stat header '$b64': $_");
       };
+   }
+   else {
+      # No stat header: staleness detection is unavailable for this Docker API response, so
+      # callers comparing against a $since will treat this path as fresh (fail open) -- log
+      # it so that silent fail-open isn't invisible to an operator debugging the feature.
+      flog("docker_container_path_exists: no X-Docker-Container-Path-Stat header present for $path; staleness check will be skipped");
    }
 
    return (1, $mtime);
