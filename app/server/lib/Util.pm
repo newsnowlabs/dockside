@@ -205,7 +205,10 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
    if (my $b64 = $result->headers->header('X-Docker-Container-Path-Stat')) {
       try {
          my $stat = decode_json(decode_base64($b64));
-         if (my ($y,$mo,$d,$h,$mi,$s) = ($stat->{'mtime'} // '') =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/) {
+         # Require a UTC ('Z') timestamp -- timegm() assumes UTC, so a non-UTC offset
+         # (e.g. "+05:30") would otherwise be silently misinterpreted as UTC and produce
+         # the wrong epoch instead of being left undef.
+         if (my ($y,$mo,$d,$h,$mi,$s) = ($stat->{'mtime'} // '') =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/) {
             $mtime = timegm($s, $mi, $h, $d, $mo - 1, $y - 1900);
          }
          else {
