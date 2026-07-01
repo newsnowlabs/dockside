@@ -96,7 +96,10 @@ sub launcher_path_exists ($reservation, $launcher, $since = undef) {
       $launcher
    );
    return 0 unless $exists;
-   return 0 if defined($since) && defined($mtime) && $mtime < $since;
+   # $mtime is whole seconds (Docker's stat has no sub-second precision by the time it's
+   # parsed); $since may carry a Time::HiRes fractional part, so floor it before comparing
+   # or a launcher written in the same second as $since is wrongly seen as predating it.
+   return 0 if defined($since) && defined($mtime) && $mtime < int($since);
    return 1;
 }
 
