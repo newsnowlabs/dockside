@@ -175,8 +175,9 @@ sub call_socket_api ($socket, $path, $opts = {}) {
    return $result;
 }
 
-# Returns ($exists, $mtime_epoch) where $mtime_epoch is a float epoch parsed from the
-# X-Docker-Container-Path-Stat header (undef if absent/unparseable).
+# Returns ($exists, $mtime_epoch) where $mtime_epoch is a whole-second (integer) epoch
+# parsed from the X-Docker-Container-Path-Stat header (undef if absent/unparseable).
+# Sub-second precision, if present in the header, is discarded.
 sub docker_container_path_exists ($socket, $containerId, $containerPath) {
    my $path = sprintf(
       '/containers/%s/archive?path=%s',
