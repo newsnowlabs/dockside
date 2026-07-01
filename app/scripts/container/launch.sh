@@ -571,7 +571,7 @@ launch_nonroot() {
 
    # Without -l, su passes all inherited/exported env vars to the child process unchanged,
    # so only PATH and HOME need to be stated here as they require new values for $IDE_USER.
-   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" $DOCKSIDE_ROOT/launch.sh run_nonroot"
+   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" $DOCKSIDE_ROOT/bin/launch.sh run_nonroot"
 }
 
 launch_theia() {

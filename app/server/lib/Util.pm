@@ -21,6 +21,8 @@ our @EXPORT_OK = ( qw(
 use POSIX qw(strftime);
 use Fcntl qw(:flock SEEK_SET);
 use Time::HiRes qw(stat time gettimeofday);
+use Time::Local qw(timegm);
+use MIME::Base64 qw(decode_base64);
 use Try::Tiny;
 use JSON;
 use URI::Escape;
@@ -173,6 +175,8 @@ sub call_socket_api ($socket, $path, $opts = {}) {
    return $result;
 }
 
+# Returns ($exists, $mtime_epoch) where $mtime_epoch is a float epoch parsed from the
+# X-Docker-Container-Path-Stat header (undef if absent/unparseable).
 sub docker_container_path_exists ($socket, $containerId, $containerPath) {
    my $path = sprintf(
       '/containers/%s/archive?path=%s',
@@ -186,13 +190,28 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
       die Exception->new( 'dbg' => "Unable to execute Docker API path check: $path", 'msg' => "Unable to check container path" );
    }
 
-   return 1 if $result->is_success;
-   return 0 if $result->code == 404;
+   if ($result->code == 404) {
+      return (0, undef);
+   }
 
-   die Exception->new(
-      'dbg' => sprintf("Docker API path check '$path' failed, response code %d, error '%s'", $result->code, $result->message),
-      'msg' => "Unable to check container path"
-   );
+   unless ($result->is_success) {
+      die Exception->new(
+         'dbg' => sprintf("Docker API path check '$path' failed, response code %d, error '%s'", $result->code, $result->message),
+         'msg' => "Unable to check container path"
+      );
+   }
+
+   my $mtime;
+   if (my $b64 = $result->headers->header('X-Docker-Container-Path-Stat')) {
+      try {
+         my $stat = decode_json(decode_base64($b64));
+         if (my ($y,$mo,$d,$h,$mi,$s) = ($stat->{'mtime'} // '') =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/) {
+            $mtime = timegm($s, $mi, $h, $d, $mo - 1, $y - 1900);
+         }
+      };
+   }
+
+   return (1, $mtime);
 }
 
 sub get_uri ($uri) {
