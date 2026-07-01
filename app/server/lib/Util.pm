@@ -208,6 +208,9 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
          if (my ($y,$mo,$d,$h,$mi,$s) = ($stat->{'mtime'} // '') =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/) {
             $mtime = timegm($s, $mi, $h, $d, $mo - 1, $y - 1900);
          }
+      }
+      catch {
+         flog("docker_container_path_exists: failed to parse X-Docker-Container-Path-Stat header '$b64': $_");
       };
    }
 
