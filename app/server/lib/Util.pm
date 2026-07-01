@@ -22,11 +22,11 @@ use POSIX qw(strftime);
 use Fcntl qw(:flock SEEK_SET);
 use Time::HiRes qw(stat time gettimeofday);
 use Time::Local qw(timegm);
-use MIME::Base64 qw(decode_base64);
 use Try::Tiny;
 use JSON;
 use URI::Escape;
 use Mojo::UserAgent;
+use Mojo::Util qw(b64_decode);
 use Digest::SHA qw(sha256_hex);
 use Exception;
 use Crypt::Rijndael;
@@ -205,7 +205,7 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
    my $mtime;
    if (my $b64 = $result->headers->header('X-Docker-Container-Path-Stat')) {
       try {
-         my $stat = decode_json(decode_base64($b64));
+         my $stat = decode_json(b64_decode($b64));
          # Require a UTC ('Z') timestamp -- timegm() assumes UTC, so a non-UTC offset
          # (e.g. "+05:30") would otherwise be silently misinterpreted as UTC and produce
          # the wrong epoch instead of being left undef.
