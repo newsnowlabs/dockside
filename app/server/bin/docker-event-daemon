@@ -268,6 +268,12 @@ sub update ($opts = {}) {
 # inside the container if it belongs to a Dockside-managed reservation.
 sub onContainerStart ($id, $eventCount) {
 
+   # Record the time the start event was received, before the slower update()/Data::load()
+   # calls below; used to detect stale launcher symlinks left over in the IDE volume from a
+   # previous container run. Capturing this later would let a launcher written by a fast
+   # entrypoint (before update()/Data::load() complete) look older than it really is.
+   my $T1 = time();
+
    # This container's details might not yet have been loaded. Do this now.
    flog("onContainerStart #$eventCount: Updating docker containers without sizes before reloading reservations");
    update();
@@ -290,10 +296,6 @@ sub onContainerStart ($id, $eventCount) {
 
    # Clear any stale pending launch entry from a previous start of the same container.
    delete $pendingLaunch{$containerId};
-
-   # Record the time the start event was received; used to detect stale launcher symlinks
-   # left over in the IDE volume from a previous container run.
-   my $T1 = time();
 
    my $launched;
    try {
