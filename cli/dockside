@@ -1142,6 +1142,25 @@ def _merged_ssh_cookie_header(opener, server):
     return target_cookie_header
 
 
+def _dockside_self_path():
+    """Return the path to re-invoke this CLI as, for generated ProxyCommands.
+
+    Generated ssh_config blocks run 'dockside ssh exec-proxy %n' from whatever
+    shell OpenSSH invokes ProxyCommand in later, which may not have this CLI's
+    location on PATH (e.g. run directly from a repo checkout via
+    './cli/dockside' or 'python3 cli/dockside'). Embed the resolved absolute
+    path of the current invocation so the generated config keeps working
+    regardless of the connecting shell's PATH; fall back to a bare 'dockside'
+    PATH lookup only if sys.argv[0] doesn't resolve to a real file (e.g. some
+    non-standard invocation).
+    """
+    argv0 = sys.argv[0] if sys.argv else ''
+    if not argv0:
+        return 'dockside'
+    path = os.path.abspath(argv0)
+    return path if os.path.isfile(path) else 'dockside'
+
+
 def _check_wstunnel_binary(binary):
     """Verify binary is wstunnel v10+; die with a helpful message for v6 or missing binary."""
     try:
@@ -1354,10 +1373,11 @@ def _build_wildcard_ssh_config_block(server_url, wstunnel_binary=None, forward_a
     if not server_hostname:
         raise APIError('Cannot determine server hostname from URL')
     host_pattern = _wildcard_host_pattern(server_hostname)
+    dockside_bin = shlex.quote(_dockside_self_path())
     if wstunnel_binary:
-        proxy_cmd = f'dockside ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy %n'
+        proxy_cmd = f'{dockside_bin} ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy %n'
     else:
-        proxy_cmd = 'dockside ssh exec-proxy %n'
+        proxy_cmd = f'{dockside_bin} ssh exec-proxy %n'
     lines = [
         '# Requires wstunnel v10+ in PATH (https://github.com/erebe/wstunnel/releases)',
         f'Host {host_pattern}',
@@ -2945,10 +2965,11 @@ def cmd_ssh_proxy_command(args):
 
     wstunnel_binary = getattr(args, 'wstunnel_binary', None)
     ssh_alias = result.get('ssh_alias', '')
+    dockside_bin = shlex.quote(_dockside_self_path())
     if wstunnel_binary:
-        result['proxy_command'] = f'dockside ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy {ssh_alias}'
+        result['proxy_command'] = f'{dockside_bin} ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy {ssh_alias}'
     else:
-        result['proxy_command'] = f'dockside ssh exec-proxy {ssh_alias}'
+        result['proxy_command'] = f'{dockside_bin} ssh exec-proxy {ssh_alias}'
 
     if args._fmt in ('json', 'yaml'):
         emit(result, args._fmt)
@@ -2994,10 +3015,11 @@ def cmd_ssh_config(args):
             container,
             connect_to=getattr(args, '_connect_to_effective', None),
         )
+        dockside_bin = shlex.quote(_dockside_self_path())
         if wstunnel_binary:
-            result['proxy_command'] = f'dockside ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy %n'
+            result['proxy_command'] = f'{dockside_bin} ssh --wstunnel {shlex.quote(wstunnel_binary)} exec-proxy %n'
         else:
-            result['proxy_command'] = 'dockside ssh exec-proxy %n'
+            result['proxy_command'] = f'{dockside_bin} ssh exec-proxy %n'
         result['ssh_config'] = _build_ssh_config_block(
             result,
             identity_file=getattr(args, 'identity_file', None),

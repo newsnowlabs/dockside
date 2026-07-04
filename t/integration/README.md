@@ -28,10 +28,10 @@ CLI**. Follow these rules so the suite stays consistent and maintainable:
 
 1. **Call the CLI; never import it.** Drive the product via the `DocksideClient` methods in
    `lib/dockside_test.py` (`_run(...)`, `check_url(...)`, `create`/`update`/`start`/`stop`/
-   `remove`, …), which shell out to `dockside`. Do **not** `import dockside_cli` or call its
+   `remove`, …), which shell out to `dockside`. Do **not** `import dockside` or call its
    functions from a test or the harness.
 2. **If the CLI can't do it, upgrade the CLI — don't work around it.** When a test needs a
-   capability the CLI lacks, add the command/flag to `cli/dockside_cli.py` and call it (e.g.
+   capability the CLI lacks, add the command/flag to `cli/dockside` and call it (e.g.
    the self-service account test uses `dockside account edit`, added for exactly this
    reason). Never hand-roll raw HTTP against the server, and never copy CLI internals
    (openers, nest-level / connect-to handling, …) into a test.
