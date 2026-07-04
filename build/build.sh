@@ -8,16 +8,27 @@ PLATFORMS_DEFAULT_DEPOT="linux/amd64,linux/arm64,linux/arm/v7"
 DIR=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/..
 
 usage() {
-  echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push|--load] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] [--builder [depot|buildx|buildkit]] [--platforms <platforms>] | [--clean] | [--list]" >&2
+  echo "$0: [[--stage <stage>] [--tag <tag>] [--theia <version>]] [--push|--push-ghcr|--load] [--no-cache] [--force-rm] [--progress-plain] [--repo <repo>] [--builder [depot|buildx|buildkit]] [--platforms <platforms>] | [--clean] | [--list]" >&2
   exit
 }
 
 push() {
   [ -z "$PUSH" ] && return
-  
+
   for t in ${TAGS[@]}
   do
     docker push $t
+  done
+}
+
+# Mirrors each built tag to GHCR (e.g. newsnowlabs/dockside:feature -> ghcr.io/newsnowlabs/dockside:feature)
+# by copying the manifest already pushed to $REPO; does not need to pull image data locally.
+push_ghcr() {
+  [ -z "$PUSH_GHCR" ] && return
+
+  for t in ${TAGS[@]}
+  do
+    docker buildx imagetools create --tag "ghcr.io/$t" "$t"
   done
 }
 
@@ -49,6 +60,8 @@ clean() {
 # --clean: Remove all images matching the repository filter.
 # --list, --ls: List all images matching the repository filter.
 # --push: Push the built image to the repository.
+# --push-ghcr: Push the built image to the repository (implies --push), then mirror each
+#   tag to GHCR (ghcr.io/<repo>:<tag>) via 'docker buildx imagetools create'.
 # --load: Load the built image into Docker.
 # -h, --help: Display usage information.
 parse_commandline() {
@@ -81,6 +94,7 @@ parse_commandline() {
            --list|--ls) list "$@"; exit 0; ;;
 	 
                 --push) PUSH="1"; ;;
+           --push-ghcr) PUSH="1"; PUSH_GHCR="1"; ;;
                 --load) LOAD="1"; ;;
 	      
              -h|--help) usage; ;;
@@ -183,5 +197,7 @@ case "$BUILDER" in
     ;;
 
 esac
+
+[ "$PUSH_GHCR" == "1" ] && push_ghcr
 
 exit 0
