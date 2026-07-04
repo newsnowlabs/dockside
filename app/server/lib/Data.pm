@@ -91,7 +91,8 @@ $CONFIG_FILES = {
          $CONFIG->{'ide'}{'fullPath'} //= "$CONFIG->{'ide'}{'path'}/$CONFIG->{'ide'}{'subPath'}";
 
          $CONFIG->{'ssh'}{'path'} //= "$CONFIG->{'ide'}{'path'}/host";
-         $CONFIG->{'ssh'}{'port'} //= 2222;
+         $CONFIG->{'ssh'}{'port'} //= 2222;    # in-container wstunnel v6 listen port
+         $CONFIG->{'ssh'}{'v10port'} //= 2223; # in-container wstunnel v10 listen port
          $CONFIG->{'ssh'}{'default'} //= 1;
       },
       'parse' => \&parse_json

@@ -550,8 +550,13 @@ class DocksideClient:
             raise APIError('ssh proxy-command returned no structured output')
         return result
 
-    def ssh_config(self, name, identity_file=None, alias=None, forward_agent=False):
-        """Return CLI-generated ssh_config text for a devtainer."""
+    def ssh_config(self, name=None, identity_file=None, alias=None, forward_agent=False,
+                   wstunnel_binary=None):
+        """Return CLI-generated ssh_config text.
+
+        With name: a per-devtainer Host block. Without: the server-wide wildcard
+        Host block (no devtainer resolution/authentication required).
+        """
         args = ['ssh']
         if identity_file:
             args.extend(['--identity-file', identity_file])
@@ -559,9 +564,41 @@ class DocksideClient:
             args.append('--forward-agent')
         if alias:
             args.extend(['--alias', alias])
+        if wstunnel_binary:
+            args.extend(['--wstunnel', wstunnel_binary])
         args.append('config')
-        args.append(name)
+        if name:
+            args.append(name)
         return self._run_text(*args)
+
+    def ssh_exec_proxy_text(self, hostname, timeout=15):
+        """Run `dockside ssh exec-proxy HOSTNAME`, expected to fail fast.
+
+        Only safe to call with a HOSTNAME the CLI is expected to reject: a
+        successful exec-proxy call execs into `wstunnel client`, replacing the
+        CLI process and blocking on stdio. This uses its own bounded timeout
+        (rather than the shared, timeout-less `_run_text`) so an unexpectedly
+        successful call fails the test loudly after `timeout` seconds instead
+        of hanging the suite; `stdin` is `/dev/null` so a tunnel that does
+        start sees immediate EOF rather than reading the harness's own stdin.
+        """
+        cmd = [self._cli] + self._base_args() + ['ssh', 'exec-proxy', hostname]
+        env = os.environ.copy()
+        env.pop('DOCKSIDE_CONFIG_DIR', None)
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, env=env,
+                timeout=timeout, stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            raise APIError(
+                f'dockside ssh exec-proxy {hostname!r} did not exit within '
+                f'{timeout}s (unexpectedly succeeded and blocked on stdio?)'
+            )
+        if result.returncode != 0:
+            raise APIError(result.stderr.strip() or result.stdout.strip()
+                            or f'CLI exited {result.returncode}')
+        return result.stdout
 
     def service_url(self, container_name, router_prefix='www'):
         """

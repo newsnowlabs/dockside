@@ -69,11 +69,11 @@ With `mountIDE: true` the full suite still runs, but it exercises the **outer** 
 subprocess via `DocksideClient` in `t/integration/lib/dockside_test.py`). See
 `t/integration/README.md` for the full guide. The hard rules:
 
-1. **Call the CLI; never import it.** Do not `import dockside_cli` or call its functions
+1. **Call the CLI; never import it.** Do not `import dockside` or call its functions
    from a test or the harness — interact via `DocksideClient._run(...)` / `check_url(...)`
    and the `create`/`update`/… wrappers.
 2. **Missing capability → upgrade the CLI.** If a test needs something the CLI can't do,
-   add the command/flag to `cli/dockside_cli.py` and call it. Never hand-roll raw HTTP
+   add the command/flag to `cli/dockside` and call it. Never hand-roll raw HTTP
    against the server or copy CLI internals into a test.
 3. **No pre-existing fixtures.** All users/roles/profiles are created at runtime by the
    harness/tests via the CLI and cleaned up — never rely on static config files.

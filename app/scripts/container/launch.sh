@@ -153,7 +153,7 @@ create_git_config() {
 }
 
 launch_sshd() {
-   [ -x "$(which dropbear)" ] && [ -x "$(which dropbearkey)" ] && [ -x "$(which wstunnel)" ] || return
+   [ -x "$(which dropbear)" ] && [ -x "$(which dropbearkey)" ] && [ -x "$(which wstunnel-v6 2>/dev/null)" ] || return
 
    log "- SSHD_ENABLE='$SSHD_ENABLE'"
    log "- HOSTDATA_PATH='$HOSTDATA_PATH'"
@@ -170,8 +170,13 @@ launch_sshd() {
    log "(1/2) Launching dropbear on port $DROPBEAR_PORT with host keys from $HOSTDATA_PATH"
    dropbear -RE -p 127.0.0.1:$DROPBEAR_PORT -r $HOSTDATA_PATH/ed25519_host_key >$LOG_PATH/dropbear.log 2>&1
 
-   log "(2/2) Launching wstunnel on port 2222"
-   wstunnel --server ws://0.0.0.0:2222 --restrictTo=127.0.0.1:$DROPBEAR_PORT >$LOG_PATH/wstunnel.log 2>&1 &
+   log "(2/2) Launching wstunnel v6 on port 2222"
+   wstunnel-v6 --server ws://0.0.0.0:2222 --restrictTo=127.0.0.1:$DROPBEAR_PORT >$LOG_PATH/wstunnel-v6.log 2>&1 &
+
+   if [ -x "$(which wstunnel 2>/dev/null)" ]; then
+      log "(3/3) Launching wstunnel v10 on port 2223"
+      wstunnel server ws://0.0.0.0:2223 --restrict-to=127.0.0.1:$DROPBEAR_PORT --log-lvl=info >$LOG_PATH/wstunnel.log 2>&1 &
+   fi
 }
 
 create_git_repo() {

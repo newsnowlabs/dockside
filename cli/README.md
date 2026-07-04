@@ -11,9 +11,9 @@ devtainers. It uses the same HTTP API as the Dockside web frontend.
 
 ```sh
 # Run directly from the repo:
-python3 cli/dockside_cli.py --help
+python3 cli/dockside --help
 
-# Or use the launcher script:
+# Or make it executable and run it directly:
 chmod +x cli/dockside
 ./cli/dockside --help
 ```
@@ -90,7 +90,9 @@ dockside --server staging ssh proxy-command my-feature
 | `logs` | Retrieve devtainer logs |
 | `check-url` | Fetch a routed URL using the current session |
 | `ssh` | Connect to a devtainer SSH router using the CLI’s resolved transport/auth path |
-| `ssh proxy-command` | Print a `wstunnel`-based `ProxyCommand` for a devtainer SSH router |
+| `ssh config` | Print a reusable `ssh_config` `Host` block (wildcard, or per-devtainer) |
+| `ssh exec-proxy` | `ProxyCommand` shim invoked by OpenSSH; resolves the server, obtains a credential, and execs `wstunnel client` |
+| `ssh proxy-command` | *(deprecated)* Print the legacy v6 inline-cookie `ProxyCommand`; superseded by `ssh config` / `ssh exec-proxy` |
 | `whoami` | Show the authenticated user and effective permissions |
 
 ### Addressing devtainers
@@ -179,19 +181,26 @@ the source.
 
 ### SSH routing
 
+SSH access requires `wstunnel` v10+ in `PATH`
+(https://github.com/erebe/wstunnel/releases); the CLI dies with a clear message if
+an older or missing binary is found. Use `--wstunnel /path/to/binary` on any `ssh`
+subcommand to point at a non-default binary location.
+
 ```sh
 dockside ssh my-feature
 dockside ssh my-feature -v
 dockside ssh my-feature -- echo hello
+dockside ssh config
 dockside ssh config my-feature
-dockside ssh proxy-command my-feature
-dockside ssh -o json proxy-command my-feature
+dockside ssh exec-proxy ssh-my-feature.dockside.example.com
 ```
 
-`dockside ssh` connects to a devtainer SSH router using the CLI's current
-server configuration and authentication path. This lets the CLI resolve the
-effective websocket target, cookie header path, and nest level before handing
-off to OpenSSH.
+`dockside ssh` connects to a devtainer SSH router using the CLI's current server
+configuration and authentication path, then execs `wstunnel client` with a
+`--http-headers-file` carrying the session cookie — the cookie never appears in
+argv or `ps`. The headers file is written 0600 under
+`~/.config/dockside/wstunnel/` and reused on later connections, skipping the
+credential fetch when it's already valid.
 
 Any arguments after `DEVTAINER` are passed through to `ssh`, so options such as
 `-v` or additional remote-command arguments can be supplied directly. Dockside
@@ -199,17 +208,31 @@ CLI options such as `--server` must appear before `DEVTAINER`. Shared auth and
 transport flags can be placed either before the command, such as
 `dockside --server staging list`, or after it, such as `dockside list --server staging`.
 
-`dockside ssh config` prints a reusable `ssh_config` `Host` block with the same
-resolved `ProxyCommand`, `Hostname`, and optional `User`, `IdentityFile`, and
-`ForwardAgent` settings. By default it emits a server-wide host pattern such as
-`Host ssh-*--staging.dockside.example.com`, so one block can cover multiple
-devtainers on the same Dockside server. Use `--alias` to force a specific host
-alias instead.
+`dockside ssh config` prints a reusable `ssh_config` `Host` block whose
+`ProxyCommand` invokes `dockside ssh exec-proxy %n` — no secret is written to
+disk. Two forms:
 
-`dockside ssh proxy-command` exposes the lower-level `ProxyCommand` string used
-by that flow. It is useful for:
+- **No `DEVTAINER`:** a server-wide wildcard block (e.g.
+  `Host ssh-*--staging.dockside.example.com`) covering every devtainer on that
+  server with one entry. Needs only a configured server, no authentication.
+- **With `DEVTAINER`:** a block for that one alias, additionally populated with
+  the devtainer's `User` (from its `unixuser`) and, if `--identity-file`/
+  `--forward-agent` are passed, `IdentityFile`/`ForwardAgent`. Use `--alias` to
+  force a specific host alias instead of the resolved default.
 
-- generating an `ssh_config` `ProxyCommand`
+`dockside ssh exec-proxy HOSTNAME` is the `ProxyCommand` shim itself — normally
+invoked by OpenSSH (`%n` expands to the SSH alias), not run directly. It
+resolves the owning Dockside server from the alias (matching the longest/most
+specific configured server pattern, so nested/wildcard aliases route
+correctly), obtains a fresh credential or reuses a valid on-disk headers file,
+and execs `wstunnel client`.
+
+`dockside ssh proxy-command` is **deprecated**: it prints the legacy v6
+`ProxyCommand` with the session cookie baked into `wstunnel`'s argv (visible in
+`ps`/`/proc/<pid>/cmdline`). It exists only for old saved `~/.ssh/config`
+entries generated before the v10 upgrade; prefer `ssh config` /
+`ssh exec-proxy` for anything new. It is still useful for:
+
 - debugging nested or proxied Dockside SSH routing
 - inspecting the effective websocket target, cookie header path, and nest level
 
@@ -591,3 +614,6 @@ dockside --server staging -o json ssh proxy-command my-devtainer
 - Config and cookie file writes use atomic temp-file + `os.replace()`.
 - Cookie filenames supplied via `--cookie-file` are sanitised.
 - `http://` server URLs are upgraded to `https://`.
+- `wstunnel` v10 headers files (`~/.config/dockside/wstunnel/<key>`) are written
+  0600 via `mkstemp`+`fchmod`+`rename`; a key containing a path separator is
+  rejected outright rather than written anywhere.

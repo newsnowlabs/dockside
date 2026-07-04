@@ -73,7 +73,7 @@ current.
   refactor to per-client temp file; inner-server entries must declare a `parent`
   (operator responsibility: `dockside login --parent <outer>`).
 - **Code anchors (current state):** the ancestor re-scoping invariant lives in
-  `cli/dockside_cli.py::_merge_ancestor_cookies` (ancestor cookies are re-scoped to the
+  `cli/dockside::_merge_ancestor_cookies` (renamed from `dockside_cli.py`; ancestor cookies are re-scoped to the
   *target* hostname so urllib sends them to the inner server); per-client isolation in
   `t/integration/lib/dockside_test.py` (temp `--cookie-file`; `DOCKSIDE_CONFIG_DIR`
   always cleared so the system parent chain is consulted).
