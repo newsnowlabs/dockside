@@ -186,6 +186,15 @@ sub get_server_port ($r, $protocol) {
       return $props->{'uri'};
    }
 
+   # Allow unauthenticated access to specific URLs nominated by the router's 'publicURLs',
+   # regardless of the router's currently configured auth/access level.
+   if( my $publicURLs = $props->{'route'}{'publicURLs'} ) {
+      if( grep { $_ eq $r->uri } @$publicURLs ) {
+         wlog( "get_server_port($protocol): allowing unauthenticated access to publicURLs path '" . $r->uri . "'" );
+         return $props->{'uri'};
+      }
+   }
+
    return $errorCode;
 }
 

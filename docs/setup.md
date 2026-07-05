@@ -104,6 +104,7 @@ A profile may specify zero or more routers. Each router consists of:
 - `https` (optional): an object specifying, for incoming public https requests selecting the router, the protocol and port within the devtainer to which the request should be forwarded
 - `http` (optional): an object specifying, for incoming public http requests selecting the router, the protocol and port within the devtainer to which the request should be forwarded
 - `auth`: an array of permitted auth/access levels that may be set on a devtainer for this router (see [auth/access levels](#router-auth%2Faccess-levels))
+- `publicURLs` (optional): an array of exact request paths (e.g. `/favicon.ico`) that are always served without authentication, regardless of the router's currently configured auth/access level — useful for a handful of paths (favicons, PWA manifests) that browsers request unconditionally
 
 ### Router auth/access levels
 

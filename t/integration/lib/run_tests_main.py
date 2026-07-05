@@ -219,6 +219,7 @@ _NGINX_PROFILE = {
             "domains": ["*"],
             "https": {"protocol": "http", "port": 80},
             "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+            "publicURLs": ["/public-test.txt"],
         }
     ],
     "networks": ["*"],
@@ -233,6 +234,7 @@ _NGINX_PROFILE = {
         "-c",
         "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo);"
         " chmod -R dockside /usr/share/nginx/html;"
+        " echo -n public > /usr/share/nginx/html/public-test.txt;"
         " exec /docker-entrypoint.sh nginx -g 'daemon off;'",
     ],
     "dockerArgs": ["--memory=1G", "--pids-limit=4000", "--cpus=1"],

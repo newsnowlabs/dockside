@@ -221,9 +221,9 @@ class AccessAndHttpTests(TestCase):
             timeout_msg='nginx owner route did not become ready',
         )
 
-    def _nginx_status(self, client, router='www'):
+    def _nginx_status(self, client, router='www', path=''):
         """Return HTTP status code for the nginx container's www service."""
-        service_url = self._service_url(self.NGINX_CONTAINER, router_prefix=router)
+        service_url = self._service_url(self.NGINX_CONTAINER, router_prefix=router) + path
         try:
             status, _ = client.check_url(service_url)
         except APIError as e:
@@ -326,6 +326,25 @@ class AccessAndHttpTests(TestCase):
             'develop-all user': 200,
             'anonymous': 200,
         })
+
+    def test_25_public_url_bypasses_auth(self):
+        """A router's publicURLs entries stay reachable by anonymous users even in the
+        most restrictive mode, while other paths on the same router remain gated."""
+        self._set_nginx_access(
+            'developer',
+            developers=self.test_username_dev2,
+            viewers=self.test_username_viewer,
+        )
+        public_code = self._nginx_status(self.unauth, path='public-test.txt')
+        self.assert_http_status(
+            public_code, 200,
+            f'anonymous got {public_code} for a publicURLs path in developer mode',
+        )
+        gated_code = self._nginx_status(self.unauth)
+        self.assert_http_status(
+            gated_code, 400,
+            f'anonymous got {gated_code} for a non-public path in developer mode',
+        )
 
     def test_31_router_listing_reflects_access_mode(self):
         """Router visibility in list matches access mode: dev2 sees www in developer mode, viewer doesn't."""

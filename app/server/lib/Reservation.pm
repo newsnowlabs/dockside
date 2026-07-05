@@ -654,7 +654,8 @@ sub routers ($self) {
                'protocol' => $proto->{'protocol'},
                'port'     => $proto->{'port'},
             },
-            'auth' => $auth->{$routerName} || 'owner',
+            'auth'       => $auth->{$routerName} || 'owner',
+            'publicURLs' => $router->{'publicURLs'},
          };
 
          foreach my $prefix (@$prefixes) {
