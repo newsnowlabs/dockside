@@ -10,6 +10,7 @@
          "prefixes": [ "www" ],
          "domains": [ "*" ],
          "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ],
+         "publicURLs": [ "/favicon.ico" ],
 
          // This normally implies public port 443
          "https": { "protocol": "https", "port": 443 }
