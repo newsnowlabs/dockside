@@ -628,79 +628,38 @@ sub sanitise ($self, $properties, $array = []) {
 }
 
 ################################################################################
-# MAPFILE ENTRY GENERATION
+# ROUTER LOOKUP TABLE GENERATION
 #
+# Builds the per-(protocol,prefix,domain) lookup table consumed by lookup_container_uri()
+# below.
 
-sub mapfile_routers ($self) {
-   # <http|https>/<prefixes>/<domains>=<http|https>:<port>
-   # e.g. https/*/*=http:8080
-
+sub routers ($self) {
    my $proxies = $self->profileObject->routers;
+   my $auth    = $self->meta('access');
 
-   my $routers;
+   my $lookup = {};
 
-   # Public Protocols/Prefixes/Domains => Private protocol and port
-   # <http,https>/<prefix1,prefix2,prefix3,...>/<domain1,domain2,domain3,...>=<http|https>:<port>:<auth>
-   # e.g. https/*/*=http:8080:public
-
-   # Derive a minimal LHS that represents permutations of request that all map to the RHS, for each given router.
-   # We do not attempt to merge separate routers.
-   my $auth = $self->meta('access');
-
-   for(my $i=0; $i < @$proxies; $i++) {
-      my $router = $proxies->[$i];
+   foreach my $router (@$proxies) {
       my $routerName = $router->{'name'};
 
-      my %destinations;
-      foreach my $publicProtocol ('http', 'https') {
-         
-         if( exists($router->{$publicProtocol}) && $router->{$publicProtocol}{'protocol'} && $router->{$publicProtocol}{'port'} ) {
-            $destinations{ sprintf("%s:%d:%s",
-                              $router->{$publicProtocol}{'protocol'},
-                              $router->{$publicProtocol}{'port'}, 
-                              $auth->{$routerName} || 'owner',
-                           ) }{$publicProtocol} = 1;
-         }
-      }
+      foreach my $publicProtocol (qw( http https )) {
+         my $proto = $router->{$publicProtocol} or next;
+         next unless $proto->{'protocol'} && $proto->{'port'};
 
-      while( my ($destination, $publicProtocols) = each %destinations) {
-         my $key = sprintf("%s/%s/%s",
-            join(',', sort keys %$publicProtocols),
-            $router->{'prefixes'} ? join(',', @{$router->{'prefixes'}}) : '*',
-            $router->{'domains'} ? join(',', @{$router->{'domains'}}) : '*',
-         );
+         my $prefixes = $router->{'prefixes'} && @{$router->{'prefixes'}} ? $router->{'prefixes'} : ['*'];
+         my $domains  = $router->{'domains'}  && @{$router->{'domains'}}  ? $router->{'domains'}  : ['*'];
 
-         $routers->{$key} = $destination;
-      }
-   }
+         my $route = {
+            'private' => {
+               'protocol' => $proto->{'protocol'},
+               'port'     => $proto->{'port'},
+            },
+            'auth' => $auth->{$routerName} || 'owner',
+         };
 
-   return $routers;
-}
-
-# This method generates a data structure consumed by lookup_container_uri() below.
-sub routers ($self) {
-   my $routers = $self->mapfile_routers;
-
-   my $lookup;
-
-   while( my($key, $val) = each %$routers ) {
-      my($publicProtocols, $prefixes, $domains) = split(m!/!, $key);
-      my $privateProtocolPortAuth = [split(/:/, $val)];
-
-      # Split the prefixes on ',' with a workaround for split() not returning a single empty string,
-      # when splitting on an empty string.
-      my @prefixes = split(/,/, $prefixes, -1);
-      @prefixes = ('') unless @prefixes;
-
-      # Split the domains on ',' with a workaround for split() not returning a single empty string,
-      # when splitting on an empty string.
-      my @domains = split(/,/, $domains, -1);
-      @domains = ('*') unless @domains;
-
-      foreach my $publicProtocol (split(/,/, $publicProtocols)) {
-         foreach my $prefix (@prefixes) {
-            foreach my $domain (@domains) {
-               $lookup->{$publicProtocol}{$prefix}{$domain} = $privateProtocolPortAuth;
+         foreach my $prefix (@$prefixes) {
+            foreach my $domain (@$domains) {
+               $lookup->{$publicProtocol}{$prefix}{$domain} = $route;
             }
          }
       }
@@ -767,12 +726,13 @@ sub lookup_container_uri ($self, $host, $actualPrefix, $actualDomain, $protocol)
       $domain = '*';
    }
 
-   my $exposedPort = $self->{'routersLookup'}{$protocol}{$prefix}{$domain}[1];
+   my $route       = $self->{'routersLookup'}{$protocol}{$prefix}{$domain};
+   my $exposedPort = $route->{'private'}{'port'};
 
    my $uri;
    if($CONFIG->{'gateway'}{'enabled'} && $CONFIG->{'gateway'}{'IP'}) {
       $uri = sprintf("%s://%s:%d",
-         $self->{'routersLookup'}{$protocol}{$prefix}{$domain}[0],
+         $route->{'private'}{'protocol'},
          $CONFIG->{'gatewayIP'},
          $self->{'inspect'}{'Ports'}{$exposedPort}
       );
@@ -786,7 +746,7 @@ sub lookup_container_uri ($self, $host, $actualPrefix, $actualDomain, $protocol)
       # else {
          # When addressing a devtainer running on an inner dockerd instance, we assume all of its networks are accessible from the Dockside container.
       # }
-      
+
       # Sort the container's networks by descending order of GwPriority (and, if needed, its name)
       # where the network is in one that's common to both devtainer and the Dockside host container.
       my $Networks = $self->{'inspect'}{'Networks'};
@@ -799,20 +759,18 @@ sub lookup_container_uri ($self, $host, $actualPrefix, $actualDomain, $protocol)
          # We found a $network we share; use the IP of the container from the network
          # with the highest gateway priority.
          $uri = sprintf("%s://%s:%d",
-            $self->{'routersLookup'}{$protocol}{$prefix}{$domain}[0],
+            $route->{'private'}{'protocol'},
             $self->{'inspect'}{'Networks'}{ $candidateNetworks[0] }{'IPAddress'},
             $exposedPort
          );
       }
    }
 
-   my $auth = $self->{'routersLookup'}{$protocol}{$prefix}{$domain}[2];
-
-   wlog("container_uri: host='$host'; actualPrefix='$actualPrefix'; assumedPrefix='$prefix'; actualDomain='$actualDomain'; assumedDomain='$domain'; auth=$auth; uri=" .
+   wlog("container_uri: host='$host'; actualPrefix='$actualPrefix'; assumedPrefix='$prefix'; actualDomain='$actualDomain'; assumedDomain='$domain'; auth=$route->{'auth'}; uri=" .
       ($uri // 'NO-URI-FOUND')
    );
 
-   return { 'uri' => $uri, 'auth' => $auth };
+   return { 'uri' => $uri, 'route' => $route };
 }
 
 ################################################################################

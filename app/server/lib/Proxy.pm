@@ -137,7 +137,7 @@ sub get_server_port ($r, $protocol) {
    # so that NGINX will display a branded error page only to authenticated users.
    my $errorCode = $User->username ? 410 : 400;
 
-   wlog( "get_server_port($protocol): Host=" . ($r->header_in("Host") // '[EMPTY]') . "; host=$host; prefix=$prefix; domain=$domain => reservation.name=$reservation->{'name'}; containerId=$reservation->{'containerId'}; uri:$props->{'uri'}; auth=$props->{'auth'}; access=$authStateString" );
+   wlog( "get_server_port($protocol): Host=" . ($r->header_in("Host") // '[EMPTY]') . "; host=$host; prefix=$prefix; domain=$domain => reservation.name=$reservation->{'name'}; containerId=$reservation->{'containerId'}; uri:$props->{'uri'}; auth=$props->{'route'}{'auth'}; access=$authStateString" );
 
    unless( $reservation->{'containerId'} ) {
       wlog( "get_server_port($protocol): container not yet launched for reservation $reservation->{'id'}" );
@@ -180,9 +180,9 @@ sub get_server_port ($r, $protocol) {
    #    return nginx::OK;
    # }
 
-   # Now check if $User can access services (on any running reservation) with access level $props->{'auth'}
+   # Now check if $User can access services (on any running reservation) with access level $props->{'route'}{'auth'}
    my $reservationPermissions = $User->reservationPermissions($reservation);
-   if( $reservationPermissions->{'auth'}{ $props->{'auth'} } ) {
+   if( $reservationPermissions->{'auth'}{ $props->{'route'}{'auth'} } ) {
       return $props->{'uri'};
    }
 
