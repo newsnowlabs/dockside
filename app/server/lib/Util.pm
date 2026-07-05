@@ -24,7 +24,9 @@ use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
 use JSON;
 use URI::Escape;
+use Mojo::Date;
 use Mojo::UserAgent;
+use Mojo::Util qw(b64_decode);
 use Digest::SHA qw(sha256_hex);
 use Exception;
 use Crypt::Rijndael;
@@ -173,6 +175,9 @@ sub call_socket_api ($socket, $path, $opts = {}) {
    return $result;
 }
 
+# Returns ($exists, $mtime_epoch) where $mtime_epoch is a whole-second (integer) epoch
+# parsed from the X-Docker-Container-Path-Stat header (undef if absent/unparseable).
+# Sub-second precision, if present in the header, is discarded.
 sub docker_container_path_exists ($socket, $containerId, $containerPath) {
    my $path = sprintf(
       '/containers/%s/archive?path=%s',
@@ -186,13 +191,46 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
       die Exception->new( 'dbg' => "Unable to execute Docker API path check: $path", 'msg' => "Unable to check container path" );
    }
 
-   return 1 if $result->is_success;
-   return 0 if $result->code == 404;
+   if ($result->code == 404) {
+      return (0, undef);
+   }
 
-   die Exception->new(
-      'dbg' => sprintf("Docker API path check '$path' failed, response code %d, error '%s'", $result->code, $result->message),
-      'msg' => "Unable to check container path"
-   );
+   unless ($result->is_success) {
+      die Exception->new(
+         'dbg' => sprintf("Docker API path check '$path' failed, response code %d, error '%s'", $result->code, $result->message),
+         'msg' => "Unable to check container path"
+      );
+   }
+
+   my $mtime;
+   if (my $b64 = $result->headers->header('X-Docker-Container-Path-Stat')) {
+      try {
+         my $stat = decode_json(b64_decode($b64));
+         # Mojo::Date parses RFC 3339 including fractional seconds and numeric offsets --
+         # Docker reports the stat mtime in the daemon's local timezone (e.g. '+01:00' on
+         # a BST host), so the offset must be honoured for a correct UTC epoch; rejecting
+         # non-'Z' timestamps would disable staleness detection entirely on any non-UTC
+         # host. (A zone-less timestamp would be read as UTC; Docker always sends a zone.)
+         my $epoch = Mojo::Date->new($stat->{'mtime'} // '')->epoch;
+         if (defined $epoch) {
+            $mtime = int($epoch);
+         }
+         else {
+            flog("docker_container_path_exists: could not parse mtime from stat header for $path: '" . ($stat->{'mtime'} // '<missing>') . "'");
+         }
+      }
+      catch {
+         flog("docker_container_path_exists: failed to parse X-Docker-Container-Path-Stat header '$b64': $_");
+      };
+   }
+   else {
+      # No stat header: staleness detection is unavailable for this Docker API response, so
+      # callers comparing against a $since will treat this path as fresh (fail open) -- log
+      # it so that silent fail-open isn't invisible to an operator debugging the feature.
+      flog("docker_container_path_exists: no X-Docker-Container-Path-Stat header present for $path; staleness check will be skipped");
+   }
+
+   return (1, $mtime);
 }
 
 sub get_uri ($uri) {

@@ -86,15 +86,24 @@ sub launcher_wait_path ($reservation) {
    return $reservation->ide_command_launcher();
 }
 
-sub launcher_path_exists ($reservation, $launcher) {
-   return docker_container_path_exists(
+# Returns true if the launcher exists inside the container AND its mtime is >= $since
+# (meaning it was written during the current container run, not left over from a previous one).
+# $since is undef when no staleness check is needed (e.g. first-ever launch with no prior volume).
+sub launcher_path_exists ($reservation, $launcher, $since = undef) {
+   my ($exists, $mtime) = docker_container_path_exists(
       $CONFIG->{'docker'}{'socket'},
       $reservation->containerId,
       $launcher
    );
+   return 0 unless $exists;
+   # $mtime is whole seconds (Docker's stat has no sub-second precision by the time it's
+   # parsed); $since may carry a Time::HiRes fractional part, so floor it before comparing
+   # or a launcher written in the same second as $since is wrongly seen as predating it.
+   return 0 if defined($since) && defined($mtime) && $mtime < int($since);
+   return 1;
 }
 
-sub queue_pending_launch ($reservation, $context, $launcher) {
+sub queue_pending_launch ($reservation, $context, $launcher, $since) {
    my $containerId = $reservation->containerId;
 
    # The container is running but the IDE is not yet launched. Until it is,
@@ -106,16 +115,17 @@ sub queue_pending_launch ($reservation, $context, $launcher) {
       nextTime      => time() + $LAUNCH_READY_INTERVAL,
       launcher      => $launcher,
       reservationId => $reservation->id,
+      startTime     => $since,
    };
 
-   flog("$context: delaying IDE launch for reservationId=" . $reservation->id . " with containerId=$containerId: launcher '$launcher' is not present yet");
+   flog("$context: delaying IDE launch for reservationId=" . $reservation->id . " with containerId=$containerId: launcher '$launcher' is not present yet (or predates container start)");
 }
 
-sub launch_or_queue_until_launcher_ready ($reservation, $context) {
+sub launch_or_queue_until_launcher_ready ($reservation, $context, $since) {
    my $launcher = launcher_wait_path($reservation);
 
-   if(defined($launcher) && $launcher ne '' && !launcher_path_exists($reservation, $launcher)) {
-      queue_pending_launch($reservation, $context, $launcher);
+   if(defined($launcher) && $launcher ne '' && !launcher_path_exists($reservation, $launcher, $since)) {
+      queue_pending_launch($reservation, $context, $launcher, $since);
       return undef;
    }
 
@@ -258,6 +268,12 @@ sub update ($opts = {}) {
 # inside the container if it belongs to a Dockside-managed reservation.
 sub onContainerStart ($id, $eventCount) {
 
+   # Record the time the start event was received, before the slower update()/Data::load()
+   # calls below; used to detect stale launcher symlinks left over in the IDE volume from a
+   # previous container run. Capturing this later would let a launcher written by a fast
+   # entrypoint (before update()/Data::load() complete) look older than it really is.
+   my $T1 = time();
+
    # This container's details might not yet have been loaded. Do this now.
    flog("onContainerStart #$eventCount: Updating docker containers without sizes before reloading reservations");
    update();
@@ -283,7 +299,7 @@ sub onContainerStart ($id, $eventCount) {
 
    my $launched;
    try {
-      $launched = launch_or_queue_until_launcher_ready($reservation, "onContainerStart #$eventCount");
+      $launched = launch_or_queue_until_launcher_ready($reservation, "onContainerStart #$eventCount", $T1);
    }
    catch {
       my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
@@ -411,8 +427,8 @@ sub eventHandler {
                   my $reservation = $reservations->[0];
                   my $launcher = launcher_wait_path($reservation) // $entry->{'launcher'};
 
-                  if(defined($launcher) && $launcher ne '' && !launcher_path_exists($reservation, $launcher)) {
-                     flog("eventHandler:tick: launcher '$launcher' still not present for reservationId=" . $reservation->id . " with containerId=$cid");
+                  if(defined($launcher) && $launcher ne '' && !launcher_path_exists($reservation, $launcher, $entry->{'startTime'})) {
+                     flog("eventHandler:tick: launcher '$launcher' still not present (or predates container start) for reservationId=" . $reservation->id . " with containerId=$cid");
                      $entry->{'launcher'} = $launcher;
                      $entry->{'nextTime'} = time() + $LAUNCH_READY_INTERVAL;
                      next;

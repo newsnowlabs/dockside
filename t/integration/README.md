@@ -20,6 +20,7 @@ and produce TAP-compatible output.
 | `10_ssh_outbound.py` | Outbound self-SSH via the devtainer's integrated ssh-agent |
 | `11_admin_api.py` | Admin CRUD round-trips (role/profile/user/`account`) with persisted-shape assertions, verb enforcement (405), role-record validation |
 | `12_rejection.py` | Negative paths: rejected launches and disallowed constrained values (image/runtime/unixuser/network/IDE); absent-resource edit/remove/get; self-protection (own manageUsers / admin role / account) and removal of an in-use role |
+| `13_ide_launch_readiness.py` | mountIDE:false IDE-launch deferral: daemon waits for the in-container launcher, and a stale launch.sh left from a previous run must not trigger a premature IDE exec after restart (asserted via `dockside logs` markers from a stub-entrypoint fixture profile) |
 
 ## Writing tests — hard rules
 
