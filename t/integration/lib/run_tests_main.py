@@ -66,6 +66,29 @@ def _prefix_image(image):
     return f'{_IMAGE_REGISTRY}/{image}'
 
 
+# ── CA bundle bind-mount ────────────────────────────────────────────────────────
+# Devtainers launched by Dockside do not inherit the host's CA bundle. Set
+# DOCKSIDE_TEST_CA_BUNDLE to a host path (e.g. /etc/ssl/certs/ca-certificates.crt)
+# to bind-mount it read-only into every test profile at the same path, so
+# devtainer package managers (apk/apt) and HTTPS git clones trust it. Useful
+# behind a TLS-inspecting proxy whose CA is trusted on the host but not baked
+# into devtainer base images.
+
+_CA_BUNDLE = os.environ.get('DOCKSIDE_TEST_CA_BUNDLE', '')
+
+
+def _with_ca_bundle_mount(spec):
+    if not _CA_BUNDLE:
+        return spec
+    spec = dict(spec)
+    mounts = dict(spec.get('mounts') or {})
+    mounts['bind'] = list(mounts.get('bind') or []) + [
+        {'src': _CA_BUNDLE, 'dst': '/etc/ssl/certs/ca-certificates.crt', 'readonly': True}
+    ]
+    spec['mounts'] = mounts
+    return spec
+
+
 # ── Profile templates (embedded; independent of any server's bundled profiles) ─
 
 _ALPINE_PROFILE = {
@@ -546,7 +569,7 @@ class _EnvManager:
 
         # Write spec to a temp file and create
         import tempfile as _tmp
-        spec_copy = dict(profile_spec)
+        spec_copy = _with_ca_bundle_mount(profile_spec)
         # Update display name to include the actual profile ID
         spec_copy['name'] = spec_copy.get('name', base_name) + (f' [{self._suffix}]' if self._suffix else '')
         with _tmp.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
