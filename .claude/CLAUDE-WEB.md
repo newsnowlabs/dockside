@@ -133,6 +133,35 @@ Navigate to `https://www.local.dockside.dev/` and sign in.
 
 ---
 
+## Step 3b — Refresh the IDE-bundled CA store (fixes git-wrapper HTTPS failures)
+
+Step 2b fixes TLS trust for the Dockside container's own system trust store (used by
+`--ssl-builtin`'s Let's Encrypt download), but Dockside's bundled `git`/`gh` wrappers
+(see `Dockerfile`) don't consult that store — they hardcode a separate, image-baked
+CA bundle at `$IDE_PATH/certs/ca-certificates.crt`
+(`/opt/dockside/system/latest/certs/ca-certificates.crt`), copied in from the Alpine
+build stage. That file lives on the `ide` named volume, which Dockside shares
+read/write into every devtainer it launches, so fixing it here also fixes HTTPS
+`git clone` inside devtainers (e.g. `06_git_profile.py` in the integration suite).
+
+Once the container is up, overwrite it with the same host bundle used in Step 2b:
+
+```bash
+docker exec dockside cp /etc/ssl/certs/ca-certificates.crt \
+  /opt/dockside/system/latest/certs/ca-certificates.crt
+```
+
+This is safe even though the source (Debian, from the Claude Code host) and the
+original destination content (Alpine-sourced) come from different distros: both are
+plain concatenated PEM certificate blocks — a generic, distro-independent format —
+and the bundled `git`/`gh` binaries carry their own musl/OpenSSL runtime (via
+BundELF's `patchelf` bundling), so they never depended on the host distro's trust
+store to begin with. Only this single flat file matters — the wrappers reference it
+directly and never consult the per-cert hash-symlink directory that also happens to
+live alongside it in `certs/`.
+
+---
+
 ## Known issue — CLI `dockside login` returns 500
 
 Running `./cli/dockside login ...` against `newsnowlabs/dockside:latest` fails
@@ -199,16 +228,18 @@ environment:
 
 Three approaches to fix this:
 
-**Option A — Bind-mount the CA bundle via profile `mounts.bind`**
+**Option A — Bind-mount the CA bundle via profile `mounts.bind` (implemented)**
 
-Add a new env var (e.g. `DOCKSIDE_TEST_CA_BUNDLE`) that the test harness uses
-to append a bind mount entry to every profile spec before creating it:
+`DOCKSIDE_TEST_CA_BUNDLE` exists in the integration-test harness
+(`t/integration/lib/run_tests_main.py`, `_with_ca_bundle_mount`): when set, it
+bind-mounts the given host CA bundle read-only into every test profile at
+`/etc/ssl/certs/ca-certificates.crt`, so devtainer `apk`/`apt` package installs
+and generic HTTPS traffic trust it:
 
 ```python
-if _CA_BUNDLE:
-    spec.setdefault('mounts', {}).setdefault('bind', []).append(
-        {'src': _CA_BUNDLE, 'dst': '/etc/ssl/certs/ca-certificates.crt', 'options': 'ro'}
-    )
+mounts['bind'] = list(mounts.get('bind') or []) + [
+    {'src': _CA_BUNDLE, 'dst': '/etc/ssl/certs/ca-certificates.crt', 'readonly': True}
+]
 ```
 
 The bind-mount source is resolved by the Docker daemon against the outer host
@@ -216,6 +247,12 @@ The bind-mount source is resolved by the Docker daemon against the outer host
 outer host already includes the Anthropic CAs.
 
 Usage: `DOCKSIDE_TEST_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt`
+
+**Gap: this does not fix the git-clone failure class above.** `06_git_profile.py`'s
+HTTPS clones go through Dockside's bundled `git` wrapper, which hardcodes
+`-c http.sslcainfo=<IDE_PATH>/certs/ca-certificates.crt` — a separate, image-baked
+file in the shared IDE volume, unrelated to the system trust store this env var
+patches. **Fixed by replacing that file's contents — see Step 3b above.**
 
 **Option B — `dockerArgs` in the profile**
 
@@ -261,7 +298,11 @@ docker pull "$DOCKSIDE_IMAGE"
 mkdir -p ~/.dockside
 docker compose up -d
 
-# 4. Wait for startup and print credentials
+# 4. Refresh the IDE-bundled git/gh CA store (see Step 3b)
+docker exec dockside cp /etc/ssl/certs/ca-certificates.crt \
+  /opt/dockside/system/latest/certs/ca-certificates.crt
+
+# 5. Wait for startup and print credentials
 until docker compose logs 2>&1 | grep -q 'Sign in'; do sleep 2; done
 docker compose logs 2>&1 | grep 'Sign in'
 ```
