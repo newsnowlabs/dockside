@@ -477,6 +477,45 @@ COPY --chown=$USER:$USER mkdocs.yml $HOME/$APP/
 WORKDIR $HOME/$APP
 RUN python3 -m venv ~/mkdocs && ~/mkdocs/bin/pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/mkdocs/bin/mkdocs build && rm -rf ~/.cache/pip
 
+################################################################################
+# DOCKSIDE-NETWORK-FIREWALL
+#
+# Minimal, independently-built/tagged image for the network firewall daemon
+# (app/sandbox/dockside-network-firewall.py). Named for what it does, not for
+# the sandbox it's used to build: this image, and the container it runs in,
+# are the tool — not themselves a sandbox. Built from a fresh base rather
+# than descending from dockside-1/dockside, and kept as its own image, because:
+# - the container it runs in is typically --privileged with --pid=host (it
+#   nsenters into the host/VM network namespace to manage iptables/ipset
+#   directly) — the highest-blast-radius container in the stack, so its image
+#   should carry the smallest toolchain available rather than inheriting
+#   Node/Theia/Perl/etc. from the main image.
+# - its release cadence is independent of the main image's: a firewall-daemon
+#   fix shouldn't force a full Theia/Node rebuild, and vice versa.
+#
+# Alpine rather than Debian: measured ~90MB vs ~384MB for the same tool set,
+# because Debian's docker.io package bundles the full engine (dockerd +
+# containerd + runc, ~254MB) when this container only ever talks to the
+# host's mounted docker.sock as a client. Alpine's docker-cli package is
+# correctly scoped to just the client, with no extra apt-repo setup needed.
+# See docs/adr/0005-dockside-network-firewall-design.md.
+#
+# Build/push with: build/build.sh --stage dockside-network-firewall --push-ghcr
+#
+FROM alpine:${SYSTEM_ALPINE_VERSION} AS dockside-network-firewall
+
+RUN apk add --no-cache \
+        python3 \
+        iptables \
+        ip6tables \
+        ipset \
+        util-linux \
+        docker-cli
+
+COPY app/sandbox/dockside-network-firewall.py /usr/local/lib/dockside/dockside-network-firewall.py
+
+ENTRYPOINT ["python3", "/usr/local/lib/dockside/dockside-network-firewall.py"]
+
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
 

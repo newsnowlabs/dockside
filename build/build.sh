@@ -79,7 +79,7 @@ parse_commandline() {
     case "$opt" in
       --stage|--target) [ -z "$val" ] && val="$1" && shift; STAGE="$val"; continue; ;;
                  --tag) [ -z "$val" ] && val="$1" && shift; TAGS+=("$REPO:$val"); continue; ;;
-                --repo) [ -z "$val" ] && val="$1" && shift; REPO="$val"; continue; ;;
+                --repo) [ -z "$val" ] && val="$1" && shift; REPO="$val"; REPO_SET="1"; continue; ;;
             --progress) [ -z "$val" ] && val="$1" && shift; PROGRESS="$val"; continue; ;;
                --theia) [ -z "$val" ] && val="$1" && shift; THEIA_VERSION="$val"; continue; ;;
 
@@ -105,6 +105,13 @@ parse_commandline() {
 
 build_env() {
   TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
+
+  # dockside-network-firewall is published as its own image (see the Dockerfile
+  # stage comment for why); default to its repo when that stage is selected,
+  # unless --repo was given explicitly.
+  if [ -z "$REPO_SET" ] && [ "$STAGE" = "dockside-network-firewall" ]; then
+    REPO="newsnowlabs/dockside-network-firewall"
+  fi
 
   if [ -z "${TAGS[0]}" ]; then
     if [ -n "$STAGE" ] && [ "$STAGE" != "production" ]; then
