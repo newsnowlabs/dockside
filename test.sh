@@ -312,10 +312,10 @@ check_python() {
   local failed=0
   local py_files=()
 
-  # Gather all Python files under t/integration/ and cli/
+  # Gather all Python files under t/integration/, cli/, and app/sandbox/
   while IFS= read -r -d '' f; do
     py_files+=("$f")
-  done < <(find t/integration cli -name '*.py' -print0 2>/dev/null | sort -z)
+  done < <(find t/integration cli app/sandbox -name '*.py' -print0 2>/dev/null | sort -z)
 
   if [[ ${#py_files[@]} -eq 0 ]]; then
     echo "  (no Python files found)"
@@ -331,6 +331,19 @@ check_python() {
     fi
   done
   return $failed
+}
+
+# ── 9. dockside-network-firewall unit tests ─────────────────────────────────
+# Pure-logic tests (validators, config parsing, iptables-restore text
+# generation, ipset TTL algorithm) — no root, no iptables/ipset/docker
+# binaries. See docs/plans/follow-on-work.md for the privileged/netns smoke
+# tests this deliberately doesn't cover.
+check_sandbox() {
+  if [[ ! -d app/sandbox/tests ]]; then
+    echo "  (no app/sandbox/tests found)"
+    return 0
+  fi
+  python3 -m unittest discover -s app/sandbox/tests -p 'test_*.py' -v
 }
 
 check_integration() {
@@ -354,6 +367,7 @@ run_check "stylelint"  check_stylelint
 run_check "shellcheck" check_shellcheck
 run_check "json"       check_json
 run_check "python"     check_python
+run_check "sandbox"    check_sandbox
 # perltidy is available via --only perltidy but excluded from the default run:
 # the codebase pre-dates perltidy enforcement and has many pre-existing diffs.
 [[ -n "$ONLY" ]] && run_check "perltidy" check_perltidy
@@ -365,7 +379,7 @@ echo ""
 echo -e "${BOLD}━━━ Summary ━━━${RESET}"
 
 overall=0
-for name in perl vue eslint stylelint shellcheck json perltidy; do
+for name in perl vue eslint stylelint shellcheck json python sandbox perltidy; do
   result="${RESULTS[$name]:-SKIP}"
   case "$result" in
     PASS) echo -e "  ${GREEN}✓ PASS${RESET}  $name" ;;
