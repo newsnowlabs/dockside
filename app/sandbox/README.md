@@ -16,7 +16,36 @@ The daemon:
 - Triggers config reload on `SIGUSR1` (mapped to `ExecReload=` in the systemd unit)
 - Runs as a `systemd` `Type=notify` service
 - Leaves iptables rules in place on shutdown so containers stay protected during
-  a `systemctl restart`; use `--teardown` to remove all Dockside rules explicitly
+  a restart; use `--teardown` to remove all Dockside rules explicitly
+
+See `docs/adr/0005-dockside-network-firewall-design.md` for why the daemon is built
+this way, and `docs/adr/0006-dockside-network-firewall-security-hardening.md` for its
+security disposition.
+
+## Getting Started
+
+The daemon runs as a `--privileged --pid=host` sidecar container that `nsenter`s into
+the host's (or, on Docker Desktop for Mac/Windows, the underlying VM's) network
+namespace to manage iptables/ipset directly — this is what lets the same
+`docker-compose.yml` work unchanged on Docker Desktop and Linux `docker-ce`, with no
+platform-specific deployment step. It ships as its own image
+(`newsnowlabs/dockside-network-firewall`, see `build/build.sh --stage
+dockside-network-firewall`), independent of the main Dockside image.
+
+Three self-contained examples in `examples/` — each a `docker-compose.yml` plus its
+paired `network-config.json`/`firewall-config.json`:
+
+| Example | Demonstrates |
+|---|---|
+| `examples/minimal/` | The smallest working setup: one network, no static IP/MAC, a small egress allowlist. Start here. |
+| `examples/ai-dev-sandbox/` | Restricting a workspace network to just what an AI coding tool needs (its own API, npm, GitHub) — safely sandboxing AI-assisted local dev work. |
+| `examples/multi-network-production/` | A real multi-network deployment: per-workspace-class networks, static IP/MAC exemption for the dockside container, DNAT, ipset-based allowlists. |
+
+Each example's `docker-compose.yml` documents its own start order and config-file
+placement in a header comment.
+
+A host-level `systemd`-supervised deployment (instead of the compose sidecar) is
+possible but not provided out of the box in this repo — see `docs/plans/follow-on-work.md`.
 
 ## Requirements
 
@@ -183,9 +212,14 @@ destination to `to_ip`/`to_host`:`to_port`.
 | `to_ip` | Literal target IP (alternative to `to_host`) |
 | `to_port` | Target port number |
 
-## Systemd Integration
+## Process Supervision
 
-The daemon is shipped as a `Type=notify` systemd service:
+The daemon supports `Type=notify`-style readiness signalling (`sd_notify`, silently
+skipped if `systemd-notify` isn't present) and reloads its config from disk on
+`SIGUSR1` without interrupting the running firewall — useful whether it's supervised
+by `docker compose`'s own `restart:` policy (the shipped deployment path; see
+[Getting Started](#getting-started)) or, on a Linux-only host that prefers it, a
+`systemd` unit with:
 
 ```ini
 [Service]
@@ -194,9 +228,7 @@ ExecStart=/usr/local/lib/dockside/dockside-network-firewall.py --daemon
 ExecReload=/bin/kill -USR1 $MAINPID
 ```
 
-`systemctl reload dockside` sends `SIGUSR1` to the daemon, which triggers a
-config reload from disk in a background thread without interrupting the
-running firewall.
+No such unit file is shipped in this repo — see `docs/plans/follow-on-work.md`.
 
 ## Management Socket
 
@@ -443,3 +475,19 @@ Removes:
 
 Docker networks are **not** removed by teardown; remove them manually with
 `docker network rm` if needed.
+
+## Testing
+
+`tests/test_dockside_network_firewall.py` covers config loading/validation, iptables-
+restore text generation, config diffing, and the ipset TTL algorithm — pure logic, no
+root or iptables/ipset/docker binaries needed. Run via:
+
+```bash
+./test.sh --only sandbox
+```
+
+It's part of the default `./test.sh` run. This is deliberately narrower than a full
+smoke test of the daemon actually applying rules in a real network namespace (startup,
+`--teardown`, `SIGUSR1` reload, socket auth end-to-end) — that tier needs a
+privileged/`NET_ADMIN` environment and is tracked in `docs/plans/follow-on-work.md`,
+not run automatically here.
