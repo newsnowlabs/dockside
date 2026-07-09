@@ -1,0 +1,64 @@
+# Restricts a workspace network to just the hosts an AI coding tool needs
+# (its own API, npm, GitHub) — useful for safely sandboxing an AI-assisted
+# local dev workspace's network access, independent of any multi-tenant
+# production deployment. See ../multi-network-production/ for that case, or
+# ../minimal/ for the smallest possible working example.
+#
+# Before starting: copy network-config.json and firewall-config.json from this
+# directory to ~/.dockside/network-firewall/ (or point the network-firewall
+# service's volume mount below at wherever you keep them).
+#
+# Start order matters: the firewall daemon creates the networks below before
+# the dockside container can attach to them.
+#   docker compose up -d network-firewall && sleep 2 && docker compose up -d dockside
+
+services:
+  dockside:
+    container_name: ${DOCKSIDE_NAME:-dockside}
+    image: ${DOCKSIDE_IMAGE:-newsnowlabs/dockside:latest}
+    restart: unless-stopped
+    attach: true
+    command: ["--ssl-builtin"]
+    ports:
+      - "${DOCKSIDE_HTTPS_PORT:-443}:443"
+      - "${DOCKSIDE_HTTP_PORT:-80}:80"
+      - "1053:53/udp"
+    volumes:
+      - ~/.dockside:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dockside-ide:/opt/dockside
+      - dockside-hostdata:/opt/dockside/host
+    security_opt:
+      - apparmor:unconfined
+    networks:
+      dockside:
+      ai-dev-sandbox:
+        mac_address: "02:00:00:00:00:02"
+
+  network-firewall:
+    container_name: ${DOCKSIDE_NAME:-dockside}-network-firewall
+    image: ${DOCKSIDE_NETWORK_FIREWALL_IMAGE:-newsnowlabs/dockside-network-firewall:latest}
+    pid: "host"
+    privileged: true
+    network_mode: "none"          # No network of its own — uses nsenter to enter host netns
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.dockside/network-firewall:/etc/dockside
+    entrypoint:
+      - nsenter
+      - --net=/proc/1/ns/net
+      - --
+      - python3
+      - /usr/local/lib/dockside/dockside-network-firewall.py
+      - --daemon
+
+volumes:
+  dockside-ide:
+  dockside-hostdata:
+
+networks:
+  dockside:
+    external: true
+  ai-dev-sandbox:
+    external: true

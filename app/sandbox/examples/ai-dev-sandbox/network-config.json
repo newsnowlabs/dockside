@@ -1,0 +1,15 @@
+{
+  "networks": [
+    {
+      "comment": "Unmanaged control-plane network for the dockside container itself.",
+      "name": "dockside",
+      "subnet": "172.31.0.0/24"
+    },
+    {
+      "comment": "Workspace network for an AI-coding-tool devtainer. dockside_mac exempts the dockside container's own traffic from the egress rules below, since it shares this network with the workspace to manage it.",
+      "name": "ai-dev-sandbox",
+      "subnet": "172.31.1.0/24",
+      "dockside_mac": "02:00:00:00:00:02"
+    }
+  ]
+}

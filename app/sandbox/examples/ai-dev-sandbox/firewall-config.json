@@ -1,0 +1,29 @@
+{
+  "ipsets": {
+    "ai-coding-tool-allowlist": [
+      "api.anthropic.com",
+      "statsig.anthropic.com",
+      "statsig.ugc.statsigapi.net",
+      "sentry.io",
+      "registry.npmjs.org",
+      "github.com",
+      "api.github.com"
+    ]
+  },
+  "networks": {
+    "ai-dev-sandbox": {
+      "egress": [
+        { "comment": "DNS (UDP and TCP) to any resolver",
+          "proto": "udp", "ports": [53], "to": "all" },
+        { "proto": "tcp", "ports": [53], "to": "all" },
+
+        { "comment": "HTTPS and SSH to the AI coding tool's own API/telemetry, npm, and GitHub only",
+          "proto": "tcp", "ports": [443], "to": "ipset", "ipset": "ai-coding-tool-allowlist" },
+        { "proto": "tcp", "ports": [22],  "to": "ipset", "ipset": "ai-coding-tool-allowlist" },
+
+        { "comment": "Default deny — everything else blocked",
+          "action": "drop" }
+      ]
+    }
+  }
+}

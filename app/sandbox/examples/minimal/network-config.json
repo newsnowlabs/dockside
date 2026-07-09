@@ -1,0 +1,9 @@
+{
+  "networks": [
+    {
+      "comment": "The only network in this example. Deliberately has no dockside_ip/dockside_mac: the dockside container's own traffic is not exempted, so it is subject to the same egress rules as everything else — see firewall-config.json. That's a fine simplification for a first trial; see ../multi-network-production/ for how to exempt the dockside container on a shared network.",
+      "name": "dockside",
+      "subnet": "172.30.0.0/24"
+    }
+  ]
+}

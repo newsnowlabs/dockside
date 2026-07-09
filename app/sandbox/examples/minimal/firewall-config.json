@@ -1,0 +1,17 @@
+{
+  "networks": {
+    "dockside": {
+      "egress": [
+        { "comment": "DNS (UDP and TCP) to any resolver",
+          "proto": "udp", "ports": [53], "to": "all" },
+        { "proto": "tcp", "ports": [53], "to": "all" },
+
+        { "comment": "Standard web traffic",
+          "proto": "tcp", "ports": [80, 443], "to": "all" },
+
+        { "comment": "Default deny — drop everything else",
+          "action": "drop" }
+      ]
+    }
+  }
+}
