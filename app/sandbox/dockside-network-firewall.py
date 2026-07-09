@@ -1761,9 +1761,10 @@ class ManagementSocket:
       Response: ``{"status": "ok"|"error", …}\\n``
 
     The server runs its accept loop in a daemon thread; each accepted
-    connection is handled in its own short-lived daemon thread.  All
-    connections share the caller-supplied ``handler`` callable, which must be
-    thread-safe (FirewallDaemon uses ``self._lock`` for this purpose).
+    connection is handled in its own short-lived daemon thread, up to
+    ``_MAX_CONNECTIONS`` concurrently.  All connections share the
+    caller-supplied ``handler`` callable, which must be thread-safe
+    (FirewallDaemon uses ``self._lock`` for this purpose).
 
     Authorization:
       Peer credentials are read via ``SO_PEERCRED`` for every connection.
@@ -1772,6 +1773,17 @@ class ManagementSocket:
       Read-only actions (``status``, ``refresh``) are permitted for any
       process in the socket's group.  All requests are logged with their peer
       PID/UID/GID for audit purposes.
+
+    Resource limits:
+      A bounded semaphore caps concurrent connection handler threads at
+      ``_MAX_CONNECTIONS``; a connection that can't acquire a slot is closed
+      immediately rather than spawning a thread.  A per-connection socket
+      timeout (``_CONN_TIMEOUT``) bounds how long a slow or idle client can
+      hold a slot.  Together these bound the damage a client able to reach
+      the socket can do by opening many connections (see ADR-0006, finding 3)
+      — proportionate to the socket's actual threat model (0o660 permissions,
+      root-gated mutations, a host you control), not a full worker-pool
+      redesign.
     """
 
     # Actions that alter iptables/ipset kernel state or the persisted config
@@ -1781,6 +1793,15 @@ class ManagementSocket:
         "set-ipset", "remove-ipset", "reconcile",
     })
 
+    # Upper bound on concurrent connection handler threads (see "Resource
+    # limits" above). Generous for a management socket that only ever expects
+    # a handful of local, trusted clients at once.
+    _MAX_CONNECTIONS = 32
+
+    # Seconds a handler thread will block on a single client's recv() before
+    # giving up, so a slow/idle connection can't hold a slot indefinitely.
+    _CONN_TIMEOUT = 5.0
+
     def __init__(self):
         # The listening server socket; None until start() is called.
         self._server: Optional[socket.socket] = None
@@ -1788,6 +1809,8 @@ class ManagementSocket:
         self._stop    = threading.Event()
         # Callable invoked with the parsed request dict; returns response dict.
         self._handler = None
+        # Bounds concurrent connection handler threads; see class docstring.
+        self._conn_sem = threading.BoundedSemaphore(self._MAX_CONNECTIONS)
 
     def start(self, path: str, handler) -> None:
         """Create the socket file, start listening, and launch the accept thread.
@@ -1842,7 +1865,9 @@ class ManagementSocket:
 
         Exits when the stop event is set or when the server socket is closed
         (``accept()`` raises ``OSError``).  Each connection is handled in its
-        own daemon thread so a slow client does not block others.
+        own daemon thread so a slow client does not block others, up to
+        ``_MAX_CONNECTIONS`` concurrently — a connection that can't acquire a
+        slot is closed immediately rather than spawning a thread.
         """
         while not self._stop.is_set():
             try:
@@ -1850,6 +1875,13 @@ class ManagementSocket:
             except OSError:
                 # Server socket closed by stop() or an unrecoverable error.
                 break
+            if not self._conn_sem.acquire(blocking=False):
+                logging.warning(
+                    "mgmt-socket: %d concurrent connections already in "
+                    "flight, dropping new connection", self._MAX_CONNECTIONS,
+                )
+                conn.close()
+                continue
             threading.Thread(
                 target=self._handle_conn, args=(conn,), daemon=True
             ).start()
@@ -1866,10 +1898,16 @@ class ManagementSocket:
         dispatched.  Mutating actions require the peer to be root (UID 0).
         All requests are logged with peer PID/UID/GID for audit purposes.
 
-        The ``finally`` block ensures the connection is always closed, even on
-        unexpected exceptions, so file descriptors are not leaked.
+        The ``finally`` block ensures the connection is always closed and its
+        semaphore slot released, even on unexpected exceptions, so file
+        descriptors and slots are not leaked.
         """
         try:
+            # Bound how long a slow/idle client can hold this handler thread
+            # (and its semaphore slot) open; a timeout is caught by the
+            # broad `except Exception` below like any other error.
+            conn.settimeout(self._CONN_TIMEOUT)
+
             # ── Read peer credentials (Linux SO_PEERCRED) ─────────────────────
             # struct ucred { pid_t pid; uid_t uid; gid_t gid; } — all 32-bit.
             try:
@@ -1930,6 +1968,7 @@ class ManagementSocket:
                 pass
         finally:
             conn.close()
+            self._conn_sem.release()
 
 
 # ---------------------------------------------------------------------------
