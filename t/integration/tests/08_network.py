@@ -25,7 +25,12 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
-from dockside_test import TestCase, APIError
+from dockside_test import (
+    TestCase, APIError,
+    docker_available as _docker_available,
+    docker_manages_container as _docker_manages_container,
+    create_and_attach_test_network,
+)
 
 
 def _docker_networks():
@@ -38,32 +43,6 @@ def _docker_networks():
         return r.stdout.splitlines()
     except Exception:
         return []
-
-
-def _docker_available():
-    try:
-        r = subprocess.run(['docker', 'version'], capture_output=True, timeout=5)
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
-def _docker_manages_container(ctr):
-    """True if the docker daemon reachable here manages container `ctr`.
-
-    A Dockside container launched with runc / io.containerd.runc.v2 + a bind-mounted
-    /var/run/docker.sock talks to the host daemon, which DOES manage it. One launched
-    with sysbox-runc instead runs an independent inner dockerd (per entrypoint.sh) that
-    does NOT manage the Dockside container — so a network cannot be attached to it from
-    here. This guard lets the network-attach tests skip cleanly in that case rather than
-    create a network and then fail on connect.
-    """
-    try:
-        r = subprocess.run(['docker', 'container', 'inspect', ctr],
-                           capture_output=True, timeout=10)
-        return r.returncode == 0
-    except Exception:
-        return False
 
 
 class NetworkTests(TestCase):
@@ -214,51 +193,18 @@ class NetworkTests(TestCase):
             self.skip(f'docker daemon reachable here does not manage container {ctr!r} '
                       '(e.g. a sysbox-runc inner dockerd); cannot attach a network to it')
 
-        test_net = f'inttest-net-{uuid.uuid4().hex[:8]}'
-        created  = False
-        attached = False
+        probe_name = self._sfx('inttest-net-probe')
+        test_net = None
         try:
-            r = subprocess.run(['docker', 'network', 'create', test_net],
-                               capture_output=True, timeout=15)
-            if r.returncode != 0:
-                self.skip(f'docker network create failed: {r.stderr.decode()}')
-            created = True
-
-            r = subprocess.run(
-                ['docker', 'network', 'connect', test_net, ctr],
-                capture_output=True, timeout=15
-            )
-            if r.returncode != 0:
-                self.skip(f'docker network connect failed: {r.stderr.decode()}')
-            attached = True
-            self._attached_networks.append((test_net, ctr))  # for emergency teardown
-
-            probe_name = self._sfx('inttest-net-probe')
-            self.register_cleanup(probe_name)
-
-            # Discovery is asynchronous: docker-event-daemon must notice the network
-            # connected to the Dockside container and rewrite containers.json, the Perl
-            # app must reload it, and Profile::applyDefaultsAndFilters must re-read the
-            # in-memory host networks before the new network is offered for a reservation.
-            # So retry the create until it is accepted (or time out), rather than assuming
-            # it is usable the instant after `docker network connect`.
-            def _create_probe_on_test_net():
-                try:
-                    self.admin.create(
-                        profile=self.test_profile_alpine,
-                        name=probe_name,
-                        network=test_net,
-                    )
-                    return True
-                except APIError:
-                    return False  # not yet discovered by Dockside; retry
             try:
-                self.wait_until(
-                    _create_probe_on_test_net, timeout=45, interval=3,
-                    timeout_msg='Dockside did not make the attached test network '
-                                'available for a reservation')
+                test_net = create_and_attach_test_network(
+                    self.admin, ctr, self.test_profile_alpine, probe_name)
+            except RuntimeError as e:
+                self.skip(str(e))
             except AssertionError as e:
                 self.skip(str(e))
+            self._attached_networks.append((test_net, ctr))  # for emergency teardown
+            self.register_cleanup(probe_name)
 
             probe_data = self.admin.get_container(probe_name)
             actual_net = ((probe_data.get('data') or {}).get('network')
@@ -267,7 +213,7 @@ class NetworkTests(TestCase):
                               f'probe container not on test network: {actual_net!r}')
 
         finally:
-            if attached:
+            if test_net:
                 subprocess.run(
                     ['docker', 'network', 'disconnect', test_net, ctr],
                     capture_output=True, timeout=15
@@ -276,7 +222,6 @@ class NetworkTests(TestCase):
                     self._attached_networks.remove((test_net, ctr))
                 except ValueError:
                     pass
-            if created:
                 subprocess.run(['docker', 'network', 'rm', test_net],
                                capture_output=True, timeout=15)
 
