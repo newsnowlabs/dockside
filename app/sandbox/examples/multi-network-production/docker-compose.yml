@@ -1,7 +1,8 @@
 # Real multi-network deployment: dockside itself sits on all four networks
-# (mac_address pins it to the dockside_mac each network's firewall config
-# expects, so its own traffic is exempted from the per-network egress rules —
-# see network-config.json/firewall-config.json). ds-prod additionally pins a
+# (mac_address pins it to the dockside_mac each network expects). Every
+# network leaves dockside_egress at its default ("exempt"), so dockside's own
+# traffic is exempted from the per-network egress rules — see
+# network-config.json/firewall-config.json. ds-prod additionally pins a
 # static ipv4_address, since its firewall config uses dockside_ip as well as
 # dockside_mac. See ../minimal/ or ../ai-dev-sandbox/ for simpler starting points.
 #

@@ -4,6 +4,12 @@
 # production deployment. See ../multi-network-production/ for that case, or
 # ../minimal/ for the smallest possible working example.
 #
+# The dockside service's mac_address on each network matches that network's
+# dockside_mac in network-config.json — required on ai-dev-sandbox so the
+# firewall daemon's ING chain still lets the dockside container reverse-proxy
+# to the devtainer there, and set on dockside too as defense-in-depth (see
+# network-config.json's comment).
+#
 # Before starting: copy network-config.json and firewall-config.json from this
 # directory to ~/.dockside/network-firewall/ (or point the network-firewall
 # service's volume mount below at wherever you keep them).
@@ -32,6 +38,7 @@ services:
       - apparmor:unconfined
     networks:
       dockside:
+        mac_address: "02:00:00:00:00:02"
       ai-dev-sandbox:
         mac_address: "02:00:00:00:00:02"
 

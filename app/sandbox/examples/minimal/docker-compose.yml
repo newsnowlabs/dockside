@@ -1,8 +1,16 @@
-# Minimal example: one network, no static IP/MAC pinning, a small egress
-# allowlist (DNS + HTTP/HTTPS only). Demonstrates the firewall daemon working
-# with the least possible moving parts — see ../multi-network-production/ for
-# a real multi-network deployment, or ../ai-dev-sandbox/ for restricting a
+# Minimal example: one network, a small egress allowlist (DNS + HTTP/HTTPS
+# only) for devtainer traffic. Demonstrates the firewall daemon working with
+# the least possible moving parts — see ../multi-network-production/ for a
+# real multi-network deployment, or ../ai-dev-sandbox/ for restricting a
 # single workspace network to an AI-coding-tool allowlist.
+#
+# The dockside service's mac_address matches network-config.json's
+# dockside_mac — required so the firewall daemon's ING chain still lets the
+# dockside container open new connections to devtainers on this network to
+# reverse-proxy to them; without it, ALL new same-network connections are
+# dropped, dockside's own included. dockside_egress is left at its default
+# ("exempt"), so the rules below end up governing devtainer egress only, not
+# dockside's own. See network-config.json's comment.
 #
 # Before starting: copy network-config.json and firewall-config.json from this
 # directory to ~/.dockside/network-firewall/ (or point the network-firewall
@@ -31,7 +39,8 @@ services:
     security_opt:
       - apparmor:unconfined
     networks:
-      - dockside
+      dockside:
+        mac_address: "02:00:00:00:00:02"
 
   network-firewall:
     container_name: ${DOCKSIDE_NAME:-dockside}-network-firewall

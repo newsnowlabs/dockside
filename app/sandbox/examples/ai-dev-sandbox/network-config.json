@@ -1,15 +1,18 @@
 {
   "networks": [
     {
-      "comment": "Unmanaged control-plane network for the dockside container itself.",
+      "comment": "Control-plane network for the dockside container itself. dockside_mac is set purely as defense-in-depth against the ING chain's lateral-connection lockdown (see ../multi-network-production/), in case a devtainer profile ever wildcard-expands onto this network; no devtainer attaches to it in this example. dockside_egress stays \"exempt\": there's no dedicated egress policy for dockside's own traffic on this network to switch to \"policed\" against.",
       "name": "dockside",
-      "subnet": "172.31.0.0/24"
+      "subnet": "172.31.0.0/24",
+      "dockside_mac": "02:00:00:00:00:02",
+      "dockside_egress": "exempt"
     },
     {
-      "comment": "Workspace network for an AI-coding-tool devtainer. dockside_mac exempts the dockside container's own traffic from the egress rules below, since it shares this network with the workspace to manage it.",
+      "comment": "Workspace network for an AI-coding-tool devtainer. dockside_mac identifies the dockside container to the ING chain so it can reverse-proxy to the devtainer here. dockside_egress stays \"exempt\", so the egress rules below govern devtainer traffic only, not the dockside container's own.",
       "name": "ai-dev-sandbox",
       "subnet": "172.31.1.0/24",
-      "dockside_mac": "02:00:00:00:00:02"
+      "dockside_mac": "02:00:00:00:00:02",
+      "dockside_egress": "exempt"
     }
   ]
 }

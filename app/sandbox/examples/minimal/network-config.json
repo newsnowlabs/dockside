@@ -1,9 +1,11 @@
 {
   "networks": [
     {
-      "comment": "The only network in this example. Deliberately has no dockside_ip/dockside_mac: the dockside container's own traffic is not exempted, so it is subject to the same egress rules as everything else — see firewall-config.json. That's a fine simplification for a first trial; see ../multi-network-production/ for how to exempt the dockside container on a shared network.",
+      "comment": "The only network in this example — the dockside container and any devtainers it launches all share it (Dockside must reach each devtainer directly on this network to reverse-proxy to it). dockside_mac is required, not optional: without it, the ING chain drops all new intra-network connections, including the dockside container's own connections to devtainers, breaking the reverse proxy. dockside_egress is left at its default, \"exempt\", so the rules in firewall-config.json end up governing devtainer egress only, not the dockside container's own traffic — switching it to \"policed\" would require first writing rules here covering everything the dockside container itself needs to send/receive (DNS, ACME, etc.).",
       "name": "dockside",
-      "subnet": "172.30.0.0/24"
+      "subnet": "172.30.0.0/24",
+      "dockside_mac": "02:00:00:00:00:02",
+      "dockside_egress": "exempt"
     }
   ]
 }

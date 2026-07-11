@@ -1,6 +1,7 @@
 {
   "networks": {
     "dockside": {
+      "_comment": "Applies to devtainer egress only — the dockside container's own traffic is exempted via dockside_egress (default \"exempt\") in network-config.json (see its comment there).",
       "egress": [
         { "comment": "DNS (UDP and TCP) to any resolver",
           "proto": "udp", "ports": [53], "to": "all" },

@@ -1,29 +1,33 @@
 {
   "networks": [
     {
-      "comment": "Unmanaged internal network used by the Dockside control plane itself.",
+      "comment": "Control-plane network for the dockside container itself. dockside_mac is set for ING-chain defense-in-depth (blocks lateral connections to dockside) even though no devtainer attaches here in this example. dockside_egress stays \"exempt\": dockside's own required egress on this network hasn't been inventoried yet, so there's no rule set to switch to \"policed\" against.",
       "name": "dockside",
       "subnet": "172.20.0.0/24",
-      "dockside_mac": "02:00:00:00:00:02"
+      "dockside_mac": "02:00:00:00:00:02",
+      "dockside_egress": "exempt"
     },
     {
       "comment": "Private/sensitive workspaces: internet access but blocked from the LAN.",
       "name": "ds-priv",
       "subnet": "172.20.1.0/24",
-      "dockside_mac": "02:00:00:00:00:02"
+      "dockside_mac": "02:00:00:00:00:02",
+      "dockside_egress": "exempt"
     },
     {
       "comment": "Clone/staging workspaces: like prod but with a DNAT redirect to the test database.",
       "name": "ds-clone",
       "subnet": "172.20.2.0/24",
-      "dockside_mac": "02:00:00:00:00:02"
+      "dockside_mac": "02:00:00:00:00:02",
+      "dockside_egress": "exempt"
     },
     {
       "comment": "Production workspaces: full outbound internet access, restricted lateral movement.",
       "name": "ds-prod",
       "subnet": "172.20.3.0/24",
       "dockside_ip": "172.20.3.2",
-      "dockside_mac": "02:00:00:00:00:02"
+      "dockside_mac": "02:00:00:00:00:02",
+      "dockside_egress": "exempt"
     }
   ]
 }
