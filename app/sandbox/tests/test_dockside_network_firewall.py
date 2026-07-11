@@ -121,6 +121,37 @@ class ConfigParsingTests(unittest.TestCase):
         cfg = fw.Config.from_dicts(net, {})
         self.assertTrue(cfg.networks[0].managed)
 
+    def test_dockside_egress_defaults_to_exempt(self):
+        net = {"networks": [{
+            "name": "ai-dev-sandbox", "subnet": "172.31.1.0/24",
+            "dockside_mac": "02:00:00:00:00:02",
+        }]}
+        cfg = fw.Config.from_dicts(net, {})
+        self.assertEqual(cfg.networks[0].dockside_egress, "exempt")
+
+    def test_dockside_egress_rejects_invalid_value(self):
+        net = {"networks": [{
+            "name": "n", "subnet": "172.31.1.0/24",
+            "dockside_mac": "02:00:00:00:00:02", "dockside_egress": "bogus",
+        }]}
+        with self.assertRaises(ValueError):
+            fw.Config.from_dicts(net, {})
+
+    def test_dockside_egress_policed_requires_identity(self):
+        net = {"networks": [{
+            "name": "n", "subnet": "172.31.1.0/24", "dockside_egress": "policed",
+        }]}
+        with self.assertRaises(ValueError):
+            fw.Config.from_dicts(net, {})
+
+    def test_dockside_egress_policed_accepted_with_mac(self):
+        net = {"networks": [{
+            "name": "n", "subnet": "172.31.1.0/24",
+            "dockside_mac": "02:00:00:00:00:02", "dockside_egress": "policed",
+        }]}
+        cfg = fw.Config.from_dicts(net, {})
+        self.assertEqual(cfg.networks[0].dockside_egress, "policed")
+
     def test_firewall_config_referencing_unknown_network_raises(self):
         net = {"networks": [{"name": "dockside", "subnet": "172.30.0.0/24"}]}
         fw_data = {"networks": {"ds-typo": {"egress": []}}}
@@ -165,6 +196,21 @@ class ConfigParsingTests(unittest.TestCase):
         cfg = fw.Config.from_dicts(net, fw_data)
         self.assertEqual(cfg.to_net_data(), net)
         self.assertEqual(cfg.to_fw_data(), {"networks": fw_data["networks"]})
+
+    def test_round_trip_omits_dockside_egress_when_default(self):
+        net = {"networks": [{
+            "name": "n", "subnet": "172.20.3.0/24", "dockside_mac": "02:00:00:00:00:02",
+        }]}
+        cfg = fw.Config.from_dicts(net, {})
+        self.assertNotIn("dockside_egress", cfg.to_net_data()["networks"][0])
+
+    def test_round_trip_includes_dockside_egress_when_policed(self):
+        net = {"networks": [{
+            "name": "n", "subnet": "172.20.3.0/24",
+            "dockside_mac": "02:00:00:00:00:02", "dockside_egress": "policed",
+        }]}
+        cfg = fw.Config.from_dicts(net, {})
+        self.assertEqual(cfg.to_net_data()["networks"][0]["dockside_egress"], "policed")
 
 
 class DiffConfigsTests(unittest.TestCase):
@@ -270,6 +316,17 @@ class IptablesRuleGenTests(unittest.TestCase):
         match = fw.IptablesManager._dispatch_out_match(spec)
         self.assertIn("-m mac ! --mac-source 02:00:00:00:00:02", match)
         self.assertIn("! -s 172.30.0.2", match)
+
+    def test_dispatch_out_match_policed_ignores_identity(self):
+        # dockside_egress="policed" means dockside's own traffic gets no OUT-chain
+        # exclusion at all, even though dockside_mac/dockside_ip are set (they still
+        # apply to the ING chain, just not here).
+        spec = fw.NetworkSpec({"name": "n", "subnet": "172.30.0.0/24",
+                                "dockside_ip": "172.30.0.2",
+                                "dockside_mac": "02:00:00:00:00:02",
+                                "dockside_egress": "policed"})
+        match = fw.IptablesManager._dispatch_out_match(spec)
+        self.assertEqual(match, "-i n ! -o n")
 
     def test_build_restore_input_declares_and_flushes_dispatch_and_per_network_chains(self):
         net = {"networks": [{"name": "dockside", "subnet": "172.30.0.0/24"}]}

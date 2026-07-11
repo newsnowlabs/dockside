@@ -37,7 +37,7 @@ paired `network-config.json`/`firewall-config.json`:
 
 | Example | Demonstrates |
 |---|---|
-| `examples/minimal/` | The smallest working setup: one network, no static IP/MAC, a small egress allowlist. Start here. |
+| `examples/minimal/` | The smallest working setup: one shared network for dockside and its devtainers, a small egress allowlist for devtainer traffic. Start here. |
 | `examples/ai-dev-sandbox/` | Restricting a workspace network to just what an AI coding tool needs (its own API, npm, GitHub) — safely sandboxing AI-assisted local dev work. |
 | `examples/multi-network-production/` | A real multi-network deployment: per-workspace-class networks, static IP/MAC exemption for the dockside container, DNAT, ipset-based allowlists. |
 
@@ -121,11 +121,25 @@ Defines the Docker bridge networks to create.
 | `name` | yes | Docker network name; also the Linux bridge name (lower-cased) |
 | `subnet` | yes | CIDR subnet, e.g. `"172.16.0.0/16"` |
 | `gateway_ip` | no | Docker network gateway IP; defaults to the `.1` host of the subnet |
-| `dockside_ip` | no | Source IP of the dockside container on this network (typically `.2`); traffic from this IP bypasses the egress chain |
-| `dockside_mac` | no | MAC address of the dockside container's interface; traffic from this MAC bypasses the egress chain |
+| `dockside_ip` | no | Source IP of the dockside container on this network (typically `.2`); identifies its traffic to the ING chain |
+| `dockside_mac` | no | MAC address of the dockside container's interface; identifies its traffic to the ING chain the same way as `dockside_ip` |
+| `dockside_egress` | no | `"exempt"` (default) or `"policed"` — whether the dockside container's own egress on this network bypasses this network's egress rules, or is subject to them like any other traffic. See below. |
 
 At least one of `dockside_ip` or `dockside_mac` (or both) should be set for any
-managed network; either is sufficient to identify dockside-container traffic.
+network the dockside container shares with devtainers, so the firewall daemon's
+ING chain still lets it initiate new connections to them (needed to reverse
+proxy). Either is sufficient to identify dockside-container traffic.
+
+`dockside_egress` is independent of `dockside_ip`/`dockside_mac`: those two
+control only the ING chain (who may open new intra-network connections);
+`dockside_egress` controls whether the dockside container's *own* egress is
+subject to this network's `firewall-config.json` rules at all. It defaults to
+`"exempt"` — the dockside container's egress bypasses those rules entirely.
+Setting it to `"policed"` requires `dockside_ip` or `dockside_mac` to also be
+set, and requires the network's egress rules to actually cover everything the
+dockside container itself needs to send/receive there (DNS, ACME, etc.) —
+nothing inventories that automatically, so switching to `"policed"` without
+first writing those rules will cut off the dockside container's own traffic.
 
 A network with no `dockside_ip`, `dockside_mac`, egress rules, or NAT rules is
 considered **unmanaged** and receives no Dockside firewall chains; its traffic

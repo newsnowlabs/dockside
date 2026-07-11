@@ -84,6 +84,28 @@ partially applied. The replacement daemon
    verified equal or newer on Alpine (e.g. `nsenter` from genuine `util-linux`, not a
    busybox stand-in).
 
+9. **`dockside_ip`/`dockside_mac` (ING exemption) and `dockside_egress`
+   (OUT-chain exemption) are separate, independently-set fields, not one
+   combined toggle.** The original implementation keyed both effects off the
+   presence of `dockside_ip`/`dockside_mac`: setting either one both (a)
+   whitelisted that MAC/IP to open new intra-network connections in the ING
+   chain (needed for the reverse proxy) and (b) unconditionally excluded that
+   traffic from the network's OUT chain, so devtainer egress rules could never
+   apply to the dockside container's own traffic. These are different
+   concerns — (a) is "who may initiate connections on this bridge," (b) is
+   "does egress policy apply to this identity" — and conflating them made it
+   impossible to express "let dockside reverse-proxy here, but also police its
+   own egress" without a code change. `dockside_egress` (`"exempt"` default,
+   or `"policed"`) now controls (b) independently; `dockside_ip`/`dockside_mac`
+   control only (a). `"exempt"` is a deliberate placeholder, not a
+   settled design: every shipped example leaves it at the default because
+   nobody has yet inventoried what the dockside container's own egress on a
+   managed network actually needs (DNS, ACME, etc.) — `"policed"` is only
+   safe to switch to once that inventory exists and rules cover it. There was
+   no backwards-compatibility constraint on this change (only two production
+   installations exist, both operator-controlled), so the split was made
+   directly rather than staged behind a compatibility shim.
+
 ## Consequences
 
 Every rule rebuild is all-or-nothing at the kernel level — there is no partial-apply

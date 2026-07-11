@@ -74,6 +74,15 @@ _VALID_PROTOS   = frozenset({"tcp", "udp", "icmp"})
 _VALID_ACTIONS  = frozenset({"allow", "drop"})
 _VALID_TO       = frozenset({"all", "cidr", "ip", "ipset", "host"})
 
+# dockside_egress values (see NetworkSpec.dockside_egress).  "exempt" is the
+# default and only currently-used value in shipped examples; "policed" is a
+# real, implemented mode but requires the operator to have already written
+# egress rules covering everything the dockside container itself needs to
+# send/receive on that network (DNS, ACME, etc.) — nothing does that
+# inventory automatically.
+_VALID_DOCKSIDE_EGRESS = frozenset({"exempt", "policed"})
+_DEFAULT_DOCKSIDE_EGRESS = "exempt"
+
 
 def _val_identifier(value: str, field: str, max_len: int = 64) -> None:
     """Validate a name used as an iptables chain/network/ipset identifier.
@@ -124,6 +133,15 @@ def _val_proto(value: str, field: str) -> None:
         raise ValueError(
             f"{field}: {value!r} is not a supported protocol; "
             f"must be one of {sorted(_VALID_PROTOS)}"
+        )
+
+
+def _val_dockside_egress(value: str, field: str) -> None:
+    """Validate a dockside_egress mode string ("exempt" or "policed")."""
+    if value not in _VALID_DOCKSIDE_EGRESS:
+        raise ValueError(
+            f"{field}: {value!r} is not a supported mode; "
+            f"must be one of {sorted(_VALID_DOCKSIDE_EGRESS)}"
         )
 
 
@@ -453,17 +471,31 @@ class NetworkSpec:
         self.gateway_ip  = d.get("gateway_ip")
 
         # Optional source IP of the dockside container on this network (typically
-        # the x.x.x.2 host).  When provided, DOCKSIDE-DISPATCH rules use ``-s``
-        # to identify traffic originating from the dockside container and exempt
-        # it from the per-network OUT chain / allow it through the ING chain.
+        # the x.x.x.2 host).  When provided, identifies dockside-container
+        # traffic to the ING chain (see dockside_egress below for OUT-chain
+        # treatment) so it may originate new intra-network connections.
         self.dockside_ip  = d.get("dockside_ip")
 
         # Optional MAC address of the dockside container's interface on this
-        # network.  When provided, DOCKSIDE-DISPATCH rules use ``--mac-source``
-        # to identify dockside-container traffic.  Either ``dockside_ip``,
-        # ``dockside_mac``, or both may be set; at least one is needed for the
-        # network to be "managed" (unless egress/NAT rules are present).
+        # network.  When provided, identifies dockside-container traffic to the
+        # ING chain the same way as dockside_ip (``--mac-source`` instead of
+        # ``-s``).  Either ``dockside_ip``, ``dockside_mac``, or both may be
+        # set; at least one is needed for the network to be "managed" (unless
+        # egress/NAT rules are present).
         self.dockside_mac = d.get("dockside_mac")
+
+        # Whether the dockside container's own egress on this network is
+        # exempt from the network's firewall-config.json rules ("exempt", the
+        # default) or subject to them the same as any other traffic on the
+        # bridge ("policed").  Independent of dockside_ip/dockside_mac, which
+        # only control ING-chain (lateral-connection) behaviour.  "policed"
+        # requires dockside_ip or dockside_mac to be set (otherwise there is
+        # no way to identify dockside's traffic on this bridge at all) and
+        # requires egress rules that actually cover what the dockside
+        # container itself needs to send/receive here — see
+        # _val_dockside_egress and the module-level comment on
+        # _VALID_DOCKSIDE_EGRESS.
+        self.dockside_egress = d.get("dockside_egress", _DEFAULT_DOCKSIDE_EGRESS)
 
         # ── Validate topology fields ──────────────────────────────────────────
         # Network name is used as part of iptables chain names and the Docker
@@ -476,6 +508,14 @@ class NetworkSpec:
             _val_ip(self.dockside_ip, "network: dockside_ip")
         if self.dockside_mac is not None:
             _val_mac(self.dockside_mac, "network: dockside_mac")
+        _val_dockside_egress(self.dockside_egress, "network: dockside_egress")
+        if self.dockside_egress == "policed" and not (self.dockside_ip or self.dockside_mac):
+            raise ValueError(
+                f"network {self.name!r}: dockside_egress=\"policed\" requires "
+                f"dockside_ip or dockside_mac to be set (otherwise there is no "
+                f"way to identify the dockside container's traffic on this "
+                f"network)"
+            )
 
         # Outbound traffic rules appended by Config.from_dicts() after parsing
         # the firewall-config "egress" array for this network.
@@ -525,7 +565,8 @@ class NetworkSpec:
 
         Returns a dict suitable for inclusion in the ``"networks"`` array of
         network-config.json.  Optional fields (``gateway_ip``, ``dockside_ip``,
-        ``dockside_mac``) are omitted when not set so the output stays compact.
+        ``dockside_mac``, ``dockside_egress``) are omitted when unset/default
+        so the output stays compact.
         """
         d: dict = {"name": self.name, "subnet": self.subnet}
         if self.gateway_ip:
@@ -534,6 +575,8 @@ class NetworkSpec:
             d["dockside_ip"] = self.dockside_ip
         if self.dockside_mac:
             d["dockside_mac"] = self.dockside_mac
+        if self.dockside_egress != _DEFAULT_DOCKSIDE_EGRESS:
+            d["dockside_egress"] = self.dockside_egress
         return d
 
     def to_fw_dict(self) -> Optional[dict]:
@@ -1328,9 +1371,11 @@ class IptablesManager:
         #   Packets are classified into two categories:
         #     ING: same bridge on both -i and -o (container-to-container, intra-network).
         #     OUT: enters the bridge (-i) but exits a different interface (egress to host/internet).
-        #   The dockside container's own MAC/IP are already excluded by _dispatch_out_match,
-        #   so its traffic never reaches the per-network OUT chains; no separate exemption
-        #   rules are needed.
+        #   When dockside_egress is "exempt" (the default), the dockside container's
+        #   own MAC/IP are excluded by _dispatch_out_match, so its traffic never
+        #   reaches the per-network OUT chains. When "policed", no exclusion is
+        #   applied and dockside's own egress is dispatched into the OUT chain the
+        #   same as any other traffic on the bridge.
         for spec in managed:
             dev = spec.dev
             p   = spec.chain_prefix
@@ -1341,8 +1386,10 @@ class IptablesManager:
                 f" -j {p}-ING"
             )
             # OUT: egress traffic — enters the bridge, exits a different interface.
-            #   Dockside's own MAC/IP are excluded by _dispatch_out_match, so its traffic
-            #   falls through to the terminal RETURN below without touching the OUT chain.
+            #   dockside_egress == "exempt" (default): dockside's own MAC/IP are
+            #   excluded here, so its traffic falls through to the terminal RETURN
+            #   below without touching the OUT chain. == "policed": no exclusion,
+            #   dockside's traffic is subject to this network's OUT chain rules.
             out_match = IptablesManager._dispatch_out_match(spec)
             lines.append(
                 f"-A DOCKSIDE-DISPATCH {out_match}"
@@ -1351,8 +1398,8 @@ class IptablesManager:
             )
 
         # 3b. Terminal RETURN: any packet not matched above (non-managed bridge, or
-        #   the dockside container's own traffic excluded by _dispatch_out_match) is
-        #   returned to DOCKER-USER, which then returns to FORWARD.
+        #   the dockside container's own traffic when dockside_egress == "exempt")
+        #   is returned to DOCKER-USER, which then returns to FORWARD.
         lines.append(
             "-A DOCKSIDE-DISPATCH"
             " -m comment --comment \"pass-through\""
@@ -1443,24 +1490,33 @@ class IptablesManager:
     def _dispatch_out_match(spec: NetworkSpec) -> str:
         """Build the iptables match fragment for the OUT dispatch rule.
 
-        The fragment matches packets that:
-          - enter the network's bridge interface (``-i <dev>``)
-          - exit a *different* interface (``! -o <dev>`` — i.e. not looping back)
-          - are *not* from the dockside container (excluded so dockside-container
-            traffic hits the dockside exemption rules in step 3b instead)
+        The fragment always matches packets that enter the network's bridge
+        interface (``-i <dev>``) and exit a *different* interface (``! -o
+        <dev>`` — i.e. not looping back).
 
-        Excluding dockside-container traffic from the OUT chain is important: the
-        dockside container is a trusted host whose egress should not be subject
-        to container egress policy.
+        When ``spec.dockside_egress == "exempt"`` (the default), it additionally
+        excludes traffic from the dockside container's own MAC/IP, so that
+        traffic hits the dockside exemption in step 3b instead of the OUT chain
+        — the dockside container is treated as a trusted host whose egress is
+        not subject to container egress policy on this network.
+
+        When ``spec.dockside_egress == "policed"``, no such exclusion is
+        applied: dockside's own egress is dispatched into the OUT chain and
+        subject to the same firewall-config.json rules as any other traffic on
+        the bridge. This requires the operator to have already written rules
+        covering what the dockside container itself needs to send/receive here.
 
         Returns a string of iptables match options (no ``-j`` target) ready to
         be embedded in a ``-A DOCKSIDE-DISPATCH … -j <PREFIX>-OUT`` rule.
         """
         dev   = spec.dev
-        gm    = spec.dockside_mac
-        gi    = spec.dockside_ip
         # Start with the mandatory match: enters the bridge, exits elsewhere.
         parts = [f"-i {dev}", f"! -o {dev}"]
+        if spec.dockside_egress != "exempt":
+            # "policed": dockside's own traffic gets no special exclusion.
+            return " ".join(parts)
+        gm = spec.dockside_mac
+        gi = spec.dockside_ip
         if gm and gi:
             # Exclude by both MAC and IP when both are known (most specific).
             parts += [f"-m mac ! --mac-source {gm}", f"! -s {gi}"]
@@ -2500,7 +2556,8 @@ class FirewallDaemon:
           ``name``     (str, required)  — network name.
           ``network``  (dict, optional) — topology fields to set or update:
                                           ``subnet``, ``gateway_ip``,
-                                          ``dockside_ip``, ``dockside_mac``.
+                                          ``dockside_ip``, ``dockside_mac``,
+                                          ``dockside_egress``.
                                           Missing fields preserve existing values.
           ``firewall`` (dict, optional) — firewall rules for this network:
                                           ``egress`` list, ``nat`` list.
@@ -2547,7 +2604,7 @@ class FirewallDaemon:
             # Overlay provided fields onto existing values.
             new_net_spec: dict = dict(existing_spec)
             new_net_spec["name"] = name
-            for key in ("subnet", "gateway_ip", "dockside_ip", "dockside_mac"):
+            for key in ("subnet", "gateway_ip", "dockside_ip", "dockside_mac", "dockside_egress"):
                 val = net_obj.get(key)
                 if val is not None:
                     new_net_spec[key] = val
