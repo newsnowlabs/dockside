@@ -14,22 +14,9 @@
 #                         If unset outside harness mode, the runner tries the
 #                         CLI's currently selected server URL.
 #                         Any https:// prefix and trailing slash are stripped.
-#                         - remote:  requests go directly to https://$DOCKSIDE_TEST_HOST
-#                         - local:   requests go to https://$DOCKSIDE_TEST_HOST with
-#                                    TCP routed to localhost via --connect-to
-#
-#   DOCKSIDE_TEST_ADMIN   username:password, e.g. 'admin:MySecret99'
-#                         If unset in local/remote mode, the CLI's stored session
-#                         is used (run 'dockside login' first).
 #
 #   DOCKSIDE_TEST_IMAGE   Docker image for harness mode
 #   DOCKSIDE_TEST_HARNESS_ZONE  DNS zone for harness container (default: dockside.test)
-#   DOCKSIDE_TEST_HARNESS_ISOLATED_CLI_CONFIG
-#                         1/unset = in harness mode, create a temporary CLI config
-#                         directory and temporary server entry so the CLI's own
-#                         stored transport settings drive test traffic
-#                         0 = use legacy direct --connect-to transport in harness mode
-#   DOCKSIDE_TEST_VERIFY_SSL  0 (default) or 1
 #
 #   DOCKSIDE_TEST_NAME_SUFFIX  Suffix for test resource names:
 #                               (unset)  defaults to auto
@@ -85,8 +72,9 @@
 #   DOCKSIDE_TEST_HARNESS_ZONE=inttest.example.com \
 #     DOCKSIDE_TEST_IMAGE=newsnowlabs/dockside:latest bash t/integration/run_tests.sh
 #
-#   # Remote mode:
-#   DOCKSIDE_TEST_HOST=www.local.dockside.dev DOCKSIDE_TEST_ADMIN=admin:pass bash t/integration/run_tests.sh
+#   # Remote mode (authenticate the CLI first):
+#   dockside login --server https://www.local.dockside.dev --nickname local
+#   DOCKSIDE_TEST_HOST=www.local.dockside.dev bash t/integration/run_tests.sh
 #
 #   # Local mode (inside or alongside the Dockside container):
 #   DOCKSIDE_TEST_MODE=local DOCKSIDE_TEST_HOST=www.local.dockside.dev bash t/integration/run_tests.sh
@@ -199,7 +187,7 @@ fi
 if [[ "$MODE" == "harness" ]]; then
     # shellcheck source=harness.sh
     source "${INTEGRATION_DIR}/harness.sh"
-    # harness.sh exports DOCKSIDE_TEST_SERVER_URL, DOCKSIDE_TEST_CONNECT_TO, etc.
+    # harness.sh exports DOCKSIDE_TEST_SERVER_URL, DOCKSIDE_TEST_MODE, etc.
 fi
 
 # ── Normalise DOCKSIDE_TEST_HOST (strip https:// prefix and trailing slash) ────
@@ -214,12 +202,10 @@ case "$MODE" in
     remote)
         HOST="${DOCKSIDE_TEST_HOST:?DOCKSIDE_TEST_HOST required for remote mode}"
         export DOCKSIDE_TEST_SERVER_URL="https://${HOST}"
-        export DOCKSIDE_TEST_CONNECT_TO=""
         ;;
     local)
         HOST="${DOCKSIDE_TEST_HOST:?DOCKSIDE_TEST_HOST required for local mode}"
         export DOCKSIDE_TEST_SERVER_URL="https://${HOST}"
-        export DOCKSIDE_TEST_CONNECT_TO="localhost"
         ;;
     harness)
         # Already set by harness.sh
@@ -271,7 +257,6 @@ trap cleanup EXIT INT TERM
 echo "# Dockside Integration Tests"
 echo "# Mode: ${MODE}"
 echo "# Server: ${DOCKSIDE_TEST_SERVER_URL}"
-[[ -n "${DOCKSIDE_TEST_CONNECT_TO:-}" ]] && echo "# Connect-to: ${DOCKSIDE_TEST_CONNECT_TO}"
 [[ -n "${ONLY_PREFIX}" ]] && echo "# Filter: ${ONLY_PREFIX}"
 echo "#"
 
