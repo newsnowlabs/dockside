@@ -222,12 +222,38 @@ In harness mode, `harness.sh` creates an isolated CLI config and runs
 | `DOCKSIDE_TEST_DEBUG` | `0` | Set `1` for full diagnostics (CLI argv, raw request/response bodies, generated SSH config). **Secret-bearing** — includes tokens, passwords and session cookies; do not paste into bug reports or shared logs |
 | `DOCKSIDE_TEST_SKIP_CLEANUP` | `0` | Usually set via `--skip-cleanup`; preserves created test roles/users/profiles for investigation |
 | `DOCKSIDE_TEST_GITHUB_TOKEN` | — | GitHub personal access token; enables `06_git_profile.py` test_03 (PR checkout via `gh pr checkout`); test is skipped if unset |
+| `DOCKSIDE_CLI_CONFIG` | `~/.config/dockside` | Override the CLI config directory. Set this (along with a prior `dockside login` into the same directory) to run tests with an isolated admin session that does not touch your real `~/.config/dockside`. All CLI subprocesses the runner spawns inherit this variable. In harness mode, `harness.sh` sets it automatically to a fresh temp directory. |
 
 If `DOCKSIDE_TEST_HOST` is unset outside harness mode, the runner reads the
-current CLI config (`DOCKSIDE_CLI_CONFIG`, `DOCKSIDE_CONFIG_DIR`, or
-`~/.config/dockside`) and uses the currently selected server URL. The harness
-still verifies the effective admin identity and permissions via `dockside
-whoami` before creating any test resources.
+current CLI config (`DOCKSIDE_CLI_CONFIG` or `~/.config/dockside`) and uses
+the currently selected server URL. The harness still verifies the effective
+admin identity and permissions via `dockside whoami` before creating any test
+resources.
+
+### Isolated admin session (without touching `~/.config/dockside`)
+
+Set `DOCKSIDE_CLI_CONFIG` to a temporary directory and run `dockside login`
+into it before running the tests. All CLI subprocesses the runner spawns
+inherit `DOCKSIDE_CLI_CONFIG`, so they use that isolated config rather than
+your real one:
+
+```bash
+export DOCKSIDE_CLI_CONFIG="$(mktemp -d)"
+dockside login \
+  --server https://www.local.dockside.dev \
+  --connect-to 127.0.0.1 \
+  --no-verify \
+  --username admin \
+  --password '<password>'
+
+DOCKSIDE_TEST_MODE=local \
+DOCKSIDE_TEST_HOST=www.local.dockside.dev \
+bash t/integration/run_tests.sh
+
+rm -rf "${DOCKSIDE_CLI_CONFIG}"
+```
+
+This is the same mechanism `harness.sh` uses automatically in harness mode.
 
 ## Output buffering
 
