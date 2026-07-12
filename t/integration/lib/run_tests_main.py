@@ -991,7 +991,14 @@ def main():
     ok = False
     cleanup_failed = 0
     try:
-        _env_manager.select_network(test_mode, allow_network_modify, dockside_container_id)
+        # harness_id wins when set, matching TestCase._dockside_container()'s existing
+        # precedent (08_network.py): harness.sh runs on the *host* and launches a fresh
+        # container via `docker run`, so in harness mode dockside_container_id's own
+        # auto-detect (this process's own ctr-id/hostname) resolves to the driver host's
+        # identity, not the harness container's — using it directly would attach the
+        # auto-created test network to the wrong container, or fail outright.
+        _env_manager.select_network(test_mode, allow_network_modify,
+                                     harness_id or dockside_container_id)
         _env_manager.setup()
 
         # Resolved names
