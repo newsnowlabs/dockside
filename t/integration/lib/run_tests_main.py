@@ -794,14 +794,17 @@ class _EnvManager:
             email='inttest-developall@dockside-integration-test.invalid',
         )
 
-        # Profiles — each pinned to the one network select_network() chose, rather
-        # than the "*" wildcard's alphabetical-first default (see select_network()).
-        net = [self.selected_network]
-        self.profile_alpine     = self._ensure_profile('inttest-alpine',     dict(_ALPINE_PROFILE, networks=net))
-        self.profile_debian     = self._ensure_profile('inttest-debian',     dict(_DEBIAN_PROFILE, networks=net))
-        self.profile_nginx      = self._ensure_profile('inttest-nginx',      dict(_NGINX_PROFILE, networks=net))
-        self.profile_git        = self._ensure_profile('inttest-git',        dict(_GIT_PROFILE, networks=net))
-        self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  dict(_BAD_IMAGE_PROFILE, networks=net))
+        # Profiles keep the "*" wildcard (any attached host network validates), so a
+        # profile reused from a previous run is never pinned to a network that may
+        # since have been torn down. The network select_network() chose for *this*
+        # run is instead applied at create() time by default (see TestRunner's
+        # default_network / DocksideClient.create()), which is also what keeps every
+        # devtainer's default network deterministic without touching the profile.
+        self.profile_alpine     = self._ensure_profile('inttest-alpine',     _ALPINE_PROFILE)
+        self.profile_debian     = self._ensure_profile('inttest-debian',     _DEBIAN_PROFILE)
+        self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
+        self.profile_git        = self._ensure_profile('inttest-git',        _GIT_PROFILE)
+        self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
 
@@ -1068,6 +1071,7 @@ def main():
             name_attrs=name_attrs,
             reuse_user_sessions=reuse_user_sessions,
             use_server_transport=use_server_transport,
+            default_network=_env_manager.selected_network,
         )
         # On SIGINT/SIGTERM the runner re-raises the signal, skipping the finally
         # below, so give it the env cleanup to still remove dynamic fixtures

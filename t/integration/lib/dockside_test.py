@@ -264,7 +264,7 @@ class DocksideClient:
     def __init__(self, cli_path, server_url, username=None, password=None,
                  connect_to=None, verify_ssl=False,
                  use_cli_admin_creds=False, reuse_explicit_session=False,
-                 use_server_transport=False):
+                 use_server_transport=False, default_network=None):
         self._cli = cli_path
         self._server = server_url
         self._username = username
@@ -273,6 +273,11 @@ class DocksideClient:
         self._verify_ssl = verify_ssl
         self._use_cli_admin_creds = use_cli_admin_creds
         self._use_server_transport = use_server_transport
+        # Applied by create() when the caller doesn't specify a network, so every
+        # devtainer this client creates lands deterministically on the network
+        # _EnvManager.select_network() chose for this run, without profiles
+        # themselves needing to be pinned to it (see create()).
+        self._default_network = default_network
         self._reuse_explicit_session = (
             reuse_explicit_session and not use_cli_admin_creds
         )
@@ -319,6 +324,7 @@ class DocksideClient:
             use_cli_admin_creds=False,
             reuse_explicit_session=self._reuse_explicit_session,
             use_server_transport=self._use_server_transport,
+            default_network=self._default_network,
         )
 
     def _should_send_credentials(self, force_credentials=False):
@@ -490,6 +496,15 @@ class DocksideClient:
         return self._run_readonly('get', name)
 
     def create(self, no_wait=False, **fields):
+        # Default to this run's selected test network unless the caller names one
+        # explicitly (e.g. 08_network.py's own tests, probing a specific network).
+        # Applied here rather than baked into the profile's networks list so a
+        # profile keeps validating any attached host network (network-switch tests
+        # still work) while a plain create() still lands deterministically on the
+        # network _EnvManager.select_network() chose, rather than on whatever the
+        # profile's own "*" default would resolve to.
+        if self._default_network and 'network' not in fields:
+            fields = {**fields, 'network': self._default_network}
         # no_wait maps to the CLI's --no-wait switch (a store_true flag, so it is
         # not a value-bearing field and cannot go through _fields_to_args).  With
         # --no-wait the CLI returns the reservation record immediately and exits 0
@@ -994,7 +1009,7 @@ class TestRunner:
                  verify_ssl=False, test_mode='remote', harness_container_id=None,
                  allow_network_modify=None, name_attrs=None,
                  reuse_user_sessions=False, use_server_transport=False,
-                 dockside_container_id=None):
+                 dockside_container_id=None, default_network=None):
         self._cli_path = cli_path
         self._server_url = server_url
         self._credentials = credentials  # dict: role -> (username, password) or (None, None)
@@ -1009,6 +1024,9 @@ class TestRunner:
         self._name_attrs = name_attrs or {}
         self._reuse_user_sessions = reuse_user_sessions
         self._use_server_transport = use_server_transport
+        # This run's selected test network (_EnvManager.select_network()), passed to
+        # every client so create() defaults to it — see DocksideClient.create().
+        self._default_network = default_network
         self._clients = {}
         self._active_cases = []
         self._active_class_teardowns = []
@@ -1038,6 +1056,7 @@ class TestRunner:
             use_cli_admin_creds=use_cli_admin_creds,
             reuse_explicit_session=self._reuse_user_sessions,
             use_server_transport=self._use_server_transport,
+            default_network=self._default_network,
         )
 
     def _validate_client(self, client, role):
