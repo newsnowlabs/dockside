@@ -14,16 +14,19 @@
             <SSHInfo></SSHInfo>
          </b-row>
       </b-container>
+      <BottomNav></BottomNav>
       <Footer></Footer>
    </div>
 </template>
 
 <script>
+   import { routePermissions } from '@/components/mixins';
    import Header       from '@/components/Header';
    import Footer       from '@/components/Footer';
    import Sidebar      from '@/components/Sidebar';
    import Main         from '@/components/Main';
    import SSHInfo      from '@/components/SSHInfo';
+   import BottomNav    from '@/components/BottomNav';
    import AdminSidebar from '@/components/admin/AdminSidebar';
    import AdminMain    from '@/components/admin/AdminMain';
 
@@ -35,29 +38,14 @@
          Sidebar,
          Main,
          SSHInfo,
+         BottomNav,
          AdminSidebar,
          AdminMain,
       },
+      mixins: [routePermissions],
       computed: {
          user() {
             return this.$store.state.account.currentUser;
-         },
-         // Controls which layout branch is rendered in the template:
-         // admin/account routes use AdminSidebar + AdminMain; all others use
-         // the existing Sidebar + Main (container list view).
-         isAdminRoute() {
-            return this.$route.path.startsWith('/admin');
-         },
-         isAccountRoute() {
-            // Match by route name, not path equality: Vue Router's non-strict
-            // matching also resolves '/account/' (trailing slash) to this route, and
-            // a bare path === '/account' check would then misclassify it and render
-            // the container layout instead of the account form.
-            return this.$route.name === 'account';
-         },
-         canAccessAdmin() {
-            const p = this.user.permissions.actions;
-            return p.manageUsers || p.manageProfiles;
          },
       },
       created() {
@@ -85,7 +73,14 @@
                // Standard container route: drive the container list's selection state.
                this.$store.dispatch('updateSelectedContainerName', route.params.name);
                this.$store.dispatch('updateContainersFilter', route.query.cf);
-            } else if (this.isAdminRoute && route.params.type && route.params.id) {
+            } else {
+               // Admin/Account routes have no notion of a selected container. Clear any
+               // selection (e.g. a stale prelaunch "new" from before navigating here) so
+               // BottomNav's isPrelaunchMode-driven Launch tab doesn't stay stuck active.
+               this.$store.dispatch('updateSelectedContainerName', undefined);
+            }
+
+            if (this.isAdminRoute && route.params.type && route.params.id) {
                // Detail route (e.g. /admin/users/alice): set the selected item so
                // AdminMain renders the correct detail component.
                // Permission check: only allow types the current user has access to,
@@ -147,8 +142,11 @@
       padding-top: 58px; /* Move down content because we have a fixed navbar that is 56px tall */
    }
 
-   // Active nav link: underline on dark navbar
-   .navbar-dark .navbar-nav .nav-link.router-link-active {
+   // Active nav link: underline on dark navbar. Matches both vue-router's own
+   // router-link-active (nav-items using `to`) and BootstrapVue's `active` prop
+   // (nav-items like BottomNav's Launch, which is a click action with no route).
+   .navbar-dark .navbar-nav .nav-link.router-link-active,
+   .navbar-dark .navbar-nav .nav-link.active {
       border-bottom: 2px solid rgba(255, 255, 255, 0.65);
       padding-bottom: 3px;
    }

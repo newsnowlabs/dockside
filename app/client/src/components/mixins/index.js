@@ -40,6 +40,28 @@ const filteredContainers = {
    }
 };
 
+const routePermissions = {
+   computed: {
+      isAdminRoute() {
+         return this.$route.path.startsWith('/admin');
+      },
+      isAccountRoute() {
+         // Match by route name, not path equality: Vue Router's non-strict matching
+         // also resolves '/account/' (trailing slash) to this route, and a bare
+         // path === '/account' check would misclassify it.
+         return this.$route.name === 'account';
+      },
+      canAccessAdmin() {
+         const p = this.$store.state.account.currentUser.permissions.actions;
+         return p.manageUsers || p.manageProfiles;
+      },
+      // Relies on the consuming component also mapping the 'isPrelaunchMode' getter.
+      isContainerSection() {
+         return !this.isAdminRoute && !this.isAccountRoute && !this.isPrelaunchMode;
+      }
+   }
+};
+
 const routing = {
    methods: {
       go: function (path) {
@@ -73,4 +95,4 @@ const routing = {
    }
 };
 
-export { filteredContainers, routing };
+export { filteredContainers, routing, routePermissions };

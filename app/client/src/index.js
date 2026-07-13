@@ -52,9 +52,8 @@ const routes = [
 
 const router = new VueRouter({
    routes,
-   // eslint-disable-next-line no-unused-vars
-   scrollBehavior (to, from, savedPosition) {
-      // https://v3.router.vuejs.org/guide/advanced/scroll-behavior.html
+   // https://v3.router.vuejs.org/guide/advanced/scroll-behavior.html
+   scrollBehavior () {
       return { x: 0, y: 0 };
    },
    mode: 'history' // https://router.vuejs.org/guide/essentials/history-mode.html
