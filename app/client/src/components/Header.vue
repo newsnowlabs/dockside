@@ -1,38 +1,32 @@
 <template>
-   <b-navbar toggleable="lg" variant="dark" type="dark" fixed="top">
+   <b-navbar toggleable="md" variant="dark" type="dark" fixed="top">
       <b-navbar-brand v-on:click="goHome(false)"><div><Dockside colour="white"/></div></b-navbar-brand>
 
-      <b-navbar-toggle target="nav-collapse"></b-navbar-toggle>
+      <b-navbar-nav class="w-100 d-none d-md-flex" align="right">
 
-      <b-collapse id="nav-collapse" is-nav>
-         <b-navbar-nav class="w-100" align="right">
+         <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute">
+            <select class="selectpicker" id="filterContainers" v-model="containersFilter" v-on:change="onContainersFilterChange">
+               <option value="shared">Shared</option>
+               <option value="all">All</option>
+            </select>
+         </b-nav-item>
 
-            <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute">
-               <select class="selectpicker" id="filterContainers" v-model="containersFilter" v-on:change="onContainersFilterChange">
-                  <option value="shared">Shared</option>
-                  <option value="all">All</option>
-               </select>
-            </b-nav-item>
+         <b-nav-item to="/" exact :active="isContainerSection"><a href="javascript:"><b-icon icon="house-door-fill" class="nav-icon" /> Containers</a></b-nav-item>
 
-            <b-nav-item v-show="user.permissions.actions.createContainerReservation && !isPrelaunchMode && !isAccountRoute" v-on:click="goToContainer('new', 'prelaunch')"><a href="javascript:">Launch</a></b-nav-item>
+         <b-nav-item v-show="user.permissions.actions.createContainerReservation" :active="isPrelaunchMode" v-on:click="goToContainer('new', 'prelaunch')"><a href="javascript:"><b-icon icon="plus-circle-fill" class="nav-icon" /> Launch</a></b-nav-item>
 
-            <b-nav-item v-show="!isSelected && !isAccountRoute" to="/docs"><a href="javascript:">Docs</a></b-nav-item>
+         <b-nav-item v-show="canAccessAdmin" to="/admin" :active="isAdminRoute"><a href="javascript:"><b-icon icon="gear-fill" class="nav-icon" /> Admin</a></b-nav-item>
 
-            <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute" to="/docksideio"><a href="https://dockside.io/">Dockside.io</a></b-nav-item>
+         <b-nav-item to="/account" :active="isAccountRoute"><a href="javascript:" :title="'Account settings for ' + user.username"><b-icon icon="person-circle" class="nav-icon" /> {{ displayName }}</a></b-nav-item>
+      </b-navbar-nav>
 
-            <b-nav-item v-show="!isSelected && !isAdminRoute && !isAccountRoute" to="/dockside-github"><a href="https://github.com/newsnowlabs/dockside">GitHub</a></b-nav-item>
-
-            <b-nav-item v-show="canAccessAdmin" to="/admin"><a href="javascript:"><b-icon icon="gear-fill" class="nav-icon" /> Admin</a></b-nav-item>
-
-            <b-nav-item to="/account"><a href="javascript:" :title="'Account settings for ' + user.username"><b-icon icon="person-circle" class="nav-icon" /> {{ displayName }}</a></b-nav-item>
-         </b-navbar-nav>
-      </b-collapse>
+      <b-navbar-toggle target="mobile-nav-sidebar"></b-navbar-toggle>
    </b-navbar>
 </template>
 
 <script>
    import { mapGetters } from 'vuex';
-   import { routing } from '@/components/mixins';
+   import { routing, routePermissions } from '@/components/mixins';
    import Dockside from '@/components/Dockside';
 
    export default {
@@ -59,20 +53,6 @@
                return email.replace(/^(.{1,3})[^@]*(@.+)$/, '$1\u2026$2');
             }
             return username;
-         },
-         isAdminRoute() {
-            return this.$route.path.startsWith('/admin');
-         },
-         isAccountRoute() {
-            // Match by route name (as App.vue does), not exact path: Vue Router
-            // also matches a trailing slash ('/account/'), which a path === '/account'
-            // test would miss — leaving the header showing container-page actions on
-            // the account layout.
-            return this.$route.name === 'account';
-         },
-         canAccessAdmin() {
-            const p = this.user.permissions.actions;
-            return p.manageUsers || p.manageProfiles;
          },
          containersFilter: {
             get() {
@@ -106,7 +86,7 @@
             this.$store.dispatch('updateContainers', 1);
          }
       },
-      mixins: [routing]
+      mixins: [routing, routePermissions]
    };
 </script>
 

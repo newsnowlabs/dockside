@@ -1,51 +1,100 @@
 <template>
-   <b-col md="3" lg="2" class="sidebar admin-sidebar">
-      <b-nav vertical class="nav-sidebar">
+   <div class="sidebar-wrapper">
+      <b-col md="3" lg="2" class="sidebar admin-sidebar d-none d-md-block">
+         <b-nav vertical class="nav-sidebar">
 
-         <template v-for="section in visibleSections">
-            <!-- Section heading (click to collapse) -->
-            <b-nav-text
-               :key="section.type + '-heading'"
-               class="heading"
-               @click="toggleSection(section.type)"
-            >
-               {{ section.label }}
-               <span class="section-toggle">{{ collapsed[section.type] ? '▸' : '▾' }}</span>
-            </b-nav-text>
+            <template v-for="section in visibleSections">
+               <!-- Section heading (click to collapse) -->
+               <b-nav-text
+                  :key="section.type + '-heading'"
+                  class="heading"
+                  @click="toggleSection(section.type)"
+               >
+                  {{ section.label }}
+                  <span class="section-toggle">{{ collapsed[section.type] ? '▸' : '▾' }}</span>
+               </b-nav-text>
 
-            <b-collapse
-               :key="section.type + '-collapse'"
-               :visible="!collapsed[section.type]"
-            >
-               <!-- Loading placeholder -->
-               <b-nav-item v-if="loading" disabled class="loading-item">
-                  Loading…
-               </b-nav-item>
-
-               <!-- Items -->
-               <template v-else>
-                  <b-nav-item
-                     v-for="item in itemsFor(section.type)"
-                     :key="item.id"
-                     :class="{ selected: isSelected(section.type, item.id) }"
-                     @click="selectItem(section.type, item.id)"
-                  >
-                     <span v-if="section.type === 'profile'" class="profile-dot" :class="item.active ? 'dot-active' : 'dot-inactive'" title="active/inactive">●</span>
-                     {{ item.label }}
+               <b-collapse
+                  :key="section.type + '-collapse'"
+                  :visible="!collapsed[section.type]"
+               >
+                  <!-- Loading placeholder -->
+                  <b-nav-item v-if="loading" disabled class="loading-item">
+                     Loading…
                   </b-nav-item>
 
-                  <!-- New item link -->
-                  <b-nav-item
-                     :key="section.type + '-new'"
-                     class="new-item"
-                     @click="selectItem(section.type, 'new')"
-                  >+ New {{ section.singular }}</b-nav-item>
-               </template>
-            </b-collapse>
-         </template>
+                  <!-- Items -->
+                  <template v-else>
+                     <b-nav-item
+                        v-for="item in itemsFor(section.type)"
+                        :key="item.id"
+                        :class="{ selected: isSelected(section.type, item.id) }"
+                        @click="selectItem(section.type, item.id)"
+                     >
+                        <span v-if="section.type === 'profile'" class="profile-dot" :class="item.active ? 'dot-active' : 'dot-inactive'" title="active/inactive">●</span>
+                        {{ item.label }}
+                     </b-nav-item>
 
-      </b-nav>
-   </b-col>
+                     <!-- New item link -->
+                     <b-nav-item
+                        :key="section.type + '-new'"
+                        class="new-item"
+                        @click="selectItem(section.type, 'new')"
+                     >+ New {{ section.singular }}</b-nav-item>
+                  </template>
+               </b-collapse>
+            </template>
+
+         </b-nav>
+      </b-col>
+
+      <!-- Mobile off-canvas drawer: same content as the desktop column above, opened
+           via Header's hamburger (b-navbar-toggle target="mobile-nav-sidebar"). Keep
+           both copies in sync if the section markup changes. -->
+      <b-sidebar id="mobile-nav-sidebar" v-model="mobileNavOpen" title="Admin" backdrop shadow class="d-md-none">
+         <b-nav vertical class="nav-sidebar">
+
+            <template v-for="section in visibleSections">
+               <b-nav-text
+                  :key="section.type + '-heading'"
+                  class="heading"
+                  @click="toggleSection(section.type)"
+               >
+                  {{ section.label }}
+                  <span class="section-toggle">{{ collapsed[section.type] ? '▸' : '▾' }}</span>
+               </b-nav-text>
+
+               <b-collapse
+                  :key="section.type + '-collapse'"
+                  :visible="!collapsed[section.type]"
+               >
+                  <b-nav-item v-if="loading" disabled class="loading-item">
+                     Loading…
+                  </b-nav-item>
+
+                  <template v-else>
+                     <b-nav-item
+                        v-for="item in itemsFor(section.type)"
+                        :key="item.id"
+                        :class="{ selected: isSelected(section.type, item.id) }"
+                        @click="onMobileSelect(section.type, item.id)"
+                     >
+                        <span v-if="section.type === 'profile'" class="profile-dot" :class="item.active ? 'dot-active' : 'dot-inactive'" title="active/inactive">●</span>
+                        {{ item.label }}
+                     </b-nav-item>
+
+                     <b-nav-item
+                        :key="section.type + '-new'"
+                        class="new-item"
+                        @click="onMobileSelect(section.type, 'new')"
+                     >+ New {{ section.singular }}</b-nav-item>
+                  </template>
+               </b-collapse>
+            </template>
+
+         </b-nav>
+      </b-sidebar>
+   </div>
 </template>
 
 <script>
@@ -63,6 +112,7 @@
       data() {
          return {
             collapsed: { user: false, role: false, profile: false },
+            mobileNavOpen: false,
          };
       },
 
@@ -111,18 +161,26 @@
          toggleSection(type) {
             this.$set(this.collapsed, type, !this.collapsed[type]);
          },
+
+         // Same as selectItem, but also closes the mobile drawer first.
+         onMobileSelect(type, id) {
+            this.mobileNavOpen = false;
+            this.selectItem(type, id);
+         },
       },
    };
 </script>
 
 <style lang="scss" scoped>
-   .admin-sidebar {
-      display: none;
+   // Vue 2 SFCs need a single root element, but a b-row expects its direct
+   // children to be grid columns. display:contents makes this wrapper
+   // layout-transparent so .admin-sidebar still behaves as a direct row child.
+   .sidebar-wrapper {
+      display: contents;
    }
 
-   @media (min-width: 768px) {
-      .admin-sidebar {
-         display: block;
+   .admin-sidebar {
+      @media (min-width: 768px) {
          position: fixed;
          top: 56px;
          bottom: 0;

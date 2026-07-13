@@ -3,9 +3,9 @@
       <a v-if="isSelected" v-on:click="goBackOrHome(true)" class="view-containers" href="javascript:">&lt; Back</a>
       <Welcome v-if="!isSelected"/>
 
-      <transition-group name="list" tag="div">
-         <Container v-for="container in filteredContainers" v-bind:key="container.id" v-bind:container="container" class="list-item"></Container>
-      </transition-group>
+      <div>
+         <Container v-for="container in filteredContainers" v-bind:key="container.id" v-bind:container="container"></Container>
+      </div>
    </b-col>
    <b-col v-else md="9" lg="10" offset-md="3" offset-lg="2" class="main">
       <Welcome/>
@@ -73,33 +73,5 @@
          padding-right: 40px;
          padding-left: 40px;
       }
-   }
-
-   .list-enter {
-     opacity: 0;
-   }
-
-   .list-enter-active {
-      transition: all 1.5s;
-   }
-
-   .list-enter-to {
-     opacity: 1;
-   }
-
-   .list-leave {
-      opacity: 1;
-   }
-
-   .list-leave-active {
-      position: absolute;
-   }
-
-   .list-leave-to {
-      opacity: 0;
-   }
-
-   .list-move {
-      transition: all 0.5s;
    }
 </style>

@@ -5,6 +5,10 @@
          <b-nav-text class="md">|</b-nav-text>
          <b-nav-text class="pad">An open-source project by NewsNow Labs</b-nav-text>
          <b-nav-text class="md">|</b-nav-text>
+         <b-nav-item to="/docs">
+            <a href="javascript:">Docs</a>
+         </b-nav-item>
+         <b-nav-text class="md">|</b-nav-text>
          <b-nav-item to="/docksideio">
             <a href="https://dockside.io/">Dockside.io</a>
          </b-nav-item>
@@ -78,12 +82,16 @@
    // On mobile devices
    @media (max-width: 768px) {
 
+      // BottomNav.vue is fixed to the viewport bottom on mobile (its own height is
+      // 56px, must match). Reserve that much extra space below the footer's own
+      // 15em so footer content scrolls into view above it rather than behind it.
       body {
-         padding-bottom: 15em; /* Footer height */
+         padding-bottom: calc(15em + 56px); /* Footer height + BottomNav clearance */
       }
 
       nav.footer {
-         height: 15em; /* Footer height */
+         height: calc(15em + 56px);
+         padding-bottom: 56px;
       }
 
       // Hide vertical bars
