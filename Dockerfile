@@ -528,17 +528,6 @@ RUN . /tmp/dockside/bash-env && \
     ln -sf $HOME /home/newsnow && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
-# ------------------------
-# DEVELOPMENT DEPENDENCIES
-#
-RUN apt-get update && \
-    apt-get -y --no-install-recommends --no-install-suggests install \
-        libfile-find-rule-perl libperl-languageserver-perl \
-        git tig perltidy \
-        shellcheck \
-        procps vim less curl locales && \
-    apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
-
 # ----------
 # GCLOUD SDK
 # - https://cloud.google.com/sdk/docs/quickstart-debian-ubuntu
@@ -585,6 +574,17 @@ ARG PLAYWRIGHT_BROWSERS_PATH=/opt/dockside-playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH
 
 USER root
+
+# ------------------------
+# DEVELOPMENT DEPENDENCIES
+#
+RUN apt-get update && \
+    apt-get -y --no-install-recommends --no-install-suggests install \
+        libfile-find-rule-perl libperl-languageserver-perl \
+        git tig perltidy \
+        shellcheck \
+        procps vim less curl locales && \
+    apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
 # Playwright's native browser dependencies (for chrome-headless-shell)
 RUN apt-get update && \
