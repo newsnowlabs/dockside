@@ -398,6 +398,32 @@ RUN cd /git/dockside && \
     git gc
 
 ################################################################################
+# BUILD MKDOCS DOCUMENTATION SITE
+#
+FROM python:3-slim AS docs-build
+
+COPY app/server/assets /build/app/server/assets/
+COPY docs /build/docs/
+COPY mkdocs.yml /build/
+WORKDIR /build
+# --site-dir overrides mkdocs.yml's own (absolute, runtime-path-shaped) site_dir setting,
+# so this stage's output lands at a fixed, self-contained path regardless of that config.
+RUN pip install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && \
+    mkdocs build --site-dir /build/site
+
+################################################################################
+# BUILD VUE CLIENT
+#
+# Built once here so both the production and development lineages copy from the
+# same npm install/build output, instead of each running (and each potentially
+# resolving) npm install independently.
+FROM node:$DOCKSIDE_NODE_VERSION-$DOCKSIDE_DEBIAN_VERSION AS vue-build
+
+COPY app/client /build/app/client/
+WORKDIR /build/app/client
+RUN npm install && npm run build && npm cache clean --force
+
+################################################################################
 # MAIN DOCKSIDE BUILD
 #
 FROM node:$DOCKSIDE_NODE_VERSION-$DOCKSIDE_DEBIAN_VERSION AS dockside-1
@@ -434,7 +460,6 @@ RUN apt-get update && \
         perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
         libyaml-libyaml-perl \
         libio-async-perl \
-        python3-venv \
         acl \
         s6 \
         jq \
@@ -463,19 +488,16 @@ COPY --chown=$USER:$USER dehydrated $HOME/$APP/dehydrated/
 # ------------------
 # VUE CLIENT INSTALL
 #
-COPY --chown=$USER:$USER app/client $HOME/$APP/app/client/
-WORKDIR $HOME/$APP/app/client
-RUN npm install && npm run build && npm cache clean --force
-RUN rm -rf $HOME/.npm
+# Only dist/ (the built bundle App.pm serves via $CONFIG->{clientDistPath}) is needed at
+# runtime; node_modules/src/etc. are dropped here to save the several hundred MB they'd add
+# to the production image. The development stage copies the full directory (including
+# node_modules) from the same vue-build stage instead of running npm install again.
+COPY --from=vue-build --chown=$USER:$USER /build/app/client/dist $HOME/$APP/app/client/dist
 
 # --------------
-# MKDOCS INSTALL
+# MKDOCS SITE
 #
-COPY --chown=$USER:$USER app/server/assets $HOME/$APP/app/server/assets/
-COPY --chown=$USER:$USER docs $HOME/$APP/docs/
-COPY --chown=$USER:$USER mkdocs.yml $HOME/$APP/
-WORKDIR $HOME/$APP
-RUN python3 -m venv ~/mkdocs && ~/mkdocs/bin/pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/mkdocs/bin/mkdocs build && rm -rf ~/.cache/pip
+COPY --from=docs-build --chown=$USER:$USER /build/site/ $HOME/$APP/app/server/nginx/html/docs/
 
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
@@ -585,6 +607,12 @@ RUN apt-get update && \
         shellcheck \
         procps vim less curl locales && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
+
+# Restore the Vue client's full source + node_modules (the production lineage keeps only
+# dist/ to save image size) from the same vue-build stage dockside-1 copied dist/ from, so
+# this self-hosted dev image can rebuild it directly (see CLAUDE.md's `cd app/client && npm
+# run build` instruction) without a second, potentially-divergent npm install.
+COPY --from=vue-build --chown=$USER:$USER /build/app/client $HOME/$APP/app/client
 
 # Playwright's native browser dependencies (for chrome-headless-shell)
 RUN apt-get update && \
