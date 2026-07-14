@@ -611,3 +611,7 @@ RUN CHROMIUM=$(find $PLAYWRIGHT_BROWSERS_PATH -name chrome-headless-shell -path 
 
 USER $USER
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Restore root as the effective runtime user, matching the base dockside stage:
+# entrypoint.sh requires root (sets up /etc/service, fixes ownership under /data, etc.)
+USER root
