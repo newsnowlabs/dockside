@@ -1,0 +1,18 @@
+{
+  "outputDir": "/home/dockside/.playwright/output",
+  "browser": {
+    "isolated": true,
+    "launchOptions": {
+      "executablePath": "",
+      "args": [
+        "--ignore-certificate-errors"
+      ]
+    },
+    "contextOptions": {
+      "ignoreHTTPSErrors": true,
+      "proxy": {
+        "server": "http://127.0.0.1:18080"
+      }
+    }
+  }
+}

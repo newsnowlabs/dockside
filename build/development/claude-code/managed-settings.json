@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "effortLevel": "high",
+  "permissions": {
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "additionalDirectories": [
+      "/opt/dockside",
+      "/var/log/dockside",
+      "/etc/service",
+      "/opt/dockside-playwright"
+    ],
+    "allow": [
+      "Bash(sudo s6-svc *)",
+      "Bash(sudo s6-svstat *)",
+      "Bash(./test.sh*)",
+      "Bash(npm run *)",
+      "Bash(npx playwright *)"
+    ],
+    "ask": [
+      "Bash(git push *)"
+    ],
+    "deny": [
+      "Read(//home/*/.ssh/*)",
+      "Write(//home/*/.ssh/*)",
+      "Read(//data/config/passwd)",
+      "Write(//data/config/passwd)",
+      "Bash(rm -rf *)",
+      "Bash(npm install*)",
+      "Bash(npm ci)",
+      "Bash(npm add *)",
+      "Bash(yarn add *)"
+    ]
+  }
+}

@@ -268,7 +268,7 @@ if [ "$OPT_RUN_DOCKERD" != "1" ]; then
 fi
 
 log "Configuring standard services ..."
-for s in bind nginx docker-event-daemon logrotate dehydrated
+for s in bind nginx docker-event-daemon logrotate dehydrated playwright-proxy
 do
   log "- Configuring $s"
   mkdir -p /etc/service/$s /etc/service/$s/data
@@ -309,7 +309,8 @@ _EOE_
 done
 
 # Disable bind9 and dehydrated by default (they will be enabled if the ssl source == letsencrypt)
-touch /etc/service/bind/down /etc/service/dehydrated/down
+# Disable playwright-proxy by default too; enabled below, only if this image has Playwright baked in
+touch /etc/service/bind/down /etc/service/dehydrated/down /etc/service/playwright-proxy/down
 
 # Enable dockerd if needed
 if [ "$OPT_RUN_DOCKERD" == "1" ]; then
@@ -634,6 +635,34 @@ elif [ "$SSL" == "selfsupplied" ]; then
     log "- Self-supplied certificate files fullchain.pem and/or privkey.pem not found; aborting!"
     exit 1
   fi
+fi
+
+log "Checking for Playwright MCP support ..."
+if [ -d /opt/dockside-playwright ]; then
+  log "- Playwright detected; enabling playwright-proxy for zones: ${SSL_ZONES[*]}"
+
+  # Build a regex matching each configured zone or any subdomain of it, so Playwright
+  # can reach this container's own UI and any devtainer it launches (e.g. www-<name>.<zone>)
+  # without needing per-devtainer updates.
+  PLAYWRIGHT_PROXY_REGEX=""
+  for zone in "${SSL_ZONES[@]}"; do
+    esc=$(printf '%s' "$zone" | sed -e 's/[][\.^$*]/\\&/g')
+    PLAYWRIGHT_PROXY_REGEX="${PLAYWRIGHT_PROXY_REGEX:+$PLAYWRIGHT_PROXY_REGEX|}(^|\\.)$esc\$"
+  done
+
+  # HTTPS/HTTP ports here must match nginx's real listen ports (see
+  # app/server/nginx/conf/sites-available/default); kept independently
+  # configurable so a future change to nginx's listen ports only needs updating here.
+  cat >>/etc/service/playwright-proxy/data/env <<_EOE_
+PLAYWRIGHT_PROXY_PORT=18080
+PLAYWRIGHT_PROXY_HTTPS_PORT=443
+PLAYWRIGHT_PROXY_HTTP_PORT=80
+PLAYWRIGHT_PROXY_REGEX=$PLAYWRIGHT_PROXY_REGEX
+_EOE_
+
+  rm -f /etc/service/playwright-proxy/down
+else
+  log "- Playwright not present in this image; leaving playwright-proxy disabled."
 fi
 
 log "Fixing ownership for data/db, data/cache, data/certs, data/config ..."

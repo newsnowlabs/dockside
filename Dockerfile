@@ -571,3 +571,43 @@ VOLUME $OPT_PATH/host
 # LAUNCH
 #
 ENTRYPOINT ["/entrypoint.sh"]
+
+################################################################################
+# DEVELOPMENT IMAGE: Playwright + Claude Code CLI, for browser-driven agentic
+# development against a self-hosted Dockside instance.
+#
+FROM dockside AS development
+
+ARG USER=dockside
+ARG APP=dockside
+ARG HOME=/home/dockside
+ARG PLAYWRIGHT_BROWSERS_PATH=/opt/dockside-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH
+
+USER root
+
+# Playwright's native browser dependencies (for chrome-headless-shell)
+RUN apt-get update && \
+    apt-get -y --no-install-recommends --no-install-suggests install \
+        libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libexpat1 \
+        libxkbcommon0 libasound2 libgbm1 libudev1 \
+        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 && \
+    apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
+
+# Playwright MCP server + baked-in headless browser (no X server/Xvfb in this image)
+RUN npm install -g @playwright/mcp && \
+    npx playwright install chromium-headless-shell && \
+    chmod -R o+rx $PLAYWRIGHT_BROWSERS_PATH
+
+# Claude Code managed config (root-owned, read-only to $USER) + this MCP server's browser config
+RUN mkdir -p /etc/claude-code $HOME/.playwright && chown $USER:$USER $HOME/.playwright
+COPY build/development/claude-code/managed-settings.json /etc/claude-code/managed-settings.json
+COPY build/development/claude-code/managed-mcp.json /etc/claude-code/managed-mcp.json
+COPY --chown=$USER:$USER build/development/claude-code/mcp-config.json $HOME/.playwright/mcp-config.json
+RUN CHROMIUM=$(find $PLAYWRIGHT_BROWSERS_PATH -name chrome-headless-shell -path '*/chrome-headless-shell-linux64/*') && \
+    jq --arg exe "$CHROMIUM" '.browser.launchOptions.executablePath = $exe' $HOME/.playwright/mcp-config.json >/tmp/mcp-config.json && \
+    mv /tmp/mcp-config.json $HOME/.playwright/mcp-config.json && \
+    chown $USER:$USER $HOME/.playwright/mcp-config.json
+
+USER $USER
+RUN curl -fsSL https://claude.ai/install.sh | bash
