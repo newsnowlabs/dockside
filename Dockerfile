@@ -398,6 +398,17 @@ RUN cd /git/dockside && \
     git gc
 
 ################################################################################
+# BUILD MKDOCS DOCUMENTATION SITE
+#
+FROM python:3-slim AS docs-build
+
+COPY app/server/assets /build/app/server/assets/
+COPY docs /build/docs/
+COPY mkdocs.yml /build/
+WORKDIR /build
+RUN pip install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && mkdocs build
+
+################################################################################
 # MAIN DOCKSIDE BUILD
 #
 FROM node:$DOCKSIDE_NODE_VERSION-$DOCKSIDE_DEBIAN_VERSION AS dockside-1
@@ -434,7 +445,6 @@ RUN apt-get update && \
         perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
         libyaml-libyaml-perl \
         libio-async-perl \
-        python3-venv \
         acl \
         s6 \
         jq \
@@ -469,13 +479,9 @@ RUN npm install && npm run build && rm -rf node_modules && npm cache clean --for
 RUN rm -rf $HOME/.npm
 
 # --------------
-# MKDOCS INSTALL
+# MKDOCS SITE
 #
-COPY --chown=$USER:$USER app/server/assets $HOME/$APP/app/server/assets/
-COPY --chown=$USER:$USER docs $HOME/$APP/docs/
-COPY --chown=$USER:$USER mkdocs.yml $HOME/$APP/
-WORKDIR $HOME/$APP
-RUN python3 -m venv ~/mkdocs && ~/mkdocs/bin/pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/mkdocs/bin/mkdocs build && rm -rf ~/.cache/pip
+COPY --from=docs-build --chown=$USER:$USER /build/site/ $HOME/$APP/site/
 
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
