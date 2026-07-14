@@ -465,7 +465,7 @@ COPY --chown=$USER:$USER dehydrated $HOME/$APP/dehydrated/
 #
 COPY --chown=$USER:$USER app/client $HOME/$APP/app/client/
 WORKDIR $HOME/$APP/app/client
-RUN npm install && npm run build && npm cache clean --force
+RUN npm install && npm run build && rm -rf node_modules && npm cache clean --force
 RUN rm -rf $HOME/.npm
 
 # --------------
