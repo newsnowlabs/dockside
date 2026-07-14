@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "playwright-mcp",
+      "args": [
+        "--config", "/home/dockside/.playwright/mcp-config.json"
+      ]
+    }
+  }
+}

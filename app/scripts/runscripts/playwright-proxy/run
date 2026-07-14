@@ -1,0 +1,6 @@
+#!/bin/bash
+
+. ./data/env
+
+exec /usr/bin/s6-setuidgid $USER node $APP_DIR/app/scripts/runscripts/playwright-proxy/data/playwright-proxy.js \
+  "$PLAYWRIGHT_PROXY_PORT" "$PLAYWRIGHT_PROXY_HTTPS_PORT" "$PLAYWRIGHT_PROXY_HTTP_PORT" "$PLAYWRIGHT_PROXY_REGEX"
