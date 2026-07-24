@@ -97,6 +97,23 @@ sub cmdline_docker_args ($self) {
       map { $self->_placeholders($_) } @{$self->profileObject->{'dockerArgs'}} : ();
 }
 
+# Per-user custom env vars targeting 'docker' (docker create, baked into the
+# container's own process env — visible via `docker inspect` and to any
+# process inside the container). Loaded from the reservation owner's stored
+# env vars; NOT profile-level (see ide_command_env for the separate
+# profile-level {ide}{env} mechanism, which targets the docker EXEC call
+# instead).
+sub cmdline_user_env ($self) {
+   my $owner = $self->owner('username');
+   return () unless $owner;
+
+   my $user = User->load($owner);
+   return () unless $user;
+
+   my $envs = $user->env_vars_for_target('docker');
+   return map { "--env=$_=$envs->{$_}" } sort keys %$envs;
+}
+
 # This function generates mount options for tmpfs mounts.
 # The source of a tmpfs mount is always the empty string.
 # However, additional options may be specified.
@@ -290,6 +307,7 @@ sub cmdline ($self) {
       $self->cmdline_ports(),
       $self->cmdline_network(),
       $self->cmdline_docker_args(),
+      $self->cmdline_user_env(), # after dockerArgs so user env can override profile-level --env
       $self->cmdline_mounts(),
       $self->cmdline_ide_mount(),
       $self->cmdline_init(),

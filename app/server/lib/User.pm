@@ -145,7 +145,7 @@ sub new ($class, $data = undef) {
       return undef unless $data->{'username'};
 
       $self = bless {
-         %$data{ qw(username id name email role ssh version gh_token) },
+         %$data{ qw(username id name email role ssh version gh_token env) },
          '_permissions' => $data->{'permissions'} // {},
          '_resources' => $data->{'resources'} // {},
       }, ( ref($class) || $class );
@@ -237,6 +237,30 @@ sub keypairs_all ($self) {
 
 sub gh_token ($self) {
    return $self->{'gh_token'} // '';
+}
+
+# All of the user's custom env vars, keyed by KEY, as stored:
+# { KEY => { value => STR, secret => BOOL, targets => { docker=>BOOL, ide=>BOOL, ssh=>BOOL } } }
+sub env_vars ($self) {
+   return $self->{'env'} // {};
+}
+
+# KEY => VALUE map filtered to vars whose targets.$target is true.
+# Used by Reservation::Launch::cmdline_user_env (target='docker') and by
+# Reservation::exec (target='ide'/'ssh', bundled into DOCKSIDE_USER_ENV).
+sub env_vars_for_target ($self, $target) {
+   my $env = $self->env_vars();
+   return { map  { $_ => $env->{$_}{'value'} }
+            grep { ref $env->{$_} eq 'HASH' && $env->{$_}{'targets'}{$target} }
+            keys %$env };
+}
+
+# KEY names (not values) flagged secret=1 AND targeting $target.
+# Used only for log redaction, never for delivery.
+sub env_vars_secret_keys ($self, $target) {
+   my $env = $self->env_vars();
+   return [ grep { ref $env->{$_} eq 'HASH' && $env->{$_}{'secret'} && $env->{$_}{'targets'}{$target} }
+            keys %$env ];
 }
 
 ################################################################################

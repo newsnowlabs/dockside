@@ -62,13 +62,21 @@ sub wlog ($m) {
    print STDERR $dt . " [dockside] " . $m . "\n";
 }
 
-sub sanitize_sensitive_text ($text) {
+sub sanitize_sensitive_text ($text, $extra_secret_env_keys = []) {
    return '' unless defined $text;
 
    my $out = $text;
 
    # Redact explicit env payloads that can carry secrets into docker exec calls.
-   $out =~ s/--env=(OWNER_DETAILS|SSH_AGENT_KEYS|GH_TOKEN)=[^\n]*/--env=$1=<redacted>/g;
+   $out =~ s/--env=(OWNER_DETAILS|SSH_AGENT_KEYS|GH_TOKEN|DOCKSIDE_USER_ENV)=[^\n]*/--env=$1=<redacted>/g;
+
+   # Redact caller-supplied secret env var names (e.g. per-user 'docker'-target
+   # env vars flagged secret=1, which aren't known ahead of time so can't be
+   # hardcoded above — see Reservation::launch).
+   for my $k (@$extra_secret_env_keys) {
+      my $qk = quotemeta($k);
+      $out =~ s/--env=$qk=[^\n]*/--env=$k=<redacted>/g;
+   }
 
    # Redact PEM private-key blocks if they appear in any other context.
    $out =~ s/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----/<redacted-private-key>/sg;
@@ -330,7 +338,7 @@ sub clean_pty ($text) {
    return $_;
 }
 
-sub run_pty ($cmd, $logfile) {
+sub run_pty ($cmd, $logfile, $extra_secret_env_keys = []) {
    open( my $fh, ">", $logfile ) || die Exception->new( 'dbg' => "Cannot open logfile '$logfile': $!", 'msg' => 'Cannot create container launch log file' );
    $fh->autoflush(1);
    my $ContainerID;
@@ -356,7 +364,7 @@ sub run_pty ($cmd, $logfile) {
 
    my $cmdString = join(' ', @$cmd);
 
-   flog( "run_pty: RUNNING: " . join( '|', @$cmd ) );
+   flog( "run_pty: RUNNING: " . sanitize_sensitive_text( join( '|', @$cmd ), $extra_secret_env_keys ) );
 
    # create an Expect object by spawning another process
    my $exp = Expect->spawn(@$cmd) or die Exception->new( 'dbg' => "Cannot spawn command '$cmdString': $!", 'msg' => "Cannot spawn command" );

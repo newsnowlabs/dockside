@@ -57,6 +57,7 @@ sub _user_to_record ($user) {
       'resources'   => $user->{'_resources'}   // {},
       'ssh'         => $user->{'ssh'},
       'gh_token'    => $user->{'gh_token'},
+      'env'         => $user->{'env'},
    };
 }
 
@@ -99,6 +100,49 @@ sub _restore_redacted_gh_token ($record, $orig_token) {
    }
 }
 
+# Restore env var VALUEs that were masked for API output.
+#
+# _sanitise_user_record masks each secret=1 var's value to first-4/last-4
+# visible chars (same convention as gh_token). If that masked value is POSTed
+# back unchanged, writing it would destroy the real value. Any secret=1 entry
+# whose current 'value' contains '*' is treated as an unchanged-masked
+# sentinel and restored from the pre-apply snapshot (or deleted if the
+# snapshot had no such key — e.g. a stale client payload for a since-removed
+# var, which we simply drop rather than persist a bogus masked string).
+#
+# Unlike _restore_redacted_gh_token, the '*' check is gated on 'secret' being
+# true: a non-secret value that legitimately contains '*' (e.g. '50*discount')
+# must not be misdetected as a masked sentinel and clobbered.
+#
+# $orig_values — KEY→scalar-value map of secret=1 vars taken BEFORE
+#                apply_args_to_record (same shallow-copy-is-unsafe rationale
+#                as _restore_redacted_ssh: apply_args_to_record mutates nested
+#                hashrefs in-place, aliasing through a shallow copy and
+#                destroying the originals).
+sub _restore_redacted_env ($record, $orig_values) {
+   my $env = $record->{'env'} // {};
+   for my $key ( keys %$env ) {
+      my $entry = $env->{$key};
+      next unless ref $entry eq 'HASH' && $entry->{'secret'};
+      next unless defined( $entry->{'value'} ) && $entry->{'value'} =~ /\*/;
+      if ( exists $orig_values->{$key} ) {
+         $entry->{'value'} = $orig_values->{$key};
+      } else {
+         delete $env->{$key};
+      }
+   }
+}
+
+# Mask a secret scalar to first-4/last-4 visible characters (or all '*' if
+# too short to leave any characters visible). Shared by gh_token and
+# per-entry env var secret masking in _sanitise_user_record.
+sub _mask_secret ($val) {
+   return '' unless defined $val;
+   return length($val) > 8
+      ? substr( $val, 0, 4 ) . ( '*' x ( length($val) - 8 ) ) . substr( $val, -4 )
+      : '*' x length($val);
+}
+
 # Sanitise a user record for API output.
 # When $sensitive is false (default), two classes of data are redacted:
 #   gh_token   — masked to first-4/last-4 visible characters to confirm
@@ -113,10 +157,7 @@ sub _sanitise_user_record ($record, $sensitive = 0) {
    my $out = {%$record};
    unless ($sensitive) {
       if ( exists $out->{'gh_token'} && defined $out->{'gh_token'} ) {
-         my $t = $out->{'gh_token'};
-         $out->{'gh_token'} = length($t) > 8
-            ? substr( $t, 0, 4 ) . ( '*' x ( length($t) - 8 ) ) . substr( $t, -4 )
-            : '*' x length($t);
+         $out->{'gh_token'} = _mask_secret( $out->{'gh_token'} );
       }
       if ( ref $out->{'ssh'} eq 'HASH' && ref $out->{'ssh'}{'keypairs'} eq 'HASH' ) {
          $out->{'ssh'}             = { %{ $out->{'ssh'} } };
@@ -126,6 +167,16 @@ sub _sanitise_user_record ($record, $sensitive = 0) {
             if ( ref $kp eq 'HASH' && exists $kp->{'private'} ) {
                $out->{'ssh'}{'keypairs'}{$kp_name} = {%$kp};
                $out->{'ssh'}{'keypairs'}{$kp_name}{'private'} = '<redacted>';
+            }
+         }
+      }
+      if ( ref $out->{'env'} eq 'HASH' ) {
+         $out->{'env'} = { %{ $out->{'env'} } };
+         for my $key ( keys %{ $out->{'env'} } ) {
+            my $entry = $out->{'env'}{$key};
+            next unless ref $entry eq 'HASH';
+            if ( $entry->{'secret'} ) {
+               $out->{'env'}{$key} = { %$entry, 'value' => _mask_secret( $entry->{'value'} ) };
             }
          }
       }
@@ -263,6 +314,7 @@ sub createUser ($self, $args) {
       # Reject non-object permissions/resources before they reach disk (see
       # _validate_record_objects); users get the same guard roles do.
       _validate_record_objects($new_user);
+      _validate_env_vars($new_user->{'env'});
 
       $users->{$username} = $new_user;
       return JSON->new->utf8->pretty->canonical->encode($users);
@@ -311,12 +363,18 @@ sub updateUser ($self, $username, $args) {
                             grep { ref $kps->{$_} eq 'HASH' && exists $kps->{$_}{'private'} }
                             keys %$kps };
       my $orig_gh_token = $record->{'gh_token'};
+      my $env_entries = $record->{'env'} // {};
+      my $orig_env_values = { map  { $_ => $env_entries->{$_}{'value'} }
+                              grep { ref $env_entries->{$_} eq 'HASH' && $env_entries->{$_}{'secret'} }
+                              keys %$env_entries };
       apply_args_to_record( $record, $args, qw(username password sensitive) );
       _restore_redacted_ssh( $record, $orig_privates );
       _restore_redacted_gh_token( $record, $orig_gh_token );
+      _restore_redacted_env( $record, $orig_env_values );
       # Reject non-object permissions/resources before they reach disk (see
       # _validate_record_objects); users get the same guard roles do.
       _validate_record_objects($record);
+      _validate_env_vars($record->{'env'});
 
       # Prevent admin lock-out via self-demotion: a caller (who necessarily holds
       # manageUsers to reach here) must not strip their OWN manageUsers capability,
@@ -355,8 +413,9 @@ sub updateUser ($self, $username, $args) {
 }
 
 # Self-service update: any authenticated user may update their own name, email,
-# gh_token, and ssh fields.  All other fields in $args are silently discarded,
-# preventing privilege escalation (no manageUsers permission required).
+# gh_token, ssh, and env fields.  All other fields in $args are silently
+# discarded, preventing privilege escalation (no manageUsers permission
+# required).
 sub updateSelf ($self, $args) {
    my $username = $self->username;
    die Exception->new( 'msg' => "Not authenticated" ) unless $username;
@@ -367,7 +426,7 @@ sub updateSelf ($self, $args) {
    # a user is allowed to self-edit.  Flat keys (e.g. 'name') are included
    # directly; dotted-path keys are included if their top-level segment is in the
    # whitelist (e.g. 'ssh.keypairs.mykey' is allowed because 'ssh' is allowed).
-   my %allowed = map { $_ => 1 } qw(name email gh_token ssh);
+   my %allowed = map { $_ => 1 } qw(name email gh_token ssh env);
    my $safe_args = { map { $_ => $args->{$_} } grep { $allowed{$_} } keys %$args };
 
    # Also allow dotted-path variants such as ssh.publicKeys, ssh.keypairs.*
@@ -395,9 +454,15 @@ sub updateSelf ($self, $args) {
                             grep { ref $kps->{$_} eq 'HASH' && exists $kps->{$_}{'private'} }
                             keys %$kps };
       my $orig_gh_token = $record->{'gh_token'};
+      my $env_entries = $record->{'env'} // {};
+      my $orig_env_values = { map  { $_ => $env_entries->{$_}{'value'} }
+                              grep { ref $env_entries->{$_} eq 'HASH' && $env_entries->{$_}{'secret'} }
+                              keys %$env_entries };
       apply_args_to_record( $record, $safe_args );
       _restore_redacted_ssh( $record, $orig_privates );
       _restore_redacted_gh_token( $record, $orig_gh_token );
+      _restore_redacted_env( $record, $orig_env_values );
+      _validate_env_vars( $record->{'env'} );
 
       $users->{$username} = $record;
       return JSON->new->utf8->pretty->canonical->encode($users);
@@ -464,6 +529,69 @@ sub _validate_record_objects ($record) {
       next unless exists $record->{$field};
       die Exception->new( 'msg' => "Field '$field' must be a JSON object" )
          unless ref $record->{$field} eq 'HASH';
+   }
+}
+
+# Names Dockside already injects into devtainers internally (see the
+# @envGhToken/@envSSH/@envGit/@envOptions/@envIDE/@envDevContainer builders
+# and the DOCKSIDE_USER_ENV blob in Reservation::exec, and cmdline_user_env
+# in Reservation::Launch), plus common POSIX/shell-critical names. A
+# colliding user-defined var could silently override an internally-injected
+# one, or for names like LD_PRELOAD/IFS/PATH, be actively dangerous inside
+# the container.
+my %RESERVED_ENV_NAMES = map { $_ => 1 } qw(
+   PATH HOME USER LOGNAME SHELL IFS LD_PRELOAD LD_LIBRARY_PATH TERM
+   SSH_AUTH_SOCK SSH_AGENT_PID IDE IDE_PATH IIDE_PATH LOG_PATH HOSTDATA_PATH
+   GH_TOKEN AUTHORIZED_KEYS SSH_AGENT_KEYS OWNER_DETAILS GIT_URL
+   SSH_KNOWN_HOSTS_DOMAINS DEVCONTAINER_VSCODE_EXTENSIONS
+);
+my $ENV_KEY_RE       = qr/^[A-Za-z_][A-Za-z0-9_]*$/;
+my $ENV_MAX_VARS     = 50;
+my $ENV_MAX_KEY_LEN  = 128;
+my $ENV_MAX_VALUE_LEN = 4096;
+
+# Validate the 'env' field of a user record before persisting. Dies with a
+# single Exception naming the first offending var and reason. $env may be
+# undef (no env vars set) — that's valid.
+sub _validate_env_vars ($env) {
+   return unless defined $env;
+   die Exception->new( 'msg' => "Field 'env' must be a JSON object" )
+      unless ref $env eq 'HASH';
+
+   my @keys = keys %$env;
+   die Exception->new( 'msg' => "Too many env vars (" . scalar(@keys) . "); maximum is $ENV_MAX_VARS" )
+      if @keys > $ENV_MAX_VARS;
+
+   for my $key (@keys) {
+      my $entry = $env->{$key};
+      die Exception->new( 'msg' => "env.$key must be a JSON object" )
+         unless ref $entry eq 'HASH';
+
+      die Exception->new( 'msg' => "Invalid env var name '$key': must match ^[A-Za-z_][A-Za-z0-9_]*\$" )
+         unless $key =~ $ENV_KEY_RE;
+      die Exception->new( 'msg' => "env var name '$key' exceeds maximum length of $ENV_MAX_KEY_LEN" )
+         if length($key) > $ENV_MAX_KEY_LEN;
+      die Exception->new( 'msg' => "env var name '$key' is reserved for internal use" )
+         if $RESERVED_ENV_NAMES{$key} || $key =~ /^DOCKSIDE_/;
+
+      my $value = $entry->{'value'} // '';
+      die Exception->new( 'msg' => "env.$key.value must not contain NUL or newline characters" )
+         if $value =~ /[\x00\n]/;
+      die Exception->new( 'msg' => "env.$key.value exceeds maximum length of $ENV_MAX_VALUE_LEN" )
+         if length($value) > $ENV_MAX_VALUE_LEN;
+
+      # 'secret' and 'targets' are optional to omit (default false / no
+      # targets), but if present must be sane shapes — malformed input here
+      # would otherwise reach cmdline_user_env / Reservation::exec and crash
+      # on a non-hashref targets deref.
+      die Exception->new( 'msg' => "env.$key.targets must be a JSON object" )
+         if exists $entry->{'targets'} && ref $entry->{'targets'} ne 'HASH';
+      if ( ref $entry->{'targets'} eq 'HASH' ) {
+         for my $t ( keys %{ $entry->{'targets'} } ) {
+            die Exception->new( 'msg' => "env.$key.targets has unknown key '$t'; expected docker/ide/ssh" )
+               unless $t =~ /^(?:docker|ide|ssh)$/;
+         }
+      }
    }
 }
 

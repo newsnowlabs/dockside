@@ -41,6 +41,30 @@ debug() {
    set -x
 }
 
+# Safely export vars from $HOME/.dockside/user-env-ide.env into THIS shell's
+# environment, then exec the given command. Used as a wrapper around the IDE
+# launch (inside `su $IDE_USER -c "..."` and the plain `env -i ...` branch of
+# launch_theia/launch_openvscode) so that arbitrary user-supplied env VALUES
+# never touch a double-quoted shell string (which would allow shell/command
+# injection via a value containing '"' or '$(...)'). Values are passed to
+# `export` as a single literal argument — never re-parsed/re-interpolated by
+# the shell — so this is safe for arbitrary VALUE content (server-side
+# validation additionally guarantees no NUL/newline). Because this execs the
+# IDE process with the extra vars already in its own environment, anything
+# the IDE forks (e.g. integrated terminals) inherits them via normal
+# process-env inheritance.
+apply_user_env() {
+   local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
+   local envfile="$HOME/.dockside/user-env-ide.env"
+   if [ -f "$envfile" ]; then
+      while IFS= read -r line; do
+         [ -n "$line" ] || continue
+         export "${line%%=*}=${line#*=}"
+      done < "$envfile"
+   fi
+   exec "$@"
+}
+
 # Create busybox shortcut for certain commands
 for a in id chown chmod date find grep head mkdir mv readlink sed sort tail tr xargs
 do
@@ -133,6 +157,31 @@ update_ssh_authorized_keys() {
    busybox chown $IDE_USER:$IDE_USER $HOME/.ssh $HOME/.ssh/authorized_keys
    busybox chmod u=rwX,g=rX,o=rX $HOME/.ssh
    busybox chmod 600 $HOME/.ssh/authorized_keys
+}
+
+# Parse the DOCKSIDE_USER_ENV JSON blob ({"ide":{KEY:VALUE,...},"ssh":{KEY:VALUE,...}})
+# and write two per-target KEY=VALUE files, consumed by apply_user_env (for
+# the 'ide' target, see launch_theia/launch_openvscode) and the SSH rc-file
+# snippet installed by install_user_env_notice (for the 'ssh' target).
+# Server-side validation guarantees VALUEs contain no NUL/newline, so the
+# KEY=VALUE-per-line format is safe with no further escaping. Unconditionally
+# overwrites both files on every call (truncating to empty if no vars are set
+# for that target) so a relaunch always reflects the latest set.
+populate_user_env() {
+   local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
+   local IDE_ENV_FILE="$HOME/.dockside/user-env-ide.env"
+   local SSH_ENV_FILE="$HOME/.dockside/user-env-ssh.env"
+
+   log "Creating $HOME/.dockside for per-user env files"
+   busybox mkdir -p "$HOME/.dockside"
+
+   echo "$DOCKSIDE_USER_ENV" | jq -re '.ide // {} | to_entries[] | "\(.key)=\(.value)"' >"$IDE_ENV_FILE" 2>/dev/null || : >"$IDE_ENV_FILE"
+   echo "$DOCKSIDE_USER_ENV" | jq -re '.ssh // {} | to_entries[] | "\(.key)=\(.value)"' >"$SSH_ENV_FILE" 2>/dev/null || : >"$SSH_ENV_FILE"
+
+   log "Resetting ownership and permissions for $HOME/.dockside user-env files"
+   busybox chown $IDE_USER:$IDE_USER "$HOME/.dockside" "$IDE_ENV_FILE" "$SSH_ENV_FILE"
+   busybox chmod 700 "$HOME/.dockside"
+   busybox chmod 600 "$IDE_ENV_FILE" "$SSH_ENV_FILE"
 }
 
 create_git_config() {
@@ -608,9 +657,9 @@ launch_theia() {
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
          # Without -l, su passes all inherited/exported env vars through; env -i clears them
          # so only the vars the IDE launcher needs are explicitly stated.
-         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
+         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $DOCKSIDE_ROOT/bin/launch.sh nop apply_user_env $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
       else
-         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
+         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $DOCKSIDE_ROOT/bin/launch.sh nop apply_user_env $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
       fi
 
       sleep 1
@@ -646,9 +695,9 @@ launch_openvscode() {
       if [ $(id -u) -eq 0 ] && [ "$IDE_USER" != "root" ]; then
          # Without -l, su passes all inherited/exported env vars through; env -i clears them
          # so only the vars the IDE launcher needs are explicitly stated.
-         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
+         $IDE_PATH/bin/su $IDE_USER -c "env -i PATH=\"$_PATH\" HOME=\"$(getent passwd $IDE_USER | cut -d':' -f6)\" USER=\"$IDE_USER\" IDE_PATH=\"$IDE_PATH\" IDE=\"$IDE\" IIDE_PATH=\"$IIDE_PATH\" LOG_PATH=\"$LOG_PATH\" $DOCKSIDE_ROOT/bin/launch.sh nop apply_user_env $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh"
       else
-         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
+         env -i PATH="$_PATH" HOME="$HOME" USER="$USER" IDE_PATH="$IDE_PATH" IDE="$IDE" IIDE_PATH="$IIDE_PATH" LOG_PATH="$LOG_PATH" SSH_AUTH_SOCK="$SSH_AUTH_SOCK" $DOCKSIDE_ROOT/bin/launch.sh nop apply_user_env $IDE_PATH/bin/sh $IIDE_PATH/bin/launch-ide.sh
       fi
 
       sleep 1
@@ -684,12 +733,35 @@ install_launch_status_notice() {
    done
 }
 
+# Idempotently add a snippet to the user's shell rc files that safely
+# exports the 'ssh'-target per-user env vars (written by populate_user_env,
+# run as root, into $HOME/.dockside/user-env-ssh.env) into every interactive/
+# login shell — this is how they reach SSH sessions, since dropbear forks a
+# fresh login shell per connection whose env inheritance from dropbear's own
+# ambient environment is not reliable to depend on. Mirrors
+# install_launch_status_notice, which already proves this rc-file mechanism
+# reaches SSH login shells. Guarded by a marker so relaunches do not
+# duplicate it; the snippet itself re-reads the env file fresh on every new
+# shell, so value changes are picked up without re-touching the rc file.
+install_user_env_notice() {
+   local marker='# dockside-user-env'
+   local envfile="$HOME/.dockside/user-env-ssh.env"
+   local line="[ -f \"$envfile\" ] && while IFS= read -r __dockside_env_line; do export \"\${__dockside_env_line%%=*}=\${__dockside_env_line#*=}\"; done < \"$envfile\""
+   local rc
+   for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+      [ -f "$rc" ] || continue
+      grep -qF "$marker" "$rc" 2>/dev/null && continue
+      printf '\n%s\n%s\n' "$marker" "$line" >> "$rc" 2>/dev/null || true
+   done
+}
+
 run_nonroot() {
    log "User account launch started ..."
    # Surface launch-time warnings to the user's interactive shells: clear any stale
    # warnings from a previous launch, then ensure the rc snippet is installed.
    rm -f "$LOG_PATH/launch-status.txt" 2>/dev/null
    install_launch_status_notice
+   install_user_env_notice
    spawn_ssh_agent
    # A failed key load is non-fatal (the IDE still launches), but no longer silent:
    # populate_ssh_agent_keys logs + returns non-zero, and we surface it to the user.
@@ -756,6 +828,7 @@ launch_ide() {
    create_user
    create_git_config
    update_ssh_authorized_keys
+   populate_user_env
    launch_sshd
    launch_nonroot
    log "Launch finished."
