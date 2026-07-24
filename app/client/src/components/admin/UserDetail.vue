@@ -439,7 +439,14 @@
                   await this.$store.dispatch('account/updateSelf', payload);
                   this.savedForm     = null;
                   this.localEditMode = false;
-                  // currentUserRecord watcher fires after store update and re-populates form.
+                  // Re-populate explicitly rather than relying solely on the
+                  // currentUserRecord watcher: the store commit (inside the
+                  // dispatch above) can trigger that watcher's callback before
+                  // localEditMode flips to false on the line above, so its
+                  // `!this.isEditMode` guard skips the repopulation and it
+                  // never fires again — leaving stale (unmasked, just-typed)
+                  // values in the form, e.g. for freshly-saved secret env vars.
+                  if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
                } else if (this.isNew) {
                   payload.username = this.form.username;
                   const record = await this.$store.dispatch('admin/createUser', payload);
@@ -449,6 +456,9 @@
                } else {
                   await this.$store.dispatch('admin/updateUser', { username: this.username, data: payload });
                   this.$store.commit('admin/setSelectedMode', 'view');
+                  // Same explicit repopulation, and for the same reason, as the
+                  // selfEdit branch above.
+                  if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
                }
             } catch (e) {
                this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;

@@ -28,14 +28,15 @@ history for that investigation.
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
-from dockside_test import CapabilityUnavailable, TestCase
-from _ssh_test_common import _DEV1_KEY, run_in_devtainer
+from dockside_test import APIError, CapabilityUnavailable, TestCase
+from _ssh_test_common import _DEV1_KEY, devtainer_container_id, docker_available, run_in_devtainer
 
 
 class EnvVarsApiTests(TestCase):
@@ -63,7 +64,7 @@ class EnvVarsApiTests(TestCase):
             'user', 'edit', self._user,
             '--set', 'env.FOO.value=bar',
             '--set', 'env.FOO.secret=0',
-            '--set', 'env.FOO.targets=["docker","ide"]',
+            '--set', 'env.FOO.targets={"docker":true,"ide":true}',
         )
         rec = self.admin._run('user', 'get', self._user, '--sensitive')
         entry = ((rec or {}).get('env') or {}).get('FOO') or {}
@@ -158,7 +159,7 @@ class EnvVarsApiTests(TestCase):
         client._run(
             'account', 'edit',
             '--set', 'env.SELFVAR.value=self-set',
-            '--set', 'env.SELFVAR.targets=["docker","ide","ssh"]',
+            '--set', 'env.SELFVAR.targets={"docker":true,"ide":true,"ssh":true}',
         )
         rec = client._run('account', 'show')
         targets = ((rec.get('env') or {}).get('SELFVAR') or {}).get('targets') or {}
@@ -207,13 +208,13 @@ class EnvVarsInjectionTests(TestCase):
         cls._user_client._run(
             'account', 'edit',
             '--set', 'env.DOCKER_VAR.value=docker-val',
-            '--set', 'env.DOCKER_VAR.targets=["docker"]',
+            '--set', 'env.DOCKER_VAR.targets={"docker":true}',
             '--set', 'env.IDE_VAR.value=ide-val',
-            '--set', 'env.IDE_VAR.targets=["ide"]',
+            '--set', 'env.IDE_VAR.targets={"ide":true}',
             '--set', 'env.SSH_VAR.value=ssh-val',
-            '--set', 'env.SSH_VAR.targets=["ssh"]',
+            '--set', 'env.SSH_VAR.targets={"ssh":true}',
             '--set', 'env.ALL_VAR.value=all-val',
-            '--set', 'env.ALL_VAR.targets=["docker","ide","ssh"]',
+            '--set', 'env.ALL_VAR.targets={"docker":true,"ide":true,"ssh":true}',
         )
 
         cls._user_client.create(profile=cls.test_profile_alpine, name=cls.CONTAINER)
@@ -238,11 +239,33 @@ class EnvVarsInjectionTests(TestCase):
                          f'stderr={result.stderr!r}')
         return result.stdout
 
+    def _docker_exec_root(self, argv):
+        """Run argv via `docker exec -u root` directly, unconditionally.
+
+        Unlike run_in_devtainer(preferred='docker'), this ignores
+        DOCKSIDE_TEST_CONTAINER_ACCESS: reading another user's (or root's own)
+        /proc/<pid>/environ requires root, which an SSH session — landing as
+        the devtainer's regular unixuser — cannot provide even when a private
+        key is available. These checks are docker-exec-only by nature, not a
+        preference the operator's access-method override should be able to
+        redirect to SSH.
+        """
+        if not docker_available():
+            raise CapabilityUnavailable('docker exec verification requires docker, which is unavailable')
+        container_id = devtainer_container_id(self._user_client, self.CONTAINER)
+        if not container_id:
+            raise APIError(f'could not resolve docker container id for {self.CONTAINER!r}')
+        result = subprocess.run(['docker', 'exec', '-u', 'root', container_id] + argv,
+                                capture_output=True, text=True, timeout=30)
+        self.assert_true(result.returncode == 0,
+                         f'command failed rc={result.returncode} stdout={result.stdout!r} '
+                         f'stderr={result.stderr!r}')
+        return result.stdout
+
     def test_01_docker_target_visible_in_container_env(self):
         """A 'docker'-target var is baked into the container's own PID 1 env."""
         try:
-            out = self._env_lines(
-                ['sh', '-c', "tr '\\0' '\\n' < /proc/1/environ"], preferred='docker')
+            out = self._docker_exec_root(['sh', '-c', "tr '\\0' '\\n' < /proc/1/environ"])
         except CapabilityUnavailable as exc:
             self.skip(str(exc))
         self.assert_in('DOCKER_VAR=docker-val', out.splitlines(),
@@ -259,35 +282,40 @@ class EnvVarsInjectionTests(TestCase):
     def test_02_ide_target_visible_to_container_processes(self):
         """An 'ide'-target var reaches the IDE server process's own environment.
 
-        Scans every running process's /proc/<pid>/environ (as root, via docker
-        exec) rather than pinpointing the exact IDE PID — Theia and openvscode
-        exec different binaries, and this is robust to either. Absence of the
-        ssh-only marker is a valid negative check here because no SSH session
-        exists yet at this point in the test (see test_03 for a more precisely
-        scoped isolation check on the SSH side).
+        Reads launch-ide.sh's own environment dump (both the Theia and
+        openvscode variants log "- environment variables:" followed by a
+        4-space-indented `env | sort` right before exec-ing the actual IDE
+        server binary) rather than reading /proc/<pid>/environ directly:
+        ptrace-reading another process's /proc/<pid>/environ needs
+        CAP_SYS_PTRACE, which is unavailable in some restricted/nested Docker
+        setups even for root — the log file needs only an ordinary root file
+        read, and is IDE-variant-agnostic. Absence of the ssh-only marker is a
+        valid negative check here because no SSH session exists yet at this
+        point in the test (see test_03 for a more precisely scoped isolation
+        check on the SSH side).
         """
         script = (
-            "for f in /proc/[0-9]*/environ; do "
-            "tr '\\0' '\\n' < \"$f\" 2>/dev/null; echo; "
-            "done"
+            "for f in /tmp/dockside/theia.log /tmp/dockside/openvscode.log; do "
+            "[ -f \"$f\" ] && sed -n '/- environment variables:/,$p' \"$f\"; "
+            "done; true"
         )
         try:
-            out = self._env_lines(['sh', '-c', script], preferred='docker', run_as_user='root')
+            out = self._docker_exec_root(['sh', '-c', script])
         except CapabilityUnavailable as exc:
             self.skip(str(exc))
-        lines = out.splitlines()
+        lines = [line.strip() for line in out.splitlines()]
         self.assert_in('IDE_VAR=ide-val', lines,
-                       'ide-target var not found in any container process environment')
+                       f'ide-target var not found in the IDE launch environment dump: {out!r}')
         self.assert_in('ALL_VAR=all-val', lines,
-                       'all-target var not found in any container process environment')
+                       f'all-target var not found in the IDE launch environment dump: {out!r}')
         self.assert_true('SSH_VAR=ssh-val' not in lines,
-                         'ssh-only var unexpectedly visible to a container process before any SSH session')
+                         f'ssh-only var unexpectedly visible in the IDE launch environment dump: {out!r}')
 
     def test_03_ssh_target_visible_in_ssh_session_env(self):
         """An 'ssh'-target var reaches a real SSH session via the rc-file snippet."""
         try:
             out = self._env_lines(
-                ['bash', '-lc', 'env'],
+                ['sh', '-lc', 'env'],
                 private_key_path=_DEV1_KEY,
                 preferred='ssh',
                 system_bin_dir=self.test_system_bin_dir,

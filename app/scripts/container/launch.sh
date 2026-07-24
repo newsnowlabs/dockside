@@ -53,8 +53,13 @@ debug() {
 # IDE process with the extra vars already in its own environment, anything
 # the IDE forks (e.g. integrated terminals) inherits them via normal
 # process-env inheritance.
+#
+# Deliberately uses the inherited $HOME rather than re-deriving it from
+# $IDE_USER: both env -i call sites that wrap this (in launch_theia/
+# launch_openvscode) explicitly include HOME in their fixed allowlist, but
+# NOT IDE_USER — so $IDE_USER is empty by the time this runs, and re-deriving
+# HOME from it would silently resolve to the wrong path.
 apply_user_env() {
-   local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
    local envfile="$HOME/.dockside/user-env-ide.env"
    if [ -f "$envfile" ]; then
       while IFS= read -r line; do
@@ -748,6 +753,15 @@ install_user_env_notice() {
    local envfile="$HOME/.dockside/user-env-ssh.env"
    local line="[ -f \"$envfile\" ] && while IFS= read -r __dockside_env_line; do export \"\${__dockside_env_line%%=*}=\${__dockside_env_line#*=}\"; done < \"$envfile\""
    local rc
+   # .profile is the one POSIX login shells universally read (dropbear's
+   # per-connection shell included), so — unlike .bashrc below, and unlike
+   # install_launch_status_notice's diagnostic-only notice — it is created if
+   # absent rather than skipped: this is the primary (only) delivery path for
+   # the 'ssh' target, so a silent no-op on a minimal image (no /etc/skel,
+   # e.g. plain Alpine) would defeat the feature outright rather than merely
+   # missing a nice-to-have. Runs as $IDE_USER (via run_nonroot's su), so any
+   # created file is already correctly owned.
+   [ -f "$HOME/.profile" ] || : > "$HOME/.profile" 2>/dev/null
    for rc in "$HOME/.bashrc" "$HOME/.profile"; do
       [ -f "$rc" ] || continue
       grep -qF "$marker" "$rc" 2>/dev/null && continue
