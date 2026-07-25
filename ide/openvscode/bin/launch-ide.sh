@@ -67,7 +67,13 @@ GZIP_STATIC="$IIDE_PATH/bin/gzip-static.js"
 cd $IIDE_PATH/openvscode
 unset IDE_PATH IDE IIDE_PATH LOG_PATH
 
-log "- environment variables:"
-env | sort | sed -r 's/^/    /' >&2
+# Only dumped when DEBUG is set: this includes per-user custom env vars
+# (target: ide), including any flagged 'secret' — apply_user_env exports
+# them into this process's environment before launch, so enabling DEBUG for
+# diagnostics may expose secret values in the IDE launch log.
+if [ -n "$DEBUG" ]; then
+   log "- environment variables:"
+   env | sort | sed -r 's/^/    /' >&2
+fi
 
 exec ./node --require "$GZIP_STATIC" ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token --telemetry-level off

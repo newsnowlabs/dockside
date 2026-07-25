@@ -48,7 +48,13 @@ log "Launching IDE using: $THEIA_PATH/bin/node $THEIA_PATH/theia/src-gen/backend
 unset IDE_PATH IIDE_PATH IDE LOG_PATH
 cd $THEIA_PATH/theia || exit 1
 
-log "- environment variables:"
-env | sort | sed -r 's/^/    /' >&2
+# Only dumped when DEBUG is set: this includes per-user custom env vars
+# (target: ide), including any flagged 'secret' — apply_user_env exports
+# them into this process's environment before launch, so enabling DEBUG for
+# diagnostics may expose secret values in the IDE launch log.
+if [ -n "$DEBUG" ]; then
+   log "- environment variables:"
+   env | sort | sed -r 's/^/    /' >&2
+fi
 
 exec $THEIA_PATH/bin/node $THEIA_PATH/theia/lib/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 --plugins=local-dir:$THEIA_PATH/theia/plugins,local-dir:$HOME/theia-plugins
