@@ -230,12 +230,13 @@ sub text ($r, $code, $data) {
 }
 
 sub send_branded_page ($r, $code, $class, $html) { # nginx request object
+   my $css_v = _asset_version('main.css');
    $r->status($code);
    $r->send_http_header("text/html");
    $r->print( get_header() );
    $r->print( "<style>\n" . get_asset('signin.css') . "\n</style>\n" );
    $r->print("</head><body>\n");
-   $r->print('<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">');
+   $r->print( qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n} );
    $r->print('<div class="container"><div class="branded ' . $class . '"><div class="dockside"></div>' . $html . "</div></div>\n</body></html>\n");
    return nginx::OK;
 }
@@ -400,6 +401,19 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       return nginx::OK;
    }
 
+   # Serve the Vue client bundle's compiled CSS pre-auth too, so the (also pre-auth)
+   # login page can link to it same-origin instead of an external CDN (see
+   # send_branded_page) — avoiding a cross-origin fetch entirely rather than just
+   # relaxing its CORS/SRI attributes. main.js has no pre-auth reader, so it stays
+   # gated below with the rest of the authenticated app's assets.
+   if( $route eq '/assets/main.css' ) {
+      $r->status(200);
+      $r->header_out('Cache-Control', 'public, max-age=31536000, immutable');
+      $r->send_http_header('text/css');
+      $r->sendfile("$CONFIG->{'clientDistPath'}/main.css");
+      return nginx::OK;
+   }
+
    # If no auth cookie exists, cookie cannot be validated, or user is not still valid, then show sign-in screen.
    unless( $User->username ) {
 
@@ -427,20 +441,19 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # Enable for verbose request logging:
    # flog("App: route=$route; User=" . $User->username);
 
-   # Serve the Vue client bundle (main.js, main.css) as separate, cacheable assets rather
-   # than inlining them into every page. Placed below the auth gate so they are served to
-   # authenticated users only. nginx gzips the responses on the fly (application/javascript
-   # and text/css are in gzip_types); the ?v= cache-buster on the references below changes
-   # whenever the file changes, so a long immutable max-age is safe. ($route is the path
-   # only — $r->uri — so the ?v= query does not affect this match, and the regex pins the
-   # exact filenames, so there is no path traversal.)
-   if( $route =~ m!^/assets/main\.(js|css)$! ) {
-      my $ext = $1;
-      my %content_type = ( 'js' => 'application/javascript', 'css' => 'text/css' );
+   # Serve the Vue client bundle's JS as a separate, cacheable asset rather than inlining
+   # it into every page. Placed below the auth gate so it is served to authenticated users
+   # only (main.css has its own pre-auth route above, for the login page's benefit too).
+   # nginx gzips the response on the fly (application/javascript is in gzip_types); the ?v=
+   # cache-buster on the reference below changes whenever the file changes, so a long
+   # immutable max-age is safe. ($route is the path only — $r->uri — so the ?v= query does
+   # not affect this match, and the regex pins the exact filename, so there is no path
+   # traversal.)
+   if( $route eq '/assets/main.js' ) {
       $r->status(200);
       $r->header_out('Cache-Control', 'public, max-age=31536000, immutable');
-      $r->send_http_header( $content_type{$ext} );
-      $r->sendfile("$CONFIG->{'clientDistPath'}/main.$ext");
+      $r->send_http_header('application/javascript');
+      $r->sendfile("$CONFIG->{'clientDistPath'}/main.js");
       return nginx::OK;
    }
 
