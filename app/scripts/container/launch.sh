@@ -890,10 +890,6 @@ init() {
    log "- PATH=$PATH"
    log "- IDE_USER=$IDE_USER"
    log "- IDE_PATH=$IDE_PATH"
-   if [ -n "$DEBUG" ]; then
-      log "- Environment:"
-      busybox env | busybox sed 's/^/=> /'}
-   fi
 }
 
 [ "$1" = "nop" ] && shift || init "$@"
