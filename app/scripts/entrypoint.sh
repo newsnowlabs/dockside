@@ -268,7 +268,7 @@ if [ "$OPT_RUN_DOCKERD" != "1" ]; then
 fi
 
 log "Configuring standard services ..."
-for s in bind nginx docker-event-daemon logrotate dehydrated
+for s in bind nginx docker-event-daemon logrotate dehydrated playwright-proxy
 do
   log "- Configuring $s"
   mkdir -p /etc/service/$s /etc/service/$s/data
@@ -309,7 +309,8 @@ _EOE_
 done
 
 # Disable bind9 and dehydrated by default (they will be enabled if the ssl source == letsencrypt)
-touch /etc/service/bind/down /etc/service/dehydrated/down
+# Disable playwright-proxy by default too; enabled below, only if this image has Playwright baked in
+touch /etc/service/bind/down /etc/service/dehydrated/down /etc/service/playwright-proxy/down
 
 # Enable dockerd if needed
 if [ "$OPT_RUN_DOCKERD" == "1" ]; then
@@ -634,6 +635,50 @@ elif [ "$SSL" == "selfsupplied" ]; then
     log "- Self-supplied certificate files fullchain.pem and/or privkey.pem not found; aborting!"
     exit 1
   fi
+fi
+
+log "Checking for Playwright MCP support ..."
+if [ -d /opt/dockside-playwright ]; then
+  log "- Playwright detected; enabling playwright-proxy for zones: ${SSL_ZONES[*]}"
+
+  # Build a regex matching each configured zone itself, and any devtainer hostname
+  # nested under it, so Playwright can reach this container's own UI (www-<zone>)
+  # and any devtainer it launches (www-<name>--<zone>, ...) without needing
+  # per-devtainer updates. Devtainer hostnames prepend onto the zone's own
+  # leftmost label with a '-' (not a '.', which would need its own cert/SAN entry
+  # rather than reusing this container's own certificate) — see domain_to_host()
+  # in Proxy.pm — so matching just requires a literal '-' immediately before the
+  # zone, not the dot-subdomain boundary a bare suffix match would assume.
+  PLAYWRIGHT_PROXY_REGEX=""
+  for zone in "${SSL_ZONES[@]}"; do
+    esc=$(printf '%s' "$zone" | sed -e 's/[][\.^$*]/\\&/g')
+    PLAYWRIGHT_PROXY_REGEX="${PLAYWRIGHT_PROXY_REGEX:+$PLAYWRIGHT_PROXY_REGEX|}-$esc\$"
+  done
+
+  # HTTPS/HTTP ports here must match nginx's real listen ports (see
+  # app/server/nginx/conf/sites-available/default); kept independently
+  # configurable so a future change to nginx's listen ports only needs updating here.
+  #
+  # TLS_CERT/TLS_KEY point at this container's own certificate (see nginx's
+  # ssl_certificate/ssl_certificate_key above), letting playwright-proxy terminate
+  # TLS itself for regex-matched hosts and inject the X-Nest-Level header that a
+  # real outer Dockside proxy hop would otherwise have added (see Proxy.pm's
+  # domain_to_host()) — mirroring what the CLI's --connect-to mode does via
+  # _compute_nest_level()/_NestLevelHandler. Without this, a direct/local request
+  # (bypassing the outer proxy chain) is indistinguishable from a lookup for a
+  # same-named *child* reservation, and gets a 400 "container not found".
+  cat >>/etc/service/playwright-proxy/data/env <<_EOE_
+PLAYWRIGHT_PROXY_PORT=18080
+PLAYWRIGHT_PROXY_HTTPS_PORT=443
+PLAYWRIGHT_PROXY_HTTP_PORT=80
+PLAYWRIGHT_PROXY_REGEX='$PLAYWRIGHT_PROXY_REGEX'
+PLAYWRIGHT_PROXY_TLS_CERT='$DATA_DIR/certs/fullchain.pem'
+PLAYWRIGHT_PROXY_TLS_KEY='$DATA_DIR/certs/privkey.pem'
+_EOE_
+
+  rm -f /etc/service/playwright-proxy/down
+else
+  log "- Playwright not present in this image; leaving playwright-proxy disabled."
 fi
 
 log "Fixing ownership for data/db, data/cache, data/certs, data/config ..."

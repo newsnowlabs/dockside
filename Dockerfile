@@ -398,6 +398,32 @@ RUN cd /git/dockside && \
     git gc
 
 ################################################################################
+# BUILD MKDOCS DOCUMENTATION SITE
+#
+FROM python:3-slim AS docs-build
+
+COPY app/server/assets /build/app/server/assets/
+COPY docs /build/docs/
+COPY mkdocs.yml /build/
+WORKDIR /build
+# --site-dir overrides mkdocs.yml's own (absolute, runtime-path-shaped) site_dir setting,
+# so this stage's output lands at a fixed, self-contained path regardless of that config.
+RUN pip install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && \
+    mkdocs build --site-dir /build/site
+
+################################################################################
+# BUILD VUE CLIENT
+#
+# Built once here so both the production and development lineages copy from the
+# same npm install/build output, instead of each running (and each potentially
+# resolving) npm install independently.
+FROM node:$DOCKSIDE_NODE_VERSION-$DOCKSIDE_DEBIAN_VERSION AS vue-build
+
+COPY app/client /build/app/client/
+WORKDIR /build/app/client
+RUN npm install && npm run build && npm cache clean --force
+
+################################################################################
 # MAIN DOCKSIDE BUILD
 #
 FROM node:$DOCKSIDE_NODE_VERSION-$DOCKSIDE_DEBIAN_VERSION AS dockside-1
@@ -434,7 +460,6 @@ RUN apt-get update && \
         perl libjson-perl libjson-xs-perl liburi-perl libexpect-perl libtry-tiny-perl libterm-readkey-perl libcrypt-rijndael-perl libmojolicious-perl \
         libyaml-libyaml-perl \
         libio-async-perl \
-        python3-venv \
         acl \
         s6 \
         jq \
@@ -463,19 +488,16 @@ COPY --chown=$USER:$USER dehydrated $HOME/$APP/dehydrated/
 # ------------------
 # VUE CLIENT INSTALL
 #
-COPY --chown=$USER:$USER app/client $HOME/$APP/app/client/
-WORKDIR $HOME/$APP/app/client
-RUN npm install && npm run build && npm cache clean --force
-RUN rm -rf $HOME/.npm
+# Only dist/ (the built bundle App.pm serves via $CONFIG->{clientDistPath}) is needed at
+# runtime; node_modules/src/etc. are dropped here to save the several hundred MB they'd add
+# to the production image. The development stage copies the full directory (including
+# node_modules) from the same vue-build stage instead of running npm install again.
+COPY --from=vue-build --chown=$USER:$USER /build/app/client/dist $HOME/$APP/app/client/dist
 
 # --------------
-# MKDOCS INSTALL
+# MKDOCS SITE
 #
-COPY --chown=$USER:$USER app/server/assets $HOME/$APP/app/server/assets/
-COPY --chown=$USER:$USER docs $HOME/$APP/docs/
-COPY --chown=$USER:$USER mkdocs.yml $HOME/$APP/
-WORKDIR $HOME/$APP
-RUN python3 -m venv ~/mkdocs && ~/mkdocs/bin/pip3 install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && ~/mkdocs/bin/mkdocs build && rm -rf ~/.cache/pip
+COPY --from=docs-build --chown=$USER:$USER /build/site/ $HOME/$APP/app/server/nginx/html/docs/
 
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
@@ -528,17 +550,6 @@ RUN . /tmp/dockside/bash-env && \
     ln -sf $HOME /home/newsnow && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
-# ------------------------
-# DEVELOPMENT DEPENDENCIES
-#
-RUN apt-get update && \
-    apt-get -y --no-install-recommends --no-install-suggests install \
-        libfile-find-rule-perl libperl-languageserver-perl \
-        git tig perltidy \
-        shellcheck \
-        procps vim less curl locales && \
-    apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
-
 # ----------
 # GCLOUD SDK
 # - https://cloud.google.com/sdk/docs/quickstart-debian-ubuntu
@@ -571,3 +582,69 @@ VOLUME $OPT_PATH/host
 # LAUNCH
 #
 ENTRYPOINT ["/entrypoint.sh"]
+
+################################################################################
+# DEVELOPMENT IMAGE: Playwright + Claude Code CLI, for browser-driven agentic
+# development against a self-hosted Dockside instance.
+#
+FROM dockside AS development
+
+ARG USER=dockside
+ARG APP=dockside
+ARG HOME=/home/dockside
+ARG PLAYWRIGHT_BROWSERS_PATH=/opt/dockside-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH
+
+USER root
+
+# ------------------------
+# DEVELOPMENT DEPENDENCIES
+#
+RUN apt-get update && \
+    apt-get -y --no-install-recommends --no-install-suggests install \
+        libfile-find-rule-perl libperl-languageserver-perl \
+        git tig perltidy \
+        shellcheck \
+        procps vim less curl locales && \
+    apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
+
+# Restore the Vue client's full source + node_modules (the production lineage keeps only
+# dist/ to save image size) from the same vue-build stage dockside-1 copied dist/ from, so
+# this self-hosted dev image can rebuild it directly (see CLAUDE.md's `cd app/client && npm
+# run build` instruction) without a second, potentially-divergent npm install.
+COPY --from=vue-build --chown=$USER:$USER /build/app/client $HOME/$APP/app/client
+
+# Playwright's native browser dependencies (for chrome-headless-shell).
+# fontconfig/fonts-liberation are required for text rendering: without them,
+# chrome-headless-shell fatally crashes (SkFontMgr_FontConfigInterface) the
+# instant it renders any page with real text, rather than just failing to find
+# a specific glyph.
+RUN apt-get update && \
+    apt-get -y --no-install-recommends --no-install-suggests install \
+        libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libexpat1 \
+        libxkbcommon0 libasound2 libgbm1 libudev1 \
+        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+        fontconfig fonts-liberation && \
+    apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
+
+# Playwright MCP server + baked-in headless browser (no X server/Xvfb in this image)
+RUN npm install -g @playwright/mcp && \
+    npx playwright install chromium-headless-shell && \
+    chmod -R o+rx $PLAYWRIGHT_BROWSERS_PATH
+
+# Claude Code managed config (root-owned, read-only to $USER) + this MCP server's browser config
+RUN mkdir -p /etc/claude-code $HOME/.playwright && chown $USER:$USER $HOME/.playwright
+COPY build/development/claude-code/managed-settings.json /etc/claude-code/managed-settings.json
+COPY build/development/claude-code/managed-mcp.json /etc/claude-code/managed-mcp.json
+COPY --chown=$USER:$USER build/development/claude-code/mcp-config.json $HOME/.playwright/mcp-config.json
+RUN CHROMIUM=$(find $PLAYWRIGHT_BROWSERS_PATH -name chrome-headless-shell -path '*/chrome-headless-shell-linux64/*') && \
+    jq --arg exe "$CHROMIUM" '.browser.launchOptions.executablePath = $exe' $HOME/.playwright/mcp-config.json >/tmp/mcp-config.json && \
+    mv /tmp/mcp-config.json $HOME/.playwright/mcp-config.json && \
+    chown $USER:$USER $HOME/.playwright/mcp-config.json
+
+USER $USER
+RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Restore root as the effective runtime user, matching the base dockside stage:
+# entrypoint.sh requires root (sets up /etc/service, fixes ownership under /data, etc.)
+USER root
