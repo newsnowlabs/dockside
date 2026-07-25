@@ -162,6 +162,116 @@ live alongside it in `certs/`.
 
 ---
 
+## Step 4 — Installing local code changes into the running container
+
+Nothing about the container is auto-reloaded from your git checkout. Every edit
+made in this working directory — Perl, CLI, Vue, `launch.sh`/IDE assets — has to
+be explicitly installed into the running `dockside` container before it takes
+effect, using `docker cp` (there's no bind mount of the repo by default). This
+section covers the workflow, plus two ways to make the launch.sh/IDE-asset case
+survive a container restart, and an alternative that avoids `docker cp` entirely
+for the Perl/CLI/test case.
+
+### Perl server and CLI changes
+
+Copy the changed files into the container's copy of the repo checkout at
+`/home/dockside/dockside`, then restart the affected services (per the repo-root
+`CLAUDE.md`, the running server does **not** pick up file changes automatically):
+
+```bash
+docker cp app/server/lib/User/Manage.pm dockside:/home/dockside/dockside/app/server/lib/User/Manage.pm
+docker exec dockside sudo s6-svc -t /etc/service/nginx
+docker exec dockside sudo s6-svc -t /etc/service/docker-event-daemon
+```
+
+`cli/dockside` is a standalone script run from the host (or wherever the
+integration suite invokes it from) — copy it the same way if you're testing it
+inside the container, or just run your host checkout's copy directly.
+
+### Vue client changes
+
+Rebuild, then copy the whole `dist/` output over the container's copy:
+
+```bash
+(cd app/client && npm run build)
+docker cp app/client/dist/. dockside:/home/dockside/dockside/app/client/dist/
+```
+
+No service restart needed — nginx serves the static files directly.
+
+### `launch.sh` / IDE asset changes — the volume-vs-`.img` gotcha
+
+`launch.sh` and the IDE bundles are **not** read from the git checkout at
+runtime; they're read from `/opt/dockside`, which `entrypoint.sh` populates
+from `/opt/dockside.img` (the image-baked copy) at container start. This means:
+
+- `docker cp app/scripts/container/launch.sh dockside:/opt/dockside/bin/launch.sh`
+  takes effect immediately (`docker-event-daemon` execs it fresh on every
+  `docker exec ... launch.sh`), **but is silently wiped on the next container
+  restart** — `entrypoint.sh` unconditionally overwrites `/opt/dockside/bin/`
+  from `/opt/dockside.img/bin/` every time it runs, with no check for
+  newer/local content. This is a real trap: a `dockerd` crash-and-recover, or
+  any `docker restart dockside`, quietly reverts your patch back to the image
+  version with no error.
+- **Better: patch `.img`, not the volume.** Copy into
+  `/opt/dockside.img/bin/launch.sh` instead. `entrypoint.sh`'s `bin/` copy step
+  runs `cp -a "${OPT_PATH}.img/bin/." "$OPT_PATH/bin/"` on every start, so your
+  change now propagates to the volume automatically on every restart instead
+  of being destroyed by it. Verified live: after `docker cp` to `.img/bin/`
+  followed by `docker restart dockside`, both `/opt/dockside/bin/launch.sh` and
+  `/opt/dockside.img/bin/launch.sh` reflected the patch.
+  ```bash
+  docker cp app/scripts/container/launch.sh dockside:/opt/dockside.img/bin/launch.sh
+  docker restart dockside
+  ```
+- **IDE/system version directories behave differently from `bin/`.** Files
+  under `/opt/dockside.img/ide/<name>/<version>/` and
+  `/opt/dockside.img/system/<version>/` (e.g. `openvscode/bin/launch-ide.sh`)
+  are only copied to the volume **if the destination version directory doesn't
+  already exist** — `entrypoint.sh` treats them as "install once, then leave
+  running devtainers alone." A patch to an existing version directory made
+  directly at the volume path (`/opt/dockside/ide/...`) is **not** clobbered by
+  a restart (unlike `bin/`), but a patch made only under `.img/ide/...` will
+  **not** propagate to an already-populated volume either — you'd need to patch
+  both, or remove the volume's copy of that version dir first. In practice,
+  for an existing installed IDE version, patch the volume path directly; the
+  `.img` copy only matters for versions not yet installed on the volume.
+- **`.img` itself is part of the container's writable layer, not a docker
+  volume** (confirmed via `mount | grep dockside` inside the container — only
+  `/opt/dockside` and `/opt/dockside/host` show up as real mounts). So `.img`
+  edits survive container **restarts** but are lost on container **removal or
+  recreation** (`docker compose down` + `up`, or `docker rm`) — re-apply after
+  recreating the container, same as any other manual in-container patch.
+
+### Alternative: bind-mount the repo instead of `docker cp`
+
+For the Perl/CLI/test-code case (not `launch.sh`/IDE assets — those live under
+`/opt/dockside`, a separate subsystem, and aren't helped by this), you can skip
+`docker cp` entirely by bind-mounting your working directory over the
+container's checkout in `docker-compose.yml`:
+
+```yaml
+services:
+  dockside:
+    volumes:
+      - .:/home/dockside/dockside:ro
+```
+
+This is feasible despite a possible UID mismatch between your host user and the
+container's `dockside` user (uid 1001): Dockside's Perl/FastCGI app and CLI only
+need *read* access to the checkout (all mutable state lives in the separate
+`~/.dockside:/data`-backed volume), and a git checkout is normally
+world-readable/world-traversable, which is sufficient for another UID to read
+regardless of ownership. Verify with `find . -not -perm -o=r` /
+`find . -type d -not -perm -o=x` before relying on it if your checkout has
+unusual permissions. Edits on the host then appear inside the container
+immediately with no `docker cp` step — only a service restart (Perl) or
+`npm run build` (Vue) is still needed. Add this **as a local-only
+`docker-compose.yml` change**, same as the `:feature` image switch and CA-mount
+patch below — never commit it (see Step 2).
+
+---
+
 ## Known issue — CLI `dockside login` returns 500
 
 Running `./cli/dockside login ...` against `newsnowlabs/dockside:latest` fails
