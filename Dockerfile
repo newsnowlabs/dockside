@@ -645,6 +645,13 @@ RUN CHROMIUM=$(find $PLAYWRIGHT_BROWSERS_PATH -name chrome-headless-shell -path 
 USER $USER
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
+# The installer's `claude install` step never edits shell rc files itself: it only
+# prints an `echo ... >> ~/.bashrc` suggestion for an interactive user to run, which
+# is unreachable from this non-interactive RUN. Apply that PATH export directly so
+# `claude` is on PATH in shells opened against this image (terminals, SSH, etc.).
+RUN grep -qF 'export PATH="$HOME/.local/bin:$PATH"' $HOME/.bashrc 2>/dev/null || \
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> $HOME/.bashrc
+
 # Restore root as the effective runtime user, matching the base dockside stage:
 # entrypoint.sh requires root (sets up /etc/service, fixes ownership under /data, etc.)
 USER root
