@@ -614,12 +614,17 @@ RUN apt-get update && \
 # run build` instruction) without a second, potentially-divergent npm install.
 COPY --from=vue-build --chown=$USER:$USER /build/app/client $HOME/$APP/app/client
 
-# Playwright's native browser dependencies (for chrome-headless-shell)
+# Playwright's native browser dependencies (for chrome-headless-shell).
+# fontconfig/fonts-liberation are required for text rendering: without them,
+# chrome-headless-shell fatally crashes (SkFontMgr_FontConfigInterface) the
+# instant it renders any page with real text, rather than just failing to find
+# a specific glyph.
 RUN apt-get update && \
     apt-get -y --no-install-recommends --no-install-suggests install \
         libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libexpat1 \
         libxkbcommon0 libasound2 libgbm1 libudev1 \
-        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 && \
+        libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+        fontconfig fonts-liberation && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
 # Playwright MCP server + baked-in headless browser (no X server/Xvfb in this image)
