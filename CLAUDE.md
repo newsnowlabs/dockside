@@ -27,6 +27,31 @@
   ```
   Run modules individually with `--only NN` for targeted testing.
 
+## Commit authorship
+
+Every commit's **Author** must be the real human contributor — never
+`Claude <noreply@anthropic.com>`. Credit Claude via a `Co-Authored-By:` trailer instead. Fix an
+unpushed bad-author commit with `git commit --amend --author=...`; never rewrite one that's
+already shared without explicit sign-off.
+
+## Commit messages
+
+Keep commit messages that land on `main` focused on the current change's *why* — not the
+branch's own process history. Drop provenance/lineage narrative that becomes stale or
+unreachable once the source branch is deleted, e.g. "Originally authored on `<branch>` (commit
+`<hash>`)" or "Rebased directly onto main, reconciling with...". A `Raw-History:` trailer (see
+below) is for genuine squash-rewrites, where it points at the one place the discarded pre-squash
+history survives; a straight rebase/reword that keeps each commit's own message and hash needs
+no such trailer, since nothing is being discarded.
+
+## Checking whether a branch already landed
+
+Before concluding a **multi-commit** branch is unmerged, check for the `Raw-History:` trailer
+convention — a squashed/rewritten landing on `main` won't show up via a plain `git diff` or
+`git merge-base --is-ancestor` check (it's a deliberate history rewrite, not a rebase). See
+`docs/developing/curated-merge-process.md` (detection snippet + the full curated-landing
+process) and `docs/plans/branches.md` (current branch inventory).
+
 ## Runtime environment & testing capability (check at the start of each session)
 
 What you can test depends on **how this container was launched** — specifically whether its
