@@ -309,10 +309,19 @@ docker exec -u dockside dockside bash -c "
   DOCKSIDE_TEST_HOST=www.local.dockside.dev \
   DOCKSIDE_TEST_CONTAINER_ACCESS=ssh \
   DOCKSIDE_TEST_IMAGE_REGISTRY=mirror.gcr.io/library \
+  DOCKSIDE_TEST_NETWORK=bridge \
   PATH=\$PATH:/opt/dockside/system/latest/bin \
   bash t/integration/run_tests.sh
 "
 ```
+
+`DOCKSIDE_TEST_NETWORK=bridge` is explicit here rather than relying on the
+harness's own single-network auto-detection (it only needs one network attached
+to the `dockside` container to disambiguate, which is all `network_mode: "bridge"`
+gives it here) — spelling it out keeps this invocation reproducible regardless of
+what the harness's default behaviour does in a given version, and matches the
+literal Docker network name `network_mode: "bridge"` attaches to (Docker's
+built-in default bridge network, always named `bridge`).
 
 ### `PYTHONUNBUFFERED=1` is required for live output
 

@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 import traceback
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -260,12 +261,18 @@ class DocksideClient:
     """
 
     def __init__(self, cli_path, server_url, username=None, password=None,
-                 use_cli_admin_creds=False, reuse_explicit_session=False):
+                 use_cli_admin_creds=False, reuse_explicit_session=False,
+                 default_network=None):
         self._cli = cli_path
         self._server = server_url
         self._username = username
         self._password = password
         self._use_cli_admin_creds = use_cli_admin_creds
+        # Applied by create() when the caller doesn't specify a network, so every
+        # devtainer this client creates lands deterministically on the network
+        # _EnvManager.select_network() chose for this run, without profiles
+        # themselves needing to be pinned to it (see create()).
+        self._default_network = default_network
         self._reuse_explicit_session = (
             reuse_explicit_session and not use_cli_admin_creds
         )
@@ -309,6 +316,7 @@ class DocksideClient:
             password=password,
             use_cli_admin_creds=False,
             reuse_explicit_session=self._reuse_explicit_session,
+            default_network=self._default_network,
         )
 
     def _should_send_credentials(self, force_credentials=False):
@@ -472,6 +480,15 @@ class DocksideClient:
         return self._run_readonly('get', name)
 
     def create(self, no_wait=False, **fields):
+        # Default to this run's selected test network unless the caller names one
+        # explicitly (e.g. 08_network.py's own tests, probing a specific network).
+        # Applied here rather than baked into the profile's networks list so a
+        # profile keeps validating any attached host network (network-switch tests
+        # still work) while a plain create() still lands deterministically on the
+        # network _EnvManager.select_network() chose, rather than on whatever the
+        # profile's own "*" default would resolve to.
+        if self._default_network and 'network' not in fields:
+            fields = {**fields, 'network': self._default_network}
         # no_wait maps to the CLI's --no-wait switch (a store_true flag, so it is
         # not a value-bearing field and cannot go through _fields_to_args).  With
         # --no-wait the CLI returns the reservation record immediately and exits 0
@@ -625,6 +642,120 @@ class DocksideClient:
         self._persisted_session_ready = False
 
 
+# ── Docker/network helpers ──────────────────────────────────────────────────────
+# Shared by TestCase.can_modify_networks() / 08_network.py's NetworkTests and by
+# run_tests_main.py's harness-wide test network selection (both need to create,
+# attach, and probe a throwaway Docker network the same way).
+
+def docker_available():
+    try:
+        r = subprocess.run(['docker', 'version'], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def docker_manages_container(ctr):
+    """True if the docker daemon reachable here manages container `ctr`.
+
+    A Dockside container launched with runc / io.containerd.runc.v2 + a bind-mounted
+    /var/run/docker.sock talks to the host daemon, which DOES manage it. One launched
+    with sysbox-runc instead runs an independent inner dockerd (per entrypoint.sh) that
+    does NOT manage the Dockside container — so a network cannot be attached to it from
+    here. This guard lets callers skip/fail cleanly in that case rather than create a
+    network and then fail on connect.
+    """
+    try:
+        r = subprocess.run(['docker', 'container', 'inspect', ctr],
+                           capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def resolve_allow_network_modify(test_mode, override=None):
+    """Whether Docker networks may be created/attached/detached in this run.
+
+    Defaults:
+      harness → True  (we own the Dockside container)
+      local   → False (may be the developer's own instance)
+      remote  → False (definitely someone's production instance)
+
+    Always overridable via DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1/0, or an explicit
+    `override` (e.g. the runner's allow_network_modify, itself derived from the
+    same env var — see callers).
+    """
+    env_val = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()
+    if env_val == '1':
+        return True
+    if env_val == '0':
+        return False
+    if override is not None:
+        return override
+    return test_mode == 'harness'
+
+
+def create_and_attach_test_network(admin_client, ctr, probe_profile, probe_name,
+                                    timeout=45, interval=3):
+    """Create a throwaway Docker network, attach it to `ctr`, and wait until Dockside
+    recognizes it as available for a reservation.
+
+    Discovery is asynchronous: docker-event-daemon must notice the network connected
+    to the Dockside container and rewrite containers.json, the Perl app must reload
+    it, and Profile::applyDefaultsAndFilters must re-read the in-memory host networks
+    before the new network is offered for a reservation. So this retries a probe
+    create on `probe_profile` (with an explicit `network=`) until it is accepted, or
+    `timeout` elapses.
+
+    Returns the created network's name. The probe reservation named `probe_name` is
+    left in place on success (caller decides whether to inspect/remove it); the
+    network itself is left attached. On any failure the network (and, if attached,
+    its connection to `ctr`) is torn down before raising — callers otherwise own
+    disconnect/remove of a network returned successfully.
+
+    Raises RuntimeError (create/connect failed) or AssertionError (probe never
+    succeeded within `timeout`).
+    """
+    test_net = f'inttest-net-{uuid.uuid4().hex[:8]}'
+    r = subprocess.run(['docker', 'network', 'create', test_net],
+                       capture_output=True, timeout=15)
+    if r.returncode != 0:
+        raise RuntimeError(f'docker network create failed: {r.stderr.decode()}')
+
+    r = subprocess.run(['docker', 'network', 'connect', test_net, ctr],
+                       capture_output=True, timeout=15)
+    if r.returncode != 0:
+        subprocess.run(['docker', 'network', 'rm', test_net], capture_output=True, timeout=15)
+        raise RuntimeError(f'docker network connect failed: {r.stderr.decode()}')
+
+    def _probe():
+        try:
+            admin_client.create(profile=probe_profile, name=probe_name,
+                                 network=test_net, no_wait=True)
+            return True
+        except APIError:
+            return False  # not yet discovered by Dockside; retry
+
+    deadline = time.time() + timeout
+    discovered = False
+    while time.time() < deadline:
+        if _probe():
+            discovered = True
+            break
+        time.sleep(interval)
+
+    if not discovered:
+        subprocess.run(['docker', 'network', 'disconnect', test_net, ctr],
+                       capture_output=True, timeout=15)
+        subprocess.run(['docker', 'network', 'rm', test_net], capture_output=True, timeout=15)
+        raise AssertionError(
+            f'Dockside did not make the attached test network available for a '
+            f'reservation within {timeout}s'
+        )
+
+    return test_net
+
+
 # ── TestCase base class ────────────────────────────────────────────────────────
 
 class TestCase:
@@ -703,25 +834,12 @@ class TestCase:
         self._cleanup_names.append(name)
 
     def can_modify_networks(self):
-        """
-        Whether this test run may create/attach/detach Docker networks.
+        """Whether this test run may create/attach/detach Docker networks.
 
-        Defaults:
-          harness → True  (we own the Dockside container)
-          local   → False (may be the developer's own instance)
-          remote  → False (definitely someone's production instance)
-
-        Always overridable via DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1/0
-        or the allow_network_modify class attribute set by the runner.
+        See resolve_allow_network_modify() for the default/override logic; this
+        just supplies this run's test_mode and allow_network_modify class attribute.
         """
-        env_val = os.environ.get('DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY', '').strip()
-        if env_val == '1':
-            return True
-        if env_val == '0':
-            return False
-        if self.allow_network_modify is not None:
-            return self.allow_network_modify
-        return self.test_mode == 'harness'
+        return resolve_allow_network_modify(self.test_mode, self.allow_network_modify)
 
     # ── Assertions ────────────────────────────────────────────────────────────
 
@@ -873,7 +991,8 @@ class TestRunner:
 
     def __init__(self, cli_path, server_url, credentials, test_mode='remote',
                  harness_container_id=None, allow_network_modify=None, name_attrs=None,
-                 reuse_user_sessions=False, dockside_container_id=None):
+                 reuse_user_sessions=False, dockside_container_id=None,
+                 default_network=None):
         self._cli_path = cli_path
         self._server_url = server_url
         self._credentials = credentials  # dict: role -> (username, password) or (None, None)
@@ -885,6 +1004,9 @@ class TestRunner:
         self._allow_network_modify = allow_network_modify
         self._name_attrs = name_attrs or {}
         self._reuse_user_sessions = reuse_user_sessions
+        # This run's selected test network (_EnvManager.select_network()), passed to
+        # every client so create() defaults to it — see DocksideClient.create().
+        self._default_network = default_network
         self._clients = {}
         self._active_cases = []
         self._active_class_teardowns = []
@@ -911,6 +1033,7 @@ class TestRunner:
             password=password,
             use_cli_admin_creds=use_cli_admin_creds,
             reuse_explicit_session=self._reuse_user_sessions,
+            default_network=self._default_network,
         )
 
     def _validate_client(self, client, role):

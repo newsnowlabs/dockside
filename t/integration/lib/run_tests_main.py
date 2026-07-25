@@ -28,6 +28,7 @@ import os
 import random
 import signal
 import socket
+import subprocess
 import sys
 
 SCRIPT_DIR      = os.path.dirname(os.path.abspath(__file__))
@@ -38,7 +39,11 @@ _SSH_DIR        = os.path.join(INTEGRATION_DIR, 'config', 'ssh')
 sys.path.insert(0, SCRIPT_DIR)
 sys.path.insert(0, os.path.join(REPO_ROOT, 'cli'))
 
-from dockside_test import DocksideClient, TestRunner, APIError
+from dockside_test import (
+    DocksideClient, TestRunner, APIError,
+    docker_available, docker_manages_container, resolve_allow_network_modify,
+    create_and_attach_test_network,
+)
 
 
 # ── Image registry prefix ──────────────────────────────────────────────────────
@@ -413,6 +418,10 @@ class _EnvManager:
         self.profile_bad_image  = None
         self.password_dev    = 'inttest-testpass'
 
+        # Resolved by select_network() before setup() builds any profile.
+        self.selected_network = None
+        self._created_network = None  # (name, container_id) if we created+attached it
+
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _get_role(self, name):
@@ -577,11 +586,134 @@ class _EnvManager:
         print(f'# Profile {name!r}: created', file=sys.stderr)
         return name
 
+    # ── network selection ─────────────────────────────────────────────────────
+
+    def _container_networks(self, ctr):
+        """Return the set of Docker network names `ctr` is currently attached to,
+        or None if that can't be determined (docker unreachable, ctr unknown, etc.)."""
+        r = subprocess.run(['docker', 'inspect', ctr], capture_output=True, timeout=10)
+        if r.returncode != 0:
+            return None
+        try:
+            data = json.loads(r.stdout)
+            return set(data[0]['NetworkSettings']['Networks'].keys())
+        except (ValueError, KeyError, IndexError, TypeError):
+            return None
+
+    def _network_attached(self, ctr, network_name):
+        """True if `network_name` is one of `ctr`'s current Docker network attachments."""
+        networks = self._container_networks(ctr)
+        return networks is not None and network_name in networks
+
+    def select_network(self, test_mode, allow_network_modify, dockside_container_id):
+        """Choose which Docker network test devtainers use, deterministically.
+
+        Every default test profile used to declare ``"networks": ["*"]``, which
+        Profile::applyDefaultsAndFilters resolves to an alphabetical sort of
+        whatever networks the Dockside-under-test happens to be attached to.  On
+        a real instance with more than one attached network (e.g. one firewall-
+        managed, one not), that made a test run's actual network non-deterministic
+        and dependent on incidental network naming rather than anything the suite
+        declares — the same "correct by assumption" problem the no-pre-existing-
+        fixtures rule exists to avoid for users/roles/profiles.  This picks one
+        network explicitly instead, in priority order:
+
+          1. DOCKSIDE_TEST_NETWORK env var — used verbatim.  Verified against the
+             Dockside-under-test's actual attachments when docker access and a
+             container id are both available; trusted as-is otherwise (e.g. true
+             remote mode with no local docker access to check with).
+          2. If docker access and a container id are available and the
+             Dockside-under-test is currently attached to exactly one network,
+             use it automatically. There is nothing to disambiguate — a set of
+             one is deterministic regardless of what it happens to be named —
+             so this needs no modify permission and is not the "correct by
+             assumption" problem this method exists to remove (e.g. a fresh
+             single-network deployment such as the root docker-compose.yml's
+             network_mode: "bridge").
+          3. Auto-create-and-attach a dedicated ``inttest-net-*`` network, when
+             network modification is enabled (resolve_allow_network_modify()) and
+             the preconditions 08_network.py's own network-attach tests already
+             require all hold (docker reachable, a container id known, that
+             daemon manages it). Only reached when step 2 found 2+ candidate
+             networks (genuine ambiguity) or none at all.
+          4. Fail fast.  This deliberately does NOT fall back to whatever ["*"]
+             would have resolved to — that silent, environment-dependent choice
+             is exactly what this method exists to remove.
+
+        Exits the process on failure (this runs during setup, not as a test).
+        """
+        explicit = os.environ.get('DOCKSIDE_TEST_NETWORK', '').strip()
+        if explicit:
+            if docker_available() and dockside_container_id:
+                if not self._network_attached(dockside_container_id, explicit):
+                    print(
+                        f'ERROR: DOCKSIDE_TEST_NETWORK={explicit!r} is not attached to '
+                        f'Dockside container {dockside_container_id!r}.', file=sys.stderr)
+                    print('  Attach it first, e.g.:', file=sys.stderr)
+                    print(f'    docker network connect {explicit} {dockside_container_id}',
+                          file=sys.stderr)
+                    sys.exit(1)
+            self.selected_network = explicit
+            print(f'# Test devtainer network: {explicit!r} (explicit, DOCKSIDE_TEST_NETWORK)',
+                  file=sys.stderr)
+            return
+
+        if docker_available() and dockside_container_id:
+            networks = self._container_networks(dockside_container_id)
+            if networks is not None and len(networks) == 1:
+                net = next(iter(networks))
+                self.selected_network = net
+                print(f'# Test devtainer network: {net!r} (only network attached to the '
+                      f'Dockside-under-test; unambiguous, no selection needed)',
+                      file=sys.stderr)
+                return
+
+        can_modify = resolve_allow_network_modify(test_mode, allow_network_modify)
+        if (can_modify and docker_available() and dockside_container_id
+                and docker_manages_container(dockside_container_id)):
+            probe_profile = self._ensure_profile('inttest-netprobe', _ALPINE_PROFILE)
+            probe_name = _suffixed('inttest-netprobe-check', self._suffix)
+            try:
+                net = create_and_attach_test_network(
+                    self._admin, dockside_container_id, probe_profile, probe_name)
+            except (RuntimeError, AssertionError) as e:
+                print(f'ERROR: could not create/attach a test network: {e}', file=sys.stderr)
+                sys.exit(1)
+            # The probe reservation itself is removed later, in cleanup() — it was
+            # just created with no_wait=True (create_and_attach_test_network's own
+            # discovery-retry loop calls create() that way), so removing it here
+            # immediately would race its own launch and can silently fail, leaving
+            # it attached and blocking the network's removal at the end of the run.
+            # By cleanup() time (after the whole suite has run) it is long since
+            # settled, so a normal blocking remove(wait=True) there is reliable.
+            self.selected_network = net
+            self._created_network = (net, dockside_container_id, probe_name)
+            print(f'# Test devtainer network: {net!r} (auto-created and attached)',
+                  file=sys.stderr)
+            return
+
+        networks = (self._container_networks(dockside_container_id)
+                    if docker_available() and dockside_container_id else None)
+        if networks:
+            print(f'ERROR: {len(networks)} candidate networks are attached to the '
+                  f'Dockside-under-test ({", ".join(sorted(networks))}) — ambiguous, '
+                  f'refusing to guess.', file=sys.stderr)
+        else:
+            print('ERROR: no test devtainer network selected, and none can be created.',
+                  file=sys.stderr)
+        print('  Set DOCKSIDE_TEST_NETWORK=<name> to use a specific network already', file=sys.stderr)
+        print('  connected to the Dockside-under-test, or set', file=sys.stderr)
+        print('  DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1 (and DOCKSIDE_TEST_CONTAINER_ID if not',
+              file=sys.stderr)
+        print('  auto-detectable) to let the harness create and attach one.', file=sys.stderr)
+        sys.exit(1)
+
     # ── public interface ──────────────────────────────────────────────────────
 
     def setup(self):
         """Create all test roles, users, and profiles (or reuse existing)."""
         print('# Setting up test environment...', file=sys.stderr)
+        assert self.selected_network, 'select_network() must be called before setup()'
 
         _dev_resources = {
             'profiles': ['*'],
@@ -656,7 +788,12 @@ class _EnvManager:
             email='inttest-developall@dockside-integration-test.invalid',
         )
 
-        # Profiles
+        # Profiles keep the "*" wildcard (any attached host network validates), so a
+        # profile reused from a previous run is never pinned to a network that may
+        # since have been torn down. The network select_network() chose for *this*
+        # run is instead applied at create() time by default (see TestRunner's
+        # default_network / DocksideClient.create()), which is also what keeps every
+        # devtainer's default network deterministic without touching the profile.
         self.profile_alpine     = self._ensure_profile('inttest-alpine',     _ALPINE_PROFILE)
         self.profile_debian     = self._ensure_profile('inttest-debian',     _DEBIAN_PROFILE)
         self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
@@ -673,11 +810,12 @@ class _EnvManager:
         the caller can surface a distinct status — a green test run that
         nevertheless leaks fixtures is neither a clean pass nor a test failure.
         """
-        if not (self._created_users or self._created_roles or self._created_profiles):
+        if not (self._created_users or self._created_roles or self._created_profiles
+                or self._created_network):
             return 0
         failures = 0
         print('# Cleaning up test environment...', file=sys.stderr)
-        # Remove in reverse-dependency order: users → roles → profiles
+        # Remove in reverse-dependency order: users → roles → profiles → network
         for name in self._created_users:
             try:
                 self._admin._run('user', 'remove', '--force', name)
@@ -699,6 +837,28 @@ class _EnvManager:
             except APIError as e:
                 failures += 1
                 print(f'# Warning: could not remove profile {name!r}: {e}', file=sys.stderr)
+        if self._created_network:
+            net, ctr, probe_name = self._created_network
+            try:
+                # remove() alone does not stop a running container (matches
+                # TestCase.tearDown's own stop-then-remove pattern for test devtainers).
+                self._admin.stop(probe_name, wait=True)
+                self._admin.remove(probe_name, wait=True)
+                print(f'# Removed probe reservation {probe_name!r}', file=sys.stderr)
+            except APIError as e:
+                failures += 1
+                print(f'# Warning: could not remove probe reservation {probe_name!r}: {e}',
+                      file=sys.stderr)
+            r1 = subprocess.run(['docker', 'network', 'disconnect', net, ctr],
+                                capture_output=True, timeout=15)
+            r2 = subprocess.run(['docker', 'network', 'rm', net],
+                                capture_output=True, timeout=15)
+            if r1.returncode == 0 and r2.returncode == 0:
+                print(f'# Removed test network {net!r}', file=sys.stderr)
+            else:
+                failures += 1
+                print(f'# Warning: could not fully remove test network {net!r}', file=sys.stderr)
+            self._created_network = None
         return failures
 
 
@@ -803,6 +963,14 @@ def main():
     ok = False
     cleanup_failed = 0
     try:
+        # harness_id wins when set, matching TestCase._dockside_container()'s existing
+        # precedent (08_network.py): harness.sh runs on the *host* and launches a fresh
+        # container via `docker run`, so in harness mode dockside_container_id's own
+        # auto-detect (this process's own ctr-id/hostname) resolves to the driver host's
+        # identity, not the harness container's — using it directly would attach the
+        # auto-created test network to the wrong container, or fail outright.
+        _env_manager.select_network(test_mode, allow_network_modify,
+                                     harness_id or dockside_container_id)
         _env_manager.setup()
 
         # Resolved names
@@ -879,6 +1047,7 @@ def main():
             allow_network_modify=allow_network_modify,
             name_attrs=name_attrs,
             reuse_user_sessions=reuse_user_sessions,
+            default_network=_env_manager.selected_network,
         )
         # On SIGINT/SIGTERM the runner re-raises the signal, skipping the finally
         # below, so give it the env cleanup to still remove dynamic fixtures
