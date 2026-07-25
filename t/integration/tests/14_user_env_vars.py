@@ -264,11 +264,23 @@ class EnvVarsApiTests(TestCase):
     def test_21_aggregate_ide_ssh_blob_size_rejected(self):
         """Per-var limits (50 vars x 4096 bytes) alone would allow a combined
         ide+ssh blob larger than the aggregate limit enforced for the single
-        --env=DOCKSIDE_USER_ENV=<json> argv element built in Reservation::exec."""
-        big_value = 'x' * 4000
+        --env=DOCKSIDE_USER_ENV=<json> argv element built in Reservation::exec.
+
+        ENV_MAX_IDE_SSH_BLOB_LEN is temporarily 8192 (see User/Manage.pm), not
+        its intended 65536, because the UI server's embedded-nginx request
+        body reader silently drops POST bodies above ~10KB instead of
+        erroring (see mojolicious-app-server-split-plan.md) - a payload sized
+        to exceed 65536 would never even reach this validation. This payload
+        (4 vars x 1500 bytes, dual-targeted) is sized to clear the current
+        8192 limit (combined blob ~12KB) while staying well under that ~10KB
+        request-body ceiling (wire body ~6.5KB) so the request actually
+        reaches the check it's testing. Restore both the 4000-byte/20-var
+        payload and 65536 once the app server migration lands.
+        """
+        big_value = 'x' * 1500
         env = {f'BIGVAR{i}': {'value': big_value, 'secret': False,
                               'targets': {'ide': True, 'ssh': True}}
-               for i in range(20)}
+               for i in range(4)}
         body = {'env': env}
         with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as fh:
             json.dump(body, fh)

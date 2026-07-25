@@ -557,9 +557,21 @@ my $ENV_MAX_VALUE_LEN = 4096;
 # The 'ide'/'ssh'-targeted vars are bundled into a single
 # --env=DOCKSIDE_USER_ENV=<json> argv element for `docker exec` (see
 # Reservation::exec). Linux caps a single argv element at MAX_ARG_STRLEN
-# (131072 bytes on typical 4K-page kernels); this stays well under that so
-# per-var limits above can never combine into a blob `docker exec` rejects.
-my $ENV_MAX_IDE_SSH_BLOB_LEN = 65536;
+# (131072 bytes on typical 4K-page kernels); 65536 would stay well under
+# that so per-var limits above could never combine into a blob `docker
+# exec` rejects.
+#
+# Temporarily capped at 8192 instead: the UI server currently runs embedded
+# in nginx via ngx_http_perl_module, whose $r->request_body silently returns
+# empty for a POST body nginx buffers to a temp file rather than memory
+# (empirically ~10240 bytes on this build - not configured anywhere, just
+# nginx's compiled-in default) instead of raising an error. A limit anywhere
+# near 65536 can therefore never actually be enforced today - the request's
+# 'env' field is silently dropped before reaching this check, well below the
+# intended threshold. Raise back to 65536 once the API server moves to the
+# standalone Mojolicious app server (see the mojolicious-app-server-split
+# plan), whose $c->req->body reads the complete body regardless of size.
+my $ENV_MAX_IDE_SSH_BLOB_LEN = 8192;
 
 # True if $v is usable as a JSON boolean: an actual JSON::PP::Boolean (or
 # Types::Serialiser::Boolean, depending on which backend JSON.pm loads) as
