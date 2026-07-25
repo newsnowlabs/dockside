@@ -15,6 +15,11 @@
 #                         CLI's currently selected server URL.
 #                         Any https:// prefix and trailing slash are stripped.
 #
+#   DOCKSIDE_CLI_CONFIG   Override CLI config directory. Set this (with a prior
+#                         'dockside login' into the same dir) to use an isolated
+#                         admin session without touching ~/.config/dockside.
+#                         In harness mode, harness.sh sets this automatically.
+#
 #   DOCKSIDE_TEST_IMAGE   Docker image for harness mode
 #   DOCKSIDE_TEST_HARNESS_ZONE  DNS zone for harness container (default: dockside.test)
 #
@@ -75,6 +80,14 @@
 #   # Remote mode (authenticate the CLI first):
 #   dockside login --server https://www.local.dockside.dev --nickname local
 #   DOCKSIDE_TEST_HOST=www.local.dockside.dev bash t/integration/run_tests.sh
+#
+#   # Isolated admin session (avoids touching ~/.config/dockside):
+#   export DOCKSIDE_CLI_CONFIG="$(mktemp -d)"
+#   dockside login --server https://www.local.dockside.dev --connect-to 127.0.0.1 \
+#     --no-verify --username admin --password '<password>'
+#   DOCKSIDE_TEST_MODE=local DOCKSIDE_TEST_HOST=www.local.dockside.dev \
+#     bash t/integration/run_tests.sh
+#   rm -rf "${DOCKSIDE_CLI_CONFIG}"
 #
 #   # Local mode (inside or alongside the Dockside container):
 #   DOCKSIDE_TEST_MODE=local DOCKSIDE_TEST_HOST=www.local.dockside.dev bash t/integration/run_tests.sh
