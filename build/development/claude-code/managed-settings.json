@@ -22,9 +22,9 @@
     ],
     "deny": [
       "Read(//home/*/.ssh/*)",
-      "Write(//home/*/.ssh/*)",
+      "Edit(//home/*/.ssh/*)",
       "Read(//data/config/passwd)",
-      "Write(//data/config/passwd)",
+      "Edit(//data/config/passwd)",
       "Bash(rm -rf *)",
       "Bash(npm install*)",
       "Bash(npm ci)",
