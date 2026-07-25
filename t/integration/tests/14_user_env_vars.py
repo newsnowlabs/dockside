@@ -388,24 +388,25 @@ class EnvVarsInjectionTests(TestCase):
                          f'ssh-only var unexpectedly baked into docker create env: {out!r}')
 
     def test_02_ide_target_visible_to_container_processes(self):
-        """An 'ide'-target var reaches the IDE server process's own environment.
+        """An 'ide'-target var reaches the file the IDE launch exports from.
 
-        Reads launch-ide.sh's own environment dump (both the Theia and
-        openvscode variants log "- environment variables:" followed by a
-        4-space-indented `env | sort` right before exec-ing the actual IDE
-        server binary) rather than reading /proc/<pid>/environ directly:
-        ptrace-reading another process's /proc/<pid>/environ needs
-        CAP_SYS_PTRACE, which is unavailable in some restricted/nested Docker
-        setups even for root — the log file needs only an ordinary root file
-        read, and is IDE-variant-agnostic. Absence of the ssh-only marker is a
-        valid negative check here because no SSH session exists yet at this
-        point in the test (see test_03 for a more precisely scoped isolation
-        check on the SSH side).
+        populate_user_env (launch.sh) writes 'ide'-target vars to
+        $HOME/.dockside/user-env-ide.env; apply_user_env reads that same file
+        and exports each line into the IDE server process's own environment
+        before exec. This checks the file directly rather than the live IDE
+        process's environment (previously read via launch-ide.sh's own
+        "- environment variables:" log dump) since that dump was removed —
+        it unconditionally logged the full process environment, including
+        secret-flagged values, to a world-readable log file. 'dockside' is
+        the unixuser fixed by the alpine profile's "unixusers" config.
+        Absence of the ssh-only marker is a valid negative check here because
+        it's written to a separate file (user-env-ssh.env) entirely (see
+        test_03 for a live-session isolation check on the SSH side).
         """
         script = (
-            "for f in /tmp/dockside/theia.log /tmp/dockside/openvscode.log; do "
-            "[ -f \"$f\" ] && sed -n '/- environment variables:/,$p' \"$f\"; "
-            "done; true"
+            "home=\"$(getent passwd dockside | cut -d: -f6)\"; "
+            "f=\"$home/.dockside/user-env-ide.env\"; "
+            "[ -f \"$f\" ] && cat \"$f\"; true"
         )
         try:
             out = self._docker_exec_root(['sh', '-c', script])
@@ -413,11 +414,11 @@ class EnvVarsInjectionTests(TestCase):
             self.skip(str(exc))
         lines = [line.strip() for line in out.splitlines()]
         self.assert_in('IDE_VAR=ide-val', lines,
-                       f'ide-target var not found in the IDE launch environment dump: {out!r}')
+                       f'ide-target var not found in user-env-ide.env: {out!r}')
         self.assert_in('ALL_VAR=all-val', lines,
-                       f'all-target var not found in the IDE launch environment dump: {out!r}')
+                       f'all-target var not found in user-env-ide.env: {out!r}')
         self.assert_true('SSH_VAR=ssh-val' not in lines,
-                         f'ssh-only var unexpectedly visible in the IDE launch environment dump: {out!r}')
+                         f'ssh-only var unexpectedly present in user-env-ide.env: {out!r}')
 
     def test_03_ssh_target_visible_in_ssh_session_env(self):
         """An 'ssh'-target var reaches a real SSH session via the rc-file snippet."""
