@@ -104,15 +104,21 @@ sub _restore_redacted_gh_token ($record, $orig_token) {
 #
 # _sanitise_user_record masks each secret=1 var's value to first-4/last-4
 # visible chars (same convention as gh_token). If that masked value is POSTed
-# back unchanged, writing it would destroy the real value. Any secret=1 entry
-# whose current 'value' contains '*' is treated as an unchanged-masked
-# sentinel and restored from the pre-apply snapshot (or deleted if the
-# snapshot had no such key — e.g. a stale client payload for a since-removed
-# var, which we simply drop rather than persist a bogus masked string).
-#
-# Unlike _restore_redacted_gh_token, the '*' check is gated on 'secret' being
-# true: a non-secret value that legitimately contains '*' (e.g. '50*discount')
-# must not be misdetected as a masked sentinel and clobbered.
+# back unchanged, writing it would destroy the real value. An entry is
+# restored from the pre-apply snapshot only when its submitted 'value' is an
+# EXACT match for _mask_secret() of that key's original (pre-apply) value —
+# not merely "contains a '*'" — and only for keys that were secret=1
+# originally (i.e. present in $orig_values). This means:
+#  - a brand-new secret whose real value happens to contain '*' is left
+#    alone (no prior snapshot exists for it to match against);
+#  - changing an existing secret to a new value that happens to contain '*'
+#    is left alone (it won't exactly match the old mask unless it IS the old
+#    mask);
+#  - toggling secret->non-secret while re-posting the untouched masked
+#    string still restores the real value (restoration no longer depends on
+#    the entry's NEW 'secret' flag, only on whether it matches the ORIGINAL
+#    mask) — otherwise the mask itself would be persisted as the plaintext
+#    value once 'secret' is unset.
 #
 # $orig_values — KEY→scalar-value map of secret=1 vars taken BEFORE
 #                apply_args_to_record (same shallow-copy-is-unsafe rationale
@@ -123,13 +129,11 @@ sub _restore_redacted_env ($record, $orig_values) {
    my $env = $record->{'env'} // {};
    for my $key ( keys %$env ) {
       my $entry = $env->{$key};
-      next unless ref $entry eq 'HASH' && $entry->{'secret'};
-      next unless defined( $entry->{'value'} ) && $entry->{'value'} =~ /\*/;
-      if ( exists $orig_values->{$key} ) {
-         $entry->{'value'} = $orig_values->{$key};
-      } else {
-         delete $env->{$key};
-      }
+      next unless ref $entry eq 'HASH';
+      next unless exists $orig_values->{$key};
+      next unless defined( $entry->{'value'} )
+         && $entry->{'value'} eq _mask_secret( $orig_values->{$key} );
+      $entry->{'value'} = $orig_values->{$key};
    }
 }
 
@@ -540,7 +544,7 @@ sub _validate_record_objects ($record) {
 # one, or for names like LD_PRELOAD/IFS/PATH, be actively dangerous inside
 # the container.
 my %RESERVED_ENV_NAMES = map { $_ => 1 } qw(
-   PATH HOME USER LOGNAME SHELL IFS LD_PRELOAD LD_LIBRARY_PATH TERM
+   PATH HOME USER LOGNAME SHELL IFS LD_PRELOAD LD_LIBRARY_PATH TERM DEBUG
    SSH_AUTH_SOCK SSH_AGENT_PID IDE IDE_USER IDE_PATH IIDE_PATH LOG_PATH HOSTDATA_PATH
    GH_TOKEN AUTHORIZED_KEYS SSH_AGENT_KEYS OWNER_DETAILS GIT_URL
    SSH_KNOWN_HOSTS_DOMAINS DEVCONTAINER_VSCODE_EXTENSIONS
@@ -549,6 +553,28 @@ my $ENV_KEY_RE       = qr/^[A-Za-z_][A-Za-z0-9_]*$/;
 my $ENV_MAX_VARS     = 50;
 my $ENV_MAX_KEY_LEN  = 128;
 my $ENV_MAX_VALUE_LEN = 4096;
+
+# The 'ide'/'ssh'-targeted vars are bundled into a single
+# --env=DOCKSIDE_USER_ENV=<json> argv element for `docker exec` (see
+# Reservation::exec). Linux caps a single argv element at MAX_ARG_STRLEN
+# (131072 bytes on typical 4K-page kernels); this stays well under that so
+# per-var limits above can never combine into a blob `docker exec` rejects.
+my $ENV_MAX_IDE_SSH_BLOB_LEN = 65536;
+
+# True if $v is usable as a JSON boolean: an actual JSON::PP::Boolean (or
+# Types::Serialiser::Boolean, depending on which backend JSON.pm loads) as
+# produced by decode_json for a real 'true'/'false' literal, a plain Perl
+# 0/1/''/undef, but NOT an arbitrary string. Without the string exclusion, a
+# client-supplied string like "false" would be Perl-truthy despite meaning
+# false in JSON, silently inverting the caller's intent wherever the value is
+# later used in Perl boolean context (User::env_vars_for_target,
+# env_vars_secret_keys).
+sub _is_bool_like ($v) {
+   return 1 unless defined $v;
+   return 1 if ref($v) && ( ref($v) eq 'JSON::PP::Boolean' || ref($v) eq 'Types::Serialiser::Boolean' );
+   return 0 if ref($v);
+   return $v eq '' || $v eq '0' || $v eq '1';
+}
 
 # Validate the 'env' field of a user record before persisting. Dies with a
 # single Exception naming the first offending var and reason. $env may be
@@ -574,6 +600,11 @@ sub _validate_env_vars ($env) {
       die Exception->new( 'msg' => "env var name '$key' is reserved for internal use" )
          if $RESERVED_ENV_NAMES{$key} || $key =~ /^DOCKSIDE_/;
 
+      # 'value' reaches cmdline_user_env/Reservation::exec as a literal env
+      # var value and must be a plain string — not an array/hash, and not a
+      # JSON boolean/number object (both are references too).
+      die Exception->new( 'msg' => "env.$key.value must be a string" )
+         if ref $entry->{'value'};
       my $value = $entry->{'value'} // '';
       die Exception->new( 'msg' => "env.$key.value must not contain NUL or newline characters" )
          if $value =~ /[\x00\n]/;
@@ -583,16 +614,36 @@ sub _validate_env_vars ($env) {
       # 'secret' and 'targets' are optional to omit (default false / no
       # targets), but if present must be sane shapes — malformed input here
       # would otherwise reach cmdline_user_env / Reservation::exec and crash
-      # on a non-hashref targets deref.
+      # on a non-hashref targets deref, or (for non-boolean-like values)
+      # silently misbehave under Perl truthiness (see _is_bool_like above).
+      die Exception->new( 'msg' => "env.$key.secret must be a boolean" )
+         if exists $entry->{'secret'} && !_is_bool_like( $entry->{'secret'} );
+
       die Exception->new( 'msg' => "env.$key.targets must be a JSON object" )
          if exists $entry->{'targets'} && ref $entry->{'targets'} ne 'HASH';
       if ( ref $entry->{'targets'} eq 'HASH' ) {
          for my $t ( keys %{ $entry->{'targets'} } ) {
             die Exception->new( 'msg' => "env.$key.targets has unknown key '$t'; expected docker/ide/ssh" )
                unless $t =~ /^(?:docker|ide|ssh)$/;
+            die Exception->new( 'msg' => "env.$key.targets.$t must be a boolean" )
+               unless _is_bool_like( $entry->{'targets'}{$t} );
          }
       }
    }
+
+   my ( $ideVars, $sshVars ) = ( {}, {} );
+   for my $key (@keys) {
+      my $entry = $env->{$key};
+      next unless ref $entry->{'targets'} eq 'HASH';
+      $ideVars->{$key} = $entry->{'value'} // '' if $entry->{'targets'}{'ide'};
+      $sshVars->{$key} = $entry->{'value'} // '' if $entry->{'targets'}{'ssh'};
+   }
+   my $blobLen = length(
+      JSON->new->utf8->canonical->encode( { 'ide' => $ideVars, 'ssh' => $sshVars } ) );
+   die Exception->new(
+      'msg' => "Combined size of ide/ssh-targeted env vars ($blobLen bytes) exceeds "
+              . "maximum of $ENV_MAX_IDE_SSH_BLOB_LEN bytes"
+   ) if $blobLen > $ENV_MAX_IDE_SSH_BLOB_LEN;
 }
 
 sub listRoles ($self) {

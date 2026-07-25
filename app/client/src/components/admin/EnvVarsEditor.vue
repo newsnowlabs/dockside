@@ -174,7 +174,11 @@
 
       methods: {
          entry(name) {
-            return this.env[name] || { value: '', secret: false, targets: {} };
+            // Normalize to a consistent shape regardless of what's stored — the
+            // server allows 'secret'/'targets' to be omitted entirely, so callers
+            // (e.g. entry(name).targets[t] in the template) must never see undefined.
+            const e = this.env[name] || {};
+            return { value: e.value || '', secret: !!e.secret, targets: { ...(e.targets || {}) } };
          },
 
          setValue(name, value) {

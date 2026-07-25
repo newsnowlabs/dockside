@@ -171,6 +171,114 @@ class EnvVarsApiTests(TestCase):
         self.assert_api_error(
             lambda: client._run('user', 'edit', 'admin', '--set', 'env.HACK.value=x'))
 
+    def test_12_debug_reserved(self):
+        self.assert_api_error(
+            lambda: self.admin._run('user', 'edit', self._user, '--set', 'env.DEBUG.value=1'))
+
+    def test_13_new_secret_value_containing_asterisk_not_deleted(self):
+        """A brand-new secret var whose real value contains '*' must not be
+        misdetected as an unchanged-masked sentinel and silently dropped."""
+        self.admin._run(
+            'user', 'edit', self._user,
+            '--set', 'env.STARSECRET.value=ab*cdefgh',
+            '--set', 'env.STARSECRET.secret=1',
+        )
+        rec = self.admin._run('user', 'get', self._user, '--sensitive')
+        entry = ((rec or {}).get('env') or {}).get('STARSECRET')
+        self.assert_true(entry is not None, 'STARSECRET was silently deleted (masked-sentinel misdetection)')
+        self.assert_equal(entry.get('value'), 'ab*cdefgh', f'STARSECRET value corrupted: {entry!r}')
+
+    def test_14_secret_value_changed_to_new_asterisk_value_not_reverted(self):
+        """Changing an existing secret to a new value that happens to contain
+        '*' must persist the new value, not revert to the old one."""
+        self.admin._run(
+            'user', 'edit', self._user,
+            '--set', 'env.STARSECRET2.value=originalvalue123',
+            '--set', 'env.STARSECRET2.secret=1',
+        )
+        self.admin._run('user', 'edit', self._user, '--set', 'env.STARSECRET2.value=new*value456')
+        rec = self.admin._run('user', 'get', self._user, '--sensitive')
+        stored = ((rec.get('env') or {}).get('STARSECRET2') or {}).get('value')
+        self.assert_equal(stored, 'new*value456', f'STARSECRET2 update was reverted to old value: {stored!r}')
+
+    def test_15_secret_toggle_off_with_masked_value_restores_real_value(self):
+        """Toggling secret->non-secret while re-posting the untouched masked
+        string must restore the real value, not persist the mask itself."""
+        self.admin._run(
+            'user', 'edit', self._user,
+            '--set', 'env.TOGGLEVAR.value=ToggleRealValue0000000000042',
+            '--set', 'env.TOGGLEVAR.secret=1',
+        )
+        masked = ((self.admin._run('user', 'get', self._user).get('env') or {}).get('TOGGLEVAR') or {}).get('value')
+        self.assert_true('*' in (masked or ''), f'TOGGLEVAR not masked: {masked!r}')
+
+        self.admin._run(
+            'user', 'edit', self._user,
+            '--set', f'env.TOGGLEVAR.value={masked}',
+            '--set', 'env.TOGGLEVAR.secret=0',
+        )
+        rec = self.admin._run('user', 'get', self._user, '--sensitive')
+        stored = ((rec.get('env') or {}).get('TOGGLEVAR') or {}).get('value')
+        self.assert_equal(stored, 'ToggleRealValue0000000000042',
+                          f'toggling secret off persisted the mask instead of the real value: {stored!r}')
+
+    def test_16_non_scalar_value_rejected(self):
+        body = {'env': {'BADVALUE': {'value': {'nested': 'obj'}, 'secret': False, 'targets': {}}}}
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as fh:
+            json.dump(body, fh)
+            path = fh.name
+        try:
+            self.assert_api_error(
+                lambda: self.admin._run('user', 'edit', self._user, '--from-json', path))
+        finally:
+            os.unlink(path)
+
+    def test_17_non_boolean_target_value_rejected(self):
+        """A JSON string "false" is Perl-truthy; the server must reject it
+        rather than silently treat the target as enabled."""
+        self.assert_api_error(
+            lambda: self.admin._run(
+                'user', 'edit', self._user,
+                '--set', 'env.BADTARGET.value=x',
+                '--set', 'env.BADTARGET.targets={"docker":"false"}',
+            ))
+
+    def test_18_unknown_target_key_rejected(self):
+        self.assert_api_error(
+            lambda: self.admin._run(
+                'user', 'edit', self._user,
+                '--set', 'env.BADTARGETKEY.value=x',
+                '--set', 'env.BADTARGETKEY.targets={"nope":true}',
+            ))
+
+    def test_19_overlong_key_rejected(self):
+        long_key = 'A' * 129
+        self.assert_api_error(
+            lambda: self.admin._run('user', 'edit', self._user, '--set', f'env.{long_key}.value=x'))
+
+    def test_20_overlong_value_rejected(self):
+        long_value = 'x' * 4097
+        self.assert_api_error(
+            lambda: self.admin._run('user', 'edit', self._user, '--set', f'env.OVERLONGVAL.value={long_value}'))
+
+    def test_21_aggregate_ide_ssh_blob_size_rejected(self):
+        """Per-var limits (50 vars x 4096 bytes) alone would allow a combined
+        ide+ssh blob larger than the aggregate limit enforced for the single
+        --env=DOCKSIDE_USER_ENV=<json> argv element built in Reservation::exec."""
+        big_value = 'x' * 4000
+        env = {f'BIGVAR{i}': {'value': big_value, 'secret': False,
+                              'targets': {'ide': True, 'ssh': True}}
+               for i in range(20)}
+        body = {'env': env}
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as fh:
+            json.dump(body, fh)
+            path = fh.name
+        try:
+            self.assert_api_error(
+                lambda: self.admin._run('user', 'edit', self._user, '--from-json', path))
+        finally:
+            os.unlink(path)
+
 
 class EnvVarsInjectionTests(TestCase):
     """Live-container verification of the three injection targets."""

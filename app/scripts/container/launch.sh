@@ -180,8 +180,8 @@ populate_user_env() {
    log "Creating $HOME/.dockside for per-user env files"
    busybox mkdir -p "$HOME/.dockside"
 
-   echo "$DOCKSIDE_USER_ENV" | jq -re '.ide // {} | to_entries[] | "\(.key)=\(.value)"' >"$IDE_ENV_FILE" 2>/dev/null || : >"$IDE_ENV_FILE"
-   echo "$DOCKSIDE_USER_ENV" | jq -re '.ssh // {} | to_entries[] | "\(.key)=\(.value)"' >"$SSH_ENV_FILE" 2>/dev/null || : >"$SSH_ENV_FILE"
+   printf '%s\n' "$DOCKSIDE_USER_ENV" | jq -re '.ide // {} | to_entries[] | "\(.key)=\(.value)"' >"$IDE_ENV_FILE" 2>/dev/null || : >"$IDE_ENV_FILE"
+   printf '%s\n' "$DOCKSIDE_USER_ENV" | jq -re '.ssh // {} | to_entries[] | "\(.key)=\(.value)"' >"$SSH_ENV_FILE" 2>/dev/null || : >"$SSH_ENV_FILE"
 
    log "Resetting ownership and permissions for $HOME/.dockside user-env files"
    busybox chown $IDE_USER:$IDE_USER "$HOME/.dockside" "$IDE_ENV_FILE" "$SSH_ENV_FILE"
