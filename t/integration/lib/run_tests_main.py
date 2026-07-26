@@ -231,7 +231,7 @@ _NGINX_PROFILE = {
     "command": [
         "-c",
         "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo);"
-        " chmod -R dockside /usr/share/nginx/html;"
+        " chown -R dockside /usr/share/nginx/html;"
         " exec /docker-entrypoint.sh nginx -g 'daemon off;'",
     ],
     "dockerArgs": ["--memory=1G", "--pids-limit=4000", "--cpus=1"],
