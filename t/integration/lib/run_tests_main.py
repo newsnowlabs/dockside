@@ -112,7 +112,7 @@ _ALPINE_PROFILE = {
         "volume": [],
     },
     "lxcfs": True,
-    "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
+    "dockerArgs": ["--pids-limit=4000"],
     "command": [
         "/bin/sh", "-c",
         "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo curl libgcc libstdc++ bash;); sleep infinity",
@@ -147,11 +147,8 @@ _DEBIAN_PROFILE = {
         "volume": [],
     },
     "lxcfs": True,
-    "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
-    "command": [
-        "/bin/sh", "-c",
-        "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo curl); sleep infinity",
-    ],
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": ["sleep", "infinity"],
 }
 
 _GIT_PROFILE = {
@@ -200,7 +197,7 @@ _GIT_PROFILE = {
         "volume": [],
     },
     "lxcfs": True,
-    "dockerArgs": ["--memory=1G", "--pids-limit=4000", "--env=GH_TOKEN={option.gh_token}"],
+    "dockerArgs": ["--pids-limit=4000", "--env=GH_TOKEN={option.gh_token}"],
     "command": [
         "/bin/sh", "-c",
         "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity",
@@ -234,7 +231,7 @@ _NGINX_PROFILE = {
         " chown -R dockside /usr/share/nginx/html;"
         " exec /docker-entrypoint.sh nginx -g 'daemon off;'",
     ],
-    "dockerArgs": ["--memory=1G", "--pids-limit=4000", "--cpus=1"],
+    "dockerArgs": ["--pids-limit=4000", "--cpus=1"],
 }
 
 # 127.0.0.1:19999 is chosen because no registry will be listening there;
