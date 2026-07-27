@@ -643,6 +643,19 @@ RUN CHROMIUM=$(find $PLAYWRIGHT_BROWSERS_PATH -name chrome-headless-shell -path 
     chown $USER:$USER $HOME/.playwright/mcp-config.json
 
 USER $USER
+
+# Claude Code user-level config: statusline + worktree defaults. This is separate
+# from the managed settings above by design, not just for tidiness: managed-settings.json
+# is root-owned, so Claude's own tool calls (running as $USER) can never rewrite it no
+# matter what instructions a session is following. That's where security-relevant policy
+# belongs (permission rules, effortLevel) so a compromised/prompt-injected session can't
+# loosen its own guardrails. Cosmetic/workflow prefs with no such blast radius (statusline,
+# worktree isolation) live here instead, in a file Claude could in principle edit. Runs as
+# $USER (no root needed): --chown is enough for COPY to create $HOME/.claude correctly owned.
+COPY --chown=$USER:$USER build/development/claude-code/settings.json $HOME/.claude/settings.json
+COPY --chown=$USER:$USER build/development/claude-code/statusline.sh $HOME/.claude/statusline.sh
+RUN chmod 755 $HOME/.claude/statusline.sh
+
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # The installer's `claude install` step never edits shell rc files itself: it only
