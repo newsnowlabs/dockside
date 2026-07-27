@@ -3348,6 +3348,9 @@ Examples:
   dockside remove my-devtainer --force
   dockside logs  my-devtainer
   dockside logs  my-devtainer --raw
+  dockside whoami
+  dockside ssh my-devtainer
+  dockside ssh config my-devtainer >> ~/.ssh/config
 """
 
 
@@ -3832,9 +3835,32 @@ def build_parser():
     return p
 
 
+NO_ARGS_HELP = """\
+usage: dockside COMMAND [ARGS...]
+
+Dockside CLI – manage devtainers from the command line.
+
+Common commands:
+  login      Authenticate to a Dockside server and save the session
+  list       List accessible devtainers
+  create     Create and launch a devtainer
+  start      Start a stopped devtainer
+  stop       Stop a running devtainer
+  ssh        Connect to a devtainer via SSH
+  whoami     Show the authenticated user and permissions
+
+Run 'dockside --help' for the full command list, or 'dockside COMMAND --help'
+for help on one command.
+"""
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
+    if len(sys.argv) == 1:
+        print(NO_ARGS_HELP, file=sys.stderr)
+        sys.exit(2)
+
     parser = build_parser()
     args   = parser.parse_args()
     args.func(args)
