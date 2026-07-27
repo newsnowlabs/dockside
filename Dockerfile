@@ -501,6 +501,7 @@ COPY --from=docs-build --chown=$USER:$USER /build/site/ $HOME/$APP/app/server/ng
 
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
+LABEL org.opencontainers.image.source="https://github.com/newsnowlabs/dockside"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
