@@ -117,15 +117,30 @@ written — server-side identity injection via the proxy/wstunnel/dropbear
 path, or client-side `SetEnv`/`SendEnv` — were both researched against the
 actual bundled software rather than left as assumptions, and **both turned
 out to be blocked**: the wstunnel→dropbear leg can't carry data into an
-already-encrypted SSH session without a full SSH-terminating proxy, and
-dropbear (2025.88, as shipped) has never implemented the SSH `env` channel
-request server-side at all. ADR-0008 (`0008-ssh-session-identity-for-metadata-server.md`)
-proposes a third mechanism found during that research instead — a per-key
-`command=` forced-command binding in `authorized_keys`, which dropbear does
-support today — with a hard requirement that whatever it delivers must be
-an unforgeable, server-validated session token, not a plaintext identity
-claim. See that ADR for the full writeup; its status is `Proposed`, not yet
-confirmed.
+already-encrypted SSH session without a full SSH-terminating proxy (true
+for OpenSSH too — checked, not dropbear-specific), and dropbear (2025.88, as
+shipped) has never implemented the SSH `env` channel request server-side at
+all. Swapping to OpenSSH's `sshd` would genuinely unlock this (it supports
+`AcceptEnv`/`SendEnv` and authorized_keys `environment=`) but was rejected
+as disproportionate — `sshd` isn't currently bundled at all, only OpenSSH's
+client tools are, and dropbear's small footprint was very likely the reason
+it was chosen for a per-devtainer daemon in the first place.
+
+ADR-0008 (`0008-ssh-session-identity-for-metadata-server.md`) instead
+proposes two options, deliberately kept both live: a **minimal dropbear
+source patch** adding one narrow, server-authored authorized_keys option
+(smaller and safer than upstream's general, still-unmerged
+SendEnv/AcceptEnv PR, since Dockside only ever needs to deliver one
+server-controlled value, not arbitrary client-named ones) — build tooling
+for this already exists in the Dockerfile's current stage — or, with no
+patch at all, the same `command=` forced-command binding dropbear supports
+today, with a wrapper script. The two routes have a real, checked-not-assumed
+difference: the patch can apply at auth-success time and so also covers
+port-forwarding-only connections, while `command=`'s apply-point never fires
+for a session that opens no shell/exec channel at all. Either way, the hard
+requirement is the same: whatever gets delivered must be an unforgeable,
+server-validated session token, not a plaintext identity claim. See that ADR
+for the full writeup; its status is `Proposed`, not yet confirmed.
 
 Once built, the metadata server gains a second factor beyond
 reservation-IP, and can scope its response to the actual connecting account
