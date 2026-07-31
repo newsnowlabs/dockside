@@ -4,17 +4,21 @@
   single mechanism (earlier revisions of this ADR kept a no-patch fallback
   "live"; that fallback was subsequently found to be insecure, not merely
   costlier — see below).
-- **Date:** 2026-07-31 (revised: dropped the forced-command-wrapper fallback
-  after finding it's forgeable by any co-located session; added the `/proc`
-  cross-session read risk and required mitigation; added `reservation_id` to
-  the minted token to serve ADR-0005's single-shared-socket design; added a
-  standard fetch-and-export tool, deliberately not auto-invoked, and
-  rejected auto-invoking it either from the wrapper or from dropbear itself;
-  added a second dropbear patch isolating the forwarded agent socket between
-  sessions via `SO_PEERCRED` plus a process-ancestry walk, with a two-stage
-  Landlock ruleset kept in reserve as a fallback; fixed a found-not-designed
-  gap where `dockside-identity=`'s label was writable, and so forgeable, by
-  any connected session)
+- **Date:** 2026-07-31 (revised repeatedly: dropped the forced-command-wrapper
+  fallback after finding it's forgeable by any co-located session; added the
+  `/proc` cross-session read risk and required mitigation; added
+  `reservation_id` to the minted token to serve ADR-0005's
+  single-shared-socket design; added a standard fetch-and-export tool,
+  deliberately not auto-invoked; added a second dropbear patch isolating the
+  forwarded agent socket between sessions via `SO_PEERCRED` plus a
+  process-ancestry walk, with a two-stage Landlock ruleset kept in reserve
+  as a fallback; **replaced the `dockside-identity=` authorized_keys label
+  entirely** with a live, authenticated query to the outer Dockside server
+  at auth-success time — the file-based label, however permissioned, is
+  defeatable by a connecting user with root inside the container, which
+  file permissions alone can never fix; this also removed the need for the
+  `Reservation::exec`/`update_ssh_authorized_keys` restructuring earlier
+  revisions required)
 - **Deciders:** Struan Bartlett
 
 ## Context
@@ -152,59 +156,92 @@ needs only `./configure && make` (no `autoconf`/`autoheader`, which are only
 needed if `configure.ac` itself is edited — an unpatched-`configure.ac`,
 add-new-C-code patch doesn't need them) plus `zlib`, already present.
 
-**What a minimal patch would actually add.** Checked dropbear's
-authorized_keys option parser directly
-(`src/svr-authpubkeyoptions.c`, `svr_parse_pubkey_options()`). The full set
-of options it recognizes today: `no-port-forwarding`,
-`no-agent-forwarding`, `no-X11-forwarding`, `no-pty`, `restrict`,
-`command=`, `permitopen=`, `permitlisten=`, `no-touch-required`,
-`verify-required`. `command=`'s handling is the exact pattern needed: the
-parser reads a quoted value into a buffer and stores it
-(`pubkey_options->forced_command = m_malloc(...); memcpy(...)`) on the
-per-key options struct, which persists through to session start. A new
-option — e.g. a Dockside-specific `dockside-identity="<token>"`, not
-upstream's generic `environment=` — would follow the identical pattern:
-recognize the prefix, copy the quoted value onto a new struct field, apply
-it (a single `setenv()`) when that key's session starts. This is materially
-**smaller and more surgical** than `mkj/dropbear#205`'s general
-SendEnv/AcceptEnv feature (~68 lines across 4 files, and the maintainer
-pushed back on it in review — `"plain unsigned doesn't match existing code
-style"`, `"Don't write tricky code"` re: bitshift use, `"This pointer
-arithmetic looks too risky"`, and an open question about whether its
-`putenv` usage leaks memory). A `command=`-shaped, single-fixed-purpose
-option sidesteps all of that: no client-supplied arbitrary variable names,
-no arbitrary count of variables, no `putenv`/buffer-reuse pattern to get
-subtly wrong — it is one more `if (option matches "dockside-identity=")`
-branch parsing exactly the way `command=` already does, immediately next to
-it in the same file.
+**What a minimal patch would actually add — revised after finding a hole in
+the first version.** The first design of this patch added a new
+authorized_keys option, `dockside-identity="<account>"`, following the
+exact pattern `command=` already uses (checked directly against
+`src/svr-authpubkeyoptions.c`'s `svr_parse_pubkey_options()`: read a quoted
+value into a buffer, store it on the per-key options struct). That design
+had a real hole: the label lived in `authorized_keys`, a file inside the
+devtainer's own filesystem — and however that file's permissions are set,
+a connecting user who obtains (or already has) root inside the container
+can bypass them outright. `CAP_CHOWN`/`CAP_DAC_OVERRIDE`/`CAP_FOWNER` are
+all in Docker's default capability set, so root can always `chown`/edit/
+`chown`-back a file regardless of ownership — and devtainer images commonly
+grant `sudo` as a matter of course. Any file-based label is defeatable by
+design, not by an implementation gap that could be patched around; the
+account attribution has to come from somewhere a connecting user's
+privilege level, however high, cannot reach: the outer Dockside server's
+own filesystem, a genuinely separate container.
 
-**This also has a real capability advantage over both the OpenSSH
-`environment=` idea and the forced-command wrapper this ADR originally kept
-as a fallback (see "Why the wrapper route is rejected outright" below): it
-is entirely server-authored.** The value comes from Dockside's own
-`update_ssh_authorized_keys`, never from anything the connecting client
-sends — unlike OpenSSH's `SendEnv`/`AcceptEnv` model, there is no
-"client proposes a value, server checks an allowlist" trust question to
-reason about at all, because the client never proposes anything.
+**Revised design: no new authorized_keys option at all.** `authorized_keys`
+stays exactly what it already is — a flat, unlabeled list of trusted public
+keys, used only to decide whether a connection is allowed at all, unchanged
+from today. Account attribution happens as a **live, authenticated query to
+the outer Dockside server** at auth-success time, over the same Unix socket
+ADR-0005 already builds:
 
-**Apply-point matters: auth-success, not `command=`'s session-channel
-dispatch.** `command=`'s logic only fires inside `sessioncommand()`, which
-is reached only when a client opens a *session* channel
-(`shell`/`exec`/`subsystem`). A client that opens **only** a
-port-forwarding channel (`ssh -N -L ...`, tunnel-only, no shell) never
-reaches that code path at all — confirmed by reading `svr-chansession.c`'s
-channel-request dispatch. The patch must apply the identity value at
-**auth-success time** (right after `svr_parse_pubkey_options` succeeds for
-that key, independent of which channel types get opened afterwards), not
-piggyback on `command=`'s apply-point, so this gap doesn't apply here — a
-port-forward-only connection still gets the identity value minted and set
-before any channel-type branching, even though (in practice) there's no
-shell process in that case to consume it anyway.
+- At the moment `svr_parse_pubkey_options` (or equivalent) confirms a key
+  is valid, dropbear already possesses the raw offered public key — it had
+  to, to verify it. It computes a fingerprint from it (dropbear already has
+  the hashing primitives this needs for its own key-exchange operations).
+- It sends a small request over the shared socket:
+  `reservation_id` (from its own pre-fork env, same source as the signing
+  key below) plus the key fingerprint, **authenticated with an HMAC using
+  the same per-reservation `DOCKSIDE_METADATA_HMAC_KEY`** already delivered
+  for token-minting (below) — reusing the one trust primitive already
+  established, rather than inventing a second one. Without this, any
+  process able to reach the shared socket could probe arbitrary
+  `(reservation_id, fingerprint)` pairs and learn account-mapping
+  information for reservations it has no business asking about; the same
+  per-reservation key that gates minting a valid token also gates asking
+  this question in the first place.
+- The outer server verifies the request's HMAC (looking up that
+  reservation's own signing key via `reservation_id`, treated as an
+  untrusted lookup key exactly as ADR-0005 already treats it elsewhere),
+  then answers using its own authoritative data — the same per-account
+  `authorized_keys()`/`keypairs_all()` records `Reservation::exec` already
+  consults, scoped to that reservation's currently-authorized accounts —
+  with either the matching account name or "not found."
+- **Bounded, short timeout; fails closed on the token, not the
+  connection.** If the query doesn't resolve in time, or comes back
+  not-found, dropbear proceeds with the SSH session exactly as it would
+  have otherwise (`authorized_keys` already decided the connection is
+  allowed) — it simply doesn't mint or set an identity token for that
+  session. Worst case is one session without metadata-server access, never
+  a wrong identity and never a blocked login. This deliberately does *not*
+  make ordinary SSH access to a devtainer depend on the outer server's
+  liveness — only the identity-token feature specifically does.
+
+**A genuinely pleasant consequence of this design: no restructuring of
+`Reservation::exec`/`update_ssh_authorized_keys` is needed at all**,
+unlike the file-label version. The outer server resolves "whose key is
+this" from its own independent per-user records, scoped by
+`reservation_id` — it never needs anything read back out of the container.
+`@authorized_keys`'s existing flattened, deduplicated construction, and
+`update_ssh_authorized_keys`'s existing plain one-key-per-line output, are
+both already sufficient and need no changes for this purpose.
+
+**Apply-point still matters: auth-success, not `command=`'s session-channel
+dispatch** — unchanged reasoning from the earlier design, still relevant to
+where the query and token-minting happen. `command=`'s logic only fires
+inside `sessioncommand()`, reached only when a client opens a *session*
+channel (`shell`/`exec`/`subsystem`); a client that opens **only** a
+port-forwarding channel never reaches that code path at all — confirmed by
+reading `svr-chansession.c`'s channel-request dispatch. The query and
+token-minting happen at **auth-success time** (right after the key is
+verified, independent of which channel types get opened afterwards), not
+piggybacked on `command=`'s apply-point.
 
 **Ongoing cost, stated plainly:** a source patch means Dockside now
 builds dropbear from source and carries a diff that needs periodic rebasing
 whenever Alpine's dropbear package (and thus the version this patch targets)
-moves — a real, ongoing maintenance line-item, not a one-time cost.
+moves — a real, ongoing maintenance line-item, not a one-time cost. This
+revision adds synchronous socket I/O to dropbear's own code (bounded and
+non-blocking to the SSH protocol handshake itself, but still new logic in a
+privileged, pre-fork process) — smaller in scope than embedding a full
+HTTP/JSON client (rejected earlier for exactly this kind of privileged-
+surface growth), but not nothing; worth the same implementation scrutiny.
 
 ### Why the wrapper route is rejected outright, not kept as a fallback
 
@@ -325,8 +362,8 @@ valuable to give up**, so a real isolation mechanism is needed instead.
 walk on every connection to a socket it created for a specific session, and
 reject anything that isn't a descendant of that session's own
 dropbear-forked process.** This is a second, independent patch to dropbear
-alongside `dockside-identity=` — same "already carrying a fork" cost, a
-different piece of logic, worth reviewing as its own unit.
+alongside the account-resolution query above — same "already carrying a
+fork" cost, a different piece of logic, worth reviewing as its own unit.
 
 - Unlike the metadata-socket `SO_PEERCRED` case (ADR-0005), there's no
   cross-namespace problem here: dropbear and every session's processes all
@@ -399,15 +436,18 @@ behavior if this path is ever needed.
 
 ## Decision
 
-**Patch dropbear with a single-purpose, server-authored authorized_keys
-option (`dockside-identity=`), applied at auth-success time. There is no
-recommended no-patch fallback** — see above. As part of the same session
-handoff, the patch must exec into a **mandatory, independently-created
-Landlock sandbox (`landrun` or equivalent)** before reaching the
-connecting user's shell, and must **fail closed** — refuse to hand out the
-identity token, or refuse the connection outright — if Landlock support is
-unavailable on the host kernel (checked at container/session start, not
-silently degraded).
+**Patch dropbear to resolve the connecting account via a live, authenticated
+query to the outer Dockside server at auth-success time, then mint an
+identity token from the answer. No new authorized_keys option, no local
+label of any kind — see "What a minimal patch would actually add" above
+for why that design was replaced.** There is no recommended no-patch
+fallback (unchanged from the earlier finding that the forced-command
+wrapper is forgeable). As part of the same session handoff, the patch must
+exec into a **mandatory, independently-created Landlock sandbox (`landrun`
+or equivalent)** before reaching the connecting user's shell, and must
+**fail closed** — refuse to hand out the identity token, or refuse the
+connection outright — if Landlock support is unavailable on the host
+kernel (checked at container/session start, not silently degraded).
 
 **A second, independent dropbear patch adds the `SO_PEERCRED`-plus-ancestry
 check described above**, isolating the forwarded agent socket (and any
@@ -415,58 +455,17 @@ other per-session local socket dropbear manages) between sessions, with a
 two-stage-Landlock approach kept in reserve as a documented fallback if
 this turns out harder to land than expected.
 
-**Prerequisite, shared with the abandoned wrapper design:** `Reservation::exec`
-currently discards per-account key ownership before it reaches the
-container —
-
-- `Reservation::exec` currently builds `@authorized_keys` via
-  `unique map { @{$_->authorized_keys()} : () } @Users` — flattening,
-  sorting, and deduplicating every authorized account's keys into one bare
-  array (`"--env=AUTHORIZED_KEYS=$keys_json"`).
-- `launch.sh::update_ssh_authorized_keys` writes that array's entries
-  verbatim, one per line, with no key options.
-
-Both need to change to `{username, key}` pairs, with each authorized_keys
-line becoming `dockside-identity="<account>" <key>` — the file carries only
-the **account label**, never a secret. Freshness and unforgeability come
-from the patch's own minting, not from anything static in the file.
-
-**This label must not be writable by `$IDE_USER` — checked, and it
-currently is.** `update_ssh_authorized_keys` (`launch.sh:150-165`) today does
-`busybox chown $IDE_USER:$IDE_USER $HOME/.ssh $HOME/.ssh/authorized_keys`
-and `chmod 600` on the file — meaning **every connected session already has
-full write access to it**, since every session lands as that same account.
-As specified so far, this is a direct bypass: any authorized collaborator
-could edit their *own* line's label from `dockside-identity="bob"` to
-`dockside-identity="alice"` (or replace a different line's key material
-with one of their own, keeping that line's label), and the change persists
-until the next `update_ssh_authorized_keys` run (container/IDE relaunch —
-not triggered per-connection, so this could sit live for a long time). The
-mechanism must fix this, not merely document it as a limitation:
-
-- `authorized_keys` itself is chowned to `root:root` and made unwritable by
-  `$IDE_USER` (e.g. `640`, root read/write only — dropbear reads it
-  pre-fork, as root, so it never needed `$IDE_USER` write access for any
-  functional reason; that ownership was just the file's pre-existing,
-  now-inadequate default).
-- The containing `.ssh` **directory** can't simply be locked down the same
-  way — `populate_known_hosts` (`launch.sh:340-`) leaves `known_hosts` alone
-  once it exists, meaning a user's own outbound `ssh`/`git` client (running
-  as `$IDE_USER`) is expected to keep appending to it via ordinary
-  trust-on-first-use, which needs the directory to stay genuinely writable
-  by `$IDE_USER` for other files. The fix is the sticky bit (the same
-  mechanism `/tmp` uses): keep `.ssh` group-writable by `$IDE_USER` (owner
-  `root:$IDE_USER`, mode `1770`), so the account can still create/manage
-  files it owns (like `known_hosts`) — but with the sticky bit set,
-  deleting or renaming a file inside the directory requires owning *that
-  file* or the directory, and `$IDE_USER` owns neither once
-  `authorized_keys` is root-owned. This closes the delete-and-recreate
-  route as well as direct in-place editing, without breaking the one
-  legitimate use of directory writability that's already relied on.
+**No `Reservation::exec`/`update_ssh_authorized_keys` restructuring is
+needed** — a change from the file-label design, which required rebuilding
+`@authorized_keys` as `{username, key}` pairs. The live-query design
+resolves account ownership entirely on the outer server's side, from its
+own existing per-user records, so the flat, unlabeled `AUTHORIZED_KEYS`
+blob `Reservation::exec` already builds and `update_ssh_authorized_keys`
+already writes stays exactly as it is today.
 
 **What the patch mints, and where it comes from:**
 
-- At each devtainer's launch/relaunch, `Reservation::exec` also passes a
+- At each devtainer's launch/relaunch, `Reservation::exec` passes a
   per-reservation signing secret into the container's env — e.g.
   `--env=DOCKSIDE_METADATA_HMAC_KEY=<key>` — alongside the existing
   `AUTHORIZED_KEYS`/`SSH_AGENT_KEYS` env vars. Known only to Dockside's
@@ -474,9 +473,14 @@ mechanism must fix this, not merely document it as a limitation:
   surface. This also passes `--env=DOCKSIDE_RESERVATION_ID=<id>`, or the
   patch is simply told the reservation ID the same way.
 - At auth-success, the patched dropbear (still running privileged,
-  pre-fork) reads both from its own process environment, generates a fresh
-  random nonce (dropbear already has a CSPRNG for its own key-exchange
-  operations), and computes a token over
+  pre-fork) computes a fingerprint of the just-verified public key, and
+  queries the outer server over the shared Unix socket for the account
+  that owns it — see "What a minimal patch would actually add," above, for
+  the full request/response/timeout/fail-closed shape of that query.
+- If (and only if) that query returns an account name within its bound,
+  dropbear reads the signing key and reservation ID from its own process
+  environment, generates a fresh random nonce (dropbear already has a
+  CSPRNG for its own key-exchange operations), and computes a token over
   `reservation_id || account || nonce || expiry`, HMAC'd with the signing
   key — e.g. `DOCKSIDE_SSH_IDENTITY=<reservation_id>.<account>.<nonce>.<expiry>.<hmac>`.
   `reservation_id` is included specifically to serve ADR-0005's
@@ -542,9 +546,12 @@ security posture regardless of convenience.
 
 ## Consequences
 
-- `Reservation::exec` / `update_ssh_authorized_keys` restructuring (shape
-  of the JSON blob, per-line option emission instead of bare keys) —
-  scoped, not large.
+- No `Reservation::exec`/`update_ssh_authorized_keys` changes needed — the
+  existing flat `AUTHORIZED_KEYS` construction and file output are already
+  sufficient (see "no restructuring is needed," above). New server-side
+  scope instead: a "resolve key fingerprint to account" endpoint on the
+  outer Dockside server, reachable over the same shared socket ADR-0005
+  builds, authenticated the same way the token itself is.
 - Building dropbear from source instead of `apk add`-ing it (mechanically
   compatible with the existing build stage — `make`/`gcc`/`g++` already
   present) and carrying/periodically rebasing the patch against Alpine's
@@ -564,14 +571,18 @@ security posture regardless of convenience.
   that makes ADR-0005's "pull, don't push" model something users can safely
   self-serve rather than something that pushes injection-bug risk onto
   every account that wants to use it.
-- `update_ssh_authorized_keys` also needs its ownership/permission handling
-  changed, not just its output shape — `authorized_keys` chowned to
-  `root:root` and made unwritable by `$IDE_USER`, `.ssh` given the sticky
-  bit rather than locked outright (to preserve `known_hosts`'s existing
-  writability). A small, cheap fix, but a required one: without it, the
-  `dockside-identity=` label is trivially forgeable by any connected
-  session editing its own line, which would defeat the whole mechanism the
-  same way the abandoned wrapper route did.
+- The previous revision's `authorized_keys`/`.ssh` ownership-and-sticky-bit
+  fix is **superseded, not needed**: it existed solely to protect the
+  `dockside-identity=` label this revision removes. It was also, on
+  reflection, insufficient for its own purpose — root inside the container
+  (commonly available via `sudo` on developer-focused devtainer images)
+  holds `CAP_CHOWN`/`CAP_DAC_OVERRIDE`/`CAP_FOWNER` by Docker default and
+  can bypass any DAC-based file protection regardless of how it's set up.
+  That's the actual reason the design moved to a live, authenticated query
+  against the outer server instead of anything stored in the container at
+  all — no permission scheme inside one container can protect data from
+  that same container's own root user; only keeping the data outside the
+  container entirely does.
 - A second, independent dropbear patch: the `SO_PEERCRED`-plus-ancestry
   check isolating the forwarded agent socket (and generalizing to any other
   per-session local socket) between sessions — separate scope, separate
@@ -627,12 +638,30 @@ security posture regardless of convenience.
   Recorded as a live option if a different, independent reason to prefer
   OpenSSH ever arises.
 - **General `environment=` support in dropbear (mirroring OpenSSH's
-  semantics) instead of a narrow, single-purpose option.** Rejected in
-  favor of the narrower `dockside-identity=`-style design: general
+  semantics) instead of a narrow, purpose-built mechanism.** Rejected in
+  favor of the account-resolution-query design ultimately adopted: general
   client-influenced-name env support reopens the exact trust questions
   OpenSSH itself gates behind `PermitUserEnvironment` (off by default
   upstream for good reason), for no benefit here — Dockside only ever needs
-  to deliver one, server-authored value.
+  to deliver one, server-authored value, and the adopted design never
+  trusts anything the client supplies at all.
+- **A `dockside-identity="<account>"` authorized_keys option, with the
+  label stored in the file itself.** The first design of this patch, and
+  genuinely smaller than the query-based design that replaced it — no
+  socket I/O in dropbear's own process, no new server-side endpoint, no
+  request-authentication scheme to design. Rejected once examined against
+  the actual threat model: the label's trustworthiness depends on
+  `authorized_keys` being unmodifiable by the connecting session, and no
+  file permission scheme achieves that against a user with root inside the
+  container (a common case — `sudo` is standard on developer-focused
+  devtainer images, and Docker's default capabilities include
+  `CAP_CHOWN`/`CAP_DAC_OVERRIDE`/`CAP_FOWNER`, all a root user needs to
+  bypass ownership-based protection regardless of how it's configured). A
+  root-and-sticky-bit hardening pass was designed for this version and
+  would have protected it from a *non-root* same-UID attacker, but not the
+  more general case — the label needed to live somewhere a connecting
+  user's privilege level, however high, structurally cannot reach, which
+  by definition means outside the container.
 - **The forced-command wrapper, as a no-patch fallback.** Kept in the
   previous revision of this ADR as a lower-cost alternative; rejected
   outright once examined for exactly the threat model this mechanism
