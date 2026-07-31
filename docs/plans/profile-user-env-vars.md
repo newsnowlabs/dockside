@@ -43,20 +43,20 @@ answer.
 Encryption at rest for `users.json` (separate branch) is necessary but not
 sufficient — it protects the *server's* disk, not the *devtainer's*. Layered
 on top: secret-flagged vars should never be auto-injected into a container
-at all (ADR-0005) — Dockside should store them encrypted and serve them only
+at all (`secret-env-vars-metadata-pull-only.md`) — Dockside should store them encrypted and serve them only
 on request, via the metadata server (`App::Metadata.pm`, already
 partially built). Which of a user's vars even reach a given devtainer should
 be governed by that devtainer's profile, not decided unilaterally by the
-user's own target flags (ADR-0006). And because a devtainer can be shared,
+user's own target flags (`profile-governed-env-var-admission.md`). And because a devtainer can be shared,
 and there's no way — yet — to give different accounts different views of a
 shared IDE process, the sharing UI needs to make that limitation an
-explicit, visible fact rather than a silent one (ADR-0007).
+explicit, visible fact rather than a silent one (`shared-devtainer-env-var-disclosure.md`).
 
 ## Scope boundaries
 
 **In scope for this plan and its follow-on work:**
 
-- Everything in ADR-0005, ADR-0006, ADR-0007.
+- Everything in `secret-env-vars-metadata-pull-only.md`, `profile-governed-env-var-admission.md`, `shared-devtainer-env-var-disclosure.md`.
 - The SSH per-connection-identity question below (open, not yet decided).
 - Defensible cleanups to this branch's existing code in light of the above
   (see "Cleanups" below) — documentation and light validation-tightening
@@ -68,52 +68,56 @@ explicit, visible fact rather than a silent one (ADR-0007).
 
 - **Project-scoped env vars** (values tied to a project/repo rather than a
   user account) — a plausible future parallel axis to user-scoped vars, not
-  designed here. Nothing in ADR-0006's profile-admission mechanism should
+  designed here. Nothing in `profile-governed-env-var-admission.md`'s profile-admission mechanism should
   foreclose it, but it is not being built now.
 - **Per-user IDE processes** (distinct processes on distinct internal ports
   per accessing account) — the technical prerequisite that would let
-  ADR-0007's decision be revisited. Not being built now; ADR-0007's decision
-  stands until it is.
+  `shared-devtainer-env-var-disclosure.md`'s decision be revisited. Not
+  being built now; `shared-devtainer-env-var-disclosure.md`'s decision
+  stands until it is. Worked through properly as a full alternative model
+  (per-user accounts, not just per-user IDE processes) in
+  `per-user-devtainer-accounts.md` — recorded as the long-term direction,
+  not something this plan is building toward now.
 - **Extending this same push-vs-pull boundary to `gh_token` and SSH
   keypairs.** They have their own existing delivery models (`GH_TOKEN` via
   `docker exec` env, matching the `ide`-target shape; SSH private keys via a
   transient-tempfile-then-`ssh-add`-then-`rm` pattern in
   `populate_ssh_agent_keys`, which is already close to "never at rest" modulo
-  a small window). Whether ADR-0005's reasoning should eventually apply to
+  a small window). Whether `secret-env-vars-metadata-pull-only.md`'s reasoning should eventually apply to
   them too is a reasonable future question, not answered here.
 
 ## Staged roadmap
 
 1. **Encryption at rest for `users.json`** — `claude/secrets-encryption-users-json-zghgcl`,
    independent branch, prerequisite for step 2.
-2. **Metadata-server env-fetch endpoint** (ADR-0005) — new authenticated path
+2. **Metadata-server env-fetch endpoint** (`secret-env-vars-metadata-pull-only.md`) — new authenticated path
    on `App::Metadata.pm`, reached over a single shared Unix socket (not the
-   existing TCP/source-IP-matching path — see ADR-0005's transport
+   existing TCP/source-IP-matching path — see `secret-env-vars-metadata-pull-only.md`'s transport
    revision), serving a reservation's env vars, decrypted from at-rest
-   storage on request, identified by the token described in step 6/ADR-0008.
+   storage on request, identified by the token described in step 6/`ssh-session-identity-for-metadata-server.md`.
    This retires the handler's existing `# FIXME` about hardening beyond
    `Metadata-Flavor` header + no-XFF + source-IP matching rather than just
    making it more urgent — the new transport replaces that mechanism
    outright.
-3. **Flip secret-var delivery** (ADR-0005) — `User.pm::env_vars_for_target`
+3. **Flip secret-var delivery** (`secret-env-vars-metadata-pull-only.md`) — `User.pm::env_vars_for_target`
    excludes `secret=true`; `_validate_env_vars` rejects
    `secret=true`+`targets.docker=true`; `EnvVarsEditor.vue` disables
    docker/ide/ssh checkboxes when `secret` is set.
-4. **Profile admission** (ADR-0006) — new `Profile.pm` schema field;
+4. **Profile admission** (`profile-governed-env-var-admission.md`) — new `Profile.pm` schema field;
    `Reservation::Launch::cmdline_user_env` and `Reservation::exec` consult it
    alongside the user's own vars; existing/example profiles updated to
    opt in wherever the current unconditional behavior should be preserved.
-5. **Share-time disclosure UI** (ADR-0007) — depends on step 4 (the
+5. **Share-time disclosure UI** (`shared-devtainer-env-var-disclosure.md`) — depends on step 4 (the
    effective set to display is post-admission-filter); `Container.vue`'s
    sharing flow and the CLI's equivalent gain an effective-env-var preview.
-6. **SSH per-connection identity** (ADR-0008) — depends on step 2 existing
+6. **SSH per-connection identity** (`ssh-session-identity-for-metadata-server.md`) — depends on step 2 existing
    to have something to authenticate *to*; mechanism settled (patch
    dropbear; no viable no-patch fallback — see below).
 
 Steps 3–5 can be sequenced independently of each other once 2 is done,
 except where noted (5 depends on 4).
 
-## SSH per-connection identity, and the metadata transport (ADR-0008, ADR-0005)
+## SSH per-connection identity, and the metadata transport (`ssh-session-identity-for-metadata-server.md`, `secret-env-vars-metadata-pull-only.md`)
 
 No longer open. The two options sketched when this plan was first written —
 server-side identity injection via the proxy/wstunnel/dropbear path, or
@@ -136,7 +140,7 @@ way to prove it was genuinely invoked by dropbear for a real, distinct key
 authentication versus manually re-run by an already-connected user with a
 forged argument. If it can access the signing capability, any co-located
 session can mint a token for any other identity — a complete bypass, not a
-weaker version of the protection. **ADR-0008's decision is now singular:
+weaker version of the protection. **`ssh-session-identity-for-metadata-server.md`'s decision is now singular:
 patch dropbear** with a minimal, server-authored authorized_keys option
 (`dockside-identity=`), applied at auth-success time (so it also covers
 port-forwarding-only connections, unlike `command=`'s apply-point). The
@@ -145,7 +149,7 @@ SendEnv/AcceptEnv PR, since Dockside only ever needs to deliver one
 server-controlled value, never a client-proposed one.
 
 The minted token now carries `reservation_id` alongside `account`,
-`nonce`, and `expiry` — this does double duty for ADR-0005's transport
+`nonce`, and `expiry` — this does double duty for `secret-env-vars-metadata-pull-only.md`'s transport
 decision too. Investigating how a per-reservation metadata channel would
 actually work in practice found the original per-reservation-Unix-socket
 idea impossible (Docker can't attach a new volume to an already-running
@@ -167,15 +171,15 @@ shell — there's nowhere else for a user's own later-invoked script to reach
 it from. That means its confidentiality from *other* sessions sharing the
 same container depends entirely on closing the `/proc/<pid>/environ`
 cross-session read (governed by the host kernel's `ptrace_scope`, which
-Dockside doesn't control) — ADR-0008 now makes wrapping every session in an
+Dockside doesn't control) — `ssh-session-identity-for-metadata-server.md` now makes wrapping every session in an
 independent Landlock sandbox (`landrun`), fail-closed if unavailable, a
 mandatory part of the mechanism rather than an optional hardening step, since
 Landlock's ptrace-domain restriction closes this regardless of the host's
-`ptrace_scope`. See ADR-0008 for the full mechanism and research.
+`ptrace_scope`. See `ssh-session-identity-for-metadata-server.md` for the full mechanism and research.
 
 Once built, the metadata server has both factors it needs — which
 reservation, which account — and can scope its response accordingly for
-`ssh`. No equivalent path exists for `ide` (see ADR-0007) — this only ever
+`ssh`. No equivalent path exists for `ide` (see `shared-devtainer-env-var-disclosure.md`) — this only ever
 closes the `ssh` half of the sharing problem.
 
 ## Cleanups
@@ -186,11 +190,11 @@ already landed and been reviewed once. What's reasonable to do now:
 
 - Point `docs/developing/user-data-model.md` at the `env` field (it predates
   this feature and doesn't mention it) — a factual gap, not a design change.
-- Cross-reference this plan and ADR-0005/0006/0007/0008 from the PR
+- Cross-reference this plan and `secret-env-vars-metadata-pull-only.md`/0006/0007/0008 from the PR
   description or a follow-up comment, so the "why does this feature push
   secrets today" question has a durable answer for anyone reading the
   history later rather than only living in conversation.
-- No code changes as part of landing this plan doc — ADR-0005/0006/0007/0008
+- No code changes as part of landing this plan doc — `secret-env-vars-metadata-pull-only.md`/0006/0007/0008
   are each real implementation work (metadata endpoint, profile schema
   field, share-time UI, `authorized_keys` restructuring) appropriately sized
   as their own follow-on branches, not squeezed into this one after the

@@ -1,4 +1,4 @@
-# ADR-0007: Shared devtainers — accept the IDE-sharing limitation, mandate disclosure
+# ADR: Shared devtainers — accept the IDE-sharing limitation, mandate disclosure
 
 - **Status:** Accepted — disclosure UI not yet implemented on this branch.
 - **Date:** 2026-07-31
@@ -54,7 +54,7 @@ an implicit property a user has to already know.
 Concretely: at the point an owner adds a developer/viewer
 (`Container.vue`'s sharing UI, and the equivalent CLI share command), both
 the UI and CLI must compute and display the **effective** set of env vars
-(post profile-admission filtering per ADR-0006, since it varies devtainer to
+(post profile-admission filtering per `profile-governed-env-var-admission.md`, since it varies devtainer to
 devtainer) that granting this access will expose — not a generic warning,
 the actual names and targets. This is real, scoped UI/CLI work: a
 share-time preview, not a static disclaimer.
@@ -71,16 +71,16 @@ limits, not a permanent position that per-user isolation is undesirable.
 - Real, scoped product work is still required: a share-time effective-set
   preview in `Container.vue` (replacing/extending the existing
   `UserTagsInput`-adjacent UI) and the CLI's equivalent share command.
-  Computing "effective set" depends on ADR-0006 landing first (profile
+  Computing "effective set" depends on `profile-governed-env-var-admission.md` landing first (profile
   admission), since the set is meaningless as "all of the owner's vars"
   once profiles can restrict it — this ADR's UI work is sequenced after
-  ADR-0006.
+  `profile-governed-env-var-admission.md`.
 - The pre-existing `Container.vue` FIXME about who may specify developers is
   adjacent but distinct — worth fixing in the same area of the UI, not
   conflated with this decision.
-- Combined with ADR-0005: once secret vars are metadata-pull-only, a shared
+- Combined with `secret-env-vars-metadata-pull-only.md`: once secret vars are metadata-pull-only, a shared
   collaborator with SSH/IDE access can still retrieve the owner's secret
-  values by querying the metadata server themselves (see ADR-0005's
+  values by querying the metadata server themselves (see `secret-env-vars-metadata-pull-only.md`'s
   Consequences — the metadata server authenticates by reservation IP, a
   per-container grain, not per-account). This ADR's disclosure requirement
   applies equally to that case: the share-time preview should make clear

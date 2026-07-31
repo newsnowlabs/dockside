@@ -1,4 +1,4 @@
-# ADR-0008: SSH per-connection identity — a minimal, auth-gated dropbear patch
+# ADR: SSH per-connection identity — a minimal, auth-gated dropbear patch
 
 - **Status:** Accepted — not yet implemented. Research has converged on a
   single mechanism (earlier revisions of this ADR kept a no-patch fallback
@@ -7,7 +7,7 @@
 - **Date:** 2026-07-31 (revised repeatedly: dropped the forced-command-wrapper
   fallback after finding it's forgeable by any co-located session; added the
   `/proc` cross-session read risk and required mitigation; added
-  `reservation_id` to the minted token to serve ADR-0005's
+  `reservation_id` to the minted token to serve `secret-env-vars-metadata-pull-only.md`'s
   single-shared-socket design; added a standard fetch-and-export tool,
   deliberately not auto-invoked; added a second dropbear patch isolating the
   forwarded agent socket between sessions via `SO_PEERCRED` plus a
@@ -42,7 +42,7 @@ fallback this ADR originally kept alongside the patch, and a cross-session
 `Proxy.pm::get_server_port` resolves a real, authenticated `$User` (via
 `Request->authenticate` against the session cookie) for every router-proxied
 connection, including the `ssh` router — confirmed by reading the code. Per
-ADR-0004, SSH access to devtainers is architecturally always
+`ssh-tunnel-credential-exposure.md`, SSH access to devtainers is architecturally always
 wstunnel-mediated, so this holds for every SSH session. The nginx config
 (`app/server/nginx/conf/sites-available/default`) already has a working
 precedent for turning a Perl-computed value into a header on the proxied
@@ -179,7 +179,7 @@ stays exactly what it already is — a flat, unlabeled list of trusted public
 keys, used only to decide whether a connection is allowed at all, unchanged
 from today. Account attribution happens as a **live, authenticated query to
 the outer Dockside server** at auth-success time, over the same Unix socket
-ADR-0005 already builds:
+`secret-env-vars-metadata-pull-only.md` already builds:
 
 - At the moment `svr_parse_pubkey_options` (or equivalent) confirms a key
   is valid, dropbear already possesses the raw offered public key — it had
@@ -198,7 +198,7 @@ ADR-0005 already builds:
   this question in the first place.
 - The outer server verifies the request's HMAC (looking up that
   reservation's own signing key via `reservation_id`, treated as an
-  untrusted lookup key exactly as ADR-0005 already treats it elsewhere),
+  untrusted lookup key exactly as `secret-env-vars-metadata-pull-only.md` already treats it elsewhere),
   then answers using its own authoritative data — the same per-account
   `authorized_keys()`/`keypairs_all()` records `Reservation::exec` already
   consults, scoped to that reservation's currently-authorized accounts —
@@ -290,7 +290,7 @@ Once minted, the token has to go *somewhere* the connecting user's own,
 later-invoked script can reach it — see "Where the token surfaces," below.
 That place is the spawned session's own environment, inherited by
 everything it forks. This is exactly the kind of value the rest of this
-plan (ADR-0005, ADR-0007) has been concerned about protecting from
+plan (`secret-env-vars-metadata-pull-only.md`, `shared-devtainer-env-var-disclosure.md`) has been concerned about protecting from
 *other*, differently-authenticated sessions sharing the same container —
 and the same concern applies here: could a different collaborator's SSH
 session read this token out of the target session's `/proc/<pid>/environ`?
@@ -365,7 +365,7 @@ dropbear-forked process.** This is a second, independent patch to dropbear
 alongside the account-resolution query above — same "already carrying a
 fork" cost, a different piece of logic, worth reviewing as its own unit.
 
-- Unlike the metadata-socket `SO_PEERCRED` case (ADR-0005), there's no
+- Unlike the metadata-socket `SO_PEERCRED` case (`secret-env-vars-metadata-pull-only.md`), there's no
   cross-namespace problem here: dropbear and every session's processes all
   share the *same* PID namespace (they're all inside the one devtainer
   container), so `SO_PEERCRED`'s `pid` field is fully meaningful with no
@@ -386,7 +386,7 @@ fork" cost, a different piece of logic, worth reviewing as its own unit.
   gated by ptrace/Yama the way `environ` is — any process can read it for
   any PID visible in its own namespace. A meaningful contrast with the
   `pid: host` grant `SO_PEERCRED` would have needed for the metadata-socket
-  case (ADR-0005) — this one costs nothing extra.
+  case (`secret-env-vars-metadata-pull-only.md`) — this one costs nothing extra.
 - **PID-reuse hazard, and how to close it.** `SO_PEERCRED` itself is
   race-free (the kernel latches it atomically at connect time), but the
   *subsequent* ancestry walk is a series of separate `/proc` reads — a PID
@@ -483,13 +483,13 @@ already writes stays exactly as it is today.
   CSPRNG for its own key-exchange operations), and computes a token over
   `reservation_id || account || nonce || expiry`, HMAC'd with the signing
   key — e.g. `DOCKSIDE_SSH_IDENTITY=<reservation_id>.<account>.<nonce>.<expiry>.<hmac>`.
-  `reservation_id` is included specifically to serve ADR-0005's
+  `reservation_id` is included specifically to serve `secret-env-vars-metadata-pull-only.md`'s
   single-shared-socket metadata transport: since one socket now serves
   every devtainer, the metadata server needs the request itself to say
   which reservation it's for, and this token is what carries that,
   cryptographically bound so it can't be forged independently of the
-  matching reservation's own key (see ADR-0005 for the server-side
-  verification flow — this ADR mints the token, ADR-0005 defines how it's
+  matching reservation's own key (see `secret-env-vars-metadata-pull-only.md` for the server-side
+  verification flow — this ADR mints the token, `secret-env-vars-metadata-pull-only.md` defines how it's
   transported and checked).
 - **The signing key itself is never exported into the child session** —
   only the derived token is, after the privilege drop and the mandatory
@@ -499,7 +499,7 @@ already writes stays exactly as it is today.
 user's login shell (and everything that shell subsequently forks) — there
 is no other place a user's own, later-invoked script could reach it from,
 since responsibility for actually querying the metadata server is
-deliberately left to the user (ADR-0005). This is precisely why the
+deliberately left to the user (`secret-env-vars-metadata-pull-only.md`). This is precisely why the
 Landlock requirement above is not optional: the token's confidentiality
 *from other sessions in the same shared container* rests entirely on that
 sandboxing, not on the delivery mechanism itself. Disabling core dumps for
@@ -550,7 +550,7 @@ security posture regardless of convenience.
   existing flat `AUTHORIZED_KEYS` construction and file output are already
   sufficient (see "no restructuring is needed," above). New server-side
   scope instead: a "resolve key fingerprint to account" endpoint on the
-  outer Dockside server, reachable over the same shared socket ADR-0005
+  outer Dockside server, reachable over the same shared socket `secret-env-vars-metadata-pull-only.md`
   builds, authenticated the same way the token itself is.
 - Building dropbear from source instead of `apk add`-ing it (mechanically
   compatible with the existing build stage — `make`/`gcc`/`g++` already
@@ -568,7 +568,7 @@ security posture regardless of convenience.
   installed via the same rc-file mechanism as the identity token itself —
   additional surface to build and test, but reusing established delivery
   infrastructure rather than inventing new plumbing, and it's the piece
-  that makes ADR-0005's "pull, don't push" model something users can safely
+  that makes `secret-env-vars-metadata-pull-only.md`'s "pull, don't push" model something users can safely
   self-serve rather than something that pushes injection-bug risk onto
   every account that wants to use it.
 - The previous revision's `authorized_keys`/`.ssh` ownership-and-sticky-bit
@@ -594,20 +594,20 @@ security posture regardless of convenience.
   Pre-existing identity-hygiene edge case, not introduced by this
   mechanism.
 - This closes the transport gap for `ssh` only. It does nothing for `ide`
-  (ADR-0007's shared-single-process limitation stands — there is no
+  (`shared-devtainer-env-var-disclosure.md`'s shared-single-process limitation stands — there is no
   per-connection concept inside a running Theia/openvscode process for
   this, or any, mechanism to attach to).
-- Once built, this is the missing factor referenced in ADR-0005's
+- Once built, this is the missing factor referenced in `secret-env-vars-metadata-pull-only.md`'s
   Consequences — covering **both** halves of what a single shared metadata
   socket needs to know: which reservation is asking (`reservation_id`) and
   which account within it (`account`), from one verified token.
-- Sequenced after ADR-0005's metadata-server endpoint exists (nothing to
-  validate the token against otherwise) and is independent of ADR-0006/0007.
+- Sequenced after `secret-env-vars-metadata-pull-only.md`'s metadata-server endpoint exists (nothing to
+  validate the token against otherwise) and is independent of `profile-governed-env-var-admission.md`/0007.
 - Landlock's ptrace-domain protection is specific to `/proc`-based reads.
   It does not touch the separate, still-open risk that a tool the user
   runs persists the *fetched* secret (not this identity token, but
   whatever the metadata server later returns) to a file under the shared
-  `$HOME` — see ADR-0007, which this generalizes: ordinary DAC file
+  `$HOME` — see `shared-devtainer-env-var-disclosure.md`, which this generalizes: ordinary DAC file
   permissions offer no protection at all when every collaborator is the
   same UID, and no amount of transport or `/proc` hardening changes that.
 
@@ -671,18 +671,18 @@ security posture regardless of convenience.
 - **Auto-invoke the fetch-and-export function from the session wrapper,
   instead of just defining it.** Would make the pull-based delivery model
   transparent to the user, which sounds like pure upside until you notice
-  it removes exactly the property ADR-0005 was written to establish: every
+  it removes exactly the property `secret-env-vars-metadata-pull-only.md` was written to establish: every
   session would auto-materialize the account's full var set — secret and
-  non-secret both, since ADR-0005 requires the pull interface to be
+  non-secret both, since `secret-env-vars-metadata-pull-only.md` requires the pull interface to be
   uniform — into its environment on every login, with no user action
   involved. That's the auto-push model this design exists to move away
   from, just relocated from `Reservation::exec`'s `docker exec` call to a
   wrapper inside the container; the mechanism changes but the property that
-  made ADR-0005 worth deciding doesn't survive the move. An individual
+  made `secret-env-vars-metadata-pull-only.md` worth deciding doesn't survive the move. An individual
   account owner adding the function call to their own `.bashrc` is a
   different, legitimate thing — an informed, per-account opt-in, not a
   blanket default Dockside imposes on every session including shared ones
-  (see ADR-0007 on why that default matters for shared devtainers
+  (see `shared-devtainer-env-var-disclosure.md` on why that default matters for shared devtainers
   specifically).
 - **Have the patched dropbear fetch and export the vars itself, rather than
   minting a token for the user's own tool to redeem.** Rejected for two
@@ -716,4 +716,4 @@ security posture regardless of convenience.
   container) was specific to sharing a socket between the Dockside server
   and a devtainer; the agent-forwarding socket lives entirely inside one
   container already, so this isn't a relevant alternative for this
-  problem, only for ADR-0005's.
+  problem, only for `secret-env-vars-metadata-pull-only.md`'s.

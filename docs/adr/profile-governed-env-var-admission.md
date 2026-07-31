@@ -1,4 +1,4 @@
-# ADR-0006: Profiles govern which env vars a devtainer admits (default-deny)
+# ADR: Profiles govern which env vars a devtainer admits (default-deny)
 
 - **Status:** Accepted — not yet implemented on this branch.
 - **Date:** 2026-07-31
@@ -31,7 +31,7 @@ devtainer profile they happen to launch from the same account — the user has
 no way to scope a var to *some* of their devtainers and not others, and a
 profile author has no way to declare "this class of devtainer does not admit
 arbitrary user env vars at all," which will matter more once secret vars
-route through the metadata server (ADR-0005) and a profile may want to
+route through the metadata server (`secret-env-vars-metadata-pull-only.md`) and a profile may want to
 declare it doesn't support that retrieval pattern either.
 
 **Project-scoped env vars** (values tied to a project/repo rather than a
@@ -66,7 +66,7 @@ launching user's vars must say so explicitly in the profile.
 - Every devtainer's effective env var set becomes profile-dependent, not
   purely account-dependent — the same user launching from two different
   profiles may see two different effective sets. This is deliberate (see
-  ADR-0007, which depends on this varying devtainer-to-devtainer for its
+  `shared-devtainer-env-var-disclosure.md`, which depends on this varying devtainer-to-devtainer for its
   share-time disclosure UI to be meaningful) but is a genuine behavior
   change from what shipped in `ba6a022`/`c091aac`/`829ee99`: existing
   profiles, unless updated, will admit **no** user env vars at all once this

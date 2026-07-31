@@ -126,7 +126,7 @@ never reimplement it.
 **Note on remove/rename:** Like all state-changing admin/self routes, these
 require POST; the server returns 405 for a non-POST request. GET is cacheable,
 prefetchable and logged, and its argument parser does not JSON-decode structured
-fields. See `docs/adr/0002-admin-api-post-migration.md`.
+fields. See `docs/adr/admin-api-post-migration.md`.
 
 ### Self-service account API — any authenticated user
 

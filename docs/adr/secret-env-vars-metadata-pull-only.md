@@ -1,4 +1,4 @@
-# ADR-0005: Secret-flagged env vars are metadata-pull-only, never auto-injected
+# ADR: Secret-flagged env vars are metadata-pull-only, never auto-injected
 
 - **Status:** Accepted — sequenced after `claude/secrets-encryption-users-json-zghgcl`
   and a metadata-server env-fetch endpoint; not yet implemented on this branch.
@@ -109,7 +109,7 @@ surfaced two problems with extending it as-is, and a cleaner replacement:
   own, already-fixed mount set retroactively, which Docker doesn't support.
 - **HTTP(S) over TCP carries real risk from a co-located attacker sharing
   the container's one network namespace**, independent of anything already
-  covered by ADR-0008's token. Checked directly: `CAP_NET_RAW` **is** in
+  covered by `ssh-session-identity-for-metadata-server.md`'s token. Checked directly: `CAP_NET_RAW` **is** in
   Docker's default capability set, so a root-capable session inside the
   same container can capture same-namespace traffic without needing any
   additional privilege — plain HTTP is fully exposed to this. HTTPS without
@@ -151,20 +151,20 @@ that — even then — would only identify *which container*, requiring a
 further cross-reference against `dockerd`'s own container/PID accounting to
 be useful at all.
 
-**Instead: reservation identity rides in the same token ADR-0008 already
+**Instead: reservation identity rides in the same token `ssh-session-identity-for-metadata-server.md` already
 mints**, which now carries `reservation_id` alongside `account`. The
 metadata server treats `reservation_id` as an **untrusted lookup key** —
 like a JWT's `kid` header — used only to select which reservation's signing
 secret to check the token's HMAC against; the request is trusted only if
 that verification succeeds. A forged `reservation_id` buys an attacker
 nothing, since they can't produce a valid signature for a key they were
-never issued. This requires no new mechanism beyond what ADR-0008 already
+never issued. This requires no new mechanism beyond what `ssh-session-identity-for-metadata-server.md` already
 builds — reservation identification and account identification are both
 answered by the same verified payload. For `ide`-originated requests (no
 SSH/dropbear involved), `Reservation::exec` mints a reservation-scoped-only
 token the same way, over the same existing `docker exec` env-injection
 mechanism already used for `AUTHORIZED_KEYS`/`SSH_AGENT_KEYS` — no account
-field, consistent with ADR-0007's still-open limitation that individual
+field, consistent with `shared-devtainer-env-var-disclosure.md`'s still-open limitation that individual
 accounts can't be distinguished inside a shared IDE process.
 
 ## Consequences
@@ -181,18 +181,18 @@ accounts can't be distinguished inside a shared IDE process.
   for non-secret docker-target vars, which are unaffected by this ADR.
 - The multi-user-sharing question (who else can retrieve a secret from a
   shared devtainer) is **partially** solved by this decision, and only for
-  `ssh`. With ADR-0008's token in place, the metadata server can scope its
+  `ssh`. With `ssh-session-identity-for-metadata-server.md`'s token in place, the metadata server can scope its
   response to the actual connecting account rather than always the
   reservation owner, for SSH-originated requests — real per-account
   isolation, not just per-container. For `ide`-originated requests, it is
   **not** solved: there is still no per-account signal inside a shared IDE
-  process (ADR-0007's limitation), so any developer with IDE access to a
+  process (`shared-devtainer-env-var-disclosure.md`'s limitation), so any developer with IDE access to a
   shared devtainer can still pull the owner's secret vars via the same
   reservation-scoped-only token every IDE session gets. Either way, this
   decision removes *passive/ambient* disclosure (nothing appears in `env`,
   terminal history, or a log unless explicitly fetched) and — for `ssh` —
   a real per-account boundary; the residual gap is exactly, and only, the
-  `ide` case ADR-0007 already names as an accepted, disclosed limitation.
+  `ide` case `shared-devtainer-env-var-disclosure.md` already names as an accepted, disclosed limitation.
 - `App::Metadata.pm`'s existing `# FIXME` about hardening beyond
   `Metadata-Flavor` header + no-XFF + source-IP matching is **superseded**
   by this ADR's transport decision, not merely made more urgent: the
@@ -243,7 +243,7 @@ accounts can't be distinguished inside a shared IDE process.
   account*, and would still need a further lookup against `dockerd`'s own
   container/PID records to be useful. The token-based approach (adopted)
   achieves the same result with no new privilege grant, reusing
-  infrastructure ADR-0008 already builds for the account-identification
+  infrastructure `ssh-session-identity-for-metadata-server.md` already builds for the account-identification
   problem.
 - **Keep source-IP matching, just add an auth header.** Superseded rather
   than extended: once every devtainer reaches the metadata server through
