@@ -7,7 +7,9 @@
 - **Date:** 2026-07-31 (revised: dropped the forced-command-wrapper fallback
   after finding it's forgeable by any co-located session; added the `/proc`
   cross-session read risk and required mitigation; added `reservation_id` to
-  the minted token to serve ADR-0005's single-shared-socket design)
+  the minted token to serve ADR-0005's single-shared-socket design; added a
+  standard fetch-and-export tool, deliberately not auto-invoked, and
+  rejected auto-invoking it either from the wrapper or from dropbear itself)
 - **Deciders:** Struan Bartlett
 
 ## Context
@@ -362,6 +364,42 @@ environment variable lives in process memory, and a core dump would
 otherwise write it to disk incidentally, defeating "never written to disk"
 without any config-writing tool being involved.
 
+**A standard fetch-and-export tool ships alongside the patch, so
+"responsibility belongs to the user" doesn't mean "every user hand-rolls
+their own metadata client."** Left entirely to individual users, this is
+almost guaranteed to reproduce exactly the bug class this branch's PR
+review spent most of its effort closing — a naively-written fetch script
+that builds an `eval "export $(...)"` string out of untrusted values is a
+shell-injection vector the moment one value contains `$()` or a backtick.
+Providing one well-audited implementation converts "N independently-written,
+unaudited scripts" into "one reviewed code path," which is the better
+security posture regardless of convenience.
+
+- **Shape: a sourced shell function, not a standalone binary meant to be
+  `eval`'d.** A subprocess cannot modify its parent shell's environment —
+  only two designs get around that: emit `export KEY='...'` text for the
+  caller to `eval` (which re-opens the exact injection surface above,
+  permanently, since safety then depends on the tool's quoting being
+  perfect forever), or run as a function *inside* the calling shell, which
+  can `export` directly with nothing to serialize or re-parse. The function
+  route is the one to build: fetch the metadata response and walk it with
+  the same safe pattern `apply_user_env` already uses elsewhere in this
+  codebase (`while IFS=$'\t' read -r key value; do export "$key=$value";
+  done`, fed from `curl --unix-socket ... | jq -r '...'`) — no `eval`
+  anywhere in the path. `curl` and `jq` are already bundled for devtainers
+  (`Dockerfile:295`'s `BUNDELF_BINARIES`, which `launch.sh` already depends
+  on `jq` for), so this needs no new dependency.
+- **Delivery reuses existing infrastructure.** The function definition is
+  installed via the same marker-guarded rc-file mechanism
+  `install_user_env_notice`/`install_launch_status_notice` already
+  establish — the wrapper's session setup *defines* the function in the
+  shell's environment, it does not *call* it.
+- **Not auto-invoked, deliberately.** Defining the function and running it
+  automatically at every session start are different things with opposite
+  answers here — see "Alternatives considered" for why auto-invoking it
+  (from the session wrapper, or from dropbear itself) is rejected, not just
+  deferred.
+
 ## Consequences
 
 - `Reservation::exec` / `update_ssh_authorized_keys` restructuring (shape
@@ -379,6 +417,13 @@ without any config-writing tool being involved.
   container/session setup; if it errors (host kernel predates 5.13, or has
   Landlock disabled), refuse to mint/deliver the identity token rather than
   silently degrading to an unprotected one.
+- A new shipped tool: the fetch-and-export shell function described above,
+  installed via the same rc-file mechanism as the identity token itself —
+  additional surface to build and test, but reusing established delivery
+  infrastructure rather than inventing new plumbing, and it's the piece
+  that makes ADR-0005's "pull, don't push" model something users can safely
+  self-serve rather than something that pushes injection-bug risk onto
+  every account that wants to use it.
 - **Known limitation:** if two different accounts have uploaded the literal
   same public key (unusual, not prevented today), only one line's binding
   can apply to that key — whichever authorized_keys line is matched first.
@@ -441,3 +486,37 @@ without any config-writing tool being involved.
   exists to address. See "Why the wrapper route is rejected outright,"
   above — it's forgeable by any co-located session, not merely weaker or
   more limited than the patch route.
+- **Auto-invoke the fetch-and-export function from the session wrapper,
+  instead of just defining it.** Would make the pull-based delivery model
+  transparent to the user, which sounds like pure upside until you notice
+  it removes exactly the property ADR-0005 was written to establish: every
+  session would auto-materialize the account's full var set — secret and
+  non-secret both, since ADR-0005 requires the pull interface to be
+  uniform — into its environment on every login, with no user action
+  involved. That's the auto-push model this design exists to move away
+  from, just relocated from `Reservation::exec`'s `docker exec` call to a
+  wrapper inside the container; the mechanism changes but the property that
+  made ADR-0005 worth deciding doesn't survive the move. An individual
+  account owner adding the function call to their own `.bashrc` is a
+  different, legitimate thing — an informed, per-account opt-in, not a
+  blanket default Dockside imposes on every session including shared ones
+  (see ADR-0007 on why that default matters for shared devtainers
+  specifically).
+- **Have the patched dropbear fetch and export the vars itself, rather than
+  minting a token for the user's own tool to redeem.** Rejected for two
+  independent reasons. First, it grows the wrong side of the privilege
+  boundary: the entire case for a custom patch over upstream's own
+  `mkj/dropbear#205` was keeping it minimal and surgical (read a quoted
+  string, copy it onto a struct field, one `setenv()`); embedding an HTTP
+  client and a JSON parser into dropbear means that code runs while
+  dropbear is still root and still pre-fork, so any bug in it is a
+  root-level vulnerability in the SSH daemon itself rather than a bug in
+  one user's own unprivileged tool — a strictly worse blast radius than
+  every other design choice in this ADR has been careful to avoid. Second,
+  it defeats the deliberate-pull model even more completely than
+  auto-invoking from the wrapper does, since there is no even theoretical
+  per-account opt-out: it would happen in C, unconditionally, before the
+  user's shell exists at all. There's no compensating upside either — it
+  doesn't reduce what ends up sitting in the session's environment, it just
+  changes it from a narrow, short-lived identity token to the raw secret
+  values themselves, which is a worse trade, not a neutral one.
