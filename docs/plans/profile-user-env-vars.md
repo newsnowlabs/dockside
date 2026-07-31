@@ -103,48 +103,31 @@ explicit, visible fact rather than a silent one (ADR-0007).
 5. **Share-time disclosure UI** (ADR-0007) — depends on step 4 (the
    effective set to display is post-admission-filter); `Container.vue`'s
    sharing flow and the CLI's equivalent gain an effective-env-var preview.
-6. **SSH per-connection identity** (below) — depends on step 2 existing to
-   have something to authenticate *to*; not yet decided between its two
-   options, tracked here until it is.
+6. **SSH per-connection identity** (ADR-0008) — depends on step 2 existing
+   to have something to authenticate *to*; mechanism proposed, pending
+   confirmation.
 
 Steps 3–5 can be sequenced independently of each other once 2 is done,
 except where noted (5 depends on 4).
 
-## Open question: SSH per-connection identity
+## SSH per-connection identity (ADR-0008)
 
-Not yet a decision, so it isn't an ADR. Restated because it's a real,
-scoped question once the metadata server (step 2) exists: today, the
-metadata server authenticates purely by matching the caller's source IP to a
-reservation — a per-*container* grain. Any account with legitimate SSH/IDE
-access to a shared devtainer can query it and get the *owner's* vars; there
-is no way for it to know *which* authorized account is actually asking, so
-it can't yet scope a response to "just this collaborator's own vars."
+No longer fully open. The two options sketched when this plan was first
+written — server-side identity injection via the proxy/wstunnel/dropbear
+path, or client-side `SetEnv`/`SendEnv` — were both researched against the
+actual bundled software rather than left as assumptions, and **both turned
+out to be blocked**: the wstunnel→dropbear leg can't carry data into an
+already-encrypted SSH session without a full SSH-terminating proxy, and
+dropbear (2025.88, as shipped) has never implemented the SSH `env` channel
+request server-side at all. ADR-0008 (`0008-ssh-session-identity-for-metadata-server.md`)
+proposes a third mechanism found during that research instead — a per-key
+`command=` forced-command binding in `authorized_keys`, which dropbear does
+support today — with a hard requirement that whatever it delivers must be
+an unforgeable, server-validated session token, not a plaintext identity
+claim. See that ADR for the full writeup; its status is `Proposed`, not yet
+confirmed.
 
-`Proxy.pm::get_server_port` already resolves a real, authenticated `$User`
-(via `Request->authenticate` against the session cookie) for every
-router-proxied connection, including the SSH router — confirmed by reading
-the code, not assumed. Per ADR-0004 (`0004-ssh-tunnel-credential-exposure.md`),
-SSH access to devtainers is architecturally always wstunnel-mediated, so
-this holds for every SSH session, not just some. The gap is that nothing
-today carries that resolved identity from the proxy hop into the shell
-`dropbear` spawns. Two options, not yet chosen between:
-
-- **Server-side, via the proxy/wstunnel/dropbear path.** Mint a
-  session-scoped token from the authenticated identity at the proxy hop and
-  thread it through to land as an env var when the shell spawns. Requires
-  new plumbing — nothing today passes metadata from the proxy hop into what
-  `dropbear` hands its spawned shell.
-- **Client-side, via the user's own SSH config.** OpenSSH's `SetEnv`/
-  `SendEnv`, paired with dropbear-side acceptance of the forwarded variable
-  (unconfirmed whether/how this dropbear build supports that — needs
-  checking before this option can be committed to). This can plausibly reuse
-  machinery ADR-0004 already built: `dockside ssh config`/`exec-proxy`
-  already mints and refreshes a live, same-UID, 0600 credential tied to the
-  authenticated session specifically to avoid a stale secret in a config
-  file; emitting a second value (a `SetEnv` line) from that same mechanism
-  is a smaller extension than building new server-side plumbing.
-
-Once either lands, the metadata server gains a second factor beyond
+Once built, the metadata server gains a second factor beyond
 reservation-IP, and can scope its response to the actual connecting account
 — the missing piece for real per-collaborator secret-var isolation over
 SSH. No equivalent path exists for `ide` (see ADR-0007) — this only ever
@@ -158,11 +141,12 @@ already landed and been reviewed once. What's reasonable to do now:
 
 - Point `docs/developing/user-data-model.md` at the `env` field (it predates
   this feature and doesn't mention it) — a factual gap, not a design change.
-- Cross-reference this plan and ADR-0005/0006/0007 from the PR description
-  or a follow-up comment, so the "why does this feature push secrets today"
-  question has a durable answer for anyone reading the history later rather
-  than only living in conversation.
-- No code changes as part of landing this plan doc — ADR-0005/0006/0007 are
-  each real implementation work (metadata endpoint, profile schema field,
-  share-time UI) appropriately sized as their own follow-on branches, not
-  squeezed into this one after the fact.
+- Cross-reference this plan and ADR-0005/0006/0007/0008 from the PR
+  description or a follow-up comment, so the "why does this feature push
+  secrets today" question has a durable answer for anyone reading the
+  history later rather than only living in conversation.
+- No code changes as part of landing this plan doc — ADR-0005/0006/0007/0008
+  are each real implementation work (metadata endpoint, profile schema
+  field, share-time UI, `authorized_keys` restructuring) appropriately sized
+  as their own follow-on branches, not squeezed into this one after the
+  fact.
