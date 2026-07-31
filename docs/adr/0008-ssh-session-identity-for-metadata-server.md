@@ -1,10 +1,14 @@
-# ADR-0008: SSH per-connection identity — a minimal dropbear patch, with a no-patch fallback
+# ADR-0008: SSH per-connection identity — a minimal, auth-gated dropbear patch
 
-- **Status:** Proposed — research complete, not yet implemented, not yet
-  reviewed in conversation beyond this ADR itself.
-- **Date:** 2026-07-31 (revised same day: added OpenSSH-swap and
-  patch-dropbear-directly research)
-- **Deciders:** Struan Bartlett (pending confirmation)
+- **Status:** Accepted — not yet implemented. Research has converged on a
+  single mechanism (earlier revisions of this ADR kept a no-patch fallback
+  "live"; that fallback was subsequently found to be insecure, not merely
+  costlier — see below).
+- **Date:** 2026-07-31 (revised: dropped the forced-command-wrapper fallback
+  after finding it's forgeable by any co-located session; added the `/proc`
+  cross-session read risk and required mitigation; added `reservation_id` to
+  the minted token to serve ADR-0005's single-shared-socket design)
+- **Deciders:** Struan Bartlett
 
 ## Context
 
@@ -15,10 +19,12 @@ open question with two candidate options, both unresearched at the time:
 - **(ii)** The user's local SSH config carries an identity value that arrives
   as a session-only env var, via dropbear accepting it.
 
-This ADR researches both against the actual bundled software, then goes
-further: whether swapping dropbear for OpenSSH would remove the limitation,
-and whether patching dropbear directly is a realistic option — not general
-SSH/dropbear folklore in either case.
+This ADR researches both against the actual bundled software, considers
+swapping dropbear for OpenSSH, evaluates patching dropbear directly, and —
+in this revision — closes two gaps found only once the mechanism was
+scrutinized further in conversation: a forgery hole in the no-patch
+fallback this ADR originally kept alongside the patch, and a cross-session
+`/proc` read risk affecting wherever the resulting token ends up.
 
 ### What identity signal already exists, and where it stops
 
@@ -166,125 +172,235 @@ branch parsing exactly the way `command=` already does, immediately next to
 it in the same file.
 
 **This also has a real capability advantage over both the OpenSSH
-`environment=` idea and this ADR's own forced-command-wrapper fallback
-(below): it is entirely server-authored.** The value comes from Dockside's
-own `update_ssh_authorized_keys`, never from anything the connecting client
+`environment=` idea and the forced-command wrapper this ADR originally kept
+as a fallback (see "Why the wrapper route is rejected outright" below): it
+is entirely server-authored.** The value comes from Dockside's own
+`update_ssh_authorized_keys`, never from anything the connecting client
 sends — unlike OpenSSH's `SendEnv`/`AcceptEnv` model, there is no
 "client proposes a value, server checks an allowlist" trust question to
 reason about at all, because the client never proposes anything.
 
-**A real gap versus the forced-command-wrapper fallback, checked directly:**
-`command=`'s logic (and so this ADR's wrapper mechanism, and — if it hooked
-into the same code path — a naively-implemented `dockside-identity=`) only
-fires inside `sessioncommand()`, which is reached only when a client opens a
-*session* channel (`shell`/`exec`/`subsystem`). A client that opens **only**
-a port-forwarding channel (`ssh -N -L ...`, tunnel-only, no shell) never
+**Apply-point matters: auth-success, not `command=`'s session-channel
+dispatch.** `command=`'s logic only fires inside `sessioncommand()`, which
+is reached only when a client opens a *session* channel
+(`shell`/`exec`/`subsystem`). A client that opens **only** a
+port-forwarding channel (`ssh -N -L ...`, tunnel-only, no shell) never
 reaches that code path at all — confirmed by reading `svr-chansession.c`'s
-channel-request dispatch. A patch that applies the identity value at
+channel-request dispatch. The patch must apply the identity value at
 **auth-success time** (right after `svr_parse_pubkey_options` succeeds for
-that key, independent of which channel types get opened afterwards) does
-not share this gap; a patch that piggybacks on the existing `command=`
-apply-point does. This is a real design choice within "patch dropbear," not
-just a patch-vs-no-patch question — worth being deliberate about which
-apply-point the patch uses. In practice this gap may not matter (a
-tunnel-only connection runs no shell process that could consume an identity
-env var anyway), but it's a materially different guarantee and should be a
-conscious choice, not an accident of which function was easiest to hook.
+that key, independent of which channel types get opened afterwards), not
+piggyback on `command=`'s apply-point, so this gap doesn't apply here — a
+port-forward-only connection still gets the identity value minted and set
+before any channel-type branching, even though (in practice) there's no
+shell process in that case to consume it anyway.
 
 **Ongoing cost, stated plainly:** a source patch means Dockside now
 builds dropbear from source and carries a diff that needs periodic rebasing
 whenever Alpine's dropbear package (and thus the version this patch targets)
-moves — a real, ongoing maintenance line-item, not a one-time cost. This is
-the "even if one is costly" case the research was asked to consider.
+moves — a real, ongoing maintenance line-item, not a one-time cost.
+
+### Why the wrapper route is rejected outright, not kept as a fallback
+
+The previous revision of this ADR kept a no-patch fallback: give each key's
+authorized_keys line a `command="<wrapper> <token-placeholder>"` binding,
+where the wrapper sets a session env var and execs `$SSH_ORIGINAL_COMMAND`.
+Scrutinized further, this is not a smaller/costlier version of the same
+protection — **it is a complete bypass, trivially available to any
+co-located session.**
+
+The wrapper is invoked as `$IDE_USER` — the same shared unix account every
+connecting session lands as, whether they authenticated as themselves or
+not. It has **no way to distinguish** "I was just invoked by dropbear as
+the direct, gated result of a real key authenticating" from "I was manually
+re-run by an already-connected user, typing my path and an argument of
+their choosing." Both look identical to the script: same user, same binary,
+an argv string. A parent-process check doesn't rescue this either — an
+attacker's own legitimate, correctly-authenticated shell is *also* a
+descendant of dropbear (from their own real connection), so "my parent is
+dropbear" is true for a manual re-invocation too. If the wrapper holds, or
+can derive, whatever signing capability is needed to produce a valid
+credential, then **any connected user can mint a token for any other
+identity they can see in `authorized_keys`**, by simply re-running the
+wrapper with a different account name as its argument — defeating the
+entire point of the mechanism, not weakening it.
+
+The patch route doesn't share this hole, provided (and only provided) one
+discipline is followed: the signing secret (`DOCKSIDE_METADATA_HMAC_KEY`,
+below) is read once by dropbear from its own **pre-fork** process
+environment — inherited from `docker exec`, before any privilege drop to
+`$IDE_USER` — used internally to compute the token, and never exported into,
+or made readable by, the spawned session. Minting a token this way still
+requires the same bar as impersonating anyone in SSH generally: possessing
+the private key that authenticates as them, checked by dropbear's own
+internal, non-user-invokable code — not a program sitting on disk that
+anyone with a shell can run directly.
+
+**The wrapper route is therefore dropped entirely, not kept as a
+lower-cost fallback.** There is no viable no-patch alternative that
+provides this property; the earlier framing of "one winning option, or two
+viable options, even if one is costly" resolves to the former.
+
+### The `/proc` cross-session read risk, and the required mitigation
+
+Once minted, the token has to go *somewhere* the connecting user's own,
+later-invoked script can reach it — see "Where the token surfaces," below.
+That place is the spawned session's own environment, inherited by
+everything it forks. This is exactly the kind of value the rest of this
+plan (ADR-0005, ADR-0007) has been concerned about protecting from
+*other*, differently-authenticated sessions sharing the same container —
+and the same concern applies here: could a different collaborator's SSH
+session read this token out of the target session's `/proc/<pid>/environ`?
+
+Researched directly (not assumed) in conversation before this revision:
+
+- Reading `/proc/<pid>/environ` is gated by the kernel's
+  `ptrace_may_access()` — same-UID access (which every session here has,
+  since all land as `$IDE_USER`) is allowed unconditionally under
+  `ptrace_scope=0`, but restricted to actual process ancestry under
+  `ptrace_scope=1` (Ubuntu's and many distros' shipped default). This is a
+  **host kernel sysctl**, not namespaced per container, and Dockside
+  neither sets nor currently checks it — so whether this vector is closed
+  depends entirely on the deployment host, which Dockside doesn't control.
+- Docker's default capability set (checked: does **not** include
+  `CAP_SYS_PTRACE`, and Dockside's `Reservation::Launch::cmdline_security`
+  has no `cap-add`/`cap-drop` handling of its own — only a profile's
+  `dockerArgs` could add it, and no shipped example profile does) means
+  **cross-UID** ptrace access (e.g. a root process reading `$IDE_USER`'s
+  environ) is blocked regardless of `ptrace_scope`, and this holds even if
+  a connecting user escalates to root *inside* the container via `sudo` —
+  the capability **bounding set** is a ceiling fixed at `docker create`
+  time that nothing inside the container, including root, can raise.
+  This does not, however, help with the **same-UID sibling** case (one
+  `$IDE_USER` session reading another's), which is exactly what's at issue
+  here, since no capability is needed for that under `ptrace_scope=0`.
+- `landrun` (a CLI wrapper around Linux Landlock, `github.com/Zouuup/landrun`)
+  closes this regardless of the host's `ptrace_scope`. Landlock's ptrace
+  restriction is automatic — not opt-in — for any process inside a Landlock
+  domain: *"the tracee must be in a sub-domain of the tracer."* Two
+  independently-created, sibling domains (one per SSH session, neither
+  nested in the other) satisfy neither direction of that relationship, so
+  a landrun-wrapped session cannot read another's `/proc/<pid>/environ`
+  regardless of the host's `ptrace_scope` setting — Landlock only adds
+  restriction on top of the classic DAC/Yama model, never depends on it.
+  This also survives in-session privilege escalation: Landlock restrictions
+  are inherited by all descendants and cannot be removed by a later
+  `setuid`/`sudo` within the same domain, unlike ordinary DAC permissions.
+  Unprivileged by design (no `CAP_SYS_ADMIN` needed), consistent with a
+  container that already runs with Docker's default capability set.
+
+**This only works if every connecting session is wrapped, uniformly** — the
+guarantee is symmetric: a sandboxed tracer is blocked from reading a
+target outside its sub-domain, so *every* session that could plausibly be
+an attacker needs to be inside its own independent domain, not just the
+one being protected.
 
 ## Decision
 
-**Prefer a minimal dropbear source patch adding a single-purpose,
-server-authored authorized_keys option (e.g. `dockside-identity=`), applied
-at auth-success time rather than piggybacked on `command=`'s session-channel
-apply-point. Keep the forced-command-wrapper mechanism (no patch required)
-as a documented fallback if carrying a source patch is judged not worth the
-ongoing maintenance cost.** Both require the same `AUTHORIZED_KEYS`
-restructuring in `Reservation::exec`/`update_ssh_authorized_keys` described
-below; they differ only in what dropbear does with the per-key value once
-it's there. Proposed for confirmation, not yet a settled decision — this
-ADR intentionally keeps both live rather than collapsing to one, per the
-"one winning option, or two viable options" brief this research was
-commissioned under.
+**Patch dropbear with a single-purpose, server-authored authorized_keys
+option (`dockside-identity=`), applied at auth-success time. There is no
+recommended no-patch fallback** — see above. As part of the same session
+handoff, the patch must exec into a **mandatory, independently-created
+Landlock sandbox (`landrun` or equivalent)** before reaching the
+connecting user's shell, and must **fail closed** — refuse to hand out the
+identity token, or refuse the connection outright — if Landlock support is
+unavailable on the host kernel (checked at container/session start, not
+silently degraded).
 
-**Both routes need the same prerequisite change**, since `Reservation::exec`
+**Prerequisite, shared with the abandoned wrapper design:** `Reservation::exec`
 currently discards per-account key ownership before it reaches the
-container:
+container —
 
 - `Reservation::exec` currently builds `@authorized_keys` via
   `unique map { @{$_->authorized_keys()} : () } @Users` — flattening,
   sorting, and deduplicating every authorized account's keys into one bare
-  array (`"--env=AUTHORIZED_KEYS=$keys_json"`), discarding which account
-  owns which key.
+  array (`"--env=AUTHORIZED_KEYS=$keys_json"`).
 - `launch.sh::update_ssh_authorized_keys` writes that array's entries
   verbatim, one per line, with no key options.
 
-Both need to change to `{username, key}` pairs and per-line options instead
-of a flat key list — this part of the work is identical regardless of which
-route below is chosen.
+Both need to change to `{username, key}` pairs, with each authorized_keys
+line becoming `dockside-identity="<account>" <key>` — the file carries only
+the **account label**, never a secret. Freshness and unforgeability come
+from the patch's own minting, not from anything static in the file.
 
-- **Patch route:** each line becomes
-  `dockside-identity="<token>" <key>`, applied by the patched dropbear
-  directly — no wrapper script needed.
-- **No-patch fallback route:** each line becomes
-  `command="<wrapper> <token>" <key>`; a small wrapper (shipped in the
-  image) sets the session env var and execs `$SSH_ORIGINAL_COMMAND` (or an
-  interactive shell if empty) — inherits the port-forward-only gap noted
-  above.
+**What the patch mints, and where it comes from:**
 
-**Critical requirement, independent of which route is chosen:** the value
-delivered must be an **unforgeable, session-scoped bearer credential, not a
-plaintext identity claim.** A bare env var is not tamper-evident — any
-process running inside that session (the connecting user's own later
-commands, or, in a shared devtainer, anything a co-located collaborator's
-process can reach) can trivially `export` a different value into its own
-children. If either route just sets `DOCKSIDE_SSH_IDENTITY=<plaintext
-username>`, anything in that session can impersonate any other authorized
-account when querying the metadata server — worse than not having this
-mechanism at all. `launch.sh`/`update_ssh_authorized_keys` (or
-`Reservation::exec`, wherever the token is minted) must instead generate an
-unguessable, server-verifiable token bound to (reservation, account, ideally
-a short expiry), and the metadata server (ADR-0005) must validate that token
-against its own record of what it minted, never merely trust whatever value
-arrives in the env var. This requirement is unchanged by, and more
-important than, the patch-vs-no-patch choice above.
+- At each devtainer's launch/relaunch, `Reservation::exec` also passes a
+  per-reservation signing secret into the container's env — e.g.
+  `--env=DOCKSIDE_METADATA_HMAC_KEY=<key>` — alongside the existing
+  `AUTHORIZED_KEYS`/`SSH_AGENT_KEYS` env vars. Known only to Dockside's
+  server process and this one container; never exposed to any user-facing
+  surface. This also passes `--env=DOCKSIDE_RESERVATION_ID=<id>`, or the
+  patch is simply told the reservation ID the same way.
+- At auth-success, the patched dropbear (still running privileged,
+  pre-fork) reads both from its own process environment, generates a fresh
+  random nonce (dropbear already has a CSPRNG for its own key-exchange
+  operations), and computes a token over
+  `reservation_id || account || nonce || expiry`, HMAC'd with the signing
+  key — e.g. `DOCKSIDE_SSH_IDENTITY=<reservation_id>.<account>.<nonce>.<expiry>.<hmac>`.
+  `reservation_id` is included specifically to serve ADR-0005's
+  single-shared-socket metadata transport: since one socket now serves
+  every devtainer, the metadata server needs the request itself to say
+  which reservation it's for, and this token is what carries that,
+  cryptographically bound so it can't be forged independently of the
+  matching reservation's own key (see ADR-0005 for the server-side
+  verification flow — this ADR mints the token, ADR-0005 defines how it's
+  transported and checked).
+- **The signing key itself is never exported into the child session** —
+  only the derived token is, after the privilege drop and the mandatory
+  `landrun` exec.
+
+**Where the token surfaces:** as an environment variable in the connecting
+user's login shell (and everything that shell subsequently forks) — there
+is no other place a user's own, later-invoked script could reach it from,
+since responsibility for actually querying the metadata server is
+deliberately left to the user (ADR-0005). This is precisely why the
+Landlock requirement above is not optional: the token's confidentiality
+*from other sessions in the same shared container* rests entirely on that
+sandboxing, not on the delivery mechanism itself. Disabling core dumps for
+these sessions (`ulimit -c 0`) is a cheap, complementary step — an
+environment variable lives in process memory, and a core dump would
+otherwise write it to disk incidentally, defeating "never written to disk"
+without any config-writing tool being involved.
 
 ## Consequences
 
-- Either route requires the same `Reservation::exec` /
-  `update_ssh_authorized_keys` restructuring (shape of the JSON blob, and
-  per-line option emission instead of bare keys) — scoped, not large, but
-  not nothing, and shared regardless of which route is chosen.
-- **Patch route** additionally requires: building dropbear from source
-  instead of `apk add`ing it (mechanically compatible with the existing
-  build stage — `make`/`gcc`/`g++` already present, no `autoconf` needed for
-  a `configure.ac`-untouched patch), carrying and periodically rebasing the
-  patch against Alpine's dropbear version as it moves, and choosing the
-  auth-success apply-point deliberately (not defaulting to `command=`'s
-  session-channel-only apply-point) if the port-forward-only gap matters.
-- **No-patch fallback route** additionally requires: the wrapper script
-  itself (shipped in the image, no source patch), and accepting the
-  port-forward-only gap as a known, probably-inconsequential limitation
-  (confirmed via source: `sessioncommand()`/`command=` logic never runs for
-  a connection that opens no session channel).
-- **Known limitation, either route:** if two different accounts have
-  uploaded the literal same public key (unusual, not prevented today), only
-  one line's binding can apply to that key — whichever authorized_keys line
-  is matched first. Pre-existing identity-hygiene edge case, not introduced
-  by this mechanism.
-- This closes the transport gap for `ssh` only, either route. It does
-  nothing for `ide` (ADR-0007's shared-single-process limitation stands).
-- Once built, this is the missing second factor referenced in ADR-0005's
-  Consequences: the metadata server can validate the session token and
-  scope its response to the actual connecting account rather than always
-  the reservation owner, for the `ssh` path specifically.
+- `Reservation::exec` / `update_ssh_authorized_keys` restructuring (shape
+  of the JSON blob, per-line option emission instead of bare keys) —
+  scoped, not large.
+- Building dropbear from source instead of `apk add`-ing it (mechanically
+  compatible with the existing build stage — `make`/`gcc`/`g++` already
+  present) and carrying/periodically rebasing the patch against Alpine's
+  dropbear version as it moves — a real, ongoing maintenance line-item.
+- A new bundled dependency: `landrun` (or equivalent Landlock wrapper),
+  added to the image's binary set alongside dropbear, `wstunnel`, etc. — a
+  small Go binary, consistent in kind with what's already bundled via
+  `BUNDELF`.
+- A new fail-closed startup check: attempt a trivial Landlock ruleset at
+  container/session setup; if it errors (host kernel predates 5.13, or has
+  Landlock disabled), refuse to mint/deliver the identity token rather than
+  silently degrading to an unprotected one.
+- **Known limitation:** if two different accounts have uploaded the literal
+  same public key (unusual, not prevented today), only one line's binding
+  can apply to that key — whichever authorized_keys line is matched first.
+  Pre-existing identity-hygiene edge case, not introduced by this
+  mechanism.
+- This closes the transport gap for `ssh` only. It does nothing for `ide`
+  (ADR-0007's shared-single-process limitation stands — there is no
+  per-connection concept inside a running Theia/openvscode process for
+  this, or any, mechanism to attach to).
+- Once built, this is the missing factor referenced in ADR-0005's
+  Consequences — covering **both** halves of what a single shared metadata
+  socket needs to know: which reservation is asking (`reservation_id`) and
+  which account within it (`account`), from one verified token.
 - Sequenced after ADR-0005's metadata-server endpoint exists (nothing to
   validate the token against otherwise) and is independent of ADR-0006/0007.
+- Landlock's ptrace-domain protection is specific to `/proc`-based reads.
+  It does not touch the separate, still-open risk that a tool the user
+  runs persists the *fetched* secret (not this identity token, but
+  whatever the metadata server later returns) to a file under the shared
+  `$HOME` — see ADR-0007, which this generalizes: ordinary DAC file
+  permissions offer no protection at all when every collaborator is the
+  same UID, and no amount of transport or `/proc` hardening changes that.
 
 ## Alternatives considered (superseded or rejected by research)
 
@@ -319,3 +435,9 @@ important than, the patch-vs-no-patch choice above.
   OpenSSH itself gates behind `PermitUserEnvironment` (off by default
   upstream for good reason), for no benefit here — Dockside only ever needs
   to deliver one, server-authored value.
+- **The forced-command wrapper, as a no-patch fallback.** Kept in the
+  previous revision of this ADR as a lower-cost alternative; rejected
+  outright once examined for exactly the threat model this mechanism
+  exists to address. See "Why the wrapper route is rejected outright,"
+  above — it's forgeable by any co-located session, not merely weaker or
+  more limited than the patch route.

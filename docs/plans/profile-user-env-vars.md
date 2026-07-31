@@ -87,11 +87,14 @@ explicit, visible fact rather than a silent one (ADR-0007).
 1. **Encryption at rest for `users.json`** — `claude/secrets-encryption-users-json-zghgcl`,
    independent branch, prerequisite for step 2.
 2. **Metadata-server env-fetch endpoint** (ADR-0005) — new authenticated path
-   on `App::Metadata.pm` serving a reservation owner's env vars, decrypted
-   from at-rest storage on request. Should address the handler's existing
-   `# FIXME` about hardening beyond `Metadata-Flavor` header + no-XFF +
-   source-IP matching as part of this work, given the stakes of what it now
-   serves.
+   on `App::Metadata.pm`, reached over a single shared Unix socket (not the
+   existing TCP/source-IP-matching path — see ADR-0005's transport
+   revision), serving a reservation's env vars, decrypted from at-rest
+   storage on request, identified by the token described in step 6/ADR-0008.
+   This retires the handler's existing `# FIXME` about hardening beyond
+   `Metadata-Flavor` header + no-XFF + source-IP matching rather than just
+   making it more urgent — the new transport replaces that mechanism
+   outright.
 3. **Flip secret-var delivery** (ADR-0005) — `User.pm::env_vars_for_target`
    excludes `secret=true`; `_validate_env_vars` rejects
    `secret=true`+`targets.docker=true`; `EnvVarsEditor.vue` disables
@@ -104,48 +107,75 @@ explicit, visible fact rather than a silent one (ADR-0007).
    effective set to display is post-admission-filter); `Container.vue`'s
    sharing flow and the CLI's equivalent gain an effective-env-var preview.
 6. **SSH per-connection identity** (ADR-0008) — depends on step 2 existing
-   to have something to authenticate *to*; mechanism proposed, pending
-   confirmation.
+   to have something to authenticate *to*; mechanism settled (patch
+   dropbear; no viable no-patch fallback — see below).
 
 Steps 3–5 can be sequenced independently of each other once 2 is done,
 except where noted (5 depends on 4).
 
-## SSH per-connection identity (ADR-0008)
+## SSH per-connection identity, and the metadata transport (ADR-0008, ADR-0005)
 
-No longer fully open. The two options sketched when this plan was first
-written — server-side identity injection via the proxy/wstunnel/dropbear
-path, or client-side `SetEnv`/`SendEnv` — were both researched against the
-actual bundled software rather than left as assumptions, and **both turned
-out to be blocked**: the wstunnel→dropbear leg can't carry data into an
+No longer open. The two options sketched when this plan was first written —
+server-side identity injection via the proxy/wstunnel/dropbear path, or
+client-side `SetEnv`/`SendEnv` — were both researched against the actual
+bundled software rather than left as assumptions, and **both turned out to
+be blocked**: the wstunnel→dropbear leg can't carry data into an
 already-encrypted SSH session without a full SSH-terminating proxy (true
 for OpenSSH too — checked, not dropbear-specific), and dropbear (2025.88, as
 shipped) has never implemented the SSH `env` channel request server-side at
-all. Swapping to OpenSSH's `sshd` would genuinely unlock this (it supports
-`AcceptEnv`/`SendEnv` and authorized_keys `environment=`) but was rejected
-as disproportionate — `sshd` isn't currently bundled at all, only OpenSSH's
-client tools are, and dropbear's small footprint was very likely the reason
-it was chosen for a per-devtainer daemon in the first place.
+all. Swapping to OpenSSH's `sshd` would genuinely unlock this but was
+rejected as disproportionate — `sshd` isn't currently bundled at all, and
+dropbear's small footprint was very likely the reason it was chosen for a
+per-devtainer daemon in the first place.
 
-ADR-0008 (`0008-ssh-session-identity-for-metadata-server.md`) instead
-proposes two options, deliberately kept both live: a **minimal dropbear
-source patch** adding one narrow, server-authored authorized_keys option
-(smaller and safer than upstream's general, still-unmerged
+A third, no-patch option — a `command=` forced-command wrapper — was
+initially kept as a fallback alongside patching dropbear, then **rejected
+outright** once examined against the actual threat model: the wrapper runs
+as the same shared `$IDE_USER` account every session lands as, and has no
+way to prove it was genuinely invoked by dropbear for a real, distinct key
+authentication versus manually re-run by an already-connected user with a
+forged argument. If it can access the signing capability, any co-located
+session can mint a token for any other identity — a complete bypass, not a
+weaker version of the protection. **ADR-0008's decision is now singular:
+patch dropbear** with a minimal, server-authored authorized_keys option
+(`dockside-identity=`), applied at auth-success time (so it also covers
+port-forwarding-only connections, unlike `command=`'s apply-point). The
+patch is materially smaller than upstream's own general, still-unmerged
 SendEnv/AcceptEnv PR, since Dockside only ever needs to deliver one
-server-controlled value, not arbitrary client-named ones) — build tooling
-for this already exists in the Dockerfile's current stage — or, with no
-patch at all, the same `command=` forced-command binding dropbear supports
-today, with a wrapper script. The two routes have a real, checked-not-assumed
-difference: the patch can apply at auth-success time and so also covers
-port-forwarding-only connections, while `command=`'s apply-point never fires
-for a session that opens no shell/exec channel at all. Either way, the hard
-requirement is the same: whatever gets delivered must be an unforgeable,
-server-validated session token, not a plaintext identity claim. See that ADR
-for the full writeup; its status is `Proposed`, not yet confirmed.
+server-controlled value, never a client-proposed one.
 
-Once built, the metadata server gains a second factor beyond
-reservation-IP, and can scope its response to the actual connecting account
-— the missing piece for real per-collaborator secret-var isolation over
-SSH. No equivalent path exists for `ide` (see ADR-0007) — this only ever
+The minted token now carries `reservation_id` alongside `account`,
+`nonce`, and `expiry` — this does double duty for ADR-0005's transport
+decision too. Investigating how a per-reservation metadata channel would
+actually work in practice found the original per-reservation-Unix-socket
+idea impossible (Docker can't attach a new volume to an already-running
+container, and the Dockside server is one long-lived container serving
+devtainers created long after its own startup), which forces a **single
+shared Unix socket** for every devtainer instead — and that, in turn, means
+the metadata server can no longer identify which reservation is asking from
+the connection itself. Rather than adding a new mechanism for that
+(`SO_PEERCRED` was considered and rejected — it would need the Dockside
+server to share the host's PID namespace, a real new privilege grant, just
+to identify *which container*, not *which account*), `reservation_id` in
+the same token already being minted answers both questions from one
+verified payload, treated as an untrusted lookup key the way a JWT's `kid`
+header is — it only selects which reservation's key to verify the HMAC
+against, so a forged value buys nothing.
+
+The token also surfaces as an ordinary env var in the connecting user's
+shell — there's nowhere else for a user's own later-invoked script to reach
+it from. That means its confidentiality from *other* sessions sharing the
+same container depends entirely on closing the `/proc/<pid>/environ`
+cross-session read (governed by the host kernel's `ptrace_scope`, which
+Dockside doesn't control) — ADR-0008 now makes wrapping every session in an
+independent Landlock sandbox (`landrun`), fail-closed if unavailable, a
+mandatory part of the mechanism rather than an optional hardening step, since
+Landlock's ptrace-domain restriction closes this regardless of the host's
+`ptrace_scope`. See ADR-0008 for the full mechanism and research.
+
+Once built, the metadata server has both factors it needs — which
+reservation, which account — and can scope its response accordingly for
+`ssh`. No equivalent path exists for `ide` (see ADR-0007) — this only ever
 closes the `ssh` half of the sharing problem.
 
 ## Cleanups
