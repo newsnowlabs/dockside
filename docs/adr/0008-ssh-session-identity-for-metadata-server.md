@@ -9,7 +9,12 @@
   cross-session read risk and required mitigation; added `reservation_id` to
   the minted token to serve ADR-0005's single-shared-socket design; added a
   standard fetch-and-export tool, deliberately not auto-invoked, and
-  rejected auto-invoking it either from the wrapper or from dropbear itself)
+  rejected auto-invoking it either from the wrapper or from dropbear itself;
+  added a second dropbear patch isolating the forwarded agent socket between
+  sessions via `SO_PEERCRED` plus a process-ancestry walk, with a two-stage
+  Landlock ruleset kept in reserve as a fallback; fixed a found-not-designed
+  gap where `dockside-identity=`'s label was writable, and so forgeable, by
+  any connected session)
 - **Deciders:** Struan Bartlett
 
 ## Context
@@ -296,6 +301,102 @@ target outside its sub-domain, so *every* session that could plausibly be
 an attacker needs to be inside its own independent domain, not just the
 one being protected.
 
+### Isolating the forwarded SSH agent socket between sessions
+
+A separate risk, raised in conversation once agent forwarding came up:
+dropbear supports SSH agent forwarding (confirmed already, since
+`no-agent-forwarding` is one of the authorized_keys options
+`svr-authpubkeyoptions.c` recognizes), which creates a local Unix socket
+per forwarding session and points that session's `SSH_AUTH_SOCK` at it.
+Since every session — legitimate or otherwise — lands as the same
+`$IDE_USER`, and Unix socket connect permission is ordinary DAC (same-UID
+access, no distinction between sessions), nothing stops one collaborator's
+session from connecting to a *different* collaborator's forwarded-agent
+socket and using it to sign requests as them, without ever touching their
+private key material — a classic, well-known agent-forwarding risk, sharper
+here because it doesn't even need root or a privilege escalation, just the
+same shared UID every session already has.
+
+**Disabling agent forwarding entirely (`no-agent-forwarding`) closes this
+outright, at zero implementation cost — but agent forwarding is judged too
+valuable to give up**, so a real isolation mechanism is needed instead.
+
+**Decision: patch dropbear to check `SO_PEERCRED` plus a process-ancestry
+walk on every connection to a socket it created for a specific session, and
+reject anything that isn't a descendant of that session's own
+dropbear-forked process.** This is a second, independent patch to dropbear
+alongside `dockside-identity=` — same "already carrying a fork" cost, a
+different piece of logic, worth reviewing as its own unit.
+
+- Unlike the metadata-socket `SO_PEERCRED` case (ADR-0005), there's no
+  cross-namespace problem here: dropbear and every session's processes all
+  share the *same* PID namespace (they're all inside the one devtainer
+  container), so `SO_PEERCRED`'s `pid` field is fully meaningful with no
+  extra privilege needed.
+- Dropbear (run as a standalone daemon, per `launch.sh`) forks a child per
+  incoming connection — the natural anchor, since that per-connection child
+  already knows, at the moment it creates the agent-forwarding socket, which
+  session that socket belongs to (itself).
+- On `accept()`, read `SO_PEERCRED` for the connecting process's PID, then
+  walk `PPid` up through `/proc/<pid>/stat` until it either reaches that
+  specific per-connection dropbear child (accept) or terminates without
+  finding it (reject). "Descendant" has to mean *anywhere in the ancestry
+  chain*, not literally an immediate child — otherwise this breaks the
+  moment the user's own shell forks anything (`git push` invoking `ssh`,
+  several forks removed from the shell, is exactly the case agent
+  forwarding exists for).
+- **Needs no special capability.** `PPid` is plain procfs metadata, not
+  gated by ptrace/Yama the way `environ` is — any process can read it for
+  any PID visible in its own namespace. A meaningful contrast with the
+  `pid: host` grant `SO_PEERCRED` would have needed for the metadata-socket
+  case (ADR-0005) — this one costs nothing extra.
+- **PID-reuse hazard, and how to close it.** `SO_PEERCRED` itself is
+  race-free (the kernel latches it atomically at connect time), but the
+  *subsequent* ancestry walk is a series of separate `/proc` reads — a PID
+  along the chain could in principle exit and be reused by an unrelated
+  process between two steps of the walk. Mitigate by comparing
+  `(pid, starttime)` pairs at each step (`/proc/<pid>/stat` also exposes
+  `starttime`; a reused PID has a different one), or — more robustly, if
+  available on the target kernel — `SO_PEERPIDFD`, a `pidfd`-based variant
+  immune to this class of race by design. Not yet verified against the
+  specific kernel version Dockside's hosts run; check before committing to
+  it over the simpler starttime-pair comparison.
+- **Fail closed.** Any error partway through the walk (a `stat` read
+  failing, a chain that doesn't terminate within a sane bound) rejects the
+  connection — never falls through to allow.
+- **Generalizes beyond the agent socket.** The same check — "is the peer a
+  descendant of the session that owns this socket" — applies uniformly to
+  any other per-session local socket dropbear might create, not just this
+  one. One reusable primitive, not a bespoke rule per socket type.
+
+This is independent of, and does not replace, the mandatory Landlock
+wrapping required above — that's protecting against a different threat
+(`/proc/<pid>/environ` reads of the identity token and anything else in a
+session's environment), unrelated to sockets. It does remove the need to
+*also* lean on Landlock for the agent-socket problem specifically, which is
+what the fallback below would have required.
+
+**Fallback, kept in reserve, not adopted:** a two-stage Landlock ruleset
+achieves the same isolation without this second patch, if the
+`SO_PEERCRED`/ancestry approach turns out to be harder to land than
+expected. Landlock's filesystem access rules are also path-based and
+default-deny, so simply never granting a session's `landrun` ruleset access
+to sibling sessions' socket paths is sufficient — no explicit deny rule
+needed, the same shape of argument as the `/proc` protection above. The
+complication is sequencing: the agent socket's path isn't known until the
+client's `auth-agent-req@openssh.com` channel request is processed, which
+happens *after* the auth-success point where this ADR's Landlock wrap is
+first applied (needed there for the port-forward-only coverage). Landlock
+explicitly supports this via progressive restriction — a process may apply
+successive rulesets, each adding *more* restriction, never less — so the
+fallback shape is: an initial ruleset at auth-success that doesn't yet
+cover socket-connect rights, followed by a second ruleset, applied once (and
+only if) the agent socket's path becomes known, narrowing connect access to
+exactly that one path before the shell starts. This assumes the
+conventional (not protocol-guaranteed) client ordering of requesting agent
+forwarding before `shell`/`exec` — worth confirming against real client
+behavior if this path is ever needed.
+
 ## Decision
 
 **Patch dropbear with a single-purpose, server-authored authorized_keys
@@ -307,6 +408,12 @@ connecting user's shell, and must **fail closed** — refuse to hand out the
 identity token, or refuse the connection outright — if Landlock support is
 unavailable on the host kernel (checked at container/session start, not
 silently degraded).
+
+**A second, independent dropbear patch adds the `SO_PEERCRED`-plus-ancestry
+check described above**, isolating the forwarded agent socket (and any
+other per-session local socket dropbear manages) between sessions, with a
+two-stage-Landlock approach kept in reserve as a documented fallback if
+this turns out harder to land than expected.
 
 **Prerequisite, shared with the abandoned wrapper design:** `Reservation::exec`
 currently discards per-account key ownership before it reaches the
@@ -323,6 +430,39 @@ Both need to change to `{username, key}` pairs, with each authorized_keys
 line becoming `dockside-identity="<account>" <key>` — the file carries only
 the **account label**, never a secret. Freshness and unforgeability come
 from the patch's own minting, not from anything static in the file.
+
+**This label must not be writable by `$IDE_USER` — checked, and it
+currently is.** `update_ssh_authorized_keys` (`launch.sh:150-165`) today does
+`busybox chown $IDE_USER:$IDE_USER $HOME/.ssh $HOME/.ssh/authorized_keys`
+and `chmod 600` on the file — meaning **every connected session already has
+full write access to it**, since every session lands as that same account.
+As specified so far, this is a direct bypass: any authorized collaborator
+could edit their *own* line's label from `dockside-identity="bob"` to
+`dockside-identity="alice"` (or replace a different line's key material
+with one of their own, keeping that line's label), and the change persists
+until the next `update_ssh_authorized_keys` run (container/IDE relaunch —
+not triggered per-connection, so this could sit live for a long time). The
+mechanism must fix this, not merely document it as a limitation:
+
+- `authorized_keys` itself is chowned to `root:root` and made unwritable by
+  `$IDE_USER` (e.g. `640`, root read/write only — dropbear reads it
+  pre-fork, as root, so it never needed `$IDE_USER` write access for any
+  functional reason; that ownership was just the file's pre-existing,
+  now-inadequate default).
+- The containing `.ssh` **directory** can't simply be locked down the same
+  way — `populate_known_hosts` (`launch.sh:340-`) leaves `known_hosts` alone
+  once it exists, meaning a user's own outbound `ssh`/`git` client (running
+  as `$IDE_USER`) is expected to keep appending to it via ordinary
+  trust-on-first-use, which needs the directory to stay genuinely writable
+  by `$IDE_USER` for other files. The fix is the sticky bit (the same
+  mechanism `/tmp` uses): keep `.ssh` group-writable by `$IDE_USER` (owner
+  `root:$IDE_USER`, mode `1770`), so the account can still create/manage
+  files it owns (like `known_hosts`) — but with the sticky bit set,
+  deleting or renaming a file inside the directory requires owning *that
+  file* or the directory, and `$IDE_USER` owns neither once
+  `authorized_keys` is root-owned. This closes the delete-and-recreate
+  route as well as direct in-place editing, without breaking the one
+  legitimate use of directory writability that's already relied on.
 
 **What the patch mints, and where it comes from:**
 
@@ -424,6 +564,19 @@ security posture regardless of convenience.
   that makes ADR-0005's "pull, don't push" model something users can safely
   self-serve rather than something that pushes injection-bug risk onto
   every account that wants to use it.
+- `update_ssh_authorized_keys` also needs its ownership/permission handling
+  changed, not just its output shape — `authorized_keys` chowned to
+  `root:root` and made unwritable by `$IDE_USER`, `.ssh` given the sticky
+  bit rather than locked outright (to preserve `known_hosts`'s existing
+  writability). A small, cheap fix, but a required one: without it, the
+  `dockside-identity=` label is trivially forgeable by any connected
+  session editing its own line, which would defeat the whole mechanism the
+  same way the abandoned wrapper route did.
+- A second, independent dropbear patch: the `SO_PEERCRED`-plus-ancestry
+  check isolating the forwarded agent socket (and generalizing to any other
+  per-session local socket) between sessions — separate scope, separate
+  review, from the identity-token patch, sharing only the "already
+  building dropbear from source" infrastructure cost above.
 - **Known limitation:** if two different accounts have uploaded the literal
   same public key (unusual, not prevented today), only one line's binding
   can apply to that key — whichever authorized_keys line is matched first.
@@ -520,3 +673,18 @@ security posture regardless of convenience.
   doesn't reduce what ends up sitting in the session's environment, it just
   changes it from a narrow, short-lived identity token to the raw secret
   values themselves, which is a worse trade, not a neutral one.
+- **Disable agent forwarding outright (`no-agent-forwarding`), rather than
+  isolating forwarded agent sockets between sessions.** A real, already
+  dropbear-native option — closes the cross-session hijack risk completely,
+  at zero implementation cost, since the restriction already exists.
+  Rejected as the primary approach because agent forwarding was judged too
+  valuable a feature to give up rather than isolate; recorded here as the
+  cheap fallback if either the `SO_PEERCRED`/ancestry patch and its
+  two-stage-Landlock reserve both turn out impractical to land.
+- **A dedicated Unix socket per reservation for the agent-forwarding
+  problem, mirroring the metadata-transport idea.** Doesn't apply here —
+  that constraint (Docker can't attach a new mount to an already-running
+  container) was specific to sharing a socket between the Dockside server
+  and a devtainer; the agent-forwarding socket lives entirely inside one
+  container already, so this isn't a relevant alternative for this
+  problem, only for ADR-0005's.
