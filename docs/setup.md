@@ -65,7 +65,8 @@ The currently-supported root properties within a profile are:
 | unixusers | array of the unix user account for which to run the IDE | optional | `["dockside"]` | `["john","jim"]`
 | mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{ "tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}], "bind": [{"src": "/source/path", "dst": "/dest/path", "readonly": true}] }`
 | gitURLs | allowed git repository URLs that may be cloned on launch; use `["*"]` to allow any URL | optional | `[]` | `["https://github.com/myorg/*"]` or `["*"]`
-| IDEs | allowed IDE installations for the devtainer; use `["*"]` to allow all IDEs available in the Dockside image (under `/opt/dockside/ide/`) | optional | `["*"]` | `["theia/latest", "openvscode/latest"]`
+| IDEs | allowed IDE installations for the devtainer; use `["*"]` to allow all IDEs available in the Dockside image (under `/opt/dockside/ide/`); include the literal string `"none"` to also permit launching with no IDE at all (SSH-only) — see [SSH-only devtainers](extensions/ide.md) | optional | `["*"]` | `["theia/latest", "openvscode/latest", "none"]`
+| ide | whether the IDE subsystem is available at all for this profile; if `false`, `IDEs` resolves to `["none"]` regardless of any real IDE patterns configured — see [SSH-only devtainers](extensions/ide.md) | optional | as specified in `config.json` | `false` |
 | options | dynamic user-input fields displayed in the launch form; each entry has `name`, `label`, `type`, `default`, and `placeholder` sub-fields; values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables or via `entrypoint` or `command` placeholders of form `{option.<NAME>}` | optional | `[]` | `[{"name": "branch", "label": "Branch", "type": "text", "default": "", "placeholder": "e.g. main"}]`
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
@@ -85,6 +86,8 @@ Profiles using `["*"]` for `networks`, `runtimes`, or `IDEs` will present only t
 - **IDEs** are discovered by scanning the `/opt/dockside/ide/` directory for installed IDE versions (e.g. `theia/latest`, `openvscode/latest`).
 
 This means profiles using `["*"]` require no updates when new runtimes, networks, or IDEs become available (subject always to the resources the user is granted access to in `users.json` and `roles.json`).
+
+`"none"` (no IDE / SSH-only) is never auto-discovered or implied by `["*"]` — it is not a real installed IDE, so it must be listed explicitly in a profile's `IDEs`, or forced on for every devtainer via `ide: false` (per-profile) or `ide.default: false` (globally, in `config.json`). See [SSH-only devtainers](extensions/ide.md).
 
 #### Network name format
 
@@ -262,7 +265,7 @@ Available resource names are:
 - `profiles`: specify allowed profile filenames
 - `networks`: specify allowed Docker networks
 - `runtimes`: specify allowed Docker runtimes
-- `IDEs`: specify allowed IDE installations (e.g. `theia/latest`, `openvscode/latest`, or `openvscode/1.109.5`)
+- `IDEs`: specify allowed IDE installations (e.g. `theia/latest`, `openvscode/latest`, or `openvscode/1.109.5`), or the literal `"none"` to permit choosing no IDE (SSH-only) — treated exactly like any other IDE name, so an existing `["*"]` grant already covers `"none"` once a profile offers it; see [SSH-only devtainers](extensions/ide.md)
 - `images`: specify allowed Docker images
 - `auth`: specify allowed [auth/access levels](#router-auth%2Faccess-levels)
 
@@ -337,3 +340,5 @@ The `config.json` file contains global config for the Dockside instance. Not all
 - `docker.security`: the default `apparmor` and `seccomp` security profiles (may be overriden within Dockside profiles)
 - `ssh`:
     - `default`: a boolean indicating whether devtainers launched from profiles that do not contain an `ssh` property should have ssh access enabled (default true)
+- `ide`:
+    - `default`: a boolean indicating whether devtainers launched from profiles that do not contain an `ide` property should have the IDE subsystem enabled (default true); see [SSH-only devtainers](extensions/ide.md)

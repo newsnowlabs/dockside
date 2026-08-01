@@ -66,7 +66,7 @@
                            <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.IDE }}</td>
                            <td v-else>
                               <select class="form-control" v-model="form.IDE" :disabled="IDEs.length <= 1">
-                                 <option v-for="IDE in IDEs" v-bind:key="IDE">{{ IDE }}</option>
+                                 <option v-for="IDE in IDEs" v-bind:key="IDE" v-bind:value="IDE">{{ ideLabel(IDE) }}</option>
                               </select>
                            </td>
                         </tr>
@@ -131,8 +131,8 @@
                         <tr v-for="(router, index) in routers" v-bind:key="index" v-bind:class="{'list-item':true}">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
-                              <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
-                              <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.meta.IDE === 'none')" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.meta.IDE === 'none')" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
                               <b-button v-if="router.type === 'ssh' && container.status >= 0" size="sm" variant="outline-secondary" type="button" v-b-modal="'sshinfo-modal'" v-b-tooltip title="Configure SSH for Dockside">Setup</b-button>
                               ({{ container.meta.access[router.name] }} access)
                            </td>
@@ -393,6 +393,9 @@
          ...mapActions([
             'updateSelectedContainerMode'
          ]),
+         ideLabel(IDE) {
+            return IDE === 'none' ? 'No IDE (SSH only)' : IDE;
+         },
          initialiseForm() {
             // We need to initialise the form when:
             // 1. Component created for launching

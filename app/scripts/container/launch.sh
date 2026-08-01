@@ -739,6 +739,9 @@ restart_ide() {
    # Match IDE strings of form openvscode/<version> or <theia>/<version>
    # where <version> is a specific version string or the string 'latest'
    case "$IDE" in
+      none)
+         log "IDE is 'none': no IDE to launch."
+         ;;
       openvscode/*)
          launch_openvscode
          ;;

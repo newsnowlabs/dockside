@@ -15,6 +15,8 @@ Dockside's integrated SSH server support:
 
 Dockside enables SSH by default for all new devcontainers. To disable it globally, set `"ssh": { "default": false }` in `config.json`. To disable it in an individual profile, set `"ssh": false` in the profile.
 
+For maximum resource savings on constrained hosts, combine SSH-only access with disabling the IDE — see [SSH-only devtainers](ide.md).
+
 ### Configuring user public keys
 
 To control which developers can SSH into a devcontainer, add each developer's SSH public keys to their record in `users.json` under `ssh.publicKeys`, using a name of your choice for each key:
