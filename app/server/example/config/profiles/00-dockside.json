@@ -31,7 +31,7 @@
 
    "networks": [ "*" ],
    "runtimes": [ "*" ],
-   "images": [ "newsnowlabs/dockside:latest", "newsnowlabs/dockside:prerelease", "newsnowlabs/dockside:test" ],
+   "images": [ "newsnowlabs/dockside:development", "newsnowlabs/dockside:latest", "newsnowlabs/dockside:prerelease", "newsnowlabs/dockside:test" ],
 
    "unixusers": [ "dockside" ],
 
