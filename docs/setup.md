@@ -11,10 +11,11 @@ config/
   roles.json
   passwd
   profiles/
-    alpine.json
-    debian.json
-    dockside.json
-    nginx.json
+    00-dockside.json
+    03-git-repo.json
+    10-alpine.json
+    11-debian.json
+    30-nginx.json
     ...
 ```
 
@@ -93,6 +94,12 @@ Docker network names may contain letters, digits, hyphens, underscores (`_`), an
 #### Git URL format
 
 Values in `gitURLs`, and the `gitURL` field supplied at launch, may optionally end with `.git` (e.g. `https://github.com/org/repo.git` is equivalent to `https://github.com/org/repo`). Both HTTPS (e.g. `https://github.com/newsnowlabs/dockside.git`) and SSH (e.g. `git@github.com:newsnowlabs/dockside.git`) URLs are supported.
+
+#### Launch-time git branch/PR checkout
+
+The example [`03-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/03-git-repo.json) profile builds on `gitURLs` clone-on-launch by adding two `options` entries with the reserved names `branch` and `pr`. These names are special-cased by `launch.sh`: once the launch-time `gitURL` has been cloned, it will, if `pr` is set, run `gh pr checkout <pr>` (falling back to `git fetch origin refs/pull/<pr>/head && git checkout FETCH_HEAD` if `gh` is unavailable or that fails); otherwise, if `branch` is set, it fetches and switches to that branch from `origin`, failing loudly rather than silently creating an empty local branch if the branch doesn't exist there. `pr` takes precedence if both are set.
+
+This checkout only happens when a repository was actually cloned, i.e. when the profile's `gitURLs` is non-empty *and* the user supplies a `gitURL` at launch. For profiles with no `gitURLs`, or when the `gitURL` field is left blank at launch, no cloning or branch/PR switching occurs — the `branch`/`pr` fields still populate `DOCKSIDE_OPTION_BRANCH`/`DOCKSIDE_OPTION_PR` like any other `options` entry (see the `options` row above), but those values have no special meaning unless the profile's own `command`/`entrypoint` chooses to consume them.
 
 ### Profile routers
 
