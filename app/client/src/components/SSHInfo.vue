@@ -69,8 +69,7 @@
             <ul>
                <li>Linux:
                   <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-x64" target="_blank">amd64/x86_64 v6.0</a>,
-                  <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64" target="_blank">arm64/aarch64 v6.0</a>,
-                  <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7" target="_blank">armv7 (rPi) v6.0</a>
+                  <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-arm64" target="_blank">arm64/aarch64 v6.0</a>
                </li>
                <li>Windows:
                   <a href="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-windows.exe" target="_blank">amd64/x86_64 v6.0</a>

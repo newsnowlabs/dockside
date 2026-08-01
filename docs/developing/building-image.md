@@ -34,7 +34,7 @@ Here are the build options to `build/build.sh`:
 - `--help` - display all build options
 - `--builder <method>` - the choice of builder, 'buildkit', 'buildx' or 'depot' - the default is 'buildkit'
 - `--platform <platforms>` - a comma-separated list of platforms (architectures) to build for (subject to the choice of builder) -
-  for the 'depot' builder, the default is 'linux/amd64,linux/arm64,linux/arm/v7'; for the 'buildkit' and 'buildx' builders,
+  for the 'depot' builder, the default is 'linux/amd64,linux/arm64'; for the 'buildkit' and 'buildx' builders,
   the default is the native hardware platform.
 
 ## Examples

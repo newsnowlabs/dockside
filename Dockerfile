@@ -48,14 +48,6 @@ elif [ "${TARGETPLATFORM}" = "linux/arm64" ]; then
     WSTUNNEL_BINARY="https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VERSION}/wstunnel_${WSTUNNEL_VERSION}_linux_arm64.tar.gz"
     OPENVSCODE_VERSION="1.109.5"
     OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-arm64.tar.gz"
-elif [ "${TARGETPLATFORM}" = "linux/arm/v7" ]; then
-    THEIA_VERSION="1.35.0"
-    THEIA_BUILD_EXTRA_PACKAGES="ripgrep"
-    WSTUNNEL_V6_BINARY="https://storage.googleapis.com/dockside/wstunnel/v6.0/wstunnel-v6.0-linux-armv7"
-    WSTUNNEL_BINARY="https://github.com/erebe/wstunnel/releases/download/v${WSTUNNEL_VERSION}/wstunnel_${WSTUNNEL_VERSION}_linux_armv7.tar.gz"
-    OPENVSCODE_VERSION="1.109.5"
-    OPENVSCODE_BINARY="https://github.com/gitpod-io/openvscode-server/releases/download/openvscode-server-v$OPENVSCODE_VERSION/openvscode-server-v$OPENVSCODE_VERSION-linux-armhf.tar.gz"
-    OPENVSCODE_BUILD_DEBIAN_EXTRA_PACKAGES="libatomic1"
 else
     echo "Build error: Unsupported architecture '$TARGETPLATFORM'" >&2;
     exit 1;
@@ -172,15 +164,6 @@ RUN cd $THEIA_BUILD_PATH && \
 FROM theia-clean AS theia-ide
 
 ARG OPT_PATH
-
-# The version of rg installed by the Theia build on linux/arm/v7
-# depends on libs that are not available on Alpine on this platform.
-# Workaround this by overwriting it with Alpine's own rg.
-# ARG TARGETPLATFORM
-RUN if [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
-      apk add --no-cache ripgrep; \
-      cp $(which rg) $(find $THEIA_BUILD_PATH -name rg); \
-    fi
 
 RUN apk add --no-cache file patchelf coreutils findutils
 

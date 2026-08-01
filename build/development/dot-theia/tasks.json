@@ -14,7 +14,7 @@
          "type": "pickString",
          "id": "platforms",
          "description": "Select the platform(s)",
-         "options": ["linux/amd64", "linux/arm64", "linux/arm/v7", "linux/amd64,linux/arm64", "linux/amd64,linux/arm64,linux/arm/v7"],
+         "options": ["linux/amd64", "linux/arm64", "linux/amd64,linux/arm64"],
          "default": "linux/amd64"
       },
       {

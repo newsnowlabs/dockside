@@ -4,7 +4,7 @@ REPO="newsnowlabs/dockside"
 DOCKERFILE="Dockerfile"
 TAG_DATE="$(date -u +%Y%m%d%H%M%S)"
 BUILDER=buildkit
-PLATFORMS_DEFAULT_DEPOT="linux/amd64,linux/arm64,linux/arm/v7"
+PLATFORMS_DEFAULT_DEPOT="linux/amd64,linux/arm64"
 DIR=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/..
 
 usage() {
