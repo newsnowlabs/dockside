@@ -11,7 +11,6 @@ We use [Depot](https://depot.dev/) to build multi-architecture images for Docksi
    ```sh
    ./build/build.sh --builder depot --tag test --platform linux/amd64
    ./build/build.sh --builder depot --tag test --platform linux/arm64
-   ./build/build.sh --builder depot --tag test --platform linux/arm/v7
    ```
    (These commands will each build an image called `newsnowlabs/dockside:test`)
 3. Build a multiplatform docker image for testing, pushing it to the image repository. (Please note, this commands executes quickly as it draws upon the cached image layers from the previous build steps.)

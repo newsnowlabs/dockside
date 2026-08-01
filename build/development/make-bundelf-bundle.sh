@@ -54,8 +54,8 @@ BUNDELF_EXEC_PATH="${BUNDELF_EXEC_PATH:-$BUNDELF_CODE_PATH}"
 BUNDELF_LIBPATH_TYPE="${BUNDELF_LIBPATH_TYPE:-relative}"
 
 # Determine LD filepath, which is architecture-dependent:
-# e.g. ld-musl-aarch64.so.1 (linux/arm64), ld-musl-armhf.so.1 (linux/arm/v7), ld-musl-x86_64.so.1 (linux/amd64)
-#   or ld-linux-aarch64.so.1 (linux/arm64), ld-linux-armhf.so.3 (linux/arm/v7), ld-linux-x86-64.so.2 (linux/amd64)
+# e.g. ld-musl-aarch64.so.1 (linux/arm64), ld-musl-x86_64.so.1 (linux/amd64)
+#   or ld-linux-aarch64.so.1 (linux/arm64), ld-linux-x86-64.so.2 (linux/amd64)
 LD_PATH=$(ls -1 /lib/ld-musl-* /lib/*-linux-*/ld-linux-*.so.* 2>/dev/null | head -n 1)
 if [ -z "$LD_PATH" ]; then
   echo "ERROR: No dynamic linker found in /lib (ld-musl-* or ld-linux-*.so.*)" >&2

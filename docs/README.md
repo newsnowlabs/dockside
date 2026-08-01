@@ -105,14 +105,14 @@ Advanced features:
 
 ## Host requirements
 
-Dockside is supported on Intel (amd64/x86), Apple M1/M2 (arm64) and Raspberry Pi (arm/v7) hardware platforms, via a multiarch Docker image
-that contains native binary implementations of Dockside for all three architectures.
+Dockside is supported on Intel (amd64/x86) and arm64 (Apple M1-5, Raspberry Pi 64-bit) hardware platforms, via a multiarch Docker image
+that contains native binary implementations of Dockside for both architectures.
 
 Dockside is tested on:
 - Intel (amd64/x86) platforms running Debian Linux and [Docker Engine](https://docs.docker.com/engine/install/) (via the `docker-ce` package suite)
-- MacOS (amd64/x86 and Apple Mac M1) running [Docker Desktop](https://docs.docker.com/get-docker/)
+- MacOS (amd64/x86 and Apple M1-5) running [Docker Desktop](https://docs.docker.com/get-docker/)
 - Intel Windows 10 running [Docker Desktop](https://docs.docker.com/get-docker/)
-- Raspberry Pi (arm/v7) running Raspbian Linux and [Docker Engine](https://docs.docker.com/engine/install/) (via the `docker-ce` package suite)
+- Raspberry Pi (arm64) running Raspberry Pi OS 64-bit and [Docker Engine](https://docs.docker.com/engine/install/) (via the `docker-ce` package suite)
 
 Dockside requires a host with a minimum of 1GB memory.
 
