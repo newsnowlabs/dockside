@@ -291,6 +291,7 @@ APP_HOME=${APP_HOME:-/home/dockside}
 APP_DIR=$APP_HOME/$APP
 CTR_ID=${CTR_ID:0:12}
 INNER_DOCKERD="$OPT_RUN_DOCKERD"
+IDE_PATH=$IDE_PATH
 _EOE_
 
   echo "${CTR_ID:0:12}" >/etc/service/$s/data/ctr-id
