@@ -342,53 +342,60 @@ checkout_git_ref() {
    return 1
 }
 
-# Run the profile-declared 'launch' hook (an in-image, profile-author-trusted
-# executable named by the DOCKSIDE_HOOK_SCRIPT env var, resolved server-side from
-# the profile's `hooks.launch` property - see Reservation::hook_script). Invoked
-# both automatically once per launch (from run_nonroot, after git/ssh/gh setup) and
-# on demand, any time later, via a fresh `docker exec ... launch.sh run_hook` (see
-# Reservation::run_hook_sync). Both paths call this same function, so it
-# self-serializes via an mkdir-based lock: a concurrent second invocation does not
+# Run a hook named $1 - either the reserved lifecycle name 'lifecycle:launch' or a
+# profile-declared custom name (an in-image, profile-author-trusted executable
+# resolved server-side into the DOCKSIDE_HOOK_SCRIPT env var for whichever name was
+# requested - see Reservation::hook_script/_hook_env). Invoked both automatically,
+# for 'lifecycle:launch' only, once per launch (from run_nonroot, after git/ssh/gh
+# setup), and on demand, for any declared name, any time later, via a fresh
+# `docker exec ... launch.sh run_hook <name>` (see Reservation::run_hook_sync).
+# Both paths call this same function, so it self-serializes per name via an
+# mkdir-based lock: a concurrent second invocation of the *same* name does not
 # block or double-run, it just reports "busy" (exit 2) and leaves the first run to
-# finish undisturbed.
+# finish undisturbed - a concurrent invocation of a *different* name is unaffected,
+# since the lock and sentinels are scoped by name. Names are embedded raw in
+# filenames (no sanitization needed): only '/' and NUL are unsafe in a Linux
+# filename, and reserved lifecycle names' literal ':' can never collide with a
+# custom name, whose slug syntax forbids colons entirely (see Profile.pm).
 #
 # Returns 0 on success (or when no hook is configured for this profile), 1 if the
 # hook script itself failed, 2 if a run was already in progress.
 run_hook() {
+   local NAME="$1"
    local SCRIPT="${DOCKSIDE_HOOK_SCRIPT:-}"
    [ -n "$SCRIPT" ] || { log "run_hook: no hook configured"; return 0; }
    [ -x "$SCRIPT" ] || { log "run_hook: ERROR: '$SCRIPT' not found or not executable"; return 1; }
 
-   local LOCK="$LOG_PATH/.hook.lock.d"
+   local LOCK="$LOG_PATH/.hook.lock.d.$NAME"
    if ! mkdir "$LOCK" 2>/dev/null; then
       local OLD_PID
       OLD_PID=$(cat "$LOCK/pid" 2>/dev/null)
       if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-         log "run_hook: already running (pid $OLD_PID); refusing concurrent run"
+         log "run_hook: '$NAME' already running (pid $OLD_PID); refusing concurrent run"
          return 2
       fi
-      log "run_hook: found stale lock (pid $OLD_PID not running); reclaiming"
+      log "run_hook: found stale lock for '$NAME' (pid $OLD_PID not running); reclaiming"
       rm -rf "$LOCK"
-      mkdir "$LOCK" 2>/dev/null || { log "run_hook: ERROR: could not acquire lock"; return 2; }
+      mkdir "$LOCK" 2>/dev/null || { log "run_hook: ERROR: could not acquire lock for '$NAME'"; return 2; }
    fi
    echo "$$" > "$LOCK/pid"
-   rm -f "$LOG_PATH/.hook-ready" "$LOG_PATH/.hook-failed"
+   rm -f "$LOG_PATH/.hook-ready.$NAME" "$LOG_PATH/.hook-failed.$NAME"
 
-   log "run_hook: running '$SCRIPT' ..."
+   log "run_hook: running '$NAME' ($SCRIPT) ..."
    # Send the hook script's own stdout/stderr to fds 3/4 (the pre-log-redirect
    # original stdout/stderr preserved by init()), not into $LOG, so a synchronous
    # caller (Reservation::run_hook_sync) sees the hook's real output; log() calls
    # made by this function itself still go to $LOG as usual.
    if "$SCRIPT" 1>&3 2>&4; then
-      log "run_hook: '$SCRIPT' succeeded"
-      touch "$LOG_PATH/.hook-ready"
+      log "run_hook: '$NAME' ($SCRIPT) succeeded"
+      touch "$LOG_PATH/.hook-ready.$NAME"
       rm -rf "$LOCK"
       return 0
    else
       local rc=$?
-      log "run_hook: '$SCRIPT' failed with exit code $rc"
-      dockside_user_warning "Hook script failed (exit $rc); see $LOG."
-      touch "$LOG_PATH/.hook-failed"
+      log "run_hook: '$NAME' ($SCRIPT) failed with exit code $rc"
+      dockside_user_warning "Hook '$NAME' failed (exit $rc); see $LOG."
+      touch "$LOG_PATH/.hook-failed.$NAME"
       rm -rf "$LOCK"
       return 1
    fi
@@ -859,11 +866,13 @@ run_nonroot() {
          touch "$LOG_PATH/.git-repo-failed"
          exit 1
       fi
-      # Run the profile-declared hook (if any), once, now that git/ssh/gh setup for
-      # this launch has completed. A hook failure is logged and surfaced via
-      # dockside_user_warning/.hook-failed by run_hook itself, but is not treated as
-      # fatal to the rest of this subshell.
-      run_hook || true
+      # Run the profile-declared 'lifecycle:launch' hook (if any), once, now that
+      # git/ssh/gh setup for this launch has completed. This is the one place a hook
+      # name is ever hardcoded - the server's own fixed decision about which
+      # lifecycle event auto-fires today, not a caller-facing default. A hook
+      # failure is logged and surfaced via dockside_user_warning/.hook-failed.<name>
+      # by run_hook itself, but is not treated as fatal to the rest of this subshell.
+      run_hook 'lifecycle:launch' || true
       populate_vscode_extensions;
       populate_vscode_settings
       log "Repo setup subproc finished";

@@ -1125,7 +1125,7 @@ sub exec ($reservation, $command = undef) {
       );
    }
 
-   my @envHook = $reservation->_hook_env($user);
+   my @envHook = $reservation->_hook_env($user, 'lifecycle:launch');
 
    my @envIDE = (
       "--env=IDE=" . $reservation->meta('IDE')
@@ -1164,8 +1164,11 @@ sub exec ($reservation, $command = undef) {
 # in-process by launch.sh itself, or a later `docker exec ... launch.sh run_hook`
 # built here) needs: the same GIT_URL/SSH_KNOWN_HOSTS_DOMAINS, DOCKSIDE_OPTION_*
 # and GH_TOKEN env this reservation's IDE launch already gets - shared here to
-# avoid duplicating/drifting that logic between exec() and run_hook_sync().
-sub _hook_env ($self, $user) {
+# avoid duplicating/drifting that logic between exec() and run_hook_sync(). Takes
+# the hook name explicitly (no default) - exec() always passes 'lifecycle:launch'
+# (the one hook auto-invoked at launch), run_hook_sync() passes whichever name was
+# requested.
+sub _hook_env ($self, $user, $hookName) {
    my @envGit;
    if( $self->gitURL() ) {
       my ($git_domain) = $self->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
@@ -1185,35 +1188,57 @@ sub _hook_env ($self, $user) {
    }
 
    my @envHookScript;
-   if( my $script = $self->hook_script('launch') ) {
+   if( my $script = $self->hook_script($hookName) ) {
       @envHookScript = ( "--env=DOCKSIDE_HOOK_SCRIPT=$script" );
    }
 
    return (@envGit, @envOptions, @envGhToken, @envHookScript);
 }
 
-# Run the profile-declared 'launch' hook synchronously inside the reservation's
-# container, via the same `docker exec ... launch.sh <fn>` dispatch pattern used
-# elsewhere in this file, but (unlike exec()'s fire-and-forget `-d`) waiting for it
-# to finish so the caller (Reservation::Launch::hook_script - see User::runContainerHook,
-# App.pm's /containers/<id>/hook route, and the `dockside hook run` CLI command) can
-# report a real exit code, not just "we asked the container to do something".
+# Run a named hook (a reserved 'lifecycle:*' name or a profile-declared custom
+# name) synchronously inside the reservation's container, via the same
+# `docker exec ... launch.sh <fn>` dispatch pattern used elsewhere in this file,
+# but (unlike exec()'s fire-and-forget `-d`) waiting for it to finish so the
+# caller (see User::runContainerHook, App.pm's /containers/<id>/hook route, and the
+# `dockside hook run` CLI command) can report a real exit code, not just "we asked
+# the container to do something".
+#
+# $args->{'name'} is required (no default - every caller must say which hook).
+# Three gates, checked in order: (1) is it declared in this profile's `hooks` at
+# all; (2) if it's a 'lifecycle:*' name, is that lifecycle event actually
+# implemented yet (today: only 'lifecycle:launch' - the rest are schema-valid,
+# reserved for docs/roadmap.md's future start/stop/rename/periodic, but not
+# runnable); (3) still only for a 'lifecycle:*' name, is it listed in this
+# profile's `manualHooks` (custom names skip (2) and (3) entirely - they never
+# auto-fire, so declaring one always makes it manually invocable).
 #
 # Returns { exitCode, timedOut, busy, output } on any outcome where a docker exec was
-# actually attempted. Dies with a 400 Exception before attempting anything if this
-# profile has no hook configured.
+# actually attempted. Dies with a 400 Exception before attempting anything if any
+# of the above gates fail.
 sub run_hook_sync ($self, $args = {}) {
-   my $script = $self->hook_script('launch');
-   die Exception->new( 'msg' => 'No hook configured for this profile', 'status' => 400 ) unless length($script);
+   my $name = $args->{'name'};
+   die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
+
+   my $script = $self->hook_script($name);
+   die Exception->new( 'msg' => "No hook '$name' configured for this profile", 'status' => 400 ) unless length($script);
+
+   if( $name =~ /^lifecycle:/ ) {
+      die Exception->new( 'msg' => "'$name' is reserved for a future release, not runnable yet", 'status' => 400 )
+         unless $name eq 'lifecycle:launch';
+
+      die Exception->new( 'msg' => "'$name' is not configured as manually invocable for this profile (see 'manualHooks')", 'status' => 400 )
+         unless grep { $_ eq $name } @{ $self->profileObject->manualHooks };
+   }
 
    my @Command = $self->ide_command();
    die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::run_hook_sync: ide_command() returned empty' ) unless @Command;
    $Command[-1] = 'run_hook';
+   push( @Command, $name );
 
    my $owner = $self->owner('username');
    my $user = User->load($owner);
 
-   my @env = $self->_hook_env($user);
+   my @env = $self->_hook_env($user, $name);
 
    my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )

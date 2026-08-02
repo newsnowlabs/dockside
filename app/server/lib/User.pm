@@ -968,9 +968,11 @@ sub controlContainer ($self, $cmd, $id, $args = {}) {
    return $container->action($cmd, $args);
 }
 
-# Runs a container's profile-declared 'launch' hook synchronously, on demand (e.g. a
-# user has changed the 'branch'/'pr' options and wants their devtainer to switch now,
-# without a full relaunch). Named/shaped like controlContainer above.
+# Runs a container's profile-declared hook (named by $args->{'name'}) synchronously,
+# on demand (e.g. a user has changed the 'branch'/'pr' options and wants their
+# devtainer to switch now, without a full relaunch). Named/shaped like
+# controlContainer above. $args is forwarded opaquely to run_hook_sync, which
+# requires and validates 'name' itself - nothing here needs to know its shape.
 sub runContainerHook ($self, $id, $args = {}) {
    if( $id !~ m!^([0-9a-f]+)$! ) {
       die Exception->new( 'msg' => "hook run with invalid argument '$id' failed" );

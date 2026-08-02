@@ -361,7 +361,7 @@ sub option_value ($self, $name = undef) {
    return ($self->data('options') // {})->{$name} // '';
 }
 
-sub hook_script ($self, $name = 'launch') {
+sub hook_script ($self, $name) {
    return $self->profileObject->hooks->{$name} // '';
 }
 
