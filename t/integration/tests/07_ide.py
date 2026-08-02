@@ -51,9 +51,16 @@ class IdeTests(TestCase):
             self.admin.start(self.IDE_CONTAINER, wait=True, timeout=180)
 
     def test_01_create_no_ide_override(self):
+        """Omitting --ide must still resolve meta.IDE to the profile's default IDE."""
         name = self._sfx('inttest-ide-noide')
         self.register_cleanup(name)
         self.create_and_wait(self.admin, self.test_profile_debian, name, timeout=180)
+        data = self.admin.get_container(name)
+        self.assert_true(
+            data.get('meta', {}).get('IDE'),
+            'meta.IDE should resolve to the profile default when --ide is omitted, '
+            f'got {data.get("meta", {}).get("IDE")!r}'
+        )
 
     def test_02_create_with_ide_override(self):
         """Create with openvscode, start, and verify IDE URL is reachable."""
