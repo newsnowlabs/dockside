@@ -197,17 +197,22 @@ _GIT_PROFILE = {
     ],
 }
 
-# Fixture for 14_hooks.py: a profile declaring a 'launch' hook. The hook script
-# itself is synthesized by the container's own command (no custom baked image
-# needed, per the suite's no-pre-existing-fixtures rule) — it records one line per
-# run (an incrementing index, not a timestamp, so runs are unambiguously ordered
-# even if they land within the same wall-clock second) to /tmp/hook-runs.log, and
-# exits non-zero if the 'fail' option is set to '1', to exercise the failure path.
-# The script write+chmod comes first in `command`, ahead of `sleep infinity` - it
-# races launch.sh's own one-shot auto-invoke of the hook (run_hook is called once,
-# not retried, right after launch.sh's git/ssh/gh setup), which fires within the
-# same instant the container starts. The hook script itself never uses sudo, so
-# there's nothing to install first.
+# Fixture for 14_hooks.py: a profile declaring the 'lifecycle:launch' hook, plus a
+# second, custom-named hook ('update') purely to exercise the generalized
+# custom-hook dispatch mechanism end-to-end (independent sentinel/lock state, no
+# manualHooks entry needed since custom hooks are always manually invocable). Both
+# scripts are synthesized by the container's own command (no custom baked image
+# needed, per the suite's no-pre-existing-fixtures rule); the launch-hook script
+# records one line per run (an incrementing index, not a timestamp, so runs are
+# unambiguously ordered even if they land within the same wall-clock second) to
+# /tmp/hook-runs.log, and exits non-zero if the 'fail' option is set to '1', to
+# exercise the failure path. The update-hook script logs to a separate file, so its
+# independence from the launch hook is directly observable. Both script write+chmod
+# blocks come first in `command`, ahead of `sleep infinity` - they race launch.sh's
+# own one-shot auto-invoke of 'lifecycle:launch' (run_hook is called once, not
+# retried, right after launch.sh's git/ssh/gh setup), which fires within the same
+# instant the container starts. Neither script uses sudo, so there's nothing to
+# install first.
 _HOOK_PROFILE = {
     "version": 4,
     "name": "Integration Test - Hooks",
@@ -225,8 +230,10 @@ _HOOK_PROFILE = {
     "images": [_prefix_image("alpine:latest")],
     "unixusers": ["dockside"],
     "hooks": {
-        "launch": "/usr/local/bin/dockside-test-hook.sh",
+        "lifecycle:launch": "/usr/local/bin/dockside-test-hook.sh",
+        "update": "/usr/local/bin/dockside-test-update-hook.sh",
     },
+    "manualHooks": ["lifecycle:launch"],
     "options": [
         {
             "name": "marker",
@@ -260,6 +267,13 @@ _HOOK_PROFILE = {
         "exit 0\n"
         "EOF\n"
         "chmod +x /usr/local/bin/dockside-test-hook.sh; "
+        "cat > /usr/local/bin/dockside-test-update-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "n=$(wc -l < /tmp/update-hook-runs.log 2>/dev/null || echo 0)\n"
+        "echo \"ran:update:$n\" >> /tmp/update-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-update-hook.sh; "
         "sleep infinity",
     ],
 }
@@ -334,8 +348,9 @@ _HOOK_GIT_PROFILE = {
     "gitURLs": ["*"],
     "unixusers": ["dockside"],
     "hooks": {
-        "launch": "/usr/local/bin/dockside-test-git-hook.sh",
+        "lifecycle:launch": "/usr/local/bin/dockside-test-git-hook.sh",
     },
+    "manualHooks": ["lifecycle:launch"],
     "options": [
         {
             "name": "test_ref",
@@ -374,6 +389,72 @@ _HOOK_GIT_PROFILE = {
         "echo \"switched:$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\" > /tmp/hook-git-result\n"
         "EOF\n"
         "chmod +x /usr/local/bin/dockside-test-git-hook.sh; "
+        "sleep infinity",
+    ],
+}
+
+# Fixture for 14_hooks.py's hook-naming edge-case tests: (1) "lifecycle:launch" is
+# declared but deliberately NOT listed in manualHooks - auto-invoke doesn't consult
+# manualHooks at all, so it still fires fine at launch, but manual re-invoke is
+# rejected, proving manual runnability of a lifecycle hook is opt-in; (2) a bare
+# "launch" key (no 'lifecycle:' namespace) is schema-valid, inert (nothing ever
+# auto-invokes it - only 'lifecycle:launch' does), and reachable only via its
+# custom name; (3) a reserved-but-unimplemented lifecycle name ("lifecycle:stop")
+# is schema-valid and may even be listed in manualHooks, but dispatch still
+# rejects running it as "not yet implemented" regardless - proving the "is it
+# implemented" and "is it in manualHooks" gates are independent. The
+# "lifecycle:launch" script write comes first in `command`, ahead of the other
+# two (which are only ever manually invoked, so their write timing doesn't race
+# anything) - see _HOOK_PROFILE's own comment above for why auto-invoke timing
+# forces this ordering.
+_EDGE_CASE_HOOK_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Hook Naming Edge Cases",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "hooks": {
+        "lifecycle:launch": "/usr/local/bin/dockside-test-edge-launch-hook.sh",
+        "launch": "/usr/local/bin/dockside-test-bare-launch-hook.sh",
+        "lifecycle:stop": "/usr/local/bin/dockside-test-stop-hook.sh",
+    },
+    "manualHooks": ["lifecycle:stop"],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "cat > /usr/local/bin/dockside-test-edge-launch-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "echo ran >> /tmp/edge-launch-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-edge-launch-hook.sh; "
+        "cat > /usr/local/bin/dockside-test-bare-launch-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "echo ran >> /tmp/bare-launch-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-bare-launch-hook.sh; "
+        "cat > /usr/local/bin/dockside-test-stop-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-stop-hook.sh; "
         "sleep infinity",
     ],
 }
@@ -974,6 +1055,7 @@ class _EnvManager:
         self.profile_hook       = self._ensure_profile('inttest-hook',       _HOOK_PROFILE)
         self.profile_option_argv = self._ensure_profile('inttest-option-argv', _OPTION_ARGV_PROFILE)
         self.profile_hook_git   = self._ensure_profile('inttest-hook-git',   _HOOK_GIT_PROFILE)
+        self.profile_hook_edge_case = self._ensure_profile('inttest-hook-edge-case', _EDGE_CASE_HOOK_PROFILE)
         self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
@@ -1168,6 +1250,7 @@ def main():
         test_profile_hook       = _env_manager.profile_hook
         test_profile_option_argv = _env_manager.profile_option_argv
         test_profile_hook_git   = _env_manager.profile_hook_git
+        test_profile_hook_edge_case = _env_manager.profile_hook_edge_case
         test_profile_bad_image  = _env_manager.profile_bad_image
         test_image_alpine       = _prefix_image('alpine:latest')
         test_image_nginx        = _prefix_image('nginx:latest')
@@ -1198,6 +1281,7 @@ def main():
             'test_profile_hook':       test_profile_hook,
             'test_profile_option_argv': test_profile_option_argv,
             'test_profile_hook_git':   test_profile_hook_git,
+            'test_profile_hook_edge_case': test_profile_hook_edge_case,
             'test_profile_bad_image':  test_profile_bad_image,
             'test_image_alpine':       test_image_alpine,
             'test_image_nginx':        test_image_nginx,
