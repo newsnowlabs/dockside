@@ -1,13 +1,14 @@
 """
-06_git_profile.py — Git URL, branch, and PR options
+06_git_profile.py — Git URL and the single 'ref' (branch or PR) profile option
 
 Coverage:
   - launch accepts a gitURL for the example 03-git-repo profile
-  - launch accepts branch / PR profile options
+  - launch accepts a single 'ref' profile option holding either a branch name or a
+    PR number (bare or '#'-prefixed)
   - launch accepts alternate allowed images for the profile
   - launch writes the owner's git name/email into ~/.gitconfig
   - launch clones the requested repo into the unix user's home directory
-  - explicit branch / PR launch options affect the resulting checkout state
+  - an explicit 'ref' launch option affects the resulting checkout state
 """
 
 import sys
@@ -204,7 +205,7 @@ class GitProfileTests(TestCase):
         name = self._sfx('inttest-git-branch')
         self._create_git_container(
             name,
-            options=json.dumps({'branch': EXPLICIT_BRANCH}),
+            options=json.dumps({'ref': EXPLICIT_BRANCH}),
         )
         state = self._wait_git_state(
             name,
@@ -218,14 +219,9 @@ class GitProfileTests(TestCase):
             self._normalize_git_url(GIT_URL),
         )
 
-    def test_03_create_with_pr_option(self):
-        if not GITHUB_TOKEN:
-            self.skip('DOCKSIDE_TEST_GITHUB_TOKEN not set')
-        name = self._sfx('inttest-git-pr')
-        self._create_git_container(
-            name,
-            options=json.dumps({'pr': EXPLICIT_PR, 'gh_token': GITHUB_TOKEN}),
-        )
+    def _assert_pr_checked_out(self, name):
+        """Wait for HEAD to move off the default branch, then confirm via gh that
+        it's actually EXPLICIT_PR's head commit (not just some other branch/commit)."""
         state = self._wait_git_state(
             name,
             lambda s: (s.get('git_ready') == '1'
@@ -239,9 +235,6 @@ class GitProfileTests(TestCase):
             self._normalize_git_url(state.get('origin_url')),
             self._normalize_git_url(GIT_URL),
         )
-        # The "HEAD moved off main" wait above is necessary but weak — any branch or
-        # commit would satisfy it. Confirm via gh that HEAD is actually PR EXPLICIT_PR's
-        # head commit, so a checkout of the wrong PR/branch is caught.
         head_sha, pr_head_oid = self._verify_pr_head(name)
         # An empty pr_head_oid means gh could not read the PR head inside the
         # devtainer — but the PR checkout itself relies on gh working there, so this
@@ -256,6 +249,30 @@ class GitProfileTests(TestCase):
             head_sha and head_sha == pr_head_oid,
             f'devtainer HEAD {head_sha!r} is not PR {EXPLICIT_PR} head {pr_head_oid!r}',
         )
+
+    def test_03_create_with_pr_option(self):
+        if not GITHUB_TOKEN:
+            self.skip('DOCKSIDE_TEST_GITHUB_TOKEN not set')
+        name = self._sfx('inttest-git-pr')
+        self._create_git_container(
+            name,
+            options=json.dumps({'ref': EXPLICIT_PR, 'gh_token': GITHUB_TOKEN}),
+        )
+        self._assert_pr_checked_out(name)
+
+    def test_03b_create_with_hash_prefixed_pr_option(self):
+        # A single 'ref' option must accept a PR number with a leading '#'
+        # (e.g. "#40", as GitHub itself displays PR references) exactly like the
+        # bare number — see checkout_git_ref()'s disambiguation heuristic in
+        # app/scripts/container/launch.sh.
+        if not GITHUB_TOKEN:
+            self.skip('DOCKSIDE_TEST_GITHUB_TOKEN not set')
+        name = self._sfx('inttest-git-pr-hash')
+        self._create_git_container(
+            name,
+            options=json.dumps({'ref': f'#{EXPLICIT_PR}', 'gh_token': GITHUB_TOKEN}),
+        )
+        self._assert_pr_checked_out(name)
 
     def test_04_create_debian_with_git_url(self):
         name = self._sfx('inttest-git-debian')

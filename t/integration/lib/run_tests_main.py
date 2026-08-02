@@ -170,18 +170,11 @@ _GIT_PROFILE = {
     "unixusers": ["dockside"],
     "options": [
         {
-            "name": "branch",
-            "label": "Branch",
+            "name": "ref",
+            "label": "Branch or PR #",
             "type": "text",
             "default": "",
-            "placeholder": "e.g. main, feature/my-feature (leave blank for default)",
-        },
-        {
-            "name": "pr",
-            "label": "Pull Request #",
-            "type": "text",
-            "default": "",
-            "placeholder": "e.g. 42 (overrides branch if set)",
+            "placeholder": "e.g. main, feature/my-feature, or a PR number like 42 (leave blank for default)",
         },
         {
             "name": "gh_token",

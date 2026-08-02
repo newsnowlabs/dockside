@@ -219,18 +219,24 @@ gh_authenticate() {
    $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") || log "WARN: gh auth login failed"
 }
 
-# Returns 0 if there was nothing to do or the requested branch/PR was checked out;
+# Returns 0 if there was nothing to do or the requested ref was checked out;
 # non-zero if a requested checkout failed (so the caller can abort and signal it).
-checkout_git_branch_or_pr() {
-   local BRANCH="${DOCKSIDE_OPTION_BRANCH:-}"
-   local PR="${DOCKSIDE_OPTION_PR:-}"
+checkout_git_ref() {
+   local REF="${DOCKSIDE_OPTION_REF:-}"
 
-   [ -n "$BRANCH" ] || [ -n "$PR" ] || return 0
+   [ -n "$REF" ] || return 0
 
    # Only act on the repo that was just cloned via GIT_URL.
-   # For pre-populated images (no GIT_URL), branch/PR checkout is the
-   # responsibility of the profile command, which can use {option.branch}
-   # and {option.pr} placeholders or read the DOCKSIDE_OPTION_* env vars.
+   # For pre-populated images (no GIT_URL), ref checkout is the
+   # responsibility of the profile command, which can use {option.ref}
+   # placeholders or read the DOCKSIDE_OPTION_REF env var directly.
+   #
+   # Deliberately not extended to also act on a pre-existing repo when GIT_URL is
+   # unset: a repo an application's own entrypoint is already using (or about to
+   # use) could be mid-switch from underneath it if this ran too, leaving the
+   # working tree in an indeterminate state. Use one of the entrypoint/hook
+   # patterns in docs/extensions/lifecycle-hooks.md instead, where the
+   # application itself is in control of when the switch happens.
    [ -n "$GIT_URL" ] || return 0
 
    local CLONE_DIR
@@ -238,6 +244,16 @@ checkout_git_branch_or_pr() {
    local REPO="$HOME/$CLONE_DIR"
 
    [ -d "$REPO/.git" ] || return 0
+
+   # A single 'ref' option covers both cases: a ref that, once any leading '#' is
+   # stripped, is purely numeric (e.g. "42" or "#42") is a PR number; anything
+   # else (including a numeric-looking branch name like "123-fix-thing", which
+   # contains a non-digit character) is a branch name.
+   local PR="" BRANCH="" NUM="${REF#'#'}"
+   case "$NUM" in
+      ''|*[!0-9]*) BRANCH="$REF" ;;
+      *)           PR="$NUM" ;;
+   esac
 
    if [ -n "$PR" ]; then
       log "Checking out PR $PR in $REPO"
@@ -764,27 +780,27 @@ run_nonroot() {
    (
       log "Repo setup subproc started ..."
       # A failed clone is a hard error: there is no repository to set up, so abort
-      # before any sentinel is written (checkout_git_branch_or_pr would otherwise
+      # before any sentinel is written (checkout_git_ref would otherwise
       # return 0 on the absent repo and let .git-repo-ready be touched anyway).
       if ! create_git_repo; then
          dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
          touch "$LOG_PATH/.git-repo-failed"
          exit 1
       fi
-      # A requested branch/PR checkout failure is a hard error: abort the rest of repo
+      # A requested ref checkout failure is a hard error: abort the rest of repo
       # setup, log it, and write .git-repo-failed instead of the success sentinel so a
       # consumer can detect it immediately rather than waiting for a timeout.
       #
-      # On success (or when no branch/PR was requested), write .git-repo-ready. With a
+      # On success (or when no ref was requested), write .git-repo-ready. With a
       # hard clone failure now handled above, this signals that a GIT_URL clone
-      # succeeded and any requested branch/PR was checked out; it does NOT wait for the
+      # succeeded and any requested ref was checked out; it does NOT wait for the
       # later VS Code population, and Dockside does not guarantee an otherwise error-free
       # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
       # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
-      if checkout_git_branch_or_pr; then
+      if checkout_git_ref; then
          [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
       else
-         dockside_user_warning "Checkout of the requested branch/PR failed; the repository may be on the wrong ref (see $LOG)."
+         dockside_user_warning "Checkout of the requested ref failed; the repository may be on the wrong ref (see $LOG)."
          touch "$LOG_PATH/.git-repo-failed"
          exit 1
       fi

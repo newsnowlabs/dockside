@@ -45,18 +45,11 @@
    },
    "options": [
       {
-         "name": "branch",
-         "label": "Branch",
+         "name": "ref",
+         "label": "Branch or PR #",
          "type": "text",
          "default": "",
-         "placeholder": "e.g. main (leave blank to just pull the current branch)"
-      },
-      {
-         "name": "pr",
-         "label": "Pull Request #",
-         "type": "text",
-         "default": "",
-         "placeholder": "e.g. 42 (overrides branch if set)"
+         "placeholder": "e.g. main, or a PR number like 42 (leave blank to just pull the current branch)"
       }
    ],
 
