@@ -85,6 +85,10 @@ sub log_status ($sub, $json) {
 #
 
 sub split_args ($queryString) {
+   # $queryString is undef whenever the request URL has no query string at all
+   # (e.g. $r->args on a plain GET); treat that the same as an empty string.
+   $queryString //= '';
+
    # Split querystring-style arguments, and unescape them
    my %hash = map { uri_unescape($_) } split( /[=&]/, $queryString );
 
