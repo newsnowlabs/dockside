@@ -260,6 +260,121 @@ _HOOK_PROFILE = {
     ],
 }
 
+# Fixture for 15_entrypoint_signaling.py: tests only the mechanism pattern B relies on
+# ({option.<name>} resolving into the container's own command argv at container-create
+# time) - no git, no hook, no credentials of any kind, so this launches/settles fast.
+_OPTION_ARGV_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Option Argv Resolution",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "options": [
+        {
+            "name": "value",
+            "label": "Value",
+            "type": "text",
+            "default": "",
+            "placeholder": "arbitrary value; recorded verbatim into a marker file",
+        },
+    ],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "printf '%s' \"$1\" > /tmp/option-argv-marker\nsleep infinity",
+        "sh",
+        "{option.value}",
+    ],
+}
+
+# Fixture for 14_hooks.py's HookWithGitUrlTests: a gitURLs profile (so launch.sh's own
+# create_git_repo() clones synchronously, in-line, before run_hook is ever invoked - no
+# race with anything the container's own command does) whose ref-bearing option is
+# deliberately NOT named 'ref', so launch.sh's built-in checkout_git_ref() reads an empty
+# DOCKSIDE_OPTION_REF and cleanly no-ops, leaving the switch entirely to the hook. The
+# hook script mirrors app/scripts/hooks/dockside-self-update.sh's disambiguation/switch
+# logic (minus the rebuild/restart, irrelevant here) and needs no git/gh install of its
+# own: a hook dispatched via run_hook inherits launch.sh's own PATH, which already
+# prepends $IDE_PATH/bin, so plain `git`/`gh` resolve to the IDE-bundled binaries.
+_HOOK_GIT_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Hook + GitURL",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "gitURLs": ["*"],
+    "unixusers": ["dockside"],
+    "hooks": {
+        "launch": "/usr/local/bin/dockside-test-git-hook.sh",
+    },
+    "options": [
+        {
+            "name": "test_ref",
+            "label": "Test Ref",
+            "type": "text",
+            "default": "",
+            "placeholder": "branch name or bare PR number - deliberately not named 'ref'",
+        },
+    ],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); "
+        "cat > /usr/local/bin/dockside-test-git-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "set -e\n"
+        "REPO=\"$HOME/dockside\"\n"
+        "cd \"$REPO\"\n"
+        "REF=\"$DOCKSIDE_OPTION_TEST_REF\"\n"
+        "PR=\"\" BRANCH=\"\" NUM=\"${REF#'#'}\"\n"
+        "case \"$NUM\" in\n"
+        "  ''|*[!0-9]*) BRANCH=\"$REF\" ;;\n"
+        "  *)           PR=\"$NUM\" ;;\n"
+        "esac\n"
+        "if [ -n \"$PR\" ]; then\n"
+        "  gh pr checkout \"$PR\" || { git fetch origin \"refs/pull/$PR/head\" && git checkout FETCH_HEAD; }\n"
+        "elif [ -n \"$BRANCH\" ]; then\n"
+        "  git fetch origin \"refs/heads/$BRANCH:refs/remotes/origin/$BRANCH\"\n"
+        "  git switch \"$BRANCH\" 2>/dev/null || git switch --track -c \"$BRANCH\" \"origin/$BRANCH\"\n"
+        "fi\n"
+        "echo \"switched:$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\" > /tmp/hook-git-result\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-git-hook.sh; "
+        "sleep infinity",
+    ],
+}
+
 _NGINX_PROFILE = {
     "version": 2,
     "name": "Integration Test - NGINX",
@@ -852,6 +967,8 @@ class _EnvManager:
         self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
         self.profile_git        = self._ensure_profile('inttest-git',        _GIT_PROFILE)
         self.profile_hook       = self._ensure_profile('inttest-hook',       _HOOK_PROFILE)
+        self.profile_option_argv = self._ensure_profile('inttest-option-argv', _OPTION_ARGV_PROFILE)
+        self.profile_hook_git   = self._ensure_profile('inttest-hook-git',   _HOOK_GIT_PROFILE)
         self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
@@ -1044,6 +1161,8 @@ def main():
         test_profile_nginx      = _env_manager.profile_nginx
         test_profile_git        = _env_manager.profile_git
         test_profile_hook       = _env_manager.profile_hook
+        test_profile_option_argv = _env_manager.profile_option_argv
+        test_profile_hook_git   = _env_manager.profile_hook_git
         test_profile_bad_image  = _env_manager.profile_bad_image
         test_image_alpine       = _prefix_image('alpine:latest')
         test_image_nginx        = _prefix_image('nginx:latest')
@@ -1072,6 +1191,8 @@ def main():
             'test_profile_nginx':      test_profile_nginx,
             'test_profile_git':        test_profile_git,
             'test_profile_hook':       test_profile_hook,
+            'test_profile_option_argv': test_profile_option_argv,
+            'test_profile_hook_git':   test_profile_hook_git,
             'test_profile_bad_image':  test_profile_bad_image,
             'test_image_alpine':       test_image_alpine,
             'test_image_nginx':        test_image_nginx,

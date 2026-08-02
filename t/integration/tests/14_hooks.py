@@ -11,6 +11,11 @@ Coverage:
     exec attempted)
   - a manual invoke racing the automatic one completes cleanly either way
     (success or a clean "busy" report), never hangs or crashes
+  - HookWithGitUrlTests: a gitURLs profile whose ref-bearing option is
+    deliberately not named 'ref' (so launch.sh's built-in checkout_git_ref()
+    no-ops) has its hook auto-invoked after create_git_repo()'s synchronous
+    clone completes, and correctly switches the already-cloned repo to a
+    requested branch or PR (docs/extensions/lifecycle-hooks.md pattern D)
 """
 
 import json
@@ -142,3 +147,91 @@ class HooksTests(TestCase):
             self.dev1.hook_run(name, timeout=30)
         except APIError:
             pass
+
+
+GIT_URL = 'https://github.com/newsnowlabs/dockside.git'
+EXPLICIT_BRANCH = 'gh-pages'
+EXPLICIT_PR = '40'  # closed PR, same one used by 06_git_profile.py
+
+_GIT_HOOK_INSPECT_SCRIPT = (
+    'printf "hook_ready=%s\\n" "$(test -f /tmp/dockside/.hook-ready && echo 1 || echo 0)"; '
+    'printf "hook_failed=%s\\n" "$(test -f /tmp/dockside/.hook-failed && echo 1 || echo 0)"; '
+    'printf "result=%s\\n" "$(cat /tmp/hook-git-result 2>/dev/null)"'
+)
+
+
+class HookWithGitUrlTests(TestCase):
+    """A gitURLs profile whose ref-bearing option is deliberately not named 'ref',
+    so launch.sh's built-in checkout_git_ref() reads an empty DOCKSIDE_OPTION_REF
+    and no-ops, leaving the switch to a hook instead - run against the repo
+    create_git_repo() already cloned synchronously, in-line, before run_hook is
+    ever invoked. No race between the clone and the hook's auto-invoke, by
+    construction (see docs/extensions/lifecycle-hooks.md pattern D).
+
+    Tests hook-specific mechanics only (auto-invoke firing after a real clone,
+    env var delivery, .hook-ready reporting) - not the shared ref-disambiguation
+    logic, already matrix-tested via pattern A in 06_git_profile.py.
+    """
+
+    def _inspect(self, name):
+        try:
+            result = run_in_devtainer(
+                self.dev1,
+                name,
+                ['sh', '-c', _GIT_HOOK_INSPECT_SCRIPT],
+                private_key_path=_DEV1_KEY,
+                preferred=('docker' if self.test_mode in ('local', 'harness') else 'ssh'),
+                system_bin_dir=self.test_system_bin_dir,
+                run_as_user='dockside',
+            )
+        except CapabilityUnavailable as exc:
+            self.skip(str(exc))
+        if result.returncode != 0:
+            return {}
+        out = {}
+        for line in result.stdout.splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                out[key.strip()] = value.strip()
+        return out
+
+    def _wait_settled(self, name, timeout=90):
+        state = {}
+
+        def _check():
+            nonlocal state
+            state = self._inspect(name)
+            return state if (state.get('hook_ready') == '1' or state.get('hook_failed') == '1') else False
+
+        return self.wait_until(
+            _check, timeout=timeout, interval=1,
+            timeout_msg=f'hook for {name!r} did not settle (.hook-ready/.hook-failed never appeared)',
+        )
+
+    def _create(self, name, test_ref):
+        self.register_cleanup(name)
+        result = self.dev1.create(
+            profile=self.test_profile_hook_git,
+            name=name,
+            gitURL=GIT_URL,
+            options=json.dumps({'test_ref': test_ref}),
+        )
+        self.assert_true(result is not None)
+        self.wait_running(self.dev1, name, timeout=120)
+
+    def test_01_hook_switches_branch_after_clone(self):
+        name = self._sfx('inttest-hookgit-branch')
+        self._create(name, EXPLICIT_BRANCH)
+        state = self._wait_settled(name)
+        self.assert_equal(state.get('hook_ready'), '1', f'expected hook to succeed; state={state!r}')
+        self.assert_equal(state.get('result'), f'switched:{EXPLICIT_BRANCH}')
+
+    def test_02_hook_switches_pr_after_clone(self):
+        name = self._sfx('inttest-hookgit-pr')
+        self._create(name, EXPLICIT_PR)
+        state = self._wait_settled(name)
+        self.assert_equal(state.get('hook_ready'), '1', f'expected hook to succeed; state={state!r}')
+        # A PR checkout always lands in detached HEAD - `git rev-parse
+        # --abbrev-ref HEAD` reports the literal string "HEAD" in that state,
+        # not a branch name (verified by hand against the real repo).
+        self.assert_equal(state.get('result'), 'switched:HEAD')
