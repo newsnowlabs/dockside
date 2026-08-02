@@ -22,9 +22,20 @@ my $PLACEHOLDERS = {
 sub _placeholders ($self, $value) {
    local $_ = $value;
 
+   # Only ever substitutes when the brace contents are an exact (case-insensitive)
+   # match for one of the known prefixes above - anything else is left untouched,
+   # rather than treated as a malformed placeholder. Profile-author command/hook
+   # scripts routinely contain unrelated curly braces (shell parameter expansion
+   # like ${VAR#pattern}, brace command grouping like `{ cmd; }`, embedded JSON,
+   # awk/printf blocks, ...); since none of those ever happen to equal one of this
+   # short, fixed set of words, requiring an exact match - rather than merely "some
+   # {...} was found" - removes the false-positive collisions without needing a
+   # different delimiter. Trade-off: a typo'd prefix (e.g. '{usre.name}') silently
+   # passes through instead of erroring, since it's indistinguishable from ordinary
+   # script text once unrecognized {...} is no longer treated as a mistake.
    s/\{([^\}\.]+)(?:\.([^\}]+))?\}/do {
       my $sub = $PLACEHOLDERS->{lc($1)};
-      $sub ? $self->$sub($2) : die Exception->new( 'msg' => "Unknown placeholder '$&' in '$_'" );
+      $sub ? $self->$sub($2) : $&;
    }/egs;
 
    return $_;
@@ -331,7 +342,10 @@ sub container ($self, $prop = undef) {
       'hostname' => 'FQDN'
    }->{$prop};
 
-   return $dataProp ? $self->data($dataProp) : '';
+   die Exception->new( 'msg' => "Unknown placeholder '{container.$prop}' - '$prop' is not a recognized container property" )
+      unless $dataProp;
+
+   return $self->data($dataProp);
 }
 
 sub gitURL ($self) {
@@ -340,6 +354,10 @@ sub gitURL ($self) {
 
 sub option_value ($self, $name = undef) {
    return '' unless defined $name;
+
+   die Exception->new( 'msg' => "Unknown placeholder '{option.$name}' - '$name' is not declared in this profile's options" )
+      unless grep { $_->{'name'} eq $name } @{$self->profileObject->options};
+
    return ($self->data('options') // {})->{$name} // '';
 }
 
