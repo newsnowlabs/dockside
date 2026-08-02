@@ -68,7 +68,8 @@ The currently-supported root properties within a profile are:
 | gitURLs | allowed git repository URLs that may be cloned on launch; use `["*"]` to allow any URL | optional | `[]` | `["https://github.com/myorg/*"]` or `["*"]`
 | IDEs | allowed IDE installations for the devtainer; use `["*"]` to allow all IDEs available in the Dockside image (under `/opt/dockside/ide/`) | optional | `["*"]` | `["theia/latest", "openvscode/latest"]`
 | options | dynamic user-input fields displayed in the launch form; each entry has `name`, `label`, `type`, `default`, and `placeholder` sub-fields; values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables or via `entrypoint` or `command` placeholders of form `{option.<NAME>}` | optional | `[]` | `[{"name": "branch", "label": "Branch", "type": "text", "default": "", "placeholder": "e.g. main"}]`
-| [hooks](extensions/lifecycle-hooks.md) | named in-image lifecycle hook scripts; currently supports one key, `launch`, an absolute in-image path run once launch-time git/ssh/gh setup completes, and re-runnable on demand via `dockside hook run` | optional | `{}` | `{"launch": "/opt/myapp/hooks/on-launch.sh"}`
+| [hooks](extensions/lifecycle-hooks.md) | named in-image hook scripts (absolute in-image paths). Keys are either a reserved `lifecycle:<event>` name (only `lifecycle:launch` is implemented - auto-run once launch-time git/ssh/gh setup completes) or any custom name (lowercase, hyphens allowed) for an on-demand-only action | optional | `{}` | `{"lifecycle:launch": "/opt/myapp/hooks/on-launch.sh", "update": "/opt/myapp/hooks/on-update.sh"}`
+| [manualHooks](extensions/lifecycle-hooks.md) | which reserved `lifecycle:*` hooks may also be run on demand via `dockside hook run`, in addition to their automatic invocation; custom hooks are always on-demand-runnable and must not be listed here | optional | `[]` | `["lifecycle:launch"]`
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
 | lxcfs | whether to mount [lxcfs](extensions/lxcfs.md) | optional | as specified in `config.json` | `true` |
@@ -262,6 +263,7 @@ Devtainer permissions are:
 - `stopContainer`: permission to stop a devtainer
 - `removeContainer`: permission to remove a devtainer
 - `getContainerLogs`: permission to retrieve devtainer logs
+- `runContainerHooks`: permission to run a devtainer's profile-declared [lifecycle hook](extensions/lifecycle-hooks.md) on demand (`dockside hook run`)
 
 #### Permission syntax
 

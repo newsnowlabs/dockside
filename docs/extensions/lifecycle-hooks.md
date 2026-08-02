@@ -9,7 +9,7 @@ This page covers four patterns for making a launched devtainer switch to (and, w
 | [A. Built-in `gitURLs` checkout](#a-built-in-giturls-checkout) | No | No | None (built in) |
 | [B. Entrypoint + static credentials](#b-entrypoint-static-credentials) | Yes | Yes (you write it) | None |
 | [C. Entrypoint + Dockside-managed credentials](#c-entrypoint-dockside-managed-credentials) | Yes | Yes (you write it) | None |
-| [D. Lifecycle hook](#d-lifecycle-hook) | Yes | Yes (you write it) | New profile field (`hooks`) |
+| [D. Lifecycle hook](#d-lifecycle-hook) | Yes | Yes (you write it) | New profile fields (`hooks`, `manualHooks`) |
 
 Patterns B–D all rely on the same generic `options` mechanism already described in [setup.md](../setup.md#profiles): a profile can define arbitrary named options (not just the reserved `ref`), whose values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables and/or via `{option.<name>}` placeholders. None of this page's patterns need a Dockside-specific "multi-repo" schema — a profile targeting several repos just defines whatever option names make sense for its app (e.g. `frontend_ref`, `api_ref`), and the entrypoint/hook script (which is entirely application-specific) decides what to do with them.
 
@@ -82,11 +82,21 @@ This is the pattern to reach for when a checkout alone isn't "running" the reque
 
 ```json
 "hooks": {
-   "launch": "/opt/myapp/hooks/on-launch.sh"
-}
+   "lifecycle:launch": "/opt/myapp/hooks/on-launch.sh"
+},
+"manualHooks": ["lifecycle:launch"]
 ```
 
-`hooks` is profile-only — it can never be set or overridden by a launch-time request, so the executable that runs is always the one the profile/image author chose (the same trust model as a profile's `command`/`entrypoint`). Only the *arguments* — the values of whatever `options` your profile defines — are user-influenced. Currently only one key, `launch`, is recognised; other names are reserved for a broader set of lifecycle trigger points (start/stop/rename/periodic) that may be added in future — don't assume they fire yet.
+`hooks` is profile-only — it can never be set or overridden by a launch-time request, so the executable that runs is always the one the profile/image author chose (the same trust model as a profile's `command`/`entrypoint`). Only the *arguments* — the values of whatever `options` your profile defines — are user-influenced.
+
+Hook names fall into two kinds:
+
+- **Reserved lifecycle names**, namespaced `lifecycle:<event>` — `lifecycle:launch` (implemented; see below), plus `lifecycle:start`/`lifecycle:stop`/`lifecycle:rename`/`lifecycle:periodic`, reserved for a broader set of lifecycle trigger points that may be added in future. These are schema-valid today even though only `launch` does anything yet, so a profile can adopt the name now without the schema needing to change shape later — but don't assume the others fire, or that they'll ever be manually runnable the way `launch` is (that's a decision for whenever each one is actually implemented).
+- **Custom names** — anything else: lowercase, starting with a letter, hyphens allowed but not leading/trailing/doubled (e.g. `update`, `repo-status`, `backup`). A profile can declare any number of these with zero Dockside code changes, for whatever on-demand actions your app needs beyond the reserved lifecycle events.
+
+**A reserved lifecycle name only auto-invokes if it's `lifecycle:launch`** (the one implemented today) — nothing else in `hooks` is ever auto-fired. **A reserved lifecycle name is only manually runnable (`dockside hook run`) if it's also listed in `manualHooks`** — this is opt-in, not automatic, so declaring `hooks."lifecycle:launch"` alone gets you auto-invoke but *not* on-demand re-invocation; you need both lines above. Custom names need no `manualHooks` entry at all — since nothing ever auto-fires them, they're always manually runnable by construction (listing one in `manualHooks` is rejected as a likely mistake, not silently ignored).
+
+> **Gotcha**: because custom names are unrestricted, a profile can legally declare a bare `"launch"` key (no `lifecycle:` prefix) — it validates fine, but it is an ordinary *custom* hook, not the reserved lifecycle one. Nothing ever auto-invokes it; it only runs via `dockside hook run <devtainer> launch`. This is an easy mistake when migrating an older profile — double-check you meant `lifecycle:launch`, not `launch`.
 
 ### What the hook script can rely on
 
@@ -94,27 +104,27 @@ This is the pattern to reach for when a checkout alone isn't "running" the reque
 - `DOCKSIDE_OPTION_<NAME>` env vars for every option your profile defines (not just `ref` — define whatever option names your app needs, including per-repo ones for a multi-repo app).
 - `GH_TOKEN`, `GIT_URL`/`SSH_KNOWN_HOSTS_DOMAINS` if this profile also uses `gitURLs`.
 - `SSH_AUTH_SOCK` already pointed at the (pinned) ssh-agent socket — no setup needed, unlike writing your own entrypoint under pattern C.
-- Exit code `0` for success, non-zero for failure. `launch.sh` records the outcome as `/tmp/dockside/.hook-ready` or `.hook-failed`, and (on failure) surfaces a warning via the same mechanism used for other launch-time warnings, visible in the devtainer's IDE/SSH terminal on next login.
+- Exit code `0` for success, non-zero for failure. `launch.sh` records the outcome as `/tmp/dockside/.hook-ready.<name>` or `.hook-failed.<name>` (scoped by hook name, so two different hooks' sentinels never collide), and (on failure) surfaces a warning via the same mechanism used for other launch-time warnings, visible in the devtainer's IDE/SSH terminal on next login.
 - Exit code `2` specifically means "a run was already in progress" (see [Concurrency](#concurrency) below) — not a script failure.
 
 ### Running it
 
-- **Automatically**, once per launch: `launch.sh` runs it itself, after launch-time git/ssh/gh setup for that invocation has completed (i.e. after the same point `.credentials-ready` is touched for pattern C, and — if this profile also uses `gitURLs` — after any requested ref has been checked out into the cloned repo).
-- **On demand**, at any later point: `dockside hook run <devtainer>` runs it synchronously and reports the outcome:
+- **Automatically**, once per launch, for `lifecycle:launch` only: `launch.sh` runs it itself, after launch-time git/ssh/gh setup for that invocation has completed (i.e. after the same point `.credentials-ready` is touched for pattern C, and — if this profile also uses `gitURLs` — after any requested ref has been checked out into the cloned repo). No other hook, reserved or custom, is ever auto-invoked.
+- **On demand**, at any later point, for `lifecycle:launch` (if listed in `manualHooks`) or any custom hook: `dockside hook run <devtainer> <hook-name>` runs it synchronously and reports the outcome:
   ```
-  $ dockside hook run my-devtainer
-  Running hook on 'my-devtainer'…
-  Hook on 'my-devtainer' succeeded.
+  $ dockside hook run my-devtainer lifecycle:launch
+  Running hook 'lifecycle:launch' on 'my-devtainer'…
+  Hook 'lifecycle:launch' on 'my-devtainer' succeeded.
   ```
-  Exit codes: `0` success, `1` the hook script failed, `3` a run was already in progress, `4` the hook timed out. Pass `--timeout SECONDS` to raise the server-side time limit for hooks that take a while (e.g. an `npm run build`) — the default is 120s (`hooks.defaultTimeoutSeconds` in `config.json`).
+  Exit codes: `0` success, `1` the hook script failed, `3` a run was already in progress, `4` the hook timed out. Pass `--timeout SECONDS` to raise the server-side time limit for hooks that take a while (e.g. an `npm run build`) — the default is 120s (`hooks.defaultTimeoutSeconds` in `config.json`). `HOOK` is required — there is no default hook name.
 
 ### Concurrency
 
-Both invocation paths run the same `launch.sh` function, which self-serializes via a lock: if a run is already in progress, a second one doesn't queue or block — it reports "busy" (exit code `2`/`3` depending on which layer you're looking at) and leaves the first run to finish undisturbed.
+Both invocation paths run the same `launch.sh` function, which self-serializes per hook name via a lock: if a run of that *same* hook is already in progress, a second one doesn't queue or block — it reports "busy" (exit code `2`/`3` depending on which layer you're looking at) and leaves the first run to finish undisturbed. A concurrent invocation of a *different* hook name is unaffected — locks and sentinels are scoped per name, so `lifecycle:launch` and a custom hook on the same devtainer never contend with each other.
 
 ### Example: Dockside switching its own branch
 
-Dockside's own self-hosting example profiles (`00-dockside.json`, `01-dockside-own-ide.json`, `91-dockside-sysbox.json`, `92-dockside-runcvm.json`) launch images with the Dockside repo already baked in at `/home/dockside/dockside` — no `gitURLs`, so pattern A doesn't apply, and switching branch means rebuilding the Vue client and restarting Dockside's own services, not just a checkout. They're wired to [`app/scripts/hooks/dockside-self-update.sh`](https://github.com/newsnowlabs/dockside/blob/main/app/scripts/hooks/dockside-self-update.sh):
+Dockside's own self-hosting example profiles (`00-dockside.json`, `01-dockside-own-ide.json`, `91-dockside-sysbox.json`, `92-dockside-runcvm.json`) launch images with the Dockside repo already baked in at `/home/dockside/dockside` — no `gitURLs`, so pattern A doesn't apply, and switching branch means rebuilding the Vue client and restarting Dockside's own services, not just a checkout. They declare `"hooks": {"lifecycle:launch": ".../dockside-self-update.sh"}, "manualHooks": ["lifecycle:launch"]` (the `manualHooks` entry is what makes `dockside hook run` able to re-trigger it later, not just the automatic once-per-launch invocation), wired to [`app/scripts/hooks/dockside-self-update.sh`](https://github.com/newsnowlabs/dockside/blob/main/app/scripts/hooks/dockside-self-update.sh):
 
 ```sh
 #!/bin/bash
@@ -167,3 +177,28 @@ sudo s6-svc -t /etc/service/docker-event-daemon
 ```
 
 (Elided above: `resolve_tree_branch()`'s body, IDE-bundled `git`/`gh` binary paths, and log lines — see the real script for the full version.) This reuses the exact restart sequence documented for manual use in this repo's own `CLAUDE.md`, and consumes the same single `ref` option as `03-git-repo.json` — via a hook instead of `launch.sh`'s built-in checkout, since a bare checkout alone would leave the previous branch's build still running.
+
+## E. Custom (non-lifecycle) hooks: on-demand actions beyond branch switching
+
+Everything above covers `lifecycle:launch` specifically — a reserved name Dockside itself auto-invokes. A profile can also declare any number of **custom hooks**: any name that isn't one of the reserved `lifecycle:*` forms, requiring no Dockside code changes to add and needing no `manualHooks` entry (they're always on-demand only, and always manually runnable, since nothing else ever triggers them).
+
+A representative use case: a CI job keeping a long-lived preview devtainer in sync with a PR's latest commit, without a full relaunch. This is deliberately *not* the same job as `lifecycle:launch` — it should only ever fast-forward whatever's already checked out (never resolve or switch to a different ref) and then rebuild/restart, so it can't accidentally do what a branch switch does:
+
+```json
+"hooks": {
+   "lifecycle:launch": "/opt/myapp/hooks/on-launch.sh",
+   "update": "/opt/myapp/hooks/on-update.sh"
+},
+"manualHooks": ["lifecycle:launch"]
+```
+
+```sh
+#!/bin/sh
+set -e
+cd /opt/myapp
+git pull --ff-only
+npm install --no-audit --no-fund && npm run build
+sudo s6-svc -t /etc/service/my-app
+```
+
+Triggered the same way as any other on-demand hook — `dockside hook run my-devtainer update` — whether run by a developer or by an external caller such as a CI pipeline. The credential the script uses to authenticate to git is entirely the profile author's choice, same as for any other pattern on this page: reuse the calling user's own git/gh credentials (pattern C's mechanism — this is the default for every hook, custom or lifecycle, with no extra configuration), or bind-mount a separately-provisioned read-only deploy key (pattern B's mechanism) if you'd rather not depend on a specific person's credentials for a routine, automatable action. Dockside's authorization model doesn't need to know which — the `runContainerHooks` permission plus ordinary `develop` access to the devtainer governs who may call `dockside hook run` at all, entirely independent of what credential the hook script itself decides to use.
