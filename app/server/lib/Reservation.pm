@@ -1184,7 +1184,12 @@ sub _hook_env ($self, $user) {
       @envGhToken = ( "--env=GH_TOKEN=$token" );
    }
 
-   return (@envGit, @envOptions, @envGhToken);
+   my @envHookScript;
+   if( my $script = $self->hook_script('launch') ) {
+      @envHookScript = ( "--env=DOCKSIDE_HOOK_SCRIPT=$script" );
+   }
+
+   return (@envGit, @envOptions, @envGhToken, @envHookScript);
 }
 
 # Run the profile-declared 'launch' hook synchronously inside the reservation's
@@ -1209,7 +1214,6 @@ sub run_hook_sync ($self, $args = {}) {
    my $user = User->load($owner);
 
    my @env = $self->_hook_env($user);
-   push( @env, "--env=DOCKSIDE_HOOK_SCRIPT=$script" );
 
    my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
