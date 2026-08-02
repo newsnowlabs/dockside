@@ -512,12 +512,12 @@ class DocksideClient:
             return self._run_mutating('stop', '--timeout', str(timeout), name)
         return self._run_mutating('stop', '--no-wait', name)
 
-    def hook_run(self, name, timeout=None):
-        """Run a devtainer's profile-declared 'launch' hook now. Raises APIError
-        (via _run_mutating -> _run_once) if the CLI exits non-zero, i.e. on hook
-        failure (exit 1), a run already in progress (exit 3), or a timeout (exit 4)
-        - not just on a transport/API-level error."""
-        args = ['hook', 'run', name]
+    def hook_run(self, name, hook_name, timeout=None):
+        """Run a devtainer's profile-declared hook named `hook_name` now. Raises
+        APIError (via _run_mutating -> _run_once) if the CLI exits non-zero, i.e. on
+        hook failure (exit 1), a run already in progress (exit 3), or a timeout
+        (exit 4) - not just on a transport/API-level error."""
+        args = ['hook', 'run', name, hook_name]
         if timeout:
             args += ['--timeout', str(timeout)]
         return self._run_mutating(*args)
