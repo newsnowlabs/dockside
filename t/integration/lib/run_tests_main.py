@@ -203,6 +203,11 @@ _GIT_PROFILE = {
 # run (an incrementing index, not a timestamp, so runs are unambiguously ordered
 # even if they land within the same wall-clock second) to /tmp/hook-runs.log, and
 # exits non-zero if the 'fail' option is set to '1', to exercise the failure path.
+# The script write+chmod comes first in `command`, ahead of `sleep infinity` - it
+# races launch.sh's own one-shot auto-invoke of the hook (run_hook is called once,
+# not retried, right after launch.sh's git/ssh/gh setup), which fires within the
+# same instant the container starts. The hook script itself never uses sudo, so
+# there's nothing to install first.
 _HOOK_PROFILE = {
     "version": 4,
     "name": "Integration Test - Hooks",
@@ -247,7 +252,6 @@ _HOOK_PROFILE = {
     "dockerArgs": ["--pids-limit=4000"],
     "command": [
         "/bin/sh", "-c",
-        "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); "
         "cat > /usr/local/bin/dockside-test-hook.sh <<'EOF'\n"
         "#!/bin/sh\n"
         "[ \"$DOCKSIDE_OPTION_FAIL\" = \"1\" ] && exit 1\n"
@@ -350,7 +354,6 @@ _HOOK_GIT_PROFILE = {
     "dockerArgs": ["--pids-limit=4000"],
     "command": [
         "/bin/sh", "-c",
-        "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); "
         "cat > /usr/local/bin/dockside-test-git-hook.sh <<'EOF'\n"
         "#!/bin/sh\n"
         "set -e\n"
