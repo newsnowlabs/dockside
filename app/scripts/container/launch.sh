@@ -219,6 +219,38 @@ gh_authenticate() {
    $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") || log "WARN: gh auth login failed"
 }
 
+# Given a URL path remainder after "/tree/" or "/commits/" of a GitHub URL (which may
+# contain slashes, since GitHub branch names can too), find the longest prefix that is
+# an actual branch on $1 (a local repo path)'s 'origin', by trying progressively
+# shorter prefixes of $2 - the common case (no subpath in the URL) matches immediately
+# on the first, full-remainder try. Echoes the resolved branch name and returns 0 on a
+# match; returns 1 (no output) if nothing matched, in which case the caller falls back
+# to treating the whole remainder as the branch name - the subsequent git fetch then
+# fails loudly if that's genuinely wrong, same as an invalid bare branch name today. (A
+# ls-remote failure for network/auth reasons rather than "no such branch" also falls
+# through to that same fetch-fails-loudly path, just one step later.)
+#
+# This longest-prefix-first search is not just a heuristic: git's own ref namespace is
+# hierarchical, so "feature" and "feature/foo" can never both exist as branches at once
+# (creating one when the other exists is a git error) - there is exactly one real branch
+# any given remainder could resolve to, and trying the fullest candidate first finds it
+# without ever needing to backtrack past a false shorter match.
+resolve_tree_branch() {
+   local REPO="$1"
+   local CANDIDATE="$2"
+   while [ -n "$CANDIDATE" ]; do
+      if git -C "$REPO" ls-remote --exit-code origin "refs/heads/$CANDIDATE" >/dev/null 2>&1; then
+         echo "$CANDIDATE"
+         return 0
+      fi
+      case "$CANDIDATE" in
+         */*) CANDIDATE="${CANDIDATE%/*}" ;;
+         *) return 1 ;;
+      esac
+   done
+   return 1
+}
+
 # Returns 0 if there was nothing to do or the requested ref was checked out;
 # non-zero if a requested checkout failed (so the caller can abort and signal it).
 checkout_git_ref() {
@@ -245,14 +277,37 @@ checkout_git_ref() {
 
    [ -d "$REPO/.git" ] || return 0
 
-   # A single 'ref' option covers both cases: a ref that, once any leading '#' is
-   # stripped, is purely numeric (e.g. "42" or "#42") is a PR number; anything
-   # else (including a numeric-looking branch name like "123-fix-thing", which
-   # contains a non-digit character) is a branch name.
-   local PR="" BRANCH="" NUM="${REF#'#'}"
-   case "$NUM" in
-      ''|*[!0-9]*) BRANCH="$REF" ;;
-      *)           PR="$NUM" ;;
+   # A single 'ref' option covers several forms: a bare branch name; a bare PR number
+   # (optionally '#'-prefixed, e.g. "42" or "#42"); or a full GitHub URL copied from the
+   # browser - https://github.com/<org>/<repo>/pull/<n> (unambiguous: the PR number is
+   # extracted directly) or https://github.com/<org>/<repo>/tree/<branch> (potentially
+   # ambiguous if <branch> contains a slash, resolved via resolve_tree_branch() above by
+   # checking progressively shorter prefixes against the actual repo). Anchored to
+   # 'https://github.com/' so a literal branch name that happens to contain '/pull/' or
+   # '/tree/' as a substring isn't misread as a URL.
+   local PR="" BRANCH=""
+   case "$REF" in
+      https://github.com/*/pull/*)
+         PR=${REF#*/pull/}
+         PR=${PR%%[/?#]*}
+         ;;
+      https://github.com/*/tree/*)
+         local CANDIDATE=${REF#*/tree/}
+         CANDIDATE=${CANDIDATE%%[?#]*}
+         BRANCH=$(resolve_tree_branch "$REPO" "$CANDIDATE") || BRANCH="$CANDIDATE"
+         ;;
+      https://github.com/*/commits/*)
+         local CANDIDATE=${REF#*/commits/}
+         CANDIDATE=${CANDIDATE%%[?#]*}
+         BRANCH=$(resolve_tree_branch "$REPO" "$CANDIDATE") || BRANCH="$CANDIDATE"
+         ;;
+      *)
+         local NUM="${REF#'#'}"
+         case "$NUM" in
+            ''|*[!0-9]*) BRANCH="$REF" ;;
+            *)           PR="$NUM" ;;
+         esac
+         ;;
    esac
 
    if [ -n "$PR" ]; then

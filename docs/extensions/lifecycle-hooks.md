@@ -1,6 +1,6 @@
 # Lifecycle hooks: switching a devtainer's branch or PR
 
-The [`03-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/03-git-repo.json) example profile shows Dockside's built-in `gitURLs`/`GIT_URL` clone-on-launch, plus a single reserved `ref` option — holding either a branch name or a PR number — that `launch.sh` special-cases to check out after cloning (see [Launch-time git branch/PR checkout](../setup.md#launch-time-git-branchpr-checkout)). That mechanism is launch-time-only, single-repo, and stops at "the working tree is on the right ref" — it has no idea whether your application needs a rebuild or a service restart to actually run that ref.
+The [`03-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/03-git-repo.json) example profile shows Dockside's built-in `gitURLs`/`GIT_URL` clone-on-launch, plus a single reserved `ref` option — holding a branch name, a PR number, or a full GitHub branch/PR URL copied from the browser — that `launch.sh` special-cases to check out after cloning (see [Launch-time git branch/PR checkout](../setup.md#launch-time-git-branchpr-checkout)). That mechanism is launch-time-only, single-repo, and stops at "the working tree is on the right ref" — it has no idea whether your application needs a rebuild or a service restart to actually run that ref.
 
 This page covers four patterns for making a launched devtainer switch to (and, where relevant, actually *run*) a requested branch or PR, so you can pick the one that fits your application:
 
@@ -13,7 +13,11 @@ This page covers four patterns for making a launched devtainer switch to (and, w
 
 Patterns B–D all rely on the same generic `options` mechanism already described in [setup.md](../setup.md#profiles): a profile can define arbitrary named options (not just the reserved `ref`), whose values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables and/or via `{option.<name>}` placeholders. None of this page's patterns need a Dockside-specific "multi-repo" schema — a profile targeting several repos just defines whatever option names make sense for its app (e.g. `frontend_ref`, `api_ref`), and the entrypoint/hook script (which is entirely application-specific) decides what to do with them.
 
-None of B–D need two separate options either: a single `ref`-style option that may hold either a branch name or a PR number is entirely a matter of how your own entrypoint/hook script chooses to interpret its value — Dockside doesn't need to know the difference. A simple, robust rule (used throughout this page's examples, and by `launch.sh` itself for pattern A) is: strip any leading `#`, and if what's left is purely numeric, treat it as a PR number; otherwise treat the original value as a branch name.
+None of B–D need two separate options either: a single `ref`-style option that may hold a branch name, a PR number, or a full GitHub URL is entirely a matter of how your own entrypoint/hook script chooses to interpret its value — Dockside doesn't need to know the difference. The rule used throughout this page's examples, and by `launch.sh` itself for pattern A:
+
+1. `https://github.com/<org>/<repo>/pull/<n>[...]` → PR `<n>` (extracted directly, unambiguous).
+2. `https://github.com/<org>/<repo>/tree/<remainder>` or `.../commits/<remainder>` → a branch, resolved by trying progressively shorter prefixes of `<remainder>` against the repo's actual branches (`git ls-remote`) until one matches, starting with the full remainder. This isn't guesswork: git's ref namespace is hierarchical (`feature` and `feature/foo` can never both exist as branches at once), so there's exactly one real branch any given remainder could resolve to, and the search finds it — the only extra cost is a handful of `git ls-remote` round-trips for a branch name/subpath combination with several slashes.
+3. Anything else: strip any leading `#` (so `42` and `#42` are equivalent); if what's left is purely numeric, treat it as a PR number; otherwise treat the original value as a branch name.
 
 ## A. Built-in `gitURLs` checkout
 
@@ -30,7 +34,7 @@ This works because two things are both true, regardless of `launch.sh`:
 1. **Bind/volume mounts are present from container start.** A `mounts.bind` (or `volume`) entry is part of `docker create`, so a mounted deploy key is already there when your entrypoint's first line runs — no waiting on anything Dockside does later.
 2. **`{option.<name>}` placeholders resolve into `command`/`entrypoint` at container-create time.** They become literal argv on the container's `docker create`/`docker run` command line, before `launch.sh` ever runs.
 
-The example [`04-entrypoint-branch-switch.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/04-entrypoint-branch-switch.json) profile demonstrates this end-to-end: it wires `{option.ref}` into its `command`, whose entrypoint script clones (over HTTPS, so the demo runs with no credential at all), decides whether `ref` is a branch or a PR number, and switches to it before starting the long-running process. Read the comments in that profile for how to extend it with a bind-mounted SSH deploy key for a private repo.
+The example [`04-entrypoint-branch-switch.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/04-entrypoint-branch-switch.json) profile demonstrates this end-to-end: it wires `{option.ref}` into its `command`, whose entrypoint script clones (over HTTPS, so the demo runs with no credential at all), decides whether `ref` is a branch, a PR number, or a full GitHub `tree`/`pull` URL (in which case it's resolved into a branch or PR number first — the same `resolve_tree_branch()` approach `checkout_git_ref()` uses for pattern A), and switches to it before starting the long-running process. Read the comments in that profile for how to extend it with a bind-mounted SSH deploy key for a private repo.
 
 > **Pass option values as argv, not interpolated into your script text.** The example passes `{option.ref}` as an extra argument to `sh -c '<script>' sh "{option.ref}"` (read inside the script as `$1`), rather than substituting it directly into the script string. A user-supplied option value becomes a single literal argv string this way, immune to shell-metacharacter injection — interpolating it straight into the script text would not be.
 
@@ -120,10 +124,31 @@ REPO="$HOME/dockside"
 cd "$REPO"
 
 REF="${DOCKSIDE_OPTION_REF:-}"
-PR="" BRANCH="" NUM="${REF#'#'}"
-case "$NUM" in
-  ''|*[!0-9]*) BRANCH="$REF" ;;
-  *)           PR="$NUM" ;;
+
+# resolve_tree_branch(): same progressive-shortening resolution as
+# checkout_git_ref() in app/scripts/container/launch.sh — elided here, see the
+# real script for the full version.
+
+PR="" BRANCH=""
+case "$REF" in
+  https://github.com/*/pull/*)
+    PR=${REF#*/pull/}; PR=${PR%%[/?#]*}
+    ;;
+  https://github.com/*/tree/*)
+    CANDIDATE=${REF#*/tree/}; CANDIDATE=${CANDIDATE%%[?#]*}
+    BRANCH=$(resolve_tree_branch "$CANDIDATE") || BRANCH="$CANDIDATE"
+    ;;
+  https://github.com/*/commits/*)
+    CANDIDATE=${REF#*/commits/}; CANDIDATE=${CANDIDATE%%[?#]*}
+    BRANCH=$(resolve_tree_branch "$CANDIDATE") || BRANCH="$CANDIDATE"
+    ;;
+  *)
+    NUM="${REF#'#'}"
+    case "$NUM" in
+      ''|*[!0-9]*) BRANCH="$REF" ;;
+      *)           PR="$NUM" ;;
+    esac
+    ;;
 esac
 
 if [ -n "$PR" ]; then
@@ -141,4 +166,4 @@ sudo s6-svc -t /etc/service/nginx
 sudo s6-svc -t /etc/service/docker-event-daemon
 ```
 
-(Elided above: IDE-bundled `git`/`gh` binary paths and log lines — see the real script for the full version.) This reuses the exact restart sequence documented for manual use in this repo's own `CLAUDE.md`, and consumes the same single `ref` option as `03-git-repo.json` — via a hook instead of `launch.sh`'s built-in checkout, since a bare checkout alone would leave the previous branch's build still running.
+(Elided above: `resolve_tree_branch()`'s body, IDE-bundled `git`/`gh` binary paths, and log lines — see the real script for the full version.) This reuses the exact restart sequence documented for manual use in this repo's own `CLAUDE.md`, and consumes the same single `ref` option as `03-git-repo.json` — via a hook instead of `launch.sh`'s built-in checkout, since a bare checkout alone would leave the previous branch's build still running.

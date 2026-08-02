@@ -3,8 +3,8 @@
 
 Coverage:
   - launch accepts a gitURL for the example 03-git-repo profile
-  - launch accepts a single 'ref' profile option holding either a branch name or a
-    PR number (bare or '#'-prefixed)
+  - launch accepts a single 'ref' profile option holding a branch name, a PR number
+    (bare or '#'-prefixed), or a full GitHub branch/PR URL copied from the browser
   - launch accepts alternate allowed images for the profile
   - launch writes the owner's git name/email into ~/.gitconfig
   - launch clones the requested repo into the unix user's home directory
@@ -219,6 +219,27 @@ class GitProfileTests(TestCase):
             self._normalize_git_url(GIT_URL),
         )
 
+    def test_02b_create_with_branch_tree_url_option(self):
+        # A single 'ref' option must also accept a full GitHub branch URL copied
+        # from the browser, resolved via checkout_git_ref()'s resolve_tree_branch()
+        # in app/scripts/container/launch.sh.
+        name = self._sfx('inttest-git-branch-url')
+        self._create_git_container(
+            name,
+            options=json.dumps({'ref': f'https://github.com/{GH_REPO}/tree/{EXPLICIT_BRANCH}'}),
+        )
+        state = self._wait_git_state(
+            name,
+            lambda s: s.get('git_ready') == '1' and s.get('branch') == EXPLICIT_BRANCH,
+            f'branch {EXPLICIT_BRANCH!r} checkout via tree URL did not complete',
+            timeout=60,
+        )
+        self._assert_gitconfig(state)
+        self.assert_equal(
+            self._normalize_git_url(state.get('origin_url')),
+            self._normalize_git_url(GIT_URL),
+        )
+
     def _assert_pr_checked_out(self, name):
         """Wait for HEAD to move off the default branch, then confirm via gh that
         it's actually EXPLICIT_PR's head commit (not just some other branch/commit)."""
@@ -271,6 +292,21 @@ class GitProfileTests(TestCase):
         self._create_git_container(
             name,
             options=json.dumps({'ref': f'#{EXPLICIT_PR}', 'gh_token': GITHUB_TOKEN}),
+        )
+        self._assert_pr_checked_out(name)
+
+    def test_03c_create_with_pr_url_option(self):
+        # A single 'ref' option must also accept a full GitHub PR URL copied from
+        # the browser.
+        if not GITHUB_TOKEN:
+            self.skip('DOCKSIDE_TEST_GITHUB_TOKEN not set')
+        name = self._sfx('inttest-git-pr-url')
+        self._create_git_container(
+            name,
+            options=json.dumps({
+                'ref': f'https://github.com/{GH_REPO}/pull/{EXPLICIT_PR}',
+                'gh_token': GITHUB_TOKEN,
+            }),
         )
         self._assert_pr_checked_out(name)
 
