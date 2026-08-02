@@ -1128,7 +1128,10 @@ sub exec ($reservation, $command = undef) {
 
    my @envGit;
    if( $reservation->gitURL() ) {
-      my ($git_domain) = $reservation->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
+      # SCP-style URLs may use any username (see the gitURL validation regex
+      # above), not just literally 'git@' - match that here too, else
+      # $git_domain is left undef for e.g. 'deploy@host:path'.
+      my ($git_domain) = $reservation->gitURL() =~ m!^(?:https://|[a-zA-Z][\w-]*@)([^:/]+)!;
       @envGit = (
          "--env=GIT_URL=" . $reservation->gitURL(),
          "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"
