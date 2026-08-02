@@ -70,7 +70,8 @@ my @CONTAINER_PERMISSIONS = (
    'startContainer', # Permission to start a container
    'stopContainer', # Permission to stop a container
    'removeContainer', # Permission to remove a container
-   'getContainerLogs' # Permission to retrieve container logs
+   'getContainerLogs', # Permission to retrieve container logs
+   'runContainerHooks' # Permission to run a container's profile-declared lifecycle hook
 );
 
 our $USER_PASSWD;
@@ -965,6 +966,27 @@ sub controlContainer ($self, $cmd, $id, $args = {}) {
    }
 
    return $container->action($cmd, $args);
+}
+
+# Runs a container's profile-declared 'launch' hook synchronously, on demand (e.g. a
+# user has changed the 'branch'/'pr' options and wants their devtainer to switch now,
+# without a full relaunch). Named/shaped like controlContainer above.
+sub runContainerHook ($self, $id, $args = {}) {
+   if( $id !~ m!^([0-9a-f]+)$! ) {
+      die Exception->new( 'msg' => "hook run with invalid argument '$id' failed" );
+   }
+
+   if( !$self->has_permission('runContainerHooks') ) {
+      die Exception->new( 'msg' => "You need the 'runContainerHooks' permission to run a devtainer's hook" );
+   }
+
+   my $container = $self->reservation($id);
+
+   if( !$self->can_on( $container, 'develop' )) {
+      die Exception->new( 'msg' => "You need the 'develop' permission to run a hook on this devtainer" );
+   }
+
+   return $container->run_hook_sync($args);
 }
 
 # Creates a Reservation object, stores it, and attempts to launch a container for that Reservation.

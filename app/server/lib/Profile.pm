@@ -262,6 +262,7 @@ sub validate ($self) {
          gitURLs=@
          IDEs=@
          options=@
+         hooks=%
       )
    );
 
@@ -406,6 +407,39 @@ sub validate_profile_options ($self, $type, $data) {
    }
 }
 
+# Allow-list of recognised hook names. Only 'launch' is implemented today (run once
+# launch-time git/ssh/gh setup completes, and re-runnable on demand); the remaining
+# names are reserved for docs/roadmap.md's broader (unimplemented) lifecycle-hooks
+# ambition (start/stop/rename/periodic), so the schema doesn't need to change shape
+# again when those land.
+my @ALLOWED_HOOKS = ( 'launch' );
+
+sub validate_profile_hooks ($self, $type, $data) {
+   unless( ref($data) eq 'HASH' ) {
+      return $self->errors( $type, "must be a JSON Object" );
+   }
+
+   my %allowed = map { $_ => 1 } @ALLOWED_HOOKS;
+
+   foreach my $name ( sort keys %$data ) {
+      unless( $allowed{$name} ) {
+         $self->errors( "$type.$name", sprintf( "unknown hook name, must be one of: %s", join( ', ', @ALLOWED_HOOKS ) ) );
+         next;
+      }
+
+      my $script = $data->{$name};
+
+      if( ref($script) || !length($script) ) {
+         $self->errors( "$type.$name", "must be a non-empty String" );
+         next;
+      }
+
+      unless( $script =~ m!^/! ) {
+         $self->errors( "$type.$name", "must be an absolute path to an executable in the image" );
+      }
+   }
+}
+
 sub validate_profile_mounts_tmpfs_dst ($self, $type, $data) {
    my $dstRE = '^/';
 
@@ -535,6 +569,10 @@ sub routers ($self) {
 
 sub options ($self) {
    return $self->{'options'} // [];
+}
+
+sub hooks ($self) {
+   return $self->{'hooks'} // {};
 }
 
 sub ssh ($self) {

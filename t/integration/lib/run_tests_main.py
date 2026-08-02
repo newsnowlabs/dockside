@@ -204,6 +204,69 @@ _GIT_PROFILE = {
     ],
 }
 
+# Fixture for 14_hooks.py: a profile declaring a 'launch' hook. The hook script
+# itself is synthesized by the container's own command (no custom baked image
+# needed, per the suite's no-pre-existing-fixtures rule) — it records one line per
+# run (an incrementing index, not a timestamp, so runs are unambiguously ordered
+# even if they land within the same wall-clock second) to /tmp/hook-runs.log, and
+# exits non-zero if the 'fail' option is set to '1', to exercise the failure path.
+_HOOK_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Hooks",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "hooks": {
+        "launch": "/usr/local/bin/dockside-test-hook.sh",
+    },
+    "options": [
+        {
+            "name": "marker",
+            "label": "Marker",
+            "type": "text",
+            "default": "",
+            "placeholder": "arbitrary marker string recorded on each hook run",
+        },
+        {
+            "name": "fail",
+            "label": "Fail",
+            "type": "text",
+            "default": "",
+            "placeholder": "set to 1 to make the hook script exit non-zero",
+        },
+    ],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo;); "
+        "cat > /usr/local/bin/dockside-test-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "[ \"$DOCKSIDE_OPTION_FAIL\" = \"1\" ] && exit 1\n"
+        "n=$(wc -l < /tmp/hook-runs.log 2>/dev/null || echo 0)\n"
+        "echo \"ran:$DOCKSIDE_OPTION_MARKER:$n\" >> /tmp/hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-hook.sh; "
+        "sleep infinity",
+    ],
+}
+
 _NGINX_PROFILE = {
     "version": 2,
     "name": "Integration Test - NGINX",
@@ -795,6 +858,7 @@ class _EnvManager:
         self.profile_debian     = self._ensure_profile('inttest-debian',     _DEBIAN_PROFILE)
         self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
         self.profile_git        = self._ensure_profile('inttest-git',        _GIT_PROFILE)
+        self.profile_hook       = self._ensure_profile('inttest-hook',       _HOOK_PROFILE)
         self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
@@ -986,6 +1050,7 @@ def main():
         test_profile_debian     = _env_manager.profile_debian
         test_profile_nginx      = _env_manager.profile_nginx
         test_profile_git        = _env_manager.profile_git
+        test_profile_hook       = _env_manager.profile_hook
         test_profile_bad_image  = _env_manager.profile_bad_image
         test_image_alpine       = _prefix_image('alpine:latest')
         test_image_nginx        = _prefix_image('nginx:latest')
@@ -1013,6 +1078,7 @@ def main():
             'test_profile_debian':     test_profile_debian,
             'test_profile_nginx':      test_profile_nginx,
             'test_profile_git':        test_profile_git,
+            'test_profile_hook':       test_profile_hook,
             'test_profile_bad_image':  test_profile_bad_image,
             'test_image_alpine':       test_image_alpine,
             'test_image_nginx':        test_image_nginx,

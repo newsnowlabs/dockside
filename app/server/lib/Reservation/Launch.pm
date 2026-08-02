@@ -343,6 +343,10 @@ sub option_value ($self, $name = undef) {
    return ($self->data('options') // {})->{$name} // '';
 }
 
+sub hook_script ($self, $name = 'launch') {
+   return $self->profileObject->hooks->{$name} // '';
+}
+
 # If the dockside container and launched container share the default 
 # bridge network at launch time, use the dockside container’s IP.
 #

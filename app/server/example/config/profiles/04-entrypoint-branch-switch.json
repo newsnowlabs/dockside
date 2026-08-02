@@ -1,0 +1,71 @@
+{
+   "version": 4,
+   "name": "Entrypoint Branch/PR Switch (static credentials)",
+   "description": "Demonstrates pattern B from docs/extensions/lifecycle-hooks.md: {option.branch}/{option.pr} wired directly into the entrypoint's own command line, resolved at container-create time - so branch/PR switching works from container start, with no dependency on launch.sh's timing. See mounts.bind below for how to add a statically-provisioned deploy key for a private repo.",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "*" ],
+   "images": [
+      "ubuntu:latest",
+      "debian:latest"
+   ],
+   "unixusers": ["dockside"],
+   "options": [
+      {
+         "name": "branch",
+         "label": "Branch",
+         "type": "text",
+         "default": "main",
+         "placeholder": "e.g. main, feature/my-feature"
+      },
+      {
+         "name": "pr",
+         "label": "Pull Request #",
+         "type": "text",
+         "default": "",
+         "placeholder": "e.g. 42 (overrides branch if set)"
+      }
+   ],
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
+      "bind": [
+         // For a private repo, point this at wherever your own deployment
+         // provisions a read-only deploy key (e.g. a secret dropped by your CI/ops
+         // tooling, or an encrypted volume). Present from container start, unlike
+         // Dockside-managed per-user SSH keys/gh auth (see pattern C in
+         // docs/extensions/lifecycle-hooks.md), which aren't ready until
+         // launch.sh has run. Commented out here since the demo below clones a
+         // public repo over HTTPS and needs no key; uncomment and adjust "src"
+         // to use it, then set GIT_SSH_COMMAND before cloning (see comment in
+         // "command" below).
+         // { "src": "/opt/example-deploy-keys/entrypoint-branch-switch", "dst": "/home/dockside/.ssh/deploy_key", "ro": true }
+      ],
+      "volume": []
+   },
+   "dockerArgs": ["--memory=1G", "--pids-limit=4000"],
+   "command": [
+      "/bin/sh", "-c",
+
+      // $1/$2 (not a direct {option.*} substitution inside this script string)
+      // deliberately: passing the resolved option values as argv positional
+      // parameters, rather than interpolating them into the script text itself,
+      // avoids a shell-metacharacter-injection surface - a `branch` value like
+      // `; rm -rf /` becomes a single literal argv string here, never
+      // re-parsed as shell syntax. See "sh", "{option.branch}", "{option.pr}"
+      // below, which supply $0/$1/$2.
+      "set -e\napt-get update -qq && apt-get install -y -qq git sudo >/dev/null\nREPO=/home/dockside/app\nBRANCH=\"$1\"\nPR=\"$2\"\n# For a private repo: uncomment the mounts.bind entry above, then add:\n#   export GIT_SSH_COMMAND=\"ssh -i /home/dockside/.ssh/deploy_key -o StrictHostKeyChecking=accept-new\"\n# and use a git@... URL below instead of the https:// one.\n[ -d \"$REPO/.git\" ] || git clone https://github.com/newsnowlabs/dockside.git \"$REPO\"\ncd \"$REPO\"\nif [ -n \"$PR\" ]; then\n  # Two statements, not \"git fetch ... && git checkout ...\": under `set -e`, a\n  # non-final command in an && list is exempt from aborting the script on\n  # failure, so a bad PR number would otherwise fail silently and fall through.\n  git fetch origin \"refs/pull/$PR/head\"\n  git checkout FETCH_HEAD\nelif [ -n \"$BRANCH\" ]; then\n  git fetch origin \"refs/heads/$BRANCH:refs/remotes/origin/$BRANCH\"\n  git switch \"$BRANCH\" 2>/dev/null || git switch --track -c \"$BRANCH\" \"origin/$BRANCH\"\nfi\nsleep infinity",
+      "sh",
+      "{option.branch}",
+      "{option.pr}"
+   ]
+}

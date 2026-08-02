@@ -88,6 +88,7 @@ nav:
     - Sysbox: extensions/runtimes/sysbox.md
     - Backups: extensions/backups.md
     - SSH: extensions/ssh.md
+    - Lifecycle Hooks: extensions/lifecycle-hooks.md
   - Case Studies: case-studies/NewsNow.md
   - Roadmap: roadmap.md
   - Developing:

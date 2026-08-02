@@ -271,12 +271,67 @@ checkout_git_branch_or_pr() {
    return 1
 }
 
+# Run the profile-declared 'launch' hook (an in-image, profile-author-trusted
+# executable named by the DOCKSIDE_HOOK_SCRIPT env var, resolved server-side from
+# the profile's `hooks.launch` property - see Reservation::hook_script). Invoked
+# both automatically once per launch (from run_nonroot, after git/ssh/gh setup) and
+# on demand, any time later, via a fresh `docker exec ... launch.sh run_hook` (see
+# Reservation::run_hook_sync). Both paths call this same function, so it
+# self-serializes via an mkdir-based lock: a concurrent second invocation does not
+# block or double-run, it just reports "busy" (exit 2) and leaves the first run to
+# finish undisturbed.
+#
+# Returns 0 on success (or when no hook is configured for this profile), 1 if the
+# hook script itself failed, 2 if a run was already in progress.
+run_hook() {
+   local SCRIPT="${DOCKSIDE_HOOK_SCRIPT:-}"
+   [ -n "$SCRIPT" ] || { log "run_hook: no hook configured"; return 0; }
+   [ -x "$SCRIPT" ] || { log "run_hook: ERROR: '$SCRIPT' not found or not executable"; return 1; }
+
+   local LOCK="$LOG_PATH/.hook.lock.d"
+   if ! mkdir "$LOCK" 2>/dev/null; then
+      local OLD_PID
+      OLD_PID=$(cat "$LOCK/pid" 2>/dev/null)
+      if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+         log "run_hook: already running (pid $OLD_PID); refusing concurrent run"
+         return 2
+      fi
+      log "run_hook: found stale lock (pid $OLD_PID not running); reclaiming"
+      rm -rf "$LOCK"
+      mkdir "$LOCK" 2>/dev/null || { log "run_hook: ERROR: could not acquire lock"; return 2; }
+   fi
+   echo "$$" > "$LOCK/pid"
+   rm -f "$LOG_PATH/.hook-ready" "$LOG_PATH/.hook-failed"
+
+   log "run_hook: running '$SCRIPT' ..."
+   # Send the hook script's own stdout/stderr to fds 3/4 (the pre-log-redirect
+   # original stdout/stderr preserved by init()), not into $LOG, so a synchronous
+   # caller (Reservation::run_hook_sync) sees the hook's real output; log() calls
+   # made by this function itself still go to $LOG as usual.
+   if "$SCRIPT" 1>&3 2>&4; then
+      log "run_hook: '$SCRIPT' succeeded"
+      touch "$LOG_PATH/.hook-ready"
+      rm -rf "$LOCK"
+      return 0
+   else
+      local rc=$?
+      log "run_hook: '$SCRIPT' failed with exit code $rc"
+      dockside_user_warning "Hook script failed (exit $rc); see $LOG."
+      touch "$LOG_PATH/.hook-failed"
+      rm -rf "$LOCK"
+      return 1
+   fi
+}
+
 spawn_ssh_agent() {
    log "Checking for ssh-agent ..."
    if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
-      log "Found ssh-agent binary but no running agent, so launching it ..."
-      
-      eval $($(which ssh-agent))
+      log "Found ssh-agent binary but no running agent, so launching it, pinned to '$SSH_AUTH_SOCK' ..."
+
+      # -a pins the agent to the well-known socket path init() already exported into
+      # SSH_AUTH_SOCK, instead of letting ssh-agent choose a random one, so a later
+      # independent invocation of this script can reach the same agent (see init()).
+      eval $($(which ssh-agent) -a "$SSH_AUTH_SOCK")
       export SSH_AUTH_SOCK
 
       log "Launched ssh-agent binary with SSH_AUTH_SOCK='$SSH_AUTH_SOCK'"
@@ -697,6 +752,15 @@ run_nonroot() {
       dockside_user_warning "One or more SSH keys could not be loaded into the ssh-agent (see $LOG)."
    fi
    populate_known_hosts
+   # Authenticate gh, and signal that credentials (ssh-agent + known_hosts + gh) are
+   # ready, unconditionally and before any git-repo-specific work — so this signal is
+   # available regardless of whether this profile even has a GIT_URL, and is not
+   # skipped when a git clone happens to fail. This is what lets an application's own
+   # entrypoint (started long before this script runs) poll for
+   # "$LOG_PATH/.credentials-ready" and then use the same ssh-agent/gh auth Dockside
+   # set up here, without needing to wait for or depend on the git-repo setup below.
+   gh_authenticate
+   touch "$LOG_PATH/.credentials-ready"
    (
       log "Repo setup subproc started ..."
       # A failed clone is a hard error: there is no repository to set up, so abort
@@ -707,7 +771,6 @@ run_nonroot() {
          touch "$LOG_PATH/.git-repo-failed"
          exit 1
       fi
-      gh_authenticate
       # A requested branch/PR checkout failure is a hard error: abort the rest of repo
       # setup, log it, and write .git-repo-failed instead of the success sentinel so a
       # consumer can detect it immediately rather than waiting for a timeout.
@@ -725,6 +788,11 @@ run_nonroot() {
          touch "$LOG_PATH/.git-repo-failed"
          exit 1
       fi
+      # Run the profile-declared hook (if any), once, now that git/ssh/gh setup for
+      # this launch has completed. A hook failure is logged and surfaced via
+      # dockside_user_warning/.hook-failed by run_hook itself, but is not treated as
+      # fatal to the rest of this subshell.
+      run_hook || true
       populate_vscode_extensions;
       populate_vscode_settings
       log "Repo setup subproc finished";
@@ -793,8 +861,22 @@ init() {
    LOG_PATH=/tmp/dockside
    LOG=$LOG_PATH/launch-$(id -u).log
 
+   # Pin the ssh-agent socket to a well-known path (rather than the random one
+   # ssh-agent would otherwise choose) so that any later, independent invocation of
+   # this script (e.g. a fresh `docker exec ... launch.sh run_hook`, long after the
+   # original launch) can reach the same agent without needing to rediscover it.
+   export SSH_AUTH_SOCK="$LOG_PATH/agent.sock"
+
    [ -d $LOG_PATH ] || busybox mkdir -p $LOG_PATH && busybox chmod a+rwx,+t $LOG_PATH 2>/dev/null
    [ -d $LOG ] || busybox touch $LOG && busybox chmod 644 $LOG
+
+   # Preserve the original stdout/stderr as fds 3/4 before redirecting 1/2 into the
+   # log file below. Every function's log() output is unaffected by this (still only
+   # goes to $LOG via fd 1/2); it exists solely so that run_hook, when dispatched via
+   # a synchronous `docker exec ... launch.sh run_hook` (see Reservation::run_hook_sync),
+   # can let its caller capture real-time output/exit status via fd 3/4, instead of
+   # having it silently swallowed into the container's internal log file.
+   exec 3>&1 4>&2
 
    exec 1>>$LOG
    exec 2>>$LOG

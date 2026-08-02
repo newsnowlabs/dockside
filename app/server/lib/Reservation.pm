@@ -1125,23 +1125,7 @@ sub exec ($reservation, $command = undef) {
       );
    }
 
-   my @envGit;
-   if( $reservation->gitURL() ) {
-      my ($git_domain) = $reservation->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
-      @envGit = (
-         "--env=GIT_URL=" . $reservation->gitURL(),
-         "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"
-      );
-   }
-
-   my @envOptions = map {
-      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($reservation->data('options') // {})->{$_}
-   } keys %{ $reservation->data('options') // {} };
-
-   my @envGhToken;
-   if( my $token = $user->gh_token() ) {
-      @envGhToken = ( "--env=GH_TOKEN=$token" );
-   }
+   my @envHook = $reservation->_hook_env($user);
 
    my @envIDE = (
       "--env=IDE=" . $reservation->meta('IDE')
@@ -1165,9 +1149,7 @@ sub exec ($reservation, $command = undef) {
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs_all() ),
-      @envGit,
-      @envOptions,
-      @envGhToken,
+      @envHook,
       @envSSH,
       @envDevContainer,
       @envIDE,
@@ -1176,6 +1158,116 @@ sub exec ($reservation, $command = undef) {
    );
 
    return 1;
+}
+
+# The env vars a hook invocation (whether the launch-time auto-invoke, dispatched
+# in-process by launch.sh itself, or a later `docker exec ... launch.sh run_hook`
+# built here) needs: the same GIT_URL/SSH_KNOWN_HOSTS_DOMAINS, DOCKSIDE_OPTION_*
+# and GH_TOKEN env this reservation's IDE launch already gets - shared here to
+# avoid duplicating/drifting that logic between exec() and run_hook_sync().
+sub _hook_env ($self, $user) {
+   my @envGit;
+   if( $self->gitURL() ) {
+      my ($git_domain) = $self->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
+      @envGit = (
+         "--env=GIT_URL=" . $self->gitURL(),
+         "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"
+      );
+   }
+
+   my @envOptions = map {
+      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($self->data('options') // {})->{$_}
+   } keys %{ $self->data('options') // {} };
+
+   my @envGhToken;
+   if( my $token = $user->gh_token() ) {
+      @envGhToken = ( "--env=GH_TOKEN=$token" );
+   }
+
+   return (@envGit, @envOptions, @envGhToken);
+}
+
+# Run the profile-declared 'launch' hook synchronously inside the reservation's
+# container, via the same `docker exec ... launch.sh <fn>` dispatch pattern used
+# elsewhere in this file, but (unlike exec()'s fire-and-forget `-d`) waiting for it
+# to finish so the caller (Reservation::Launch::hook_script - see User::runContainerHook,
+# App.pm's /containers/<id>/hook route, and the `dockside hook run` CLI command) can
+# report a real exit code, not just "we asked the container to do something".
+#
+# Returns { exitCode, timedOut, busy, output } on any outcome where a docker exec was
+# actually attempted. Dies with a 400 Exception before attempting anything if this
+# profile has no hook configured.
+sub run_hook_sync ($self, $args = {}) {
+   my $script = $self->hook_script('launch');
+   die Exception->new( 'msg' => 'No hook configured for this profile', 'status' => 400 ) unless length($script);
+
+   my @Command = $self->ide_command();
+   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::run_hook_sync: ide_command() returned empty' ) unless @Command;
+   $Command[-1] = 'run_hook';
+
+   my $owner = $self->owner('username');
+   my $user = User->load($owner);
+
+   my @env = $self->_hook_env($user);
+   push( @env, "--env=DOCKSIDE_HOOK_SCRIPT=$script" );
+
+   my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
+      unless $timeout =~ /^[1-9][0-9]*$/;
+
+   my $containerId = $self->containerId();
+
+   my @cmd = (
+      'timeout', '--kill-after=5', "${timeout}s",
+      $CONFIG->{'docker'}{'bin'}, 'exec', '-u', $self->unixuser(),
+      @env,
+      $containerId,
+      @Command
+   );
+
+   flog( "Reservation::run_hook_sync: RUNNING: " . join( '|', map { sanitize_sensitive_text($_) } @cmd ) );
+
+   # Magically prevent nginx from reaping the subprocess before we do (see run_system/run_pty).
+   local $SIG{'CHLD'} = 'DEFAULT';
+
+   # Fork + exec (no shell, list-form) with the child's stdout/stderr piped back to us,
+   # rather than touching this process's own STDOUT/STDERR - safer under a server that
+   # may be handling other requests concurrently in the same process.
+   my $pid = open( my $kid, '-|' );
+   die Exception->new( 'msg' => 'Internal error - failed to run hook', 'dbg' => "Reservation::run_hook_sync: fork failed: $!" ) unless defined $pid;
+
+   if( $pid == 0 ) {
+      open( STDERR, '>&STDOUT' ) or exit(126);
+      exec(@cmd) or exit(127);
+   }
+
+   my $output = '';
+   while( my $line = <$kid> ) {
+      $output .= $line;
+   }
+   close($kid);
+   my $rc = ( $? == -1 ) ? -1 : ( $? >> 8 );
+
+   # Keep the API response bounded regardless of how chatty the hook script is.
+   $output = substr( $output, -4096 ) if length($output) > 4096;
+
+   # `timeout` itself exits 124 on a plain timeout, or 128+signal (137 for SIGKILL,
+   # used after --kill-after) if the --kill-after grace period was needed too.
+   my $timedOut = ( $rc == 124 || $rc == 137 ) ? 1 : 0;
+   # run_hook's own mkdir-lock returns exit code 2 when a run is already in progress.
+   # Note: `timeout` killing the host-side docker exec process does not reliably kill
+   # the process running inside the container (a Docker CLI/API limitation) - the
+   # in-container mkdir lock is what actually prevents a subsequent overlapping run;
+   # a timed-out hook may still be finishing in the background, discoverable later via
+   # the .hook-ready/.hook-failed sentinels launch.sh's run_hook writes.
+   my $busy = ( $rc == 2 && !$timedOut ) ? 1 : 0;
+
+   return {
+      'exitCode' => $rc,
+      'timedOut' => $timedOut,
+      'busy'     => $busy,
+      'output'   => $output
+   };
 }
 
 1;

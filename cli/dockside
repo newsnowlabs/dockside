@@ -843,6 +843,19 @@ def api_control(opener, server, res_id, cmd):
     return data.get('data') or []
 
 
+def api_hook(opener, server, res_id, timeout=None):
+    """Run a devtainer's profile-declared 'launch' hook now, synchronously. Returns
+    the server's {exitCode, timedOut, busy, output} result dict."""
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/hook'
+    params = {'timeout': timeout} if timeout else {}
+    # Give the HTTP request comfortably longer than the server-side hook timeout
+    # (which defaults to 120s if not given), so we don't time out the client-side
+    # request before the server's own `timeout ...s docker exec` has a chance to.
+    client_timeout = (timeout or 120) + 15
+    data = _do_post(opener, url, params, timeout=client_timeout)
+    return data.get('data') or {}
+
+
 def api_user_list(opener, server, sensitive=False):
     qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
     data = _do_get(opener, server.rstrip('/') + '/users' + qs)
@@ -2408,6 +2421,52 @@ def cmd_stop(args):
         print(f'Stop command sent for {name!r}.', file=sys.stderr)
 
 
+def cmd_hook_run(args):
+    """Run a devtainer's profile-declared 'launch' hook now (see docs/extensions/lifecycle-hooks.md).
+
+    Exit codes: 0 success; 1 hook script failed; 3 a run was already in progress
+    ('busy'); 4 the hook timed out.
+    """
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    res_id = c['id']
+    name   = c.get('name', res_id)
+    print(f'Running hook on {name!r}…', file=sys.stderr)
+    try:
+        result = api_hook(opener, server, res_id, timeout=args.timeout)
+    except APIError as e:
+        die(str(e))
+
+    exit_code = result.get('exitCode')
+    output = (result.get('output') or '').strip()
+
+    if result.get('busy'):
+        print(f'Hook already running on {name!r}; try again shortly.', file=sys.stderr)
+        sys.exit(3)
+
+    if result.get('timedOut'):
+        print(f'Hook on {name!r} timed out.', file=sys.stderr)
+        if output:
+            print(output, file=sys.stderr)
+        sys.exit(4)
+
+    if exit_code == 0:
+        print(f'Hook on {name!r} succeeded.', file=sys.stderr)
+        if output:
+            print(output, file=sys.stderr)
+        return
+
+    print(f'Hook on {name!r} failed (exit {exit_code}).', file=sys.stderr)
+    if output:
+        print(output, file=sys.stderr)
+    sys.exit(1)
+
+
 def cmd_edit(args):
     opener, server = _client(args)
     try:
@@ -3491,6 +3550,27 @@ def build_parser():
     sp.add_argument('devtainer', metavar='DEVTAINER')
     _add_wait_flags(sp, 'the container to stop')
     sp.set_defaults(func=cmd_stop)
+
+    # ── hook ───────────────────────────────────────────────────────────────────
+    hook_p = sub.add_parser('hook', help="Run a devtainer's profile-declared lifecycle hook")
+    hook_sub = hook_p.add_subparsers(dest='hook_command', metavar='SUBCOMMAND')
+    hook_sub.required = True
+
+    sp = hook_sub.add_parser(
+        'run',
+        help="Run a devtainer's profile-declared 'launch' hook now",
+        description=(
+            "Run the profile-declared 'launch' hook (see docs/extensions/lifecycle-hooks.md) "
+            'inside a devtainer now, synchronously, and report its outcome. Useful after '
+            "changing a devtainer's branch/pr options without a full relaunch."
+        ),
+    )
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER',
+                    help='Name, reservation ID, or container ID')
+    sp.add_argument('--timeout', type=int, default=None, metavar='SECONDS',
+                    help='Server-side time limit for the hook to run (default: server-configured, currently 120s)')
+    sp.set_defaults(func=cmd_hook_run)
 
     # ── edit ───────────────────────────────────────────────────────────────────
     sp = sub.add_parser(
