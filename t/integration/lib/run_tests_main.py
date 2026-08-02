@@ -435,6 +435,7 @@ _DEVELOPER_ROLE_PERMISSIONS = {
     'setContainerViewers':        1,
     'setContainerDevelopers':     1,
     'getContainerLogs':           1,
+    'runContainerHooks':          1,
     'viewAllContainers':          0,
 }
 
@@ -457,6 +458,7 @@ _REQUIRED_ADMIN_PERMISSIONS = [
     'setContainerViewers',
     'setContainerDevelopers',
     'getContainerLogs',
+    'runContainerHooks',
     'viewAllContainers',
     'manageUsers',
     'manageProfiles',
