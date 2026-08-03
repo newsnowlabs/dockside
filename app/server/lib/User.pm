@@ -696,14 +696,28 @@ sub set ($self, $reservation, $property, $value = '') {
 
    elsif( $property eq 'IDE') {
 
-      # Permitted, if no change in value is requested, or empty value requested when non-empty value already set.
-      if( $reservation->meta('IDE') eq $value || ($reservation->meta('IDE') ne '' && ($value eq '')) ) {
+      # A create() request that omits --ide entirely reaches here with $value
+      # undef (the field is absent from the request, not merely blank) - treat
+      # that the same as ''  (no explicit choice).
+      $value //= '';
+      my $current = $reservation->meta('IDE') // '';
+
+      # Permitted, if no change in value is requested, or empty value requested
+      # when non-empty value already set. Gated on $current ne '': a fresh
+      # reservation (current '') must always fall through to default resolution
+      # below, never short-circuit here just because both sides are blank.
+      if( $current ne '' && ($current eq $value || $value eq '') ) {
          return 1;
       }
 
       if( $value eq '' ) {
          # Select default for this profile (and, where required, user).
          $value = $profileObject->default_IDE;
+
+         # Permitted (IDE left unresolved), if the profile has no IDE choices to
+         # offer at all - matches pre-existing behaviour for profiles whose IDEs
+         # list resolves empty (no host IDE installed, no 'none' declared).
+         return 1 if $value eq '';
       }
 
       # Not permitted
