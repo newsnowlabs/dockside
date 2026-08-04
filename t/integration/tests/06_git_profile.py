@@ -9,12 +9,16 @@ Coverage:
   - launch writes the owner's git name/email into ~/.gitconfig
   - launch clones the requested repo into the unix user's home directory
   - an explicit 'ref' launch option affects the resulting checkout state
+  - a stop/start restart neither spuriously fails repo setup nor disturbs an
+    already-checked-out branch (create_git_repo/checkout_git_ref's restart
+    handling)
 """
 
 import sys
 import os
 import json
 import subprocess
+import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError, CapabilityUnavailable
@@ -39,12 +43,20 @@ class GitProfileTests(TestCase):
         '[ -x "$git_bin" ] || git_bin=git; '
         'printf "git_ready=%s\\n" "$(test -f /tmp/dockside/.git-repo-ready && echo 1 || echo 0)"; '
         'printf "git_failed=%s\\n" "$(test -f /tmp/dockside/.git-repo-failed && echo 1 || echo 0)"; '
+        # mtime (epoch seconds) of .git-repo-ready, not just its presence - it is
+        # never cleared before a launch re-touches it, so a stale ready sentinel
+        # from a PREVIOUS launch can still read as "ready" the instant a restart's
+        # container starts, before this launch's own repo setup has run at all.
+        # Comparing this against a wall-clock time recorded just before the
+        # restart is what proves the file was genuinely rewritten this time.
+        'printf "git_ready_mtime=%s\\n" "$(stat -c %Y /tmp/dockside/.git-repo-ready 2>/dev/null || true)"; '
         'printf "gitconfig_name=%s\\n" "$("$git_bin" config -f "$home/.gitconfig" --get user.name 2>/dev/null || true)"; '
         'printf "gitconfig_email=%s\\n" "$("$git_bin" config -f "$home/.gitconfig" --get user.email 2>/dev/null || true)"; '
         'printf "repo_exists=%s\\n" "$(test -d "$repo/.git" && echo 1 || echo 0)"; '
         'printf "origin_url=%s\\n" "$("$git_bin" -C "$repo" remote get-url origin 2>/dev/null || true)"; '
         'printf "branch=%s\\n" "$("$git_bin" -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"; '
-        'printf "head_ref=%s\\n" "$(cat "$repo/.git/HEAD" 2>/dev/null || true)"'
+        'printf "head_ref=%s\\n" "$(cat "$repo/.git/HEAD" 2>/dev/null || true)"; '
+        'printf "head_sha=%s\\n" "$("$git_bin" -C "$repo" rev-parse HEAD 2>/dev/null || true)"'
     )
 
     def _debug(self, msg):
@@ -331,3 +343,73 @@ class GitProfileTests(TestCase):
             image=self.test_image_ubuntu,
         )
         self.assert_true(result is not None)
+
+    def test_06_restart_preserves_git_state(self):
+        """A stop/start restart must neither spuriously fail repo setup nor
+        disturb an already-checked-out branch.
+
+        Guards against the create_git_repo/checkout_git_ref restart bug:
+        create_git_repo previously had no idempotency check, so it unconditionally
+        re-ran `git clone` on every restart - which fails outright into the
+        already-populated directory - spuriously reporting .git-repo-failed and
+        skipping ref checkout on every restart after the first, forever.
+
+        checkout_git_ref must also not simply be re-run on restart, not just have
+        its clone-failure fixed: DOCKSIDE_OPTION_REF is fixed at
+        reservation-creation time and can never change, so re-running it on
+        restart has nothing new to do - and would fail loudly (by design, to
+        protect any local work made since) if history has since diverged. head_sha
+        being unchanged below is what confirms it was skipped rather than merely
+        re-running as a no-op.
+        """
+        name = self._sfx('inttest-git-restart')
+        self._create_git_container(
+            name,
+            options=json.dumps({'ref': EXPLICIT_BRANCH}),
+        )
+        before = self._wait_git_state(
+            name,
+            lambda s: s.get('git_ready') == '1' and s.get('branch') == EXPLICIT_BRANCH,
+            f'branch {EXPLICIT_BRANCH!r} checkout did not complete before restart',
+            timeout=60,
+        )
+        head_sha_before = before.get('head_sha')
+        self.assert_true(bool(head_sha_before), 'no HEAD commit recorded before restart')
+
+        # .git-repo-ready is never cleared before a launch re-touches it (/tmp
+        # survives a stop/start), so it can still read as "ready" the instant this
+        # restart's container starts, well before this launch's own repo setup has
+        # run at all - a naive "does it exist" check would pass on that stale
+        # leftover without ever observing whether THIS restart actually succeeded.
+        # Recording a timestamp now and requiring git_ready_mtime to be newer than
+        # it is what makes the wait below observe this restart specifically.
+        restart_time = time.time()
+        self.dev1.stop(name, wait=True, timeout=60)
+        self.dev1.start(name, wait=True, timeout=120)
+
+        # _wait_git_state's own predicate already raises immediately if
+        # .git-repo-failed appears during this poll (see its definition above) -
+        # the core regression this test guards against. The assertions below are
+        # a belt-and-braces check against the state it actually returns.
+        after = self._wait_git_state(
+            name,
+            lambda s: (s.get('git_ready') == '1'
+                       and float(s.get('git_ready_mtime') or 0) > restart_time),
+            'repo setup did not report a freshly-touched .git-repo-ready after '
+            'restart (a stale one left over from before the restart does not count)',
+            timeout=60,
+        )
+        self.assert_equal(
+            after.get('git_failed'), '0',
+            'restart spuriously reported .git-repo-failed',
+        )
+        self.assert_equal(after.get('repo_exists'), '1')
+        self.assert_equal(
+            after.get('branch'), EXPLICIT_BRANCH,
+            'branch checkout was disturbed by the restart',
+        )
+        self.assert_equal(
+            after.get('head_sha'), head_sha_before,
+            'HEAD commit moved across a restart - checkout_git_ref ran '
+            'again when it should have been skipped',
+        )

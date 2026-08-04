@@ -179,8 +179,23 @@ launch_sshd() {
    fi
 }
 
+# Returns 0 if a fresh clone just succeeded, 1 if the clone failed, 2 if the repo
+# already existed (a restart) and the clone was skipped. The caller uses this to
+# decide whether to run checkout_git_ref at all: DOCKSIDE_OPTION_REF is fixed at
+# reservation-creation time and can never change, so that checkout should only
+# ever run once, right after a genuine fresh clone - re-running it on every
+# restart has nothing new to do, and would fail loudly (by design, to protect
+# local work) on every single restart from then on if local history has since
+# diverged from origin, not just once.
 create_git_repo() {
    [ -n "$GIT_URL" ] || return 0
+
+   local CLONE_DIR
+   CLONE_DIR=$(basename "${GIT_URL%.git}")
+   if [ -d "$HOME/$CLONE_DIR/.git" ]; then
+      log "Repo '$HOME/$CLONE_DIR' already exists; skipping clone (already set up by an earlier launch)"
+      return 2
+   fi
 
    log "- Running: git clone $GIT_URL"
    # Detect clone failure explicitly: without this the function returned the
@@ -339,7 +354,15 @@ checkout_git_ref() {
    if (
       cd "$REPO" &&
       git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" &&
-      { git switch "$BRANCH" 2>/dev/null || git switch --track -c "$BRANCH" "origin/$BRANCH"; }
+      { git switch "$BRANCH" 2>/dev/null || git switch --track -c "$BRANCH" "origin/$BRANCH"; } &&
+      # A pre-existing local branch of this name (e.g. baked into the image, or left
+      # over from an earlier launch) is not touched by 'switch' above - only the
+      # just-fetched origin/$BRANCH ref advances. Fast-forward explicitly so a
+      # repeat launch/restart actually converges on the latest commit instead of
+      # silently staying on a stale one; --ff-only fails loudly rather than
+      # discarding local commits if history has diverged (a freshly-tracked branch
+      # is already at this commit, so this is a no-op there).
+      git merge --ff-only "origin/$BRANCH"
    ); then
       log "Checked out branch $BRANCH in $REPO"
       return 0
@@ -841,7 +864,14 @@ run_nonroot() {
    log "User account launch started ..."
    # Surface launch-time warnings to the user's interactive shells: clear any stale
    # warnings from a previous launch, then ensure the rc snippet is installed.
-   rm -f "$LOG_PATH/launch-status.txt" "$LOG_PATH/.credentials-ready" 2>/dev/null
+   # Also clear .credentials-ready and .git-repo-ready/.git-repo-failed from a
+   # previous launch here, for the same reason: /tmp survives a stop/start, so a
+   # stale ready sentinel from a prior successful launch would otherwise still read
+   # as "ready" the instant this launch starts - before this launch's own setup has
+   # run again - masking a genuine failure on this restart (verified: a stale
+   # .git-repo-ready and a freshly-written .git-repo-failed can coexist, each with
+   # its own launch's timestamp, until this clear removes the former).
+   rm -f "$LOG_PATH/launch-status.txt" "$LOG_PATH/.credentials-ready" "$LOG_PATH/.git-repo-ready" "$LOG_PATH/.git-repo-failed" 2>/dev/null
    install_launch_status_notice
    spawn_ssh_agent
    # A failed key load is non-fatal (the IDE still launches), but no longer silent:
@@ -861,31 +891,46 @@ run_nonroot() {
    touch "$LOG_PATH/.credentials-ready"
    (
       log "Repo setup subproc started ..."
-      # A failed clone is a hard error: there is no repository to set up, so abort
-      # before any sentinel is written (checkout_git_ref would otherwise
-      # return 0 on the absent repo and let .git-repo-ready be touched anyway).
-      if ! create_git_repo; then
-         dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
-         touch "$LOG_PATH/.git-repo-failed"
-         exit 1
-      fi
-      # A requested ref checkout failure is a hard error: abort the rest of repo
-      # setup, log it, and write .git-repo-failed instead of the success sentinel so a
-      # consumer can detect it immediately rather than waiting for a timeout.
-      #
-      # On success (or when no ref was requested), write .git-repo-ready. With a
-      # hard clone failure now handled above, this signals that a GIT_URL clone
-      # succeeded and any requested ref was checked out; it does NOT wait for the
-      # later VS Code population, and Dockside does not guarantee an otherwise error-free
-      # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
-      # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
-      if checkout_git_ref; then
-         [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
-      else
-         dockside_user_warning "Checkout of the requested ref failed; the repository may be on the wrong ref (see $LOG)."
-         touch "$LOG_PATH/.git-repo-failed"
-         exit 1
-      fi
+      create_git_repo
+      case $? in
+         0)
+            # A fresh clone just succeeded: this is the one invocation where
+            # checkout_git_ref is meant to run (see its own return-code
+            # comment on create_git_repo above).
+            #
+            # A requested ref checkout failure is a hard error: abort the rest of repo
+            # setup, log it, and write .git-repo-failed instead of the success sentinel so a
+            # consumer can detect it immediately rather than waiting for a timeout.
+            #
+            # On success (or when no ref was requested), write .git-repo-ready. With a
+            # hard clone failure now handled above, this signals that a GIT_URL clone
+            # succeeded and any requested ref was checked out; it does NOT wait for the
+            # later VS Code population, and Dockside does not guarantee an otherwise error-free
+            # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
+            # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
+            if checkout_git_ref; then
+               [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+            else
+               dockside_user_warning "Checkout of the requested ref failed; the repository may be on the wrong ref (see $LOG)."
+               touch "$LOG_PATH/.git-repo-failed"
+               exit 1
+            fi
+            ;;
+         2)
+            # Repo already existed from an earlier launch (a restart): the clone was
+            # skipped, so deliberately do NOT run checkout_git_ref again - see the
+            # comment on create_git_repo for why.
+            [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+            ;;
+         *)
+            # A failed clone is a hard error: there is no repository to set up, so
+            # abort before any sentinel is written (checkout_git_ref would otherwise
+            # return 0 on the absent repo and let .git-repo-ready be touched anyway).
+            dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
+            touch "$LOG_PATH/.git-repo-failed"
+            exit 1
+            ;;
+      esac
       # Run the profile-declared 'lifecycle:launch' hook (if any), once, now that
       # git/ssh/gh setup for this launch has completed. This is the one place a hook
       # name is ever hardcoded - the server's own fixed decision about which
@@ -893,6 +938,7 @@ run_nonroot() {
       # failure is logged and surfaced via dockside_user_warning/.hook-failed.<name>
       # by run_hook itself, but is not treated as fatal to the rest of this subshell.
       run_hook 'lifecycle:launch' || true
+
       populate_vscode_extensions;
       populate_vscode_settings
       log "Repo setup subproc finished";
