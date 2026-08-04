@@ -269,7 +269,15 @@ checkout_git_branch_or_pr() {
    if (
       cd "$REPO" &&
       git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" &&
-      { git switch "$BRANCH" 2>/dev/null || git switch --track -c "$BRANCH" "origin/$BRANCH"; }
+      { git switch "$BRANCH" 2>/dev/null || git switch --track -c "$BRANCH" "origin/$BRANCH"; } &&
+      # A pre-existing local branch of this name (e.g. baked into the image, or left
+      # over from an earlier launch) is not touched by 'switch' above - only the
+      # just-fetched origin/$BRANCH ref advances. Fast-forward explicitly so a
+      # repeat launch/restart actually converges on the latest commit instead of
+      # silently staying on a stale one; --ff-only fails loudly rather than
+      # discarding local commits if history has diverged (a freshly-tracked branch
+      # is already at this commit, so this is a no-op there).
+      git merge --ff-only "origin/$BRANCH"
    ); then
       log "Checked out branch $BRANCH in $REPO"
       return 0
