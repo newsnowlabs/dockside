@@ -182,6 +182,13 @@ launch_sshd() {
 create_git_repo() {
    [ -n "$GIT_URL" ] || return 0
 
+   local CLONE_DIR
+   CLONE_DIR=$(basename "${GIT_URL%.git}")
+   if [ -d "$HOME/$CLONE_DIR/.git" ]; then
+      log "Repo '$HOME/$CLONE_DIR' already exists; skipping clone (already set up by an earlier launch)"
+      return 0
+   fi
+
    log "- Running: git clone $GIT_URL"
    # Detect clone failure explicitly: without this the function returned the
    # status of the trailing gitconfig block, so a failed clone went unnoticed and
