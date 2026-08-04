@@ -213,10 +213,16 @@ gh_authenticate() {
    # The value of the GH_TOKEN environment variable is being used for authentication.
    # To have GitHub CLI store credentials instead, first clear the value from the environment.
    local TOKEN="$GH_TOKEN"
-   unset GH_TOKEN
 
    log "Authenticating to Github with token '${TOKEN:0:16}' ..."
-   $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") || log "WARN: gh auth login failed"
+   # Run in a subshell so `unset` (needed to stop `gh` warning that GH_TOKEN itself
+   # is what's authenticating, instead of storing credentials) only strips GH_TOKEN
+   # from this subshell's own copy of the environment. gh_authenticate now runs
+   # directly in run_nonroot's own shell (see the comment at its call site), so an
+   # unscoped `unset` here would also strip GH_TOKEN from everything that runs
+   # afterwards in that same shell - including the later 'lifecycle:launch' hook
+   # subshell, which needs it.
+   ( unset GH_TOKEN; $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") ) || log "WARN: gh auth login failed"
 }
 
 # Given a URL path remainder after "/tree/" or "/commits/" of a GitHub URL (which may
