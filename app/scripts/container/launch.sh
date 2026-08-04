@@ -179,6 +179,14 @@ launch_sshd() {
    fi
 }
 
+# Returns 0 if a fresh clone just succeeded, 1 if the clone failed, 2 if the repo
+# already existed (a restart) and the clone was skipped. The caller uses this to
+# decide whether to run checkout_git_branch_or_pr at all: DOCKSIDE_OPTION_BRANCH/PR
+# are fixed at reservation-creation time and can never change, so that checkout
+# should only ever run once, right after a genuine fresh clone - re-running it on
+# every restart has nothing new to do, and would fail loudly (by design, to protect
+# local work) on every single restart from then on if local history has since
+# diverged from origin, not just once.
 create_git_repo() {
    [ -n "$GIT_URL" ] || return 0
 
@@ -186,7 +194,7 @@ create_git_repo() {
    CLONE_DIR=$(basename "${GIT_URL%.git}")
    if [ -d "$HOME/$CLONE_DIR/.git" ]; then
       log "Repo '$HOME/$CLONE_DIR' already exists; skipping clone (already set up by an earlier launch)"
-      return 0
+      return 2
    fi
 
    log "- Running: git clone $GIT_URL"
@@ -714,32 +722,50 @@ run_nonroot() {
    populate_known_hosts
    (
       log "Repo setup subproc started ..."
-      # A failed clone is a hard error: there is no repository to set up, so abort
-      # before any sentinel is written (checkout_git_branch_or_pr would otherwise
-      # return 0 on the absent repo and let .git-repo-ready be touched anyway).
-      if ! create_git_repo; then
-         dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
-         touch "$LOG_PATH/.git-repo-failed"
-         exit 1
-      fi
-      gh_authenticate
-      # A requested branch/PR checkout failure is a hard error: abort the rest of repo
-      # setup, log it, and write .git-repo-failed instead of the success sentinel so a
-      # consumer can detect it immediately rather than waiting for a timeout.
-      #
-      # On success (or when no branch/PR was requested), write .git-repo-ready. With a
-      # hard clone failure now handled above, this signals that a GIT_URL clone
-      # succeeded and any requested branch/PR was checked out; it does NOT wait for the
-      # later VS Code population, and Dockside does not guarantee an otherwise error-free
-      # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
-      # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
-      if checkout_git_branch_or_pr; then
-         [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
-      else
-         dockside_user_warning "Checkout of the requested branch/PR failed; the repository may be on the wrong ref (see $LOG)."
-         touch "$LOG_PATH/.git-repo-failed"
-         exit 1
-      fi
+      create_git_repo
+      case $? in
+         0)
+            # A fresh clone just succeeded: this is the one invocation where
+            # checkout_git_branch_or_pr is meant to run (see its own return-code
+            # comment on create_git_repo above).
+            gh_authenticate
+            # A requested branch/PR checkout failure is a hard error: abort the rest of repo
+            # setup, log it, and write .git-repo-failed instead of the success sentinel so a
+            # consumer can detect it immediately rather than waiting for a timeout.
+            #
+            # On success (or when no branch/PR was requested), write .git-repo-ready. With a
+            # hard clone failure now handled above, this signals that a GIT_URL clone
+            # succeeded and any requested branch/PR was checked out; it does NOT wait for the
+            # later VS Code population, and Dockside does not guarantee an otherwise error-free
+            # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
+            # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
+            if checkout_git_branch_or_pr; then
+               [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+            else
+               dockside_user_warning "Checkout of the requested branch/PR failed; the repository may be on the wrong ref (see $LOG)."
+               touch "$LOG_PATH/.git-repo-failed"
+               exit 1
+            fi
+            ;;
+         2)
+            # Repo already existed from an earlier launch (a restart): the clone was
+            # skipped, so deliberately do NOT run checkout_git_branch_or_pr again -
+            # see the comment on create_git_repo for why. gh_authenticate still runs
+            # unconditionally here, same as on a fresh clone, since it's general
+            # auth setup unrelated to branch/PR checkout specifically.
+            gh_authenticate
+            [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+            ;;
+         *)
+            # A failed clone is a hard error: there is no repository to set up, so
+            # abort before any sentinel is written (checkout_git_branch_or_pr would
+            # otherwise return 0 on the absent repo and let .git-repo-ready be
+            # touched anyway).
+            dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
+            touch "$LOG_PATH/.git-repo-failed"
+            exit 1
+            ;;
+      esac
       populate_vscode_extensions;
       populate_vscode_settings
       log "Repo setup subproc finished";
