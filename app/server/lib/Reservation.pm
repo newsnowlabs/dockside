@@ -1237,6 +1237,7 @@ sub run_hook_sync ($self, $args = {}) {
 
    my $owner = $self->owner('username');
    my $user = User->load($owner);
+   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $user;
 
    my @env = $self->_hook_env($user, $name);
 
