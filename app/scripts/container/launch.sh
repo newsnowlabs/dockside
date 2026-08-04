@@ -835,7 +835,7 @@ run_nonroot() {
    log "User account launch started ..."
    # Surface launch-time warnings to the user's interactive shells: clear any stale
    # warnings from a previous launch, then ensure the rc snippet is installed.
-   rm -f "$LOG_PATH/launch-status.txt" 2>/dev/null
+   rm -f "$LOG_PATH/launch-status.txt" "$LOG_PATH/.credentials-ready" 2>/dev/null
    install_launch_status_notice
    spawn_ssh_agent
    # A failed key load is non-fatal (the IDE still launches), but no longer silent:
