@@ -468,7 +468,8 @@ sub validate_profile_manualHooks ($self, $type, $data) {
    }
 
    my %reserved = map { $_ => 1 } @RESERVED_LIFECYCLE_HOOKS;
-   my $declaredHooks = $self->{'hooks'} // {};
+   my $declaredHooks = $self->{'hooks'};
+   $declaredHooks = {} unless ref($declaredHooks) eq 'HASH';
 
    foreach my $name ( @$data ) {
       unless( $reserved{$name} ) {
