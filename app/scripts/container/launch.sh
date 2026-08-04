@@ -364,7 +364,13 @@ run_hook() {
    local NAME="$1"
    local SCRIPT="${DOCKSIDE_HOOK_SCRIPT:-}"
    [ -n "$SCRIPT" ] || { log "run_hook: no hook configured"; return 0; }
-   [ -x "$SCRIPT" ] || { log "run_hook: ERROR: '$SCRIPT' not found or not executable"; return 1; }
+   if [ ! -x "$SCRIPT" ]; then
+      log "run_hook: ERROR: '$SCRIPT' not found or not executable"
+      dockside_user_warning "Hook '$NAME' is not configured correctly ('$SCRIPT' not found or not executable); see $LOG."
+      rm -f "$LOG_PATH/.hook-ready.$NAME"
+      touch "$LOG_PATH/.hook-failed.$NAME"
+      return 1
+   fi
 
    local LOCK="$LOG_PATH/.hook.lock.d.$NAME"
    if ! mkdir "$LOCK" 2>/dev/null; then
