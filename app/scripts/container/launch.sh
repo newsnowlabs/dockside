@@ -384,7 +384,15 @@ run_hook() {
       rm -rf "$LOCK"
       mkdir "$LOCK" 2>/dev/null || { log "run_hook: ERROR: could not acquire lock for '$NAME'"; return 2; }
    fi
-   echo "$$" > "$LOCK/pid"
+   # $$ is unreliable here: this shell keeps $$ pinned to the top-level process's
+   # PID even inside a `( … ) &` subshell, so it doesn't identify whichever process
+   # is actually running this hook. Read /proc/self/stat via the `read` builtin
+   # instead (no fork happens - unlike any external command, which would just
+   # report its own unrelated PID) to reliably capture the real PID of the calling
+   # process, whether that's a top-level invocation or a subshell.
+   local REAL_PID
+   read -r REAL_PID _ < /proc/self/stat
+   echo "$REAL_PID" > "$LOCK/pid"
    rm -f "$LOG_PATH/.hook-ready.$NAME" "$LOG_PATH/.hook-failed.$NAME"
 
    log "run_hook: running '$NAME' ($SCRIPT) ..."
