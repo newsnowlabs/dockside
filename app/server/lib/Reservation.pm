@@ -1275,7 +1275,18 @@ sub run_hook_sync ($self, $args = {}) {
       $output .= $line;
    }
    close($kid);
-   my $rc = ( $? == -1 ) ? -1 : ( $? >> 8 );
+   my $rc;
+   if( $? == -1 ) {
+      $rc = -1;
+   } elsif( $? & 127 ) {
+      # Child died from a signal (e.g. OOM-killed) rather than exiting normally -
+      # report it using the same 128+signum convention `timeout` itself uses for
+      # its own --kill-after SIGKILL (see $timedOut below), so a signal death is
+      # never mistaken for exit code 0/success.
+      $rc = 128 + ( $? & 127 );
+   } else {
+      $rc = $? >> 8;
+   }
 
    # Keep the API response bounded regardless of how chatty the hook script is.
    $output = substr( $output, -4096 ) if length($output) > 4096;
