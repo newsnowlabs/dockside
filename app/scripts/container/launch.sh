@@ -277,6 +277,17 @@ resolve_tree_branch() {
 checkout_git_ref() {
    local REF="${DOCKSIDE_OPTION_REF:-}"
 
+   # Legacy back-compat: no real profile declares the old separate 'branch'/'pr' options any
+   # more (this branch's own example profiles are all migrated to the unified 'ref'), but
+   # retaining this is cheap. PR takes precedence over BRANCH if somehow both are set, matching
+   # the original pre-'ref' checkout_git_branch_or_pr()'s own precedence. Fed into the same
+   # $REF disambiguation below exactly as if it had been typed directly into 'ref' - always
+   # correct for a PR number (never ambiguous with a branch name), and for the overwhelming
+   # majority of branch names; a purely-numeric legacy BRANCH value is the one case this
+   # heuristic would (mis)treat as a PR number, unlike the old dedicated-field behaviour, which
+   # never drew that distinction - accepted given no real profile still uses these fields.
+   [ -n "$REF" ] || REF="${DOCKSIDE_OPTION_PR:-${DOCKSIDE_OPTION_BRANCH:-}}"
+
    [ -n "$REF" ] || return 0
 
    # Only act on the repo that was just cloned via GIT_URL.
