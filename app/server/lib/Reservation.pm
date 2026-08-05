@@ -1259,17 +1259,19 @@ sub run_hook_sync ($self, $args = {}) {
    my $name = $args->{'name'};
    die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
 
-   # Reworded deliberately to point at *why*, not just *that*: the profile is snapshotted into
-   # this reservation at creation time (Reservation::validate), so adding/editing a hook on the
-   # live profile afterwards never reaches an already-created devtainer - not a bug, a
-   # deliberate separation of concerns (profile edits are always safe because they only affect
-   # newly launched devtainers), but a confusing error without this context. See
-   # docs/plans/lifecycle-hooks-review-followup.md item C - deliberately not fixed by adding
-   # live profile lookup instead.
+   # $self->profileObject is this reservation's own profile snapshot from creation time, not a
+   # live lookup - so this check can only ever say whether $name is configured for *this
+   # devtainer*, not whether it exists in the profile's current config (which may have changed
+   # since, in either direction). The message below names both possible causes without a live
+   # profile comparison to pick between them (out of scope - see
+   # docs/plans/lifecycle-hooks-review-followup.md item C): a genuinely wrong name, or a hook
+   # added to the profile after this devtainer was created (recreating it is the fix only for
+   # the latter).
    my $script = $self->hook_script($name);
    die Exception->new(
-      'msg' => "No hook '$name' was declared in this profile when this devtainer was created " .
-               "- recreate it to pick up hooks added to the profile since",
+      'msg' => "No hook '$name' is configured for this devtainer - check the hook name's " .
+               "spelling, or recreate the devtainer if this hook has been added to the " .
+               "profile since it was created",
       'status' => 400
    ) unless length($script);
 
