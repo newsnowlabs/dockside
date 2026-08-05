@@ -3,7 +3,11 @@
 
 Coverage:
   - a profile's `hooks."lifecycle:launch"` script is auto-invoked once, after
-    launch-time git/ssh/gh setup completes, without any explicit CLI call
+    launch-time git/ssh/gh setup completes, without any explicit CLI call, and
+    never fires again on a later restart of the same devtainer
+  - a profile's `hooks."lifecycle:start"` script auto-invokes at that same point on
+    every launch, including the devtainer's first one, and fires again on every
+    subsequent restart - unlike `lifecycle:launch` (item E)
   - `dockside hook run <devtainer> "lifecycle:launch"` re-invokes it synchronously
     and reports success, but only when the profile lists it in `manualHooks` -
     manual runnability of a lifecycle hook is opt-in, not automatic
@@ -282,6 +286,57 @@ class HooksTests(TestCase):
         self._create_hook_container(name, marker='auto1')
         for malformed in ('../../etc/passwd', '/etc/passwd', '; rm -rf /tmp', 'lifecycle:launch; id'):
             self.assert_api_error(lambda m=malformed: self.dev1.hook_run(name, m))
+
+    def test_12_start_fires_every_restart_launch_does_not(self):
+        """lifecycle:start must fire again on every restart; lifecycle:launch must
+        fire only once, on this devtainer's true first launch (item E).
+
+        Uses each hook's own log line count, not just its .hook-ready sentinel, to
+        detect a genuinely fresh run: /tmp survives a stop/start (for a non-tmpfs
+        profile, as here), so a naive "does .hook-ready exist" check could observe
+        the pre-restart sentinel/log before this restart's own run_hook call has
+        even reached its rm -f, let alone rewritten anything - the same class of
+        false-positive staleness bug 06_git_profile.py's restart test guards
+        against for .git-repo-ready. The append-only, incrementing-index log each
+        hook script writes sidesteps that entirely: this test waits for the log to
+        grow *past* its pre-restart length, not merely for it to exist.
+        """
+        name = self._sfx('inttest-hook-restart')
+        self._create_hook_container(name, marker='restart1')
+
+        launch_state = self._wait_hook_settled(name)
+        self.assert_equal(launch_state.get('hook_ready'), '1', f'expected launch hook to succeed; state={launch_state!r}')
+        launch_lines_before = self._log_lines(launch_state)
+        self.assert_in('ran:restart1:0', launch_lines_before)
+
+        start_state = self._wait_hook_settled(name, hook_name='lifecycle:start', log_path='/tmp/start-hook-runs.log')
+        self.assert_equal(start_state.get('hook_ready'), '1', f'expected start hook to succeed; state={start_state!r}')
+        start_lines_before = self._log_lines(start_state)
+        self.assert_in('ran:0', start_lines_before)
+
+        self.dev1.stop(name, wait=True, timeout=60)
+        self.dev1.start(name, wait=True, timeout=90)
+
+        def _start_grew():
+            state = self._inspect(name, hook_name='lifecycle:start', log_path='/tmp/start-hook-runs.log')
+            if state.get('hook_failed') == '1':
+                raise AssertionError(f'lifecycle:start hook failed after restart; state={state!r}')
+            lines = self._log_lines(state)
+            return state if (len(lines) > len(start_lines_before) and state.get('hook_ready') == '1') else False
+
+        start_state_after = self.wait_until(
+            _start_grew, timeout=60, interval=1,
+            timeout_msg=f'lifecycle:start did not run again after restarting {name!r}',
+        )
+        self.assert_in('ran:1', self._log_lines(start_state_after))
+
+        # lifecycle:launch already settled above and must be entirely untouched by
+        # the restart - same sentinel, same log content, not just "still ready".
+        launch_state_after = self._inspect(name)
+        self.assert_equal(
+            self._log_lines(launch_state_after), launch_lines_before,
+            'lifecycle:launch ran again after a restart - it must fire only once',
+        )
 
 
 class HookNamingValidationTests(TestCase):

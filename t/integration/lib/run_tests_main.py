@@ -197,22 +197,23 @@ _GIT_PROFILE = {
     ],
 }
 
-# Fixture for 14_hooks.py: a profile declaring the 'lifecycle:launch' hook, plus a
-# second, custom-named hook ('update') purely to exercise the generalized
-# custom-hook dispatch mechanism end-to-end (independent sentinel/lock state, no
-# manualHooks entry needed since custom hooks are always manually invocable). Both
-# scripts are synthesized by the container's own command (no custom baked image
-# needed, per the suite's no-pre-existing-fixtures rule); the launch-hook script
-# records one line per run (an incrementing index, not a timestamp, so runs are
-# unambiguously ordered even if they land within the same wall-clock second) to
-# /tmp/hook-runs.log, and exits non-zero if the 'fail' option is set to '1', to
-# exercise the failure path. The update-hook script logs to a separate file, so its
-# independence from the launch hook is directly observable. Both script write+chmod
-# blocks come first in `command`, ahead of `sleep infinity` - they race launch.sh's
-# own one-shot auto-invoke of 'lifecycle:launch' (run_hook is called once, not
-# retried, right after launch.sh's git/ssh/gh setup), which fires within the same
-# instant the container starts. Neither script uses sudo, so there's nothing to
-# install first.
+# Fixture for 14_hooks.py: a profile declaring the 'lifecycle:launch' and
+# 'lifecycle:start' hooks, plus a second, custom-named hook ('update') purely to
+# exercise the generalized custom-hook dispatch mechanism end-to-end (independent
+# sentinel/lock state, no manualHooks entry needed since custom hooks are always
+# manually invocable). All scripts are synthesized by the container's own command
+# (no custom baked image needed, per the suite's no-pre-existing-fixtures rule);
+# the launch- and start-hook scripts each record one line per run (an incrementing
+# index, not a timestamp, so runs are unambiguously ordered even if they land
+# within the same wall-clock second) to their own log file, and the launch hook
+# exits non-zero if the 'fail' option is set to '1', to exercise the failure path.
+# The update-hook script logs to a separate file again, so its independence from
+# the lifecycle hooks is directly observable. All script write+chmod blocks come
+# first in `command`, ahead of `sleep infinity` - the launch- and start-hook ones
+# race launch.sh's own auto-invoke of 'lifecycle:launch' (only on this devtainer's
+# true first launch) and 'lifecycle:start' (every launch, including that one),
+# both fired right after launch.sh's git/ssh/gh setup, within the same instant the
+# container starts. Neither script uses sudo, so there's nothing to install first.
 _HOOK_PROFILE = {
     "version": 4,
     "name": "Integration Test - Hooks",
@@ -231,9 +232,10 @@ _HOOK_PROFILE = {
     "unixusers": ["dockside"],
     "hooks": {
         "lifecycle:launch": "/usr/local/bin/dockside-test-hook.sh",
+        "lifecycle:start": "/usr/local/bin/dockside-test-start-hook.sh",
         "update": "/usr/local/bin/dockside-test-update-hook.sh",
     },
-    "manualHooks": ["lifecycle:launch"],
+    "manualHooks": ["lifecycle:launch", "lifecycle:start"],
     "options": [
         {
             "name": "marker",
@@ -267,6 +269,13 @@ _HOOK_PROFILE = {
         "exit 0\n"
         "EOF\n"
         "chmod +x /usr/local/bin/dockside-test-hook.sh; "
+        "cat > /usr/local/bin/dockside-test-start-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "n=$(wc -l < /tmp/start-hook-runs.log 2>/dev/null || echo 0)\n"
+        "echo \"ran:$n\" >> /tmp/start-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-start-hook.sh; "
         "cat > /usr/local/bin/dockside-test-update-hook.sh <<'EOF'\n"
         "#!/bin/sh\n"
         "n=$(wc -l < /tmp/update-hook-runs.log 2>/dev/null || echo 0)\n"
