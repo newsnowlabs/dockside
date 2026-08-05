@@ -632,12 +632,22 @@ sub cloneHash ($from, $to) {
             next;
          }
 
-         if( 
-            (!exists($to->{$k}) && exists($from->{$k})) ||
-            ($to->{$k} ne $from->{$k})
-            ) {
-            $to->{$k} = $from->{$k};
-         }
+         # Always copy - do not gate this on a "only if different" check. That check used to
+         # read `($to->{$k} ne $from->{$k})` - `ne` is a *string* comparison, and merely
+         # evaluating it stringifies both operands as a side effect of how Perl's
+         # string-comparison operators work, regardless of whether the value started life as
+         # a clean integer. A scalar that has been through this even once carries Perl's
+         # string flag from then on, so JSON::XS later encodes it as a quoted JSON string
+         # ("0") rather than a bare number (0) - a real, non-obvious bug found while building
+         # docs/plans/lifecycle-hooks-review-followup.md item B's status endpoint: any numeric
+         # field written via store()/update() (the only caller of this function) and later
+         # read by a type-sensitive JSON consumer (e.g. Python's `if x:`, where the *string*
+         # "0" is truthy unlike the *number* 0) was exposed to this, not just hook fields.
+         # Dropping the check is safe, not just a workaround: this function's only caller,
+         # Reservation::Mutate::update(), already unconditionally returns 1 (always rewrites
+         # the reservation db) regardless of what this check decided - so the check was never
+         # skipping a real write, only a redundant, already-inert equality test.
+         $to->{$k} = $from->{$k};
       }
    }
 }
