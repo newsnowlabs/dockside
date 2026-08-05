@@ -127,13 +127,14 @@ Hook names fall into two kinds:
   - **`lifecycle:launch` fires once** — only on this devtainer's true first launch, never again on a later restart. This matters because a devtainer's `options` (and so `DOCKSIDE_OPTION_<NAME>`/`{option.*}` values, including `ref`) are frozen at creation time and can never change afterwards — there is nothing new for a hook keyed off them to do on a restart, and re-running unconditionally would force whatever the hook does (a rebuild, a service restart, a slow `git pull`) on every plain restart, whether or not anything changed.
   - **`lifecycle:start` fires every launch, including the first one** — use this for anything that should genuinely happen every time a devtainer (re)starts, e.g. an automatic `git pull --ff-only` on resume, independent of whether `ref` was ever set.
   - If a profile declares both, both run, in that order, on the very first launch; only `lifecycle:start` runs again on every subsequent restart.
-- **On demand**, at any later point, for `lifecycle:launch`/`lifecycle:start` (if listed in `manualHooks`) or any custom hook: `dockside hook run <devtainer> <hook-name>` runs it synchronously and reports the outcome:
+- **On demand**, at any later point, for `lifecycle:launch`/`lifecycle:start` (if listed in `manualHooks`) or any custom hook: `dockside hook run <devtainer> <hook-name>` dispatches it and waits for the outcome, reporting it the same way regardless of how long the hook actually takes (a `.` prints for each poll while it's still running, so a slow hook — e.g. an `npm run build` — no longer looks like the command has hung):
   ```
   $ dockside hook run my-devtainer lifecycle:launch
   Running hook 'lifecycle:launch' on 'my-devtainer'…
+  ..
   Hook 'lifecycle:launch' on 'my-devtainer' succeeded.
   ```
-  Exit codes: `0` success, `1` the hook script failed, `3` a run was already in progress, `4` the hook timed out. Pass `--timeout SECONDS` to raise the server-side time limit for hooks that take a while (e.g. an `npm run build`) — the default is 120s (`hooks.defaultTimeoutSeconds` in `config.json`). `HOOK` is required — there is no default hook name.
+  Exit codes: `0` success, `1` the hook script failed (or aborted before it could report an exit code at all — rare, e.g. the server process itself was killed mid-run), `3` a run was already in progress, `4` the hook timed out. Pass `--timeout SECONDS` to raise the server-side time limit for hooks that take a while — the default is 120s (`hooks.defaultTimeoutSeconds` in `config.json`). `HOOK` is required — there is no default hook name.
 
 ### Concurrency
 
