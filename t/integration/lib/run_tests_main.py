@@ -200,7 +200,7 @@ _GIT_PROFILE = {
 # Fixture for 14_hooks.py: a profile declaring the 'lifecycle:launch' and
 # 'lifecycle:start' hooks, plus a second, custom-named hook ('update') purely to
 # exercise the generalized custom-hook dispatch mechanism end-to-end (independent
-# sentinel/lock state, no manualHooks entry needed since custom hooks are always
+# sentinel/lock state, no 'manual' entry needed since custom hooks are always
 # manually invocable). All scripts are synthesized by the container's own command
 # (no custom baked image needed, per the suite's no-pre-existing-fixtures rule);
 # the launch- and start-hook scripts each record one line per run (an incrementing
@@ -231,11 +231,10 @@ _HOOK_PROFILE = {
     "images": [_prefix_image("alpine:latest")],
     "unixusers": ["dockside"],
     "hooks": {
-        "lifecycle:launch": "/usr/local/bin/dockside-test-hook.sh",
-        "lifecycle:start": "/usr/local/bin/dockside-test-start-hook.sh",
-        "update": "/usr/local/bin/dockside-test-update-hook.sh",
+        "lifecycle:launch": {"script": "/usr/local/bin/dockside-test-hook.sh", "manual": True},
+        "lifecycle:start": {"script": "/usr/local/bin/dockside-test-start-hook.sh", "manual": True},
+        "update": {"script": "/usr/local/bin/dockside-test-update-hook.sh"},
     },
-    "manualHooks": ["lifecycle:launch", "lifecycle:start"],
     "options": [
         {
             "name": "marker",
@@ -357,9 +356,8 @@ _HOOK_GIT_PROFILE = {
     "gitURLs": ["*"],
     "unixusers": ["dockside"],
     "hooks": {
-        "lifecycle:launch": "/usr/local/bin/dockside-test-git-hook.sh",
+        "lifecycle:launch": {"script": "/usr/local/bin/dockside-test-git-hook.sh", "manual": True},
     },
-    "manualHooks": ["lifecycle:launch"],
     "options": [
         {
             "name": "test_ref",
@@ -404,19 +402,18 @@ _HOOK_GIT_PROFILE = {
 }
 
 # Fixture for 14_hooks.py's hook-naming edge-case tests: (1) "lifecycle:launch" is
-# declared but deliberately NOT listed in manualHooks - auto-invoke doesn't consult
-# manualHooks at all, so it still fires fine at launch, but manual re-invoke is
-# rejected, proving manual runnability of a lifecycle hook is opt-in; (2) a bare
-# "launch" key (no 'lifecycle:' namespace) is schema-valid, inert (nothing ever
-# auto-invokes it - only 'lifecycle:launch' does), and reachable only via its
-# custom name; (3) a reserved-but-unimplemented lifecycle name ("lifecycle:stop")
-# is schema-valid and may even be listed in manualHooks, but dispatch still
-# rejects running it as "not yet implemented" regardless - proving the "is it
-# implemented" and "is it in manualHooks" gates are independent. The
-# "lifecycle:launch" script write comes first in `command`, ahead of the other
-# two (which are only ever manually invoked, so their write timing doesn't race
-# anything) - see _HOOK_PROFILE's own comment above for why auto-invoke timing
-# forces this ordering.
+# declared but deliberately does NOT set 'manual' - auto-invoke doesn't consult it
+# at all, so it still fires fine at launch, but manual re-invoke is rejected,
+# proving manual runnability of a lifecycle hook is opt-in; (2) a bare "launch" key
+# (no 'lifecycle:' namespace) is schema-valid, inert (nothing ever auto-invokes it -
+# only 'lifecycle:launch' does), and reachable only via its custom name; (3) a
+# reserved-but-unimplemented lifecycle name ("lifecycle:stop") is schema-valid and
+# may even set 'manual', but dispatch still rejects running it as "not yet
+# implemented" regardless - proving the "is it implemented" and "is it manual"
+# gates are independent. The "lifecycle:launch" script write comes first in
+# `command`, ahead of the other two (which are only ever manually invoked, so their
+# write timing doesn't race anything) - see _HOOK_PROFILE's own comment above for
+# why auto-invoke timing forces this ordering.
 _EDGE_CASE_HOOK_PROFILE = {
     "version": 4,
     "name": "Integration Test - Hook Naming Edge Cases",
@@ -434,11 +431,10 @@ _EDGE_CASE_HOOK_PROFILE = {
     "images": [_prefix_image("alpine:latest")],
     "unixusers": ["dockside"],
     "hooks": {
-        "lifecycle:launch": "/usr/local/bin/dockside-test-edge-launch-hook.sh",
-        "launch": "/usr/local/bin/dockside-test-bare-launch-hook.sh",
-        "lifecycle:stop": "/usr/local/bin/dockside-test-stop-hook.sh",
+        "lifecycle:launch": {"script": "/usr/local/bin/dockside-test-edge-launch-hook.sh"},
+        "launch": {"script": "/usr/local/bin/dockside-test-bare-launch-hook.sh"},
+        "lifecycle:stop": {"script": "/usr/local/bin/dockside-test-stop-hook.sh", "manual": True},
     },
-    "manualHooks": ["lifecycle:stop"],
     "mounts": {
         "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
         "bind": [],

@@ -9,8 +9,9 @@ Coverage:
     every launch, including the devtainer's first one, and fires again on every
     subsequent restart - unlike `lifecycle:launch` (item E)
   - `dockside hook run <devtainer> "lifecycle:launch"` re-invokes it synchronously
-    and reports success, but only when the profile lists it in `manualHooks` -
-    manual runnability of a lifecycle hook is opt-in, not automatic
+    and reports success, but only when the profile's `hooks."lifecycle:launch"`
+    entry sets `"manual": true` - manual runnability of a lifecycle hook is
+    opt-in, not automatic
   - a failing hook script surfaces as both a `.hook-failed.<name>` sentinel inside
     the devtainer and a non-zero/APIError result from `dockside hook run`
   - a profile with no matching hook configured is rejected cleanly (no docker exec
@@ -18,12 +19,12 @@ Coverage:
   - a manual invoke racing the automatic one completes cleanly either way
     (success or a clean "busy" report), never hangs or crashes
   - a profile-declared custom hook (any name not in the reserved 'lifecycle:*' set)
-    is always manually invocable, needs no `manualHooks` entry, and dispatches
+    is always manually invocable, needs no `"manual": true` entry, and dispatches
     independently of 'lifecycle:launch' (separate sentinel/lock state)
   - hook-naming edge cases: a bare `"launch"` key (no namespace) is schema-valid
     but inert - nothing auto-invokes it, it's just an ordinary custom hook; a
     reserved-but-unimplemented lifecycle name (`"lifecycle:stop"`) is schema-valid
-    and may even be listed in `manualHooks`, but dispatch still rejects running it
+    and may even set `"manual": true`, but dispatch still rejects running it
     as "not yet implemented" regardless
   - `dockside hook run` requires an explicit hook-name argument (no default)
   - HookWithGitUrlTests: a gitURLs profile whose ref-bearing option is
@@ -47,7 +48,8 @@ from _ssh_test_common import _DEV1_KEY, run_in_devtainer
 
 class HooksTests(TestCase):
     """Test the profile-declared hook mechanism: auto-invoke, manual re-invoke
-    (gated by `manualHooks`), failure surfacing, and custom-hook independence."""
+    (gated by each hook's own `"manual"` field), failure surfacing, and
+    custom-hook independence."""
 
     def _inspect(self, name, hook_name='lifecycle:launch', log_path='/tmp/hook-runs.log'):
         # Sentinel filenames are scoped by hook name (see launch.sh's run_hook()) -
@@ -126,8 +128,8 @@ class HooksTests(TestCase):
 
         # Re-invoke synchronously via the CLI; a non-zero/APIError result here
         # would itself fail the test (no try/except — success is required). This
-        # profile lists 'lifecycle:launch' in manualHooks, so it's allowed. The
-        # literal colon in the hook name also doubles as this suite's proof that
+        # profile's 'lifecycle:launch' entry sets "manual": true, so it's allowed.
+        # The literal colon in the hook name also doubles as this suite's proof that
         # it survives CLI -> HTTP -> server unmangled (percent-encoded as %3A by
         # the CLI's _encode_params, decoded via App.pm's split_args/uri_unescape) -
         # if it didn't round-trip correctly, the server would see a different
@@ -178,8 +180,8 @@ class HooksTests(TestCase):
     def test_06_custom_hook_independent_of_launch(self):
         # test_profile_hook (this class's shared fixture) also declares a second,
         # custom-named hook, 'update', purely to exercise the generalized
-        # custom-hook path: no manualHooks entry needed (custom names are always
-        # manually invocable), independent sentinel/lock state from
+        # custom-hook path: no "manual": true entry needed (custom names are
+        # always manually invocable), independent sentinel/lock state from
         # 'lifecycle:launch', and no auto-invoke of its own.
         name = self._sfx('inttest-hook-custom')
         self._create_hook_container(name, marker='auto1')
@@ -191,8 +193,8 @@ class HooksTests(TestCase):
         self.assert_equal(pre_state.get('hook_failed'), '0')
 
         # Manually invoke the custom hook; no APIError expected even though this
-        # profile's manualHooks only lists 'lifecycle:launch' - custom names never
-        # need to be listed there.
+        # profile only sets "manual": true on 'lifecycle:launch' - custom names
+        # never need it set.
         self.dev1.hook_run(name, 'update')
 
         update_state = self._inspect(name, hook_name='update', log_path='/tmp/update-hook-runs.log')
@@ -211,7 +213,7 @@ class HooksTests(TestCase):
         # namespace) as an ordinary custom hook - schema-valid (any slug is), but
         # nothing ever auto-invokes it (only 'lifecycle:launch' does). Since
         # custom hooks are always manually invocable, it's still reachable via its
-        # bare name with no manualHooks entry.
+        # bare name with no "manual": true entry needed.
         name = self._sfx('inttest-hook-edge-bare')
         self.register_cleanup(name)
         result = self.dev1.create(profile=self.test_profile_hook_edge_case, name=name)
@@ -240,10 +242,10 @@ class HooksTests(TestCase):
         )
         self.assert_equal(post.stdout.strip(), 'ran')
 
-    def test_08_manual_invoke_requires_manualHooks_opt_in(self):
+    def test_08_manual_invoke_requires_manual_opt_in(self):
         # test_profile_hook_edge_case also declares "lifecycle:launch" itself, but
-        # deliberately does NOT list it in manualHooks. Auto-invoke doesn't consult
-        # manualHooks at all, so it fires fine at launch; manual re-invoke is
+        # deliberately does NOT set "manual": true on it. Auto-invoke doesn't
+        # consult 'manual' at all, so it fires fine at launch; manual re-invoke is
         # rejected, proving manual runnability of a lifecycle hook is opt-in, not
         # automatic - the core behavior this design change exists for.
         name = self._sfx('inttest-hook-edge-noopt')
@@ -257,11 +259,11 @@ class HooksTests(TestCase):
 
         self.assert_api_error(lambda: self.dev1.hook_run(name, 'lifecycle:launch'))
 
-    def test_09_reserved_unimplemented_rejected_even_if_in_manualHooks(self):
-        # test_profile_hook_edge_case declares "lifecycle:stop" and lists it in
-        # manualHooks - schema-valid, forward-compatible - but run_hook_sync still
+    def test_09_reserved_unimplemented_rejected_even_if_manual(self):
+        # test_profile_hook_edge_case declares "lifecycle:stop" with "manual": true
+        # set on it - schema-valid, forward-compatible - but run_hook_sync still
         # rejects running it as "not yet implemented", proving that gate is
-        # checked independently of, and before, the manualHooks gate.
+        # checked independently of, and before, the 'manual' gate.
         name = self._sfx('inttest-hook-edge-reserved')
         self.register_cleanup(name)
         result = self.dev1.create(profile=self.test_profile_hook_edge_case, name=name)
@@ -341,8 +343,10 @@ class HooksTests(TestCase):
 
 
 class HookNamingValidationTests(TestCase):
-    """Profile-level validation of hook names and `manualHooks`, independent of
-    ever launching a devtainer - these are schema checks on `profile create`."""
+    """Profile-level validation of hook names and each hook entry's `manual` field
+    (item J: folded from a separate top-level `manualHooks` array into a `manual`
+    property on the hook's own `hooks.<name>` object), independent of ever
+    launching a devtainer - these are schema checks on `profile create`."""
 
     def _create_ad_hoc_profile(self, spec):
         name = self._sfx('inttest-hook-validation')
@@ -361,8 +365,8 @@ class HookNamingValidationTests(TestCase):
         except APIError:
             pass
 
-    def _minimal_hook_spec(self, hooks, manual_hooks=None):
-        spec = {
+    def _minimal_hook_spec(self, hooks):
+        return {
             "version": 4,
             "name": "Integration Test - Hook Validation (ad hoc)",
             "active": True,
@@ -380,42 +384,35 @@ class HookNamingValidationTests(TestCase):
             "mounts": {"tmpfs": [], "bind": [], "volume": []},
             "command": ["/bin/sh", "-c", "sleep infinity"],
         }
-        if manual_hooks is not None:
-            spec['manualHooks'] = manual_hooks
-        return spec
 
     def test_01_custom_hook_name_slug_rules(self):
         # Dashes accepted; leading/trailing/doubled dash, uppercase, and a
         # leading digit are all rejected.
-        name = self._create_ad_hoc_profile(self._minimal_hook_spec({"repo-status": "/opt/x.sh"}))
+        name = self._create_ad_hoc_profile(self._minimal_hook_spec({"repo-status": {"script": "/opt/x.sh"}}))
         self._remove_profile(name)
 
         for bad in ('-leading', 'trailing-', 'double--dash', 'Uppercase', '1leading-digit'):
-            self.assert_api_error(lambda b=bad: self._create_ad_hoc_profile(self._minimal_hook_spec({b: "/opt/x.sh"})))
+            self.assert_api_error(lambda b=bad: self._create_ad_hoc_profile(self._minimal_hook_spec({b: {"script": "/opt/x.sh"}})))
 
     def test_02_unknown_colon_prefixed_name_rejected(self):
         self.assert_api_error(
-            lambda: self._create_ad_hoc_profile(self._minimal_hook_spec({"foo:bar": "/opt/x.sh"}))
+            lambda: self._create_ad_hoc_profile(self._minimal_hook_spec({"foo:bar": {"script": "/opt/x.sh"}}))
         )
 
-    def test_03_manualHooks_rejects_custom_name(self):
-        # A custom name is always manually invocable already - listing one in
-        # manualHooks is meaningless and should be rejected as a likely mistake,
-        # not silently ignored.
+    def test_03_manual_rejects_custom_name(self):
+        # A custom name is always manually invocable already - setting "manual":
+        # true on one is meaningless and should be rejected as a likely mistake,
+        # not silently ignored. (item J removed the old separate manualHooks
+        # array's referential-integrity check - "manual" now lives directly on
+        # the hook entry it applies to, so there is no longer a name to
+        # cross-reference: it either belongs on this entry or it doesn't.)
         self.assert_api_error(lambda: self._create_ad_hoc_profile(
-            self._minimal_hook_spec({"repo-status": "/opt/x.sh"}, manual_hooks=["repo-status"])
+            self._minimal_hook_spec({"repo-status": {"script": "/opt/x.sh", "manual": True}})
         ))
 
-    def test_04_manualHooks_rejects_undeclared_name(self):
-        # Referential integrity: a manualHooks entry must correspond to a
-        # declared hooks key.
-        self.assert_api_error(lambda: self._create_ad_hoc_profile(
-            self._minimal_hook_spec({"lifecycle:launch": "/opt/x.sh"}, manual_hooks=["lifecycle:stop"])
-        ))
-
-    def test_05_manualHooks_accepts_declared_lifecycle_name(self):
+    def test_04_manual_accepts_declared_lifecycle_name(self):
         name = self._create_ad_hoc_profile(self._minimal_hook_spec(
-            {"lifecycle:launch": "/opt/x.sh"}, manual_hooks=["lifecycle:launch"]
+            {"lifecycle:launch": {"script": "/opt/x.sh", "manual": True}}
         ))
         self._remove_profile(name)
 
