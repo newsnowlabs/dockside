@@ -44,12 +44,12 @@ The roadmap for Dockside currently remains highly flexible. We have a list of ca
 - Support for launching a devtainer directly from a git repo using `.devcontainer.json`
 - Support for launching a devtainer directly from a literal Dockerfile or Dockerfile URL
 - Hooks that execute custom commands within a devtainer (see [lifecycle hooks](extensions/lifecycle-hooks.md)):
-  implemented today for `lifecycle:launch` (auto-invoked once per launch, and
-  re-invokable on demand if a profile opts it into `manualHooks`) and for any
-  number of profile-declared custom (non-lifecycle) hooks, runnable on demand by
-  name, including from an external trigger such as a CI job; still aspirational
-  for the other reserved lifecycle events - `lifecycle:start`/`stop`/`rename`/`periodic`
-  (started, stopped, renamed, or periodically)
+  implemented today for `lifecycle:launch` (auto-invoked once, on a devtainer's true first
+  launch only) and `lifecycle:start` (auto-invoked on every launch, including that first one),
+  both re-invokable on demand if a profile opts them into `manualHooks`, and for any number of
+  profile-declared custom (non-lifecycle) hooks, runnable on demand by name, including from an
+  external trigger such as a CI job; still aspirational for the other reserved lifecycle events
+  - `lifecycle:stop`/`rename`/`periodic` (stopped, renamed, or periodically)
 
 ### Other
 
