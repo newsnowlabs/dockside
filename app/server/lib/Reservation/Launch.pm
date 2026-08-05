@@ -362,7 +362,9 @@ sub option_value ($self, $name = undef) {
 }
 
 sub hook_script ($self, $name) {
-   return $self->profileObject->hooks->{$name} // '';
+   # 'hooks' entries are now { script => ..., manual => ... } (item J: was a bare script-path
+   # string per name).
+   return $self->profileObject->hooks->{$name}{'script'} // '';
 }
 
 # If the dockside container and launched container share the default 

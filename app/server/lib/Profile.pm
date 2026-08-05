@@ -263,7 +263,6 @@ sub validate ($self) {
          IDEs=@
          options=@
          hooks=%
-         manualHooks=@
       )
    );
 
@@ -414,14 +413,14 @@ sub validate_profile_options ($self, $type, $data) {
 # implemented today - both run once launch-time git/ssh/gh setup completes,
 # 'lifecycle:launch' only on this devtainer's true first launch and 'lifecycle:start'
 # on every launch including that one (see Reservation::exec), and both are
-# re-runnable on demand if listed in a profile's 'manualHooks' - see
+# re-runnable on demand if their own 'hooks' entry sets 'manual' true - see
 # Reservation::run_hook_sync. The remaining names are reserved for
 # docs/roadmap.md's broader (unimplemented) lifecycle-hooks ambition
 # (stop/rename/periodic), so the schema doesn't need to change shape again when
 # those land. Being schema-valid here is independent of being dispatchable:
 # run_hook_sync rejects every reserved name except 'lifecycle:launch'/
 # 'lifecycle:start' with a "not yet implemented" error regardless of this
-# allow-list or manualHooks.
+# allow-list or 'manual'.
 my @RESERVED_LIFECYCLE_HOOKS = map { "lifecycle:$_" } qw( launch start stop rename periodic );
 
 # Custom (non-lifecycle) hook names are free-form: lowercase, start with a letter,
@@ -430,6 +429,15 @@ my @RESERVED_LIFECYCLE_HOOKS = map { "lifecycle:$_" } qw( launch start stop rena
 # matches a 'lifecycle:' name, since colons aren't a valid slug character.
 my $CUSTOM_HOOK_NAME_RE = qr/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/;
 
+# Each hooks.<name> entry is now an Object, not a bare script-path String (item J: folds in
+# what used to be the separate top-level 'manualHooks' array). 'script' is mandatory for every
+# entry. 'manual' - may this hook also be run on demand via 'dockside hook run', in addition to
+# its automatic invocation? - is meaningful only on a reserved 'lifecycle:*' entry; custom
+# hooks are always manually invocable already (they never auto-fire), so setting 'manual' on
+# one would be meaningless and is rejected as a likely mistake, mirroring the old
+# cross-referential manualHooks check this replaces. Neither 'manual' nor 'script' says
+# anything about whether the *lifecycle event itself* is implemented yet - see
+# Reservation::run_hook_sync's separate "is this actually implemented" gate.
 sub validate_profile_hooks ($self, $type, $data) {
    unless( ref($data) eq 'HASH' ) {
       return $self->errors( $type, "must be a JSON Object" );
@@ -447,45 +455,22 @@ sub validate_profile_hooks ($self, $type, $data) {
          next;
       }
 
-      my $script = $data->{$name};
+      my $entry = $data->{$name};
 
-      if( ref($script) || !length($script) ) {
-         $self->errors( "$type.$name", "must be a non-empty String" );
+      unless( ref($entry) eq 'HASH' ) {
+         $self->errors( "$type.$name", "must be a JSON Object with a 'script' property" );
          next;
       }
 
-      unless( $script =~ m!^/! ) {
-         $self->errors( "$type.$name", "must be an absolute path to an executable in the image" );
-      }
-   }
-}
+      $self->do_validate( "$type.$name", $entry, qw( script=s! manual=b ) );
 
-# 'manualHooks': an optional array naming which reserved lifecycle hooks (only -
-# custom hooks are always manually invocable, since they never auto-fire, so
-# listing one here would be meaningless) may also be run on demand via
-# 'dockside hook run', in addition to their automatic invocation. Not an
-# allow-list of what's implemented - see validate_profile_hooks above and
-# Reservation::run_hook_sync's separate "is this actually implemented" gate.
-sub validate_profile_manualHooks ($self, $type, $data) {
-   unless( ref($data) eq 'ARRAY' ) {
-      return $self->errors( $type, "must be a JSON Array" );
-   }
-
-   my %reserved = map { $_ => 1 } @RESERVED_LIFECYCLE_HOOKS;
-   my $declaredHooks = $self->{'hooks'};
-   $declaredHooks = {} unless ref($declaredHooks) eq 'HASH';
-
-   foreach my $name ( @$data ) {
-      unless( $reserved{$name} ) {
-         $self->errors( $type, sprintf(
-            "'%s' is not a reserved lifecycle hook name - custom hooks are always " .
-            "manually invocable and must not be listed here", $name
-         ) );
-         next;
+      my $script = $entry->{'script'};
+      if( defined($script) && length($script) && $script !~ m!^/! ) {
+         $self->errors( "$type.$name.script", "must be an absolute path to an executable in the image" );
       }
 
-      unless( exists $declaredHooks->{$name} ) {
-         $self->errors( $type, sprintf( "'%s' is not declared in this profile's hooks", $name ) );
+      if( !$reserved{$name} && exists $entry->{'manual'} ) {
+         $self->errors( "$type.$name.manual", "must not be set on a custom (non-lifecycle) hook - custom hooks are always manually invocable" );
       }
    }
 }
@@ -623,10 +608,6 @@ sub options ($self) {
 
 sub hooks ($self) {
    return $self->{'hooks'} // {};
-}
-
-sub manualHooks ($self) {
-   return $self->{'manualHooks'} // [];
 }
 
 sub ssh ($self) {

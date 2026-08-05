@@ -156,16 +156,17 @@ sub load_clean_map ($class, @containerIds) {
 
 # record_hook_history:
 #
-# Atomically append $entry to reservation $id's data.hookHistory array, evicting oldest-first
-# down to at most $cap rows once appending would exceed it - but only rows in a terminal state
-# ($_->{'exitCode'} defined), never a still-running one (item B's storage-model rule: an
-# unrelated, more-frequent *other* hook name's invocations must never push a genuinely
-# still-running row out from under it, so the array can transiently exceed $cap while enough
-# invocations are genuinely in flight at once - expected, not a bug).
+# Atomically append $entry to reservation $id's data.hooks.history array (item J: nested under
+# the same 'hooks' key as data.hooks.status, was a separate top-level data.hookHistory),
+# evicting oldest-first down to at most $cap rows once appending would exceed it - but only
+# rows in a terminal state ($_->{'exitCode'} defined), never a still-running one (item B's
+# storage-model rule: an unrelated, more-frequent *other* hook name's invocations must never
+# push a genuinely still-running row out from under it, so the array can transiently exceed
+# $cap while enough invocations are genuinely in flight at once - expected, not a bug).
 #
 # Deliberately its own atomic mutator, bypassing Reservation::store()'s usual whole-record
 # update() - update()'s cloneHash-based merge (Util.pm) recurses safely into nested *hashes*
-# (data.hookStatus, keyed by hook name, merges key-by-key across concurrent forked children
+# (data.hooks.status, keyed by hook name, merges key-by-key across concurrent forked children
 # updating different names, each blind to the other's simultaneous write), but an *array*
 # value is only ever compared by reference and replaced wholesale - two concurrent appends
 # via that path would race, and the loser's row would simply be lost. This function instead
@@ -177,7 +178,8 @@ sub record_hook_history ($id, $entry, $cap) {
       sub ($by_id, $by_name) {
          my $reservation = $by_id->{$id} or return 0;
          my $data = $reservation->{'data'} //= {};
-         my $history = $data->{'hookHistory'} //= [];
+         my $hooks = $data->{'hooks'} //= {};
+         my $history = $hooks->{'history'} //= [];
 
          push(@$history, $entry);
 

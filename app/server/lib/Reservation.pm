@@ -1281,20 +1281,25 @@ sub _hook_env ($self, $user) {
    return (@envGit, @envOptions, @envGhToken);
 }
 
-# --- Hook status/history storage (item B) ---
+# --- Hook status/history storage (item B; consolidated under one data('hooks') key per
+# item J) ---
 #
-# Two structures, deliberately different shapes for different jobs (see
+# data('hooks') = { status => {...}, history => [...] } - two structures nested under one
+# top-level data key (item J: this used to be two separate top-level data('hookStatus')/
+# data('hookHistory') keys; merged for symbol-surface consistency with Profile's own
+# hooks/manualHooks merge, below), deliberately different shapes for different jobs (see
 # docs/plans/lifecycle-hooks-review-followup.md item B):
 #
-# data('hookStatus') is the master record, a hash keyed by hook name - one entry per name,
-# holding its current/last invocation's state. This is what a pre-exec "is this already
-# running?" check (hook_is_running) and a "what happened last time?" query (hook_status) both
-# read. Safe to update via the ordinary store() below despite concurrent forked children
-# invoking *different* names on the same reservation: Util::cloneHash (which store()'s
-# update() uses) recurses into nested hashes key-by-key, so two such writes merge additively
-# rather than one clobbering the other.
+# hooks.status is the master record, a hash keyed by hook name - one entry per name, holding
+# its current/last invocation's state. This is what a pre-exec "is this already running?"
+# check (hook_is_running) and a "what happened last time?" query (hook_status) both read.
+# Safe to update via the ordinary store() below despite concurrent forked children invoking
+# *different* names on the same reservation: Util::cloneHash (which store()'s update() uses)
+# recurses into nested hashes key-by-key, so two such writes merge additively rather than one
+# clobbering the other - the extra 'hooks' nesting level is just as safe, since cloneHash
+# recurses through it the same way.
 #
-# data('hookHistory') is a bounded, oldest-first array of past invocations across all names.
+# hooks.history is a bounded, oldest-first array of past invocations across all names.
 # Deliberately NOT maintained via store() - cloneHash only recurses into hashes; an array
 # value is compared by reference and replaced wholesale, so two concurrent appends via that
 # path would race and the loser's row would simply be lost. record_hook_history()
@@ -1302,6 +1307,19 @@ sub _hook_env ($self, $user) {
 # lock, appends, evicts, and writes back - safe under genuine concurrency.
 
 my $HOOK_HISTORY_MAX = 100;
+
+# Internal helpers isolating hooks.status's read/write boilerplate - every accessor below
+# reads the whole per-name status hash, mutates one entry, and writes the whole 'hooks' data
+# key back (history lives alongside it, untouched by these two).
+sub _hook_status_all ($self) {
+   return ($self->data('hooks') // {})->{'status'} // {};
+}
+
+sub _hook_status_store ($self, $all) {
+   my $hooks = $self->data('hooks') // {};
+   $hooks->{'status'} = $all;
+   $self->data('hooks', $hooks)->store();
+}
 
 # Returns true if $name's last-known invocation is still running, per the master record. A
 # cheap, purely *optimizing* pre-exec check (see item B) - it has no visibility into an
@@ -1311,7 +1329,7 @@ my $HOOK_HISTORY_MAX = 100;
 # safety net regardless, exactly as it already is today - this only ever saves a wasted
 # round-trip in the common case, it was never the thing overlap-safety depends on.
 sub hook_is_running ($self, $name) {
-   my $status = ($self->data('hookStatus') // {})->{$name};
+   my $status = $self->_hook_status_all->{$name};
    return 0 unless $status && ($status->{'state'} // '') eq 'running';
 
    # Newly-started, before the forked child has reached docker_exec()'s on_created callback
@@ -1356,7 +1374,7 @@ sub hook_is_running ($self, $name) {
 # such record eventually being rewritten, makes moot. Cheap, and harmless once every record
 # has been rewritten at least once post-fix, so left in rather than removed.
 sub hook_status ($self, $name) {
-   my $status = ($self->data('hookStatus') // {})->{$name};
+   my $status = $self->_hook_status_all->{$name};
    return undef unless $status;
 
    my $clean = { %$status };
@@ -1374,7 +1392,7 @@ sub hook_status ($self, $name) {
 # returns, the exec id only once docker_exec's on_created fires) - see
 # hook_status_set_running_details, called by the child once both are known.
 sub hook_status_started ($self, $name, $logPath) {
-   my $all = $self->data('hookStatus') // {};
+   my $all = $self->_hook_status_all;
    $all->{$name} = {
       'name'      => $name,
       'state'     => 'running',
@@ -1383,18 +1401,18 @@ sub hook_status_started ($self, $name, $logPath) {
       'logPath'   => $logPath,
       'startTime' => YYYYMMDDHHMMSS(time),
    };
-   $self->data('hookStatus', $all)->store();
+   $self->_hook_status_store($all);
 }
 
 # Called by the forked child once it knows both its own pid ($$) and the exec id
 # (docker_exec's on_created callback) - see hook_status_started above for why these can't be
 # known any earlier.
 sub hook_status_set_running_details ($self, $name, $pid, $execId) {
-   my $all = $self->data('hookStatus') // {};
+   my $all = $self->_hook_status_all;
    return unless $all->{$name};
    $all->{$name}{'pid'} = $pid;
    $all->{$name}{'execId'} = $execId;
-   $self->data('hookStatus', $all)->store();
+   $self->_hook_status_store($all);
 }
 
 # Called by the forked child once the hook has finished, timed out, or been confirmed aborted,
@@ -1402,10 +1420,10 @@ sub hook_status_set_running_details ($self, $name, $pid, $execId) {
 # include 'state' explicitly ('done' or 'aborted') - never defaulted, so a caller can never
 # accidentally leave a completed entry reading 'running' by omission.
 sub hook_status_completed ($self, $name, $fields) {
-   my $all = $self->data('hookStatus') // {};
+   my $all = $self->_hook_status_all;
    my $entry = { %{ $all->{$name} // { 'name' => $name } }, %$fields };
    $all->{$name} = $entry;
-   $self->data('hookStatus', $all)->store();
+   $self->_hook_status_store($all);
 
    record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
 }
@@ -1424,7 +1442,7 @@ sub hook_status_completed ($self, $name, $fields) {
 # `hooks` at all; (2) if it's a 'lifecycle:*' name, is that lifecycle event actually
 # implemented yet (today: 'lifecycle:launch' and 'lifecycle:start' - the rest are schema-valid,
 # reserved for docs/roadmap.md's future stop/rename/periodic, but not runnable); (3) still only
-# for a 'lifecycle:*' name, is it listed in this profile's `manualHooks` (custom names skip (2)
+# for a 'lifecycle:*' name, does its own `hooks` entry set `manual` true (custom names skip (2)
 # and (3) entirely - they never auto-fire, so declaring one always makes it manually
 # invocable).
 #
@@ -1457,8 +1475,10 @@ sub run_hook_sync ($self, $args = {}) {
       die Exception->new( 'msg' => "'$name' is reserved for a future release, not runnable yet", 'status' => 400 )
          unless $name eq 'lifecycle:launch' || $name eq 'lifecycle:start';
 
-      die Exception->new( 'msg' => "'$name' is not configured as manually invocable for this profile (see 'manualHooks')", 'status' => 400 )
-         unless grep { $_ eq $name } @{ $self->profileObject->manualHooks };
+      # 'manual' now lives nested on the hook's own entry (item J: was a separate top-level
+      # 'manualHooks' array cross-referenced by name; see Profile::validate_profile_hooks).
+      die Exception->new( 'msg' => "'$name' is not configured as manually invocable for this profile (see its 'hooks' entry's 'manual' field)", 'status' => 400 )
+         unless $self->profileObject->hooks->{$name}{'manual'};
    }
 
    my @Command = $self->ide_command();
