@@ -131,7 +131,7 @@ class HooksTests(TestCase):
         # it survives CLI -> HTTP -> server unmangled (percent-encoded as %3A by
         # the CLI's _encode_params, decoded via App.pm's split_args/uri_unescape) -
         # if it didn't round-trip correctly, the server would see a different
-        # string and reject with "No hook ... configured" instead of succeeding.
+        # string and reject with "No hook '...' was declared..." instead of succeeding.
         self.dev1.hook_run(name, 'lifecycle:launch')
 
         state = self._inspect(name)

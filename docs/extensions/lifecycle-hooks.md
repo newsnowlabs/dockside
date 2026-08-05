@@ -101,6 +101,8 @@ This is the pattern to reach for when a checkout alone isn't "running" the reque
 
 `hooks` is profile-only — it can never be set or overridden by a launch-time request, so the executable that runs is always the one the profile/image author chose (the same trust model as a profile's `command`/`entrypoint`). Only the *arguments* — the values of whatever `options` your profile defines — are user-influenced.
 
+> **A devtainer's hooks are fixed at creation time, not live-linked to the profile.** The profile is snapshotted into the reservation record when a devtainer is created — a deliberate separation of concerns, since it means editing a profile is always safe and can never affect anything already running. One consequence: adding, removing, or changing a `hooks` entry on a profile has no effect on devtainers created before that edit — attempting to run a hook name that wasn't there at creation time fails with *"No hook '\<name\>' was declared in this profile when this devtainer was created"*. Recreate the devtainer to pick up the profile's current `hooks`.
+
 Hook names fall into two kinds:
 
 - **Reserved lifecycle names**, namespaced `lifecycle:<event>` — `lifecycle:launch` and `lifecycle:start` (both implemented; see [Running it](#running-it) below), plus `lifecycle:stop`/`lifecycle:rename`/`lifecycle:periodic`, reserved for a broader set of lifecycle trigger points that may be added in future. These are schema-valid today even though only `launch`/`start` do anything yet, so a profile can adopt a name now without the schema needing to change shape later — but don't assume the others fire, or that they'll ever be manually runnable the way `launch`/`start` are (that's a decision for whenever each one is actually implemented).

@@ -1259,8 +1259,19 @@ sub run_hook_sync ($self, $args = {}) {
    my $name = $args->{'name'};
    die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
 
+   # Reworded deliberately to point at *why*, not just *that*: the profile is snapshotted into
+   # this reservation at creation time (Reservation::validate), so adding/editing a hook on the
+   # live profile afterwards never reaches an already-created devtainer - not a bug, a
+   # deliberate separation of concerns (profile edits are always safe because they only affect
+   # newly launched devtainers), but a confusing error without this context. See
+   # docs/plans/lifecycle-hooks-review-followup.md item C - deliberately not fixed by adding
+   # live profile lookup instead.
    my $script = $self->hook_script($name);
-   die Exception->new( 'msg' => "No hook '$name' configured for this profile", 'status' => 400 ) unless length($script);
+   die Exception->new(
+      'msg' => "No hook '$name' was declared in this profile when this devtainer was created " .
+               "- recreate it to pick up hooks added to the profile since",
+      'status' => 400
+   ) unless length($script);
 
    if( $name =~ /^lifecycle:/ ) {
       die Exception->new( 'msg' => "'$name' is reserved for a future release, not runnable yet", 'status' => 400 )
