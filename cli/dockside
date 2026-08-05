@@ -155,6 +155,20 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+def _truthy_flag(v):
+    """Coerce a boolean-ish JSON API field to a real bool, treating the *string* "0"
+    (and "") as false - unlike Python's default truthiness, where any non-empty string,
+    including "0", is true. Needed because some server-side fields (e.g. a dispatched
+    hook's status record - see item B, docs/plans/lifecycle-hooks-review-followup.md)
+    can arrive JSON-quoted ("busy":"0") rather than bare ("busy":0), a side effect of
+    Perl's cloneHash comparing values with `ne` before storing them - fixed at the
+    server now, but cheap to guard against defensively here too, since a silent
+    false positive here (treating a real "0" as busy) is easy to miss."""
+    if isinstance(v, str):
+        return v not in ('', '0')
+    return bool(v)
+
+
 # ── Safe file I/O ─────────────────────────────────────────────────────────────
 
 def _ensure_config_dir():
@@ -844,17 +858,31 @@ def api_control(opener, server, res_id, cmd):
 
 
 def api_hook(opener, server, res_id, name, timeout=None):
-    """Run a devtainer's profile-declared hook named `name` now, synchronously.
-    Returns the server's {exitCode, timedOut, busy, output} result dict."""
+    """Dispatch a devtainer's profile-declared hook named `name` now. The hook
+    runs asynchronously server-side (see item B,
+    docs/plans/lifecycle-hooks-review-followup.md) - this call returns almost
+    immediately with the dispatch outcome: {started:1, name} once the hook has
+    been kicked off, or {busy:1} if a previous invocation of the same name was
+    already running (no docker call attempted). Use api_hook_status/
+    wait_for_hook below to learn how it actually turns out."""
     url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/hook'
     params = {'name': name}
     if timeout:
         params['timeout'] = timeout
-    # Give the HTTP request comfortably longer than the server-side hook timeout
-    # (which defaults to 120s if not given), so we don't time out the client-side
-    # request before the server's own `timeout ...s docker exec` has a chance to.
-    client_timeout = (timeout or 120) + 15
-    data = _do_post(opener, url, params, timeout=client_timeout)
+    data = _do_post(opener, url, params, timeout=30)
+    return data.get('data') or {}
+
+
+def api_hook_status(opener, server, res_id, name):
+    """Read back a dispatched hook invocation's current status/log. Returns
+    {status, output}: status is hook_status($name)'s master-record entry
+    (None if `name` has never been invoked on this devtainer), output is its
+    tailed log lines (a list of strings, [] if there's nothing to show yet -
+    either because status is None, or the log has no content yet)."""
+    url = (server.rstrip('/') +
+           f'/containers/{urllib.parse.quote(res_id)}/hook/status'
+           f'?{_encode_params({"name": name})}')
+    data = _do_get(opener, url, timeout=30)
     return data.get('data') or {}
 
 
@@ -1016,6 +1044,38 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
     if not quiet:
         print(file=sys.stderr)
     return False
+
+
+def wait_for_hook(opener, server, res_id, name, timeout=120, interval=1.0, quiet=False):
+    """
+    Poll a dispatched hook's status/log (api_hook_status above) until it
+    reaches a terminal state ('done' or 'aborted' - see item B,
+    docs/plans/lifecycle-hooks-review-followup.md), or `timeout` (+ a fixed
+    margin, mirroring the old single-blocking-call client_timeout's margin
+    over the server-side hook timeout) elapses.
+
+    Returns the read endpoint's {status, output} dict once terminal, or None
+    if the client gave up waiting - a safety net only: the server's own
+    request_timeout, sized from this same `timeout`, should always settle
+    the record to 'done' (possibly with timedOut=1) well within this
+    deadline in practice.
+    """
+    deadline = time.monotonic() + timeout + 15
+    printed = False
+    while time.monotonic() < deadline:
+        result = api_hook_status(opener, server, res_id, name)
+        status = result.get('status')
+        if status and status.get('state') in ('done', 'aborted'):
+            if printed and not quiet:
+                print(file=sys.stderr)
+            return result
+        if not quiet:
+            print('.', end='', flush=True, file=sys.stderr)
+            printed = True
+        time.sleep(interval)
+    if printed and not quiet:
+        print(file=sys.stderr)
+    return None
 
 
 # ── Log sanitisation ──────────────────────────────────────────────────────────
@@ -2426,8 +2486,15 @@ def cmd_stop(args):
 def cmd_hook_run(args):
     """Run a devtainer's profile-declared hook now (see docs/extensions/lifecycle-hooks.md).
 
-    Exit codes: 0 success; 1 hook script failed; 3 a run was already in progress
-    ('busy'); 4 the hook timed out.
+    Dispatches the hook - which runs asynchronously server-side, see item B,
+    docs/plans/lifecycle-hooks-review-followup.md - then polls its status until
+    it settles, preserving this command's previous synchronous, run-to-
+    completion user experience even though the underlying call is no longer
+    a single blocking request.
+
+    Exit codes: 0 success; 1 hook script failed, aborted before completion, or
+    the client gave up waiting for its outcome (see below); 3 a run was
+    already in progress ('busy'); 4 the hook timed out.
     """
     opener, server = _client(args)
     try:
@@ -2441,23 +2508,62 @@ def cmd_hook_run(args):
     hook_name = args.hook_name
     print(f'Running hook {hook_name!r} on {devtainer_name!r}…', file=sys.stderr)
     try:
-        result = api_hook(opener, server, res_id, hook_name, timeout=args.timeout)
+        dispatch = api_hook(opener, server, res_id, hook_name, timeout=args.timeout)
     except APIError as e:
         die(str(e))
 
-    exit_code = result.get('exitCode')
-    output = (result.get('output') or '').strip()
-
-    if result.get('busy'):
+    # Pre-exec "already running?" check (hook_is_running - see item B): rejected
+    # before any docker call was even attempted, so there is no status record
+    # to poll for this invocation at all.
+    if dispatch.get('busy'):
         print(f'Hook {hook_name!r} already running on {devtainer_name!r}; try again shortly.', file=sys.stderr)
         sys.exit(3)
 
-    if result.get('timedOut'):
+    try:
+        result = wait_for_hook(opener, server, res_id, hook_name, timeout=args.timeout or 120)
+    except APIError as e:
+        die(str(e))
+
+    if result is None:
+        die(f'Gave up waiting for hook {hook_name!r} on {devtainer_name!r} to report its '
+            f'outcome - it may still be running; check again shortly.')
+
+    status = result.get('status') or {}
+    output = '\n'.join(result.get('output') or []).strip()
+
+    # The forked child died without ever recording a normal completion (see
+    # hook_status_completed's catch block, and hook_is_running's own
+    # self-healing check) - there is no exit code to report, unlike every
+    # other case below.
+    if status.get('state') == 'aborted':
+        print(f'Hook {hook_name!r} on {devtainer_name!r} aborted unexpectedly '
+              f'(no exit code recorded).', file=sys.stderr)
+        if output:
+            print(output, file=sys.stderr)
+        sys.exit(1)
+
+    # A rarer, later busy signal than the pre-exec check above: run_hook's own
+    # in-container mkdir lock (launch.sh) rejected an overlapping run that
+    # slipped past that check - a genuine race, not expected to be common.
+    if _truthy_flag(status.get('busy')):
+        print(f'Hook {hook_name!r} already running on {devtainer_name!r}; try again shortly.', file=sys.stderr)
+        sys.exit(3)
+
+    if _truthy_flag(status.get('timedOut')):
         print(f'Hook {hook_name!r} on {devtainer_name!r} timed out.', file=sys.stderr)
         if output:
             print(output, file=sys.stderr)
         sys.exit(4)
 
+    exit_code = status.get('exitCode')
+    try:
+        # Same defensive coercion as _truthy_flag above and for the same reason -
+        # exitCode can arrive JSON-quoted ("0" rather than 0); a plain `== 0` on an
+        # uncoerced string would always be false, misreporting a real success as a
+        # failure with a confusing "(exit 0)" message.
+        exit_code = int(exit_code) if exit_code is not None else None
+    except (TypeError, ValueError):
+        pass
     if exit_code == 0:
         print(f'Hook {hook_name!r} on {devtainer_name!r} succeeded.', file=sys.stderr)
         if output:

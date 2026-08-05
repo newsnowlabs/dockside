@@ -1331,9 +1331,36 @@ sub hook_is_running ($self, $name) {
 }
 
 # Returns $name's master-record entry (undef if it has never been invoked on this
-# reservation), for a status/log read endpoint to serve.
+# reservation), for a status/log read endpoint to serve. Normalizes the numeric-ish fields
+# (exitCode/timedOut/busy/pid) back to real numbers before returning.
+#
+# Why this is needed - a real, non-obvious footgun found while verifying the read endpoint
+# live: every write to this record goes through store()/update(), which merges via
+# Util::cloneHash - and cloneHash decides whether to copy a value using Perl's `ne` (string
+# inequality) operator. Merely *evaluating* `ne` stringifies both operands as an unavoidable
+# side effect of how Perl's string-comparison operators work - it doesn't matter that
+# $busy/$timedOut/$rc started life as clean integers (literal `? 1 : 0` ternaries); once
+# cloneHash has compared them even once, they carry Perl's string flag too, and later
+# JSON::XS encoding (App.pm's json()) then emits them as quoted JSON strings, e.g. "busy":"0"
+# rather than the bare "busy":0 - confirmed empirically by reading the raw HTTP response and
+# the raw on-disk reservations.json. A quoted "0" is a real trap for any JSON consumer that
+# checks truthiness naively - e.g. Python's `if status.get('busy'):`, where the *string* "0"
+# is truthy, unlike the *number* 0. (This is a pre-existing, general characteristic of
+# cloneHash/update() - not something item B introduced, and not unique to hook fields - but
+# item B's read endpoint is the first place this codebase serves one of these round-tripped
+# fields back out over JSON for a non-Perl consumer to interpret as a boolean/number, so
+# that's where it needs correcting, rather than in cloneHash itself, which is a shared,
+# general-purpose utility used throughout the codebase - changing its comparison semantics
+# is a bigger, separate concern, out of scope here.)
 sub hook_status ($self, $name) {
-   return ($self->data('hookStatus') // {})->{$name};
+   my $status = ($self->data('hookStatus') // {})->{$name};
+   return undef unless $status;
+
+   my $clean = { %$status };
+   for my $f (qw(exitCode timedOut busy pid)) {
+      $clean->{$f} = 0 + $clean->{$f} if defined $clean->{$f};
+   }
+   return $clean;
 }
 
 # Called by the forking parent, before forking (see run_hook_sync below), to record that $name
