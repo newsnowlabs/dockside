@@ -9,7 +9,7 @@ This page covers four patterns for making a launched devtainer switch to (and, w
 | [A. Built-in `gitURLs` checkout](#a-built-in-giturls-checkout) | No | No | None (built in) |
 | [B. Entrypoint + static credentials](#b-entrypoint-static-credentials) | Yes | Yes (you write it) | None |
 | [C. Entrypoint + Dockside-managed credentials](#c-entrypoint-dockside-managed-credentials) | Yes | Yes (you write it) | None |
-| [D. Lifecycle hook](#d-lifecycle-hook) | Yes | Yes (you write it) | New profile fields (`hooks`, `manualHooks`) |
+| [D. Lifecycle hook](#d-lifecycle-hook) | Yes | Yes (you write it) | New profile field (`hooks`) |
 
 Patterns B–D all rely on the same generic `options` mechanism already described in [setup.md](../setup.md#profiles): a profile can define arbitrary named options (not just the reserved `ref`), whose values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables and/or via `{option.<name>}` placeholders. None of this page's patterns need a Dockside-specific "multi-repo" schema — a profile targeting several repos just defines whatever option names make sense for its app (e.g. `frontend_ref`, `api_ref`), and the entrypoint/hook script (which is entirely application-specific) decides what to do with them.
 
@@ -94,12 +94,13 @@ This is the pattern to reach for when a checkout alone isn't "running" the reque
 
 ```json
 "hooks": {
-   "lifecycle:launch": "/opt/myapp/hooks/on-launch.sh"
-},
-"manualHooks": ["lifecycle:launch"]
+   "lifecycle:launch": { "script": "/opt/myapp/hooks/on-launch.sh", "manual": true }
+}
 ```
 
 `hooks` is profile-only — it can never be set or overridden by a launch-time request, so the executable that runs is always the one the profile/image author chose (the same trust model as a profile's `command`/`entrypoint`). Only the *arguments* — the values of whatever `options` your profile defines — are user-influenced.
+
+Each entry is an Object: `script` (mandatory) is the absolute in-image path to run; `manual` (optional, meaningful only on a reserved `lifecycle:*` name — see below) opts that hook into on-demand re-invocation via `dockside hook run`, in addition to its automatic invocation.
 
 > **A devtainer's hooks are fixed at creation time, not live-linked to the profile.** The profile is snapshotted into the reservation record when a devtainer is created — a deliberate separation of concerns, since it means editing a profile is always safe and can never affect anything already running. One consequence: adding, removing, or changing a `hooks` entry on a profile has no effect on devtainers created before that edit. Attempting to run a hook name not in *this devtainer's own* snapshot fails with *"No hook '\<name\>' is configured for this devtainer - check the hook name's spelling, or recreate the devtainer if this hook has been added to the profile since it was created"* — naming both possible causes rather than checking the live profile to tell which applies.
 
@@ -108,7 +109,7 @@ Hook names fall into two kinds:
 - **Reserved lifecycle names**, namespaced `lifecycle:<event>` — `lifecycle:launch` and `lifecycle:start` (both implemented; see [Running it](#running-it) below), plus `lifecycle:stop`/`lifecycle:rename`/`lifecycle:periodic`, reserved for a broader set of lifecycle trigger points that may be added in future. These are schema-valid today even though only `launch`/`start` do anything yet, so a profile can adopt a name now without the schema needing to change shape later — but don't assume the others fire, or that they'll ever be manually runnable the way `launch`/`start` are (that's a decision for whenever each one is actually implemented).
 - **Custom names** — anything else: lowercase, starting with a letter, hyphens allowed but not leading/trailing/doubled (e.g. `update`, `repo-status`, `backup`). A profile can declare any number of these with zero Dockside code changes, for whatever on-demand actions your app needs beyond the reserved lifecycle events.
 
-**A reserved lifecycle name only auto-invokes if it's `lifecycle:launch` or `lifecycle:start`** (the two implemented today) — nothing else in `hooks` is ever auto-fired. **A reserved lifecycle name is only manually runnable (`dockside hook run`) if it's also listed in `manualHooks`** — this is opt-in, not automatic, so declaring `hooks."lifecycle:launch"` alone gets you auto-invoke but *not* on-demand re-invocation; you need both lines above (the same is true for `lifecycle:start`). Custom names need no `manualHooks` entry at all — since nothing ever auto-fires them, they're always manually runnable by construction (listing one in `manualHooks` is rejected as a likely mistake, not silently ignored).
+**A reserved lifecycle name only auto-invokes if it's `lifecycle:launch` or `lifecycle:start`** (the two implemented today) — nothing else in `hooks` is ever auto-fired. **A reserved lifecycle name is only manually runnable (`dockside hook run`) if its own entry sets `"manual": true`** — this is opt-in, not automatic, so declaring `hooks."lifecycle:launch"` with `script` alone gets you auto-invoke but *not* on-demand re-invocation; you need `"manual": true` too (the same is true for `lifecycle:start`). Custom names must never set `manual` at all — since nothing ever auto-fires them, they're always manually runnable by construction (setting `"manual": true` on one is rejected as a likely mistake, not silently ignored).
 
 > **Gotcha**: because custom names are unrestricted, a profile can legally declare a bare `"launch"` key (no `lifecycle:` prefix) — it validates fine, but it is an ordinary *custom* hook, not the reserved lifecycle one. Nothing ever auto-invokes it; it only runs via `dockside hook run <devtainer> launch`. This is an easy mistake when migrating an older profile — double-check you meant `lifecycle:launch`, not `launch`.
 
@@ -127,7 +128,7 @@ Hook names fall into two kinds:
   - **`lifecycle:launch` fires once** — only on this devtainer's true first launch, never again on a later restart. This matters because a devtainer's `options` (and so `DOCKSIDE_OPTION_<NAME>`/`{option.*}` values, including `ref`) are frozen at creation time and can never change afterwards — there is nothing new for a hook keyed off them to do on a restart, and re-running unconditionally would force whatever the hook does (a rebuild, a service restart, a slow `git pull`) on every plain restart, whether or not anything changed.
   - **`lifecycle:start` fires every launch, including the first one** — use this for anything that should genuinely happen every time a devtainer (re)starts, e.g. an automatic `git pull --ff-only` on resume, independent of whether `ref` was ever set.
   - If a profile declares both, both run, in that order, on the very first launch; only `lifecycle:start` runs again on every subsequent restart.
-- **On demand**, at any later point, for `lifecycle:launch`/`lifecycle:start` (if listed in `manualHooks`) or any custom hook: `dockside hook run <devtainer> <hook-name>` dispatches it and waits for the outcome, reporting it the same way regardless of how long the hook actually takes (a `.` prints for each poll while it's still running, so a slow hook — e.g. an `npm run build` — no longer looks like the command has hung):
+- **On demand**, at any later point, for `lifecycle:launch`/`lifecycle:start` (if that entry sets `"manual": true`) or any custom hook: `dockside hook run <devtainer> <hook-name>` dispatches it and waits for the outcome, reporting it the same way regardless of how long the hook actually takes (a `.` prints for each poll while it's still running, so a slow hook — e.g. an `npm run build` — no longer looks like the command has hung):
   ```
   $ dockside hook run my-devtainer lifecycle:launch
   Running hook 'lifecycle:launch' on 'my-devtainer'…
@@ -142,7 +143,7 @@ Both invocation paths run the same `launch.sh` function, which self-serializes p
 
 ### Example: Dockside switching its own branch
 
-Dockside's own self-hosting example profiles (`00-dockside.json`, `01-dockside-own-ide.json`, `91-dockside-sysbox.json`, `92-dockside-runcvm.json`) launch images with the Dockside repo already baked in at `/home/dockside/dockside` — no `gitURLs`, so pattern A doesn't apply, and switching branch means rebuilding the Vue client and restarting Dockside's own services, not just a checkout. They declare `"hooks": {"lifecycle:launch": ".../dockside-self-update.sh"}, "manualHooks": ["lifecycle:launch"]` (the `manualHooks` entry is what makes `dockside hook run` able to re-trigger it later, not just the automatic once-per-launch invocation), wired to [`app/scripts/hooks/dockside-self-update.sh`](https://github.com/newsnowlabs/dockside/blob/main/app/scripts/hooks/dockside-self-update.sh). This is deliberately on `lifecycle:launch`, not `lifecycle:start`: `ref` can never change after the devtainer is created, so checking it out is inherently one-shot, and the no-`ref` fallback below (`git pull --ff-only`) is deliberately opt-in via on-demand `dockside hook run` rather than forced on every plain restart — a profile that genuinely wants an automatic pull on every resume should use `lifecycle:start` for that instead.
+Dockside's own self-hosting example profiles (`00-dockside.json`, `01-dockside-own-ide.json`, `91-dockside-sysbox.json`, `92-dockside-runcvm.json`) launch images with the Dockside repo already baked in at `/home/dockside/dockside` — no `gitURLs`, so pattern A doesn't apply, and switching branch means rebuilding the Vue client and restarting Dockside's own services, not just a checkout. They declare `"hooks": {"lifecycle:launch": {"script": ".../dockside-self-update.sh", "manual": true}}` (the `"manual": true` is what makes `dockside hook run` able to re-trigger it later, not just the automatic once-per-launch invocation), wired to [`app/scripts/hooks/dockside-self-update.sh`](https://github.com/newsnowlabs/dockside/blob/main/app/scripts/hooks/dockside-self-update.sh). This is deliberately on `lifecycle:launch`, not `lifecycle:start`: `ref` can never change after the devtainer is created, so checking it out is inherently one-shot, and the no-`ref` fallback below (`git pull --ff-only`) is deliberately opt-in via on-demand `dockside hook run` rather than forced on every plain restart — a profile that genuinely wants an automatic pull on every resume should use `lifecycle:start` for that instead.
 
 ```sh
 #!/bin/bash
@@ -201,16 +202,15 @@ sudo s6-svc -t /etc/service/docker-event-daemon
 
 ## E. Custom (non-lifecycle) hooks: on-demand actions beyond branch switching
 
-Everything above covers `lifecycle:launch` specifically — a reserved name Dockside itself auto-invokes. A profile can also declare any number of **custom hooks**: any name that isn't one of the reserved `lifecycle:*` forms, requiring no Dockside code changes to add and needing no `manualHooks` entry (they're always on-demand only, and always manually runnable, since nothing else ever triggers them).
+Everything above covers `lifecycle:launch` specifically — a reserved name Dockside itself auto-invokes. A profile can also declare any number of **custom hooks**: any name that isn't one of the reserved `lifecycle:*` forms, requiring no Dockside code changes to add and never setting `manual` (they're always on-demand only, and always manually runnable, since nothing else ever triggers them).
 
 A representative use case: a CI job keeping a long-lived preview devtainer in sync with a PR's latest commit, without a full relaunch. This is deliberately *not* the same job as `lifecycle:launch` — it should only ever fast-forward whatever's already checked out (never resolve or switch to a different ref) and then rebuild/restart, so it can't accidentally do what a branch switch does:
 
 ```json
 "hooks": {
-   "lifecycle:launch": "/opt/myapp/hooks/on-launch.sh",
-   "update": "/opt/myapp/hooks/on-update.sh"
-},
-"manualHooks": ["lifecycle:launch"]
+   "lifecycle:launch": { "script": "/opt/myapp/hooks/on-launch.sh", "manual": true },
+   "update": { "script": "/opt/myapp/hooks/on-update.sh" }
+}
 ```
 
 ```sh

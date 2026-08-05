@@ -3673,8 +3673,8 @@ def build_parser():
             'inside a devtainer now, synchronously, and report its outcome. Useful after '
             "changing a devtainer's branch/pr options without a full relaunch, or for any "
             "custom hook a profile declares. HOOK is either 'lifecycle:launch' or "
-            "'lifecycle:start' (if the profile lists it in manualHooks) or any custom "
-            "name the profile declares in its hooks."
+            "'lifecycle:start' (if the profile's entry for it sets \"manual\": true) or any "
+            "custom name the profile declares in its hooks."
         ),
     )
     _add_global_flags(sp)

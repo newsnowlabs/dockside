@@ -8,12 +8,12 @@
 # devtainer's own 'dockside' user, once launch-time git/ssh/gh setup has completed. Auto-fires
 # only once, on this devtainer's genuine first start (wired to 'lifecycle:launch', not
 # 'lifecycle:start' - see docs/plans/lifecycle-hooks-review-followup.md item E), and is
-# separately re-invokable any time later via `dockside hook run` (this profile lists it in
-# manualHooks). Consumes the same single 'ref' option as the 03-git-repo.json example profile,
-# but - because this repo is baked into the image rather than cloned via gitURLs - via a hook
-# instead of launch.sh's built-in GIT_URL-gated checkout, since switching Dockside's own branch
-# also requires rebuilding the client and restarting Dockside's own services, not just a
-# checkout.
+# separately re-invokable any time later via `dockside hook run` (this profile's hooks entry
+# for it sets "manual": true). Consumes the same single 'ref' option as the 03-git-repo.json
+# example profile, but - because this repo is baked into the image rather than cloned via
+# gitURLs - via a hook instead of launch.sh's built-in GIT_URL-gated checkout, since switching
+# Dockside's own branch also requires rebuilding the client and restarting Dockside's own
+# services, not just a checkout.
 
 set -euo pipefail
 
