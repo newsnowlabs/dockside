@@ -11,10 +11,11 @@ disambiguation logic via pattern A in 06_git_profile.py):
   - Pattern B: `{option.<name>}` resolves into the container's own `command`
     argv at container-create time, verbatim (no shell reinterpretation) - kept
     deliberately fast, no credential-dependent wait.
-  - Pattern C: once `/tmp/dockside/.credentials-ready` appears, the pinned
-    ssh-agent socket genuinely has the launching user's key(s) loaded, and (if
-    a GitHub token is configured on the user) `gh` is genuinely authenticated
-    on disk.
+  - Pattern C: once `/tmp/dockside/.credentials-ready` appears, a live
+    ssh-agent socket (discovered the same way an entrypoint following the
+    documented pattern would - launch.sh does not pin it to a fixed path)
+    genuinely has the launching user's key(s) loaded, and (if a GitHub token
+    is configured on the user) `gh` is genuinely authenticated on disk.
 """
 
 import json
@@ -101,9 +102,15 @@ class OptionArgvResolutionTests(TestCase):
 # ── Pattern C ────────────────────────────────────────────────────────────────
 
 class SshAgentCredentialsReadyTests(SshTestMixin, TestCase):
-    """Once .credentials-ready appears, the pinned ssh-agent socket genuinely has
-    the launching user's key loaded - using dev1, who already has a full SSH
-    keypair fixture (see run_tests_main.py's _ensure_user call for user_dev1)."""
+    """Once .credentials-ready appears, a live ssh-agent socket genuinely has the
+    launching user's key loaded - using dev1, who already has a full SSH keypair
+    fixture (see run_tests_main.py's _ensure_user call for user_dev1). launch.sh
+    lets ssh-agent choose its own socket path rather than pinning it (see
+    docs/plans/lifecycle-hooks-review-followup.md item A), so this discovers it
+    the same way launch.sh's own run_hook()/find_ssh_auth_sock() and
+    10_ssh_outbound.py's _AGENT_LIST_SCRIPT do: scan /tmp/ssh-*/agent.*, validate
+    with `ssh-add -l` (exit 0 or 1 both mean a live agent - 1 just means no keys
+    loaded, still a real answer; only something else, e.g. 2, means dead/unreachable)."""
 
     _BASE_SSH_CONTAINER = 'inttest-cred-ssh-01'
 
@@ -112,8 +119,14 @@ class SshAgentCredentialsReadyTests(SshTestMixin, TestCase):
         '"$(test -f /tmp/dockside/.credentials-ready && echo 1 || echo 0)"; '
         'ssh_add_bin="${DOCKSIDE_TEST_SYSTEM_BIN_DIR:-/opt/dockside/system/latest/bin}/ssh-add"; '
         '[ -x "$ssh_add_bin" ] || ssh_add_bin=ssh-add; '
+        'agent_sock=; '
+        'for s in /tmp/ssh-*/agent.*; do '
+        '  [ -S "$s" ] || continue; '
+        '  SSH_AUTH_SOCK="$s" "$ssh_add_bin" -l >/dev/null 2>&1; '
+        '  case $? in 0|1) agent_sock="$s"; break ;; esac; '
+        'done; '
         'echo AGENTKEYS_BEGIN; '
-        'SSH_AUTH_SOCK=/tmp/dockside/agent.sock "$ssh_add_bin" -L 2>&1; '
+        '[ -n "$agent_sock" ] && SSH_AUTH_SOCK="$agent_sock" "$ssh_add_bin" -L 2>&1; '
         'echo AGENTKEYS_END'
     )
 
