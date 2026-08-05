@@ -149,6 +149,11 @@ sub call_socket_json_api ($socket, $path) {
 sub call_socket_api ($socket, $path, $opts = {}) {
    my $ua = Mojo::UserAgent->new();
 
+   # Default (20s) is far too short for a held-open exec/start stream that can legitimately
+   # go quiet between output lines (e.g. an `npm run build` hook) - callers doing that must
+   # pass a generous inactivity_timeout explicitly; everything else keeps Mojo's own default.
+   $ua->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
+
    my $method = uc($opts->{'method'} // 'GET');
    my $uri = 'http+unix://' . uri_escape($socket) . $path;
 
@@ -163,6 +168,30 @@ sub call_socket_api ($socket, $path, $opts = {}) {
       }
       elsif($method eq 'HEAD') {
          $result = $ua->head($uri => $headers)->result;
+      }
+      elsif($method eq 'POST') {
+         my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
+
+         if( my $onRead = $opts->{'on_read'} ) {
+            # Streamed consumption (e.g. `POST /exec/{id}/start` with Detach:false): the
+            # response body is a live, held-open stream, frames arriving as the exec
+            # produces output - not a normal buffered response (verified empirically
+            # against this environment's own daemon; see
+            # docs/plans/lifecycle-hooks-review-followup.md item F's enabler section).
+            # Build the transaction explicitly so a 'read' subscriber on its response
+            # content sees each chunk as it arrives, still within this one blocking
+            # $ua->start() call - the caller (a forked child with nothing else to do
+            # concurrently; see item B) has no need for a full event loop just for this.
+            my $tx = $ua->build_tx(POST => $uri => $headers => $body);
+            $tx->res->content->unsubscribe('read')->on(read => sub ($content, $bytes) {
+               $onRead->($bytes);
+            });
+            $ua->start($tx);
+            $result = $tx->result;
+         }
+         else {
+            $result = $ua->post($uri => $headers => $body)->result;
+         }
       }
       else {
          die Exception->new( 'dbg' => "Unsupported Docker API method '$method' for $path" );
