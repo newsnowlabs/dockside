@@ -7,7 +7,7 @@ our @EXPORT_OK = ( qw(
    flog wlog
    get_config
    trim is_true
-   call_socket_api call_socket_json_api docker_container_path_exists
+   call_socket_api call_socket_json_api docker_container_path_exists docker_exec
    get_uri
    run run_system clean_pty run_pty
    sanitize_sensitive_text
@@ -260,6 +260,87 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
    }
 
    return (1, $mtime);
+}
+
+# Runs $args->{'Cmd'} inside container $containerId via the Docker exec API directly (create,
+# then start non-detached) rather than forking the `docker` CLI - reusable primitive for item
+# B's non-blocking hook dispatch, and later item F's launch dispatch restructure (see
+# docs/plans/lifecycle-hooks-review-followup.md). $args:
+#   Cmd  => [...]   required, argv
+#   User => "..."   optional, exec as this user (matches `docker exec -u`)
+#   Env  => [...]   optional, "KEY=VALUE" strings (matches `docker exec --env`)
+# $opts:
+#   on_created         => sub ($execId) { ... }  optional, called once the exec exists but
+#      *before* it is started - lets a caller that needs to fork persist the exec id (for
+#      later abort/liveness detection - see item B) right away, without having to split the
+#      create and start calls across the fork boundary itself.
+#   on_output          => sub ($stream, $bytes) { ... }  optional, called for each frame of
+#      output as it arrives (not buffered/batched) - $stream is 'stdout' or 'stderr'. Omit to
+#      discard output entirely (the caller only wants the final exit code).
+#   inactivity_timeout => seconds   optional, forwarded to call_socket_api - the exec can
+#      legitimately go quiet between output lines for longer than Mojo's 20s default.
+# Returns { execId, exitCode }. exitCode is undef if the final inspect call itself failed
+# (logged, not fatal - the exec's own output/completion already streamed successfully by that
+# point, so a caller with real output to show has already seen it). Dies with an Exception if
+# the create or start call fails outright - nothing was dispatched at all in that case.
+sub docker_exec ($socket, $containerId, $args, $opts = {}) {
+   my $createRes = call_socket_api($socket, "/containers/$containerId/exec", {
+      'method' => 'POST',
+      'json'   => {
+         'AttachStdout' => JSON::true,
+         'AttachStderr' => JSON::true,
+         'Tty'          => JSON::false,
+         ( $args->{'User'} ? ( 'User' => $args->{'User'} ) : () ),
+         ( $args->{'Env'}  ? ( 'Env'  => $args->{'Env'}  ) : () ),
+         'Cmd' => $args->{'Cmd'},
+      },
+   });
+   die Exception->new( 'dbg' => "docker_exec: unable to create exec for containerId=$containerId" )
+      unless $createRes;
+   die Exception->new(
+      'dbg' => sprintf("docker_exec: create failed for containerId=%s: %d %s", $containerId, $createRes->code, $createRes->body)
+   ) unless $createRes->code == 201;
+
+   my $execId = decode_json($createRes->body)->{'Id'};
+   $opts->{'on_created'}->($execId) if $opts->{'on_created'};
+
+   # Demultiplex Docker's own stream-multiplexed frame format directly: byte 0 is the stream
+   # type (1=stdout, 2=stderr), bytes 4-7 a big-endian payload length, that many content bytes
+   # follow (verified empirically against this environment's own daemon). on_read may deliver
+   # a partial frame, or several frames at once, so a running buffer is kept across calls
+   # rather than assuming each call aligns with a frame boundary.
+   my $onOutput = $opts->{'on_output'};
+   my $buf = '';
+   my $onRead = sub ($bytes) {
+      $buf .= $bytes;
+      while( length($buf) >= 8 ) {
+         my $type = unpack('C', substr($buf, 0, 1));
+         my $len  = unpack('N', substr($buf, 4, 4));
+         last if length($buf) < 8 + $len;
+         my $payload = substr($buf, 8, $len);
+         $buf = substr($buf, 8 + $len);
+         $onOutput->( ($type == 2) ? 'stderr' : 'stdout', $payload ) if $onOutput;
+      }
+   };
+
+   my $startRes = call_socket_api($socket, "/exec/$execId/start", {
+      'method'             => 'POST',
+      'json'               => { 'Detach' => JSON::false, 'Tty' => JSON::false },
+      'inactivity_timeout' => $opts->{'inactivity_timeout'},
+      'on_read'            => $onRead,
+   });
+   die Exception->new( 'dbg' => "docker_exec: unable to start execId=$execId" ) unless $startRes;
+
+   my $exitCode;
+   my $inspectRes = call_socket_api($socket, "/exec/$execId/json", {});
+   if( $inspectRes && $inspectRes->is_success ) {
+      $exitCode = decode_json($inspectRes->body)->{'ExitCode'};
+   }
+   else {
+      flog("docker_exec: post-run inspect of execId=$execId failed; exitCode unavailable");
+   }
+
+   return { 'execId' => $execId, 'exitCode' => $exitCode };
 }
 
 sub get_uri ($uri) {
