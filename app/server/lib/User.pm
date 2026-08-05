@@ -1005,6 +1005,38 @@ sub runContainerHook ($self, $id, $args = {}) {
    return $container->run_hook_sync($args);
 }
 
+# Reads a container's hook invocation status/log (named by $args->{'name'}), for a client to
+# poll now that runContainerHook/run_hook_sync above dispatch non-blockingly and return almost
+# immediately - see item B, docs/plans/lifecycle-hooks-review-followup.md. Same permission
+# model as runContainerHook - reading a hook's own status/log needs the same permissions as
+# running it in the first place, not a separate lesser one. Returns { status, output }:
+# status is hook_status($name)'s master-record entry (undef if $name has never been invoked
+# on this devtainer), output is load_hook_log($name)'s tailed log lines ([] if there is
+# nothing to show yet, for either reason).
+sub runContainerHookStatus ($self, $id, $args = {}) {
+   if( $id !~ m!^([0-9a-f]+)$! ) {
+      die Exception->new( 'msg' => "hook status read with invalid argument '$id' failed" );
+   }
+
+   if( !$self->has_permission('runContainerHooks') ) {
+      die Exception->new( 'msg' => "You need the 'runContainerHooks' permission to read a devtainer's hook status" );
+   }
+
+   my $container = $self->reservation($id);
+
+   if( !$self->can_on( $container, 'develop' )) {
+      die Exception->new( 'msg' => "You need the 'develop' permission to read a hook's status on this devtainer" );
+   }
+
+   my $name = $args->{'name'};
+   die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
+
+   return {
+      'status' => $container->hook_status($name),
+      'output' => $container->load_hook_log($name),
+   };
+}
+
 # Creates a Reservation object, stores it, and attempts to launch a container for that Reservation.
 # Named in camelCase for consistency with current REST API call.
 sub createContainerReservation ($self, $args) {

@@ -489,6 +489,40 @@ sub load_launch_logs ($self) {
    return $data;
 }
 
+# Tails a hook invocation's outer log file (run_hook_sync's forked child, below, writes the
+# hook's stdout+stderr frames here as they arrive - see item B,
+# docs/plans/lifecycle-hooks-review-followup.md) for a status/log read endpoint to serve -
+# see User::runContainerHookStatus and App.pm's GET /containers/<id>/hook/status route. Mirrors
+# load_launch_logs() above (last $maxLines lines via Tie::File, read fresh from disk on every
+# call, no in-process caching) - cheap for "poll a status field, fetch the tail" use, exactly
+# like load_launch_logs already is for r-<id>.log. Unlike load_launch_logs, there is no
+# synthetic '=== EXIT CODE ===' termination line to strip: docker_exec()'s on_output callback
+# writes only the hook's own raw stdout/stderr bytes.
+#
+# Returns [] (never undef) if $name has never been invoked (no status record yet, so no
+# logPath to read) or its log file cannot be opened (e.g. already cleaned up - see item I, not
+# yet built) - a caller can treat "no status" and "no log lines" as the same "nothing to show
+# yet" case without special-casing either.
+sub load_hook_log ($self, $name, $maxLines = 200) {
+   my $status = $self->hook_status($name) or return [];
+   my $logPath = $status->{'logPath'} or return [];
+
+   my @lines;
+   tie @lines, 'Tie::File', $logPath
+   || do {
+      flog("Cannot open hook log file '$logPath' for reservation " . $self->id() . ": $!");
+      return [];
+   };
+
+   my $data = [];
+   for( my $i = (@lines) - $maxLines; $i < (@lines); $i++ ) {
+      push(@$data, $lines[$i]) if $i >= 0;
+   }
+   untie @lines;
+
+   return $data;
+}
+
 # Gets the container logs for the Reservation:
 # Inputs:
 # - stdout => { 'clean_pty' => [0|1] }
@@ -1352,8 +1386,8 @@ sub hook_status_completed ($self, $name, $fields) {
 # the caller (App::handlerHTTPS's nginx worker - see item B's "fork is mandatory" note) well
 # before the hook itself finishes; the forked child does the actual waiting and records the
 # outcome via hook_status_completed() above, for a status/log read endpoint (see
-# User::runContainerHook, App.pm's /containers/<id>/hook route, and the `dockside hook run`
-# CLI command, which polls it) to serve.
+# User::runContainerHookStatus, App.pm's GET /containers/<id>/hook/status route, and the
+# `dockside hook run` CLI command, which will poll it - see item B's task list) to serve.
 #
 # $args->{'name'} is required (no default - every caller must say which hook). Three gates,
 # checked in order, exactly as before this item B rework: (1) is it declared in this profile's

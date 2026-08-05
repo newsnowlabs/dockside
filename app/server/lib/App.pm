@@ -614,6 +614,22 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
          return json($r, 200, { 'status' => '200', 'data' => $result });
       }
 
+      ###############################################################
+      # Read a devtainer's hook invocation status/log (see item B -
+      # run_hook_sync above now dispatches non-blockingly; this is what a
+      # client polls for the outcome). A plain read, no state changed - GET,
+      # like .../logs below, not subject to the POST-only guard above (that
+      # guard matches .../hook exactly, not .../hook/status).
+      #
+      if( $route =~ m!^/containers/([^\/]+)/hook/status/?$! ) {
+         my $id = $1;
+         my $args = split_args($querystring); # GET: args in the querystring
+
+         my $result = $User->runContainerHookStatus($id, $args);
+
+         return json($r, 200, { 'status' => '200', 'data' => $result });
+      }
+
       ######################################
       # Load Reservations and container data
       #
