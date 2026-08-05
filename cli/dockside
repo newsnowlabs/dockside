@@ -1704,7 +1704,9 @@ def _add_shared_fields(p):
     p.add_argument('--network', metavar='NETWORK',
                    help='Docker network name')
     p.add_argument('--ide', metavar='IDE',
-                   help='IDE to use (e.g. theia/latest, openvscode/latest)')
+                   help="IDE to use (e.g. theia/latest, openvscode/latest), or 'none' for "
+                        "SSH-only (no IDE) - only valid if the profile, your user, and your "
+                        "role all permit it")
     p.add_argument('--description', metavar='TEXT',
                    help='Short description of the devtainer')
     p.add_argument('--viewers', metavar='LIST',
