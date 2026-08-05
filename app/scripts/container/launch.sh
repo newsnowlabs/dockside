@@ -333,7 +333,13 @@ checkout_git_ref() {
 
    if [ -n "$PR" ]; then
       log "Checking out PR $PR in $REPO"
-      if (cd "$REPO" && $IDE_PATH/bin/gh pr checkout "$PR"); then
+      # --force: this function only ever runs once, on this devtainer's genuine first start
+      # (see the DOCKSIDE_START_COUNT gate at its call site) - there is no prior local work of
+      # the user's own to protect, so unconditionally resetting a pre-existing local branch of
+      # this name (e.g. baked into the image) to the PR's current state, same reasoning as
+      # 'git reset --hard' below for the branch path, is safe and intended. `gh`'s own docs
+      # describe --force as doing exactly this.
+      if (cd "$REPO" && $IDE_PATH/bin/gh pr checkout --force "$PR"); then
          log "Checked out PR $PR via gh in $REPO"
          return 0
       fi
@@ -357,12 +363,16 @@ checkout_git_ref() {
       { git switch "$BRANCH" 2>/dev/null || git switch --track -c "$BRANCH" "origin/$BRANCH"; } &&
       # A pre-existing local branch of this name (e.g. baked into the image, or left
       # over from an earlier launch) is not touched by 'switch' above - only the
-      # just-fetched origin/$BRANCH ref advances. Fast-forward explicitly so a
-      # repeat launch/restart actually converges on the latest commit instead of
-      # silently staying on a stale one; --ff-only fails loudly rather than
-      # discarding local commits if history has diverged (a freshly-tracked branch
-      # is already at this commit, so this is a no-op there).
-      git merge --ff-only "origin/$BRANCH"
+      # just-fetched origin/$BRANCH ref advances. This function only ever runs once, on this
+      # devtainer's genuine first start (see the DOCKSIDE_START_COUNT gate at its call site),
+      # so there is no prior local work of the user's own to lose - a fresh devtainer's only
+      # "local state" is whatever the image shipped with, not real work worth protecting.
+      # Reset hard rather than fast-forward-only, so a pre-existing local branch of this name
+      # converges unconditionally on the just-fetched origin/$BRANCH tip even if it had
+      # diverged from origin (not merely fallen behind it, which --ff-only alone would still
+      # have failed loudly on rather than converging) - a freshly-tracked branch is already at
+      # this commit, so this is a no-op there.
+      git reset --hard "origin/$BRANCH"
    ); then
       log "Checked out branch $BRANCH in $REPO"
       return 0
@@ -896,34 +906,39 @@ run_nonroot() {
       log "Repo setup subproc started ..."
       create_git_repo
       case $? in
-         0)
-            # A fresh clone just succeeded: this is the one invocation where
-            # checkout_git_ref is meant to run (see its own return-code
-            # comment on create_git_repo above).
-            #
-            # A requested ref checkout failure is a hard error: abort the rest of repo
-            # setup, log it, and write .git-repo-failed instead of the success sentinel so a
-            # consumer can detect it immediately rather than waiting for a timeout.
-            #
-            # On success (or when no ref was requested), write .git-repo-ready. With a
-            # hard clone failure now handled above, this signals that a GIT_URL clone
-            # succeeded and any requested ref was checked out; it does NOT wait for the
-            # later VS Code population, and Dockside does not guarantee an otherwise error-free
-            # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
-            # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
-            if checkout_git_ref; then
-               [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+         0|2)
+            # Either a fresh clone just succeeded, or the repo already existed (a restart -
+            # the clone was skipped) - either way, a usable repo now exists at $REPO. Whether
+            # to run checkout_git_ref is decided independently of *which* of these two
+            # happened, purely by DOCKSIDE_START_COUNT below: "did launch.sh's own clone just
+            # run" is not the same question as "is this this devtainer's genuine first start" -
+            # a profile could conceivably ship a repo already cloned/baked into the image, in
+            # which case create_git_repo would report "already existed" (2) even on a true
+            # first start, and a requested ref must still be honoured then. DOCKSIDE_OPTION_REF
+            # is frozen at reservation-creation time and can never change, so there is no
+            # legitimate reason to run checkout_git_ref on any later start regardless - see
+            # docs/plans/lifecycle-hooks-review-followup.md item H.
+            if [ "$DOCKSIDE_START_COUNT" = "1" ]; then
+               # A requested ref checkout failure is a hard error: abort the rest of repo
+               # setup, log it, and write .git-repo-failed instead of the success sentinel so a
+               # consumer can detect it immediately rather than waiting for a timeout.
+               #
+               # On success (or when no ref was requested), write .git-repo-ready. With a
+               # hard clone failure now handled above, this signals that a GIT_URL clone
+               # succeeded and any requested ref was checked out; it does NOT wait for the
+               # later VS Code population, and Dockside does not guarantee an otherwise error-free
+               # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
+               # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
+               if checkout_git_ref; then
+                  [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+               else
+                  dockside_user_warning "Checkout of the requested ref failed; the repository may be on the wrong ref (see $LOG)."
+                  touch "$LOG_PATH/.git-repo-failed"
+                  exit 1
+               fi
             else
-               dockside_user_warning "Checkout of the requested ref failed; the repository may be on the wrong ref (see $LOG)."
-               touch "$LOG_PATH/.git-repo-failed"
-               exit 1
+               [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
             fi
-            ;;
-         2)
-            # Repo already existed from an earlier launch (a restart): the clone was
-            # skipped, so deliberately do NOT run checkout_git_ref again - see the
-            # comment on create_git_repo for why.
-            [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
             ;;
          *)
             # A failed clone is a hard error: there is no repository to set up, so
