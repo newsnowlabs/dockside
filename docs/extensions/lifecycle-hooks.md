@@ -44,9 +44,7 @@ This is the pattern to reach for when your deployment already has its own way to
 
 Same idea as pattern B — your entrypoint does the checkout itself — but using the SSH keys/`gh` token Dockside manages *for the devtainer's owner*, rather than a separately-provisioned static credential. The catch: those aren't available yet when the container's PID-1 process starts. `launch.sh` sets them up later, asynchronously, via a `docker exec` from `docker-event-daemon` once the container is already running — so an entrypoint that wants to use them has to wait for a signal.
 
-`launch.sh` provides that signal: once ssh-agent, `known_hosts`, and `gh` auth are all set up for this launch, it touches `/tmp/dockside/.credentials-ready` (this happens before, and independently of, any repository-specific `gitURLs` cloning, so it fires even for profiles with no `gitURLs` at all). It also pins the ssh-agent socket to a fixed path, `/tmp/dockside/agent.sock`, instead of the random one `ssh-agent` would otherwise choose — so once the sentinel appears, any process (including one that started long before `launch.sh` did) can reach it immediately, with no discovery needed. `gh`'s own auth is written to `~/.config/gh/hosts.yml` on disk, so it needs no special handling to be reachable from a different process.
-
-A minimal entrypoint using this pattern:
+`launch.sh` provides that signal: once ssh-agent, `known_hosts`, and `gh` auth are all set up for this launch, it touches `/tmp/dockside/.credentials-ready` (this happens before, and independently of, any repository-specific `gitURLs` cloning, so it fires even for profiles with no `gitURLs` at all). `gh`'s own auth is written to `~/.config/gh/hosts.yml` on disk, so it needs no special handling to be reachable from a different process — but the ssh-agent socket is *not* at a fixed path: `ssh-agent` is left to choose its own (`/tmp/ssh-XXXXXXXXXX/agent.<pid>`), the same as plain OpenSSH always does, rather than Dockside pinning it to something predictable. A container restart tears down every process inside it including the agent, so a fixed path would refuse to bind on relaunch — and worse, a well-known, world-writable path is squattable by any other UID in the container ahead of the real agent, which could then harvest the owner's keys via the `ssh-add` that follows. So your entrypoint needs to *discover* the socket, not assume it:
 
 ```sh
 #!/bin/sh
@@ -60,7 +58,19 @@ while [ ! -f /tmp/dockside/.credentials-ready ]; do
    sleep 1
 done
 
-export SSH_AUTH_SOCK=/tmp/dockside/agent.sock
+# Discover Dockside's own managed ssh-agent: scan its default socket naming
+# (/tmp/ssh-*/agent.*) newest-first by mtime, and validate each candidate with `ssh-add -l`
+# rather than trusting mtime alone - a dead agent's directory (e.g. left behind by an
+# OOM-killed process) can still be the newest by mtime with no live agent behind it. Exit code
+# 0 (has keys) or 1 (no keys, but the agent answered) both mean live; anything else (2 = could
+# not contact an agent at all) does not. This is the same discovery launch.sh's own run_hook()
+# uses for the equivalent problem - see app/scripts/container/launch.sh.
+for sock in $(ls -dt /tmp/ssh-*/agent.* 2>/dev/null); do
+   SSH_AUTH_SOCK="$sock" ssh-add -l >/dev/null 2>&1
+   case $? in
+      0|1) export SSH_AUTH_SOCK="$sock"; break ;;
+   esac
+done
 # gh auth (if GH_TOKEN was configured for this user) is already on disk; no
 # extra setup needed to use `gh` here.
 
@@ -70,7 +80,9 @@ exec /my-app/start.sh
 
 Use this pattern when you want branch/PR switching to use the *same* SSH keys/`gh` auth a developer already has configured in Dockside, rather than provisioning a separate credential — at the cost of the container's real startup being delayed until `launch.sh` catches up.
 
-Like pattern B, this handles multiple repos just as easily as one: `.credentials-ready` and the pinned `SSH_AUTH_SOCK` aren't tied to any particular repo, so once they're available your entrypoint is free to fetch/switch as many repos as the devtainer needs, using whatever `DOCKSIDE_OPTION_*` option names your profile defines for each.
+Like pattern B, this handles multiple repos just as easily as one: `.credentials-ready` and the discovered `SSH_AUTH_SOCK` aren't tied to any particular repo, so once they're available your entrypoint is free to fetch/switch as many repos as the devtainer needs, using whatever `DOCKSIDE_OPTION_*` option names your profile defines for each.
+
+> **A second, different agent socket exists too — for a different purpose.** dropbear (Dockside's SSH server) creates its own, separate forwarded-agent socket at `/tmp/dropbear-<hex>/auth-<hex>-<n>` while a developer is connected with agent forwarding (`ssh -A`/`ForwardAgent`) — but it exposes *that developer's own local keys*, not the reservation owner's registered credentials, and only for the lifetime of that one SSH session. That makes it session-transient and identity-inconsistent between runs, so it's the wrong target for the unattended discovery above — but it's a genuinely available option if you specifically want a hook or entrypoint to act with *the connected developer's own* credentials rather than the reservation's, e.g. an interactive debugging session that should never touch the owner's registered keys.
 
 ## D. Lifecycle hook
 
@@ -103,7 +115,7 @@ Hook names fall into two kinds:
 - Runs as the devtainer's own unix user (not root) — use `sudo` inside the script for anything privileged, the same way you would by hand.
 - `DOCKSIDE_OPTION_<NAME>` env vars for every option your profile defines (not just `ref` — define whatever option names your app needs, including per-repo ones for a multi-repo app).
 - `GH_TOKEN`, `GIT_URL`/`SSH_KNOWN_HOSTS_DOMAINS` if this profile also uses `gitURLs`.
-- `SSH_AUTH_SOCK` already pointed at the (pinned) ssh-agent socket — no setup needed, unlike writing your own entrypoint under pattern C.
+- `SSH_AUTH_SOCK` already pointed at a live ssh-agent socket — no setup needed, unlike writing your own entrypoint under pattern C: `run_hook()` discovers it automatically for an on-demand invocation, and the launch-time/start-time auto-invoke already has one from the same process tree's own `spawn_ssh_agent`.
 - Exit code `0` for success, non-zero for failure. `launch.sh` records the outcome as `/tmp/dockside/.hook-ready.<name>` or `.hook-failed.<name>` (scoped by hook name, so two different hooks' sentinels never collide), and (on failure) surfaces a warning via the same mechanism used for other launch-time warnings, visible in the devtainer's IDE/SSH terminal on next login.
 - Exit code `2` specifically means "a run was already in progress" (see [Concurrency](#concurrency) below) — not a script failure.
 
