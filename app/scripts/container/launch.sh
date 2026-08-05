@@ -406,6 +406,17 @@ run_hook() {
    local NAME="$1"
    local SCRIPT="$2"
    [ -n "$SCRIPT" ] || { log "run_hook: no hook configured"; return 0; }
+
+   # A separate `docker exec ... launch.sh run_hook` invocation (Reservation::run_hook_sync's
+   # on-demand dispatch) does not go through run_nonroot's spawn_ssh_agent, so it has no
+   # SSH_AUTH_SOCK inherited from that process tree yet - discover Dockside's own managed agent
+   # instead (see find_ssh_auth_sock below). The launch-time/start-time auto-invoke (called from
+   # within run_nonroot, in the same process spawn_ssh_agent already ran in) already has a live
+   # one, so ssh_auth_sock_is_live short-circuits this to a no-op there.
+   if ! ssh_auth_sock_is_live "$SSH_AUTH_SOCK"; then
+      SSH_AUTH_SOCK=$(find_ssh_auth_sock) && export SSH_AUTH_SOCK
+   fi
+
    if [ ! -x "$SCRIPT" ]; then
       log "run_hook: ERROR: '$SCRIPT' not found or not executable"
       dockside_user_warning "Hook '$NAME' is not configured correctly ('$SCRIPT' not found or not executable); see $LOG."
@@ -460,16 +471,65 @@ run_hook() {
 spawn_ssh_agent() {
    log "Checking for ssh-agent ..."
    if [ -x $(which ssh-agent) ] && ! pgrep ssh-agent >/dev/null; then
-      log "Found ssh-agent binary but no running agent, so launching it, pinned to '$SSH_AUTH_SOCK' ..."
+      log "Found ssh-agent binary but no running agent, so launching it ..."
 
-      # -a pins the agent to the well-known socket path init() already exported into
-      # SSH_AUTH_SOCK, instead of letting ssh-agent choose a random one, so a later
-      # independent invocation of this script can reach the same agent (see init()).
-      eval $($(which ssh-agent) -a "$SSH_AUTH_SOCK")
+      # Let ssh-agent choose its own socket path (no -a) - a container restart tears
+      # down every process inside it, ssh-agent included, so pgrep above correctly
+      # finds nothing and a fresh agent with a fresh socket spawns every time; there
+      # is no "later independent invocation" that needs to guess this one's path in
+      # advance. A separate `docker exec ... launch.sh run_hook` (run_hook_sync) is
+      # exactly such an independent invocation, but it discovers the socket instead
+      # of relying on a fixed path - see find_ssh_auth_sock() below - which also
+      # avoids the security hazard a well-known, world-writable path had: any other
+      # UID in the container could squat it before this agent started and harvest
+      # keys via the ssh-add that follows.
+      eval $($(which ssh-agent))
       export SSH_AUTH_SOCK
 
       log "Launched ssh-agent binary with SSH_AUTH_SOCK='$SSH_AUTH_SOCK'"
    fi
+}
+
+# Returns 0 if $1 (an SSH_AUTH_SOCK candidate path) has a live, responding ssh-agent behind it,
+# checked via `ssh-add -l`'s exit code rather than the socket merely existing: 0 means it has
+# keys, 1 means no keys but the agent answered (a real, live state - populate_ssh_agent_keys
+# may legitimately have found no keypairs for this user), anything else (2 = could not contact
+# an agent at all, e.g. a dead socket left behind by an OOM-killed process; 127 if ssh-add
+# itself is missing) means not live.
+ssh_auth_sock_is_live() {
+   local SSH_ADD_BIN
+   SSH_ADD_BIN=$(which ssh-add) || return 1
+   SSH_AUTH_SOCK="$1" "$SSH_ADD_BIN" -l >/dev/null 2>&1
+   case $? in
+      0|1) return 0 ;;
+      *)   return 1 ;;
+   esac
+}
+
+# Discover a live ssh-agent socket for the current unix user, for a caller that did not itself
+# spawn the agent and so has no SSH_AUTH_SOCK inherited from that process tree - namely, a
+# separate `docker exec ... launch.sh run_hook` invocation dispatched by
+# Reservation::run_hook_sync (see run_hook below); the launch-time/start-time auto-invoke runs
+# inside run_nonroot's own process tree, right after spawn_ssh_agent, so it already has one.
+# Scans Dockside's own managed agent's default socket naming (/tmp/ssh-*/agent.* - OpenSSH's
+# own convention) newest-first by mtime, validating each candidate's liveness rather than
+# trusting mtime alone. Deliberately does not scan /tmp/dropbear-*/auth-* - dropbear's own,
+# separate forwarded-agent sockets, which expose whichever developer happens to be
+# interactively connected right now's own local keys, not this reservation's own registered
+# credentials (see docs/plans/lifecycle-hooks-review-followup.md item A) - the wrong target for
+# this automated, unattended case. An inner tmpfs /tmp is harmless here: it just means no stale
+# sockets from a previous container run to sift through.
+# Echoes the first responding socket path and returns 0; echoes nothing and returns 1 if none
+# responds (e.g. no agent has ever run for this user, or none of its sockets are still live).
+find_ssh_auth_sock() {
+   local SOCK
+   for SOCK in $(ls -dt /tmp/ssh-*/agent.* 2>/dev/null); do
+      if ssh_auth_sock_is_live "$SOCK"; then
+         echo "$SOCK"
+         return 0
+      fi
+   done
+   return 1
 }
 
 populate_known_hosts() {
@@ -1034,12 +1094,6 @@ init() {
 
    LOG_PATH=/tmp/dockside
    LOG=$LOG_PATH/launch-$(id -u).log
-
-   # Pin the ssh-agent socket to a well-known path (rather than the random one
-   # ssh-agent would otherwise choose) so that any later, independent invocation of
-   # this script (e.g. a fresh `docker exec ... launch.sh run_hook`, long after the
-   # original launch) can reach the same agent without needing to rediscover it.
-   export SSH_AUTH_SOCK="$LOG_PATH/agent.sock"
 
    [ -d $LOG_PATH ] || busybox mkdir -p $LOG_PATH && busybox chmod a+rwx,+t $LOG_PATH 2>/dev/null
    [ -d $LOG ] || busybox touch $LOG && busybox chmod 644 $LOG
