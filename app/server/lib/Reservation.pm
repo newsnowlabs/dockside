@@ -1247,6 +1247,18 @@ sub exec ($reservation, $command = undef) {
 # exec() may need up to two script paths at once ('lifecycle:launch' and 'lifecycle:start',
 # see above) and run_hook_sync passes its one script path directly as a launch.sh CLI
 # argument instead (see below), so each caller resolves whichever script(s) it needs itself.
+#
+# Returns `docker` CLI flag strings ("--env=KEY=VALUE"), not plain "KEY=VALUE" - matching
+# exec()'s own @envHook/@envIDE/etc. below, since exec() still shells out to the `docker` CLI
+# directly (run_system(...'exec','-d',...,@envCommonHook,...)). run_hook_sync (see item B)
+# dispatches via the Docker Engine API's exec/create instead, whose `Env` field wants plain
+# "KEY=VALUE" strings - a real bug, caught by the integration suite, not by this session's own
+# manual testing (which never actually inspected DOCKSIDE_OPTION_* forwarding specifically):
+# passing "--env=KEY=VALUE" straight into that JSON field doesn't error, it just silently
+# creates a nonsense env var literally named "--env" whose value is "KEY=VALUE" - so
+# DOCKSIDE_OPTION_* (and GIT_URL/GH_TOKEN) never reached the hook process at all. Fixed at
+# run_hook_sync's own call site (strips the prefix there) rather than changing this function's
+# output format, since exec() still needs the CLI-flag form.
 sub _hook_env ($self, $user) {
    my @envGit;
    if( $self->gitURL() ) {
@@ -1470,7 +1482,11 @@ sub run_hook_sync ($self, $args = {}) {
    my $user = User->load($owner);
    die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $user;
 
-   my @env = $self->_hook_env($user);
+   # _hook_env returns `docker` CLI flag strings ("--env=KEY=VALUE" - see its own comment) for
+   # exec()'s sake; docker_exec() below dispatches via the Docker Engine API instead, whose
+   # `Env` field wants plain "KEY=VALUE" strings - strip the CLI-flag prefix here, at this
+   # call site only, rather than changing _hook_env's own output format.
+   my @env = map { my $e = $_; $e =~ s/^--env=//; $e } $self->_hook_env($user);
 
    my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
