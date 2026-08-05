@@ -343,10 +343,9 @@ class HooksTests(TestCase):
 
 
 class HookNamingValidationTests(TestCase):
-    """Profile-level validation of hook names and each hook entry's `manual` field
-    (item J: folded from a separate top-level `manualHooks` array into a `manual`
-    property on the hook's own `hooks.<name>` object), independent of ever
-    launching a devtainer - these are schema checks on `profile create`."""
+    """Profile-level validation of hook names and each hook entry's `manual` field,
+    independent of ever launching a devtainer - these are schema checks on
+    `profile create`."""
 
     def _create_ad_hoc_profile(self, spec):
         name = self._sfx('inttest-hook-validation')
@@ -402,10 +401,7 @@ class HookNamingValidationTests(TestCase):
     def test_03_manual_rejects_custom_name(self):
         # A custom name is always manually invocable already - setting "manual":
         # true on one is meaningless and should be rejected as a likely mistake,
-        # not silently ignored. (item J removed the old separate manualHooks
-        # array's referential-integrity check - "manual" now lives directly on
-        # the hook entry it applies to, so there is no longer a name to
-        # cross-reference: it either belongs on this entry or it doesn't.)
+        # not silently ignored.
         self.assert_api_error(lambda: self._create_ad_hoc_profile(
             self._minimal_hook_spec({"repo-status": {"script": "/opt/x.sh", "manual": True}})
         ))

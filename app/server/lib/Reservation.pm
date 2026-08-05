@@ -1281,13 +1281,10 @@ sub _hook_env ($self, $user) {
    return (@envGit, @envOptions, @envGhToken);
 }
 
-# --- Hook status/history storage (item B; consolidated under one data('hooks') key per
-# item J) ---
+# --- Hook status/history storage ---
 #
 # data('hooks') = { status => {...}, history => [...] } - two structures nested under one
-# top-level data key (item J: this used to be two separate top-level data('hookStatus')/
-# data('hookHistory') keys; merged for symbol-surface consistency with Profile's own
-# hooks/manualHooks merge, below), deliberately different shapes for different jobs (see
+# top-level data key, deliberately different shapes for different jobs (see
 # docs/plans/lifecycle-hooks-review-followup.md item B):
 #
 # hooks.status is the master record, a hash keyed by hook name - one entry per name, holding
@@ -1475,8 +1472,6 @@ sub run_hook_sync ($self, $args = {}) {
       die Exception->new( 'msg' => "'$name' is reserved for a future release, not runnable yet", 'status' => 400 )
          unless $name eq 'lifecycle:launch' || $name eq 'lifecycle:start';
 
-      # 'manual' now lives nested on the hook's own entry (item J: was a separate top-level
-      # 'manualHooks' array cross-referenced by name; see Profile::validate_profile_hooks).
       die Exception->new( 'msg' => "'$name' is not configured as manually invocable for this profile (see its 'hooks' entry's 'manual' field)", 'status' => 400 )
          unless $self->profileObject->hooks->{$name}{'manual'};
    }

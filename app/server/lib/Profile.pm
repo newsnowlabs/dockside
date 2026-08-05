@@ -429,14 +429,12 @@ my @RESERVED_LIFECYCLE_HOOKS = map { "lifecycle:$_" } qw( launch start stop rena
 # matches a 'lifecycle:' name, since colons aren't a valid slug character.
 my $CUSTOM_HOOK_NAME_RE = qr/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/;
 
-# Each hooks.<name> entry is now an Object, not a bare script-path String (item J: folds in
-# what used to be the separate top-level 'manualHooks' array). 'script' is mandatory for every
-# entry. 'manual' - may this hook also be run on demand via 'dockside hook run', in addition to
+# Each hooks.<name> entry is an Object. 'script' is mandatory - the absolute in-image path to
+# run. 'manual' - may this hook also be run on demand via 'dockside hook run', in addition to
 # its automatic invocation? - is meaningful only on a reserved 'lifecycle:*' entry; custom
 # hooks are always manually invocable already (they never auto-fire), so setting 'manual' on
-# one would be meaningless and is rejected as a likely mistake, mirroring the old
-# cross-referential manualHooks check this replaces. Neither 'manual' nor 'script' says
-# anything about whether the *lifecycle event itself* is implemented yet - see
+# one would be meaningless and is rejected as a likely mistake. Neither 'manual' nor 'script'
+# says anything about whether the *lifecycle event itself* is implemented yet - see
 # Reservation::run_hook_sync's separate "is this actually implemented" gate.
 sub validate_profile_hooks ($self, $type, $data) {
    unless( ref($data) eq 'HASH' ) {

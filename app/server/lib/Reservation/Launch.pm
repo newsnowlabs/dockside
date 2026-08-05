@@ -362,8 +362,6 @@ sub option_value ($self, $name = undef) {
 }
 
 sub hook_script ($self, $name) {
-   # 'hooks' entries are now { script => ..., manual => ... } (item J: was a bare script-path
-   # string per name).
    return $self->profileObject->hooks->{$name}{'script'} // '';
 }
 

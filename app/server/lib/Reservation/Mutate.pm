@@ -156,13 +156,12 @@ sub load_clean_map ($class, @containerIds) {
 
 # record_hook_history:
 #
-# Atomically append $entry to reservation $id's data.hooks.history array (item J: nested under
-# the same 'hooks' key as data.hooks.status, was a separate top-level data.hookHistory),
-# evicting oldest-first down to at most $cap rows once appending would exceed it - but only
-# rows in a terminal state ($_->{'exitCode'} defined), never a still-running one (item B's
-# storage-model rule: an unrelated, more-frequent *other* hook name's invocations must never
-# push a genuinely still-running row out from under it, so the array can transiently exceed
-# $cap while enough invocations are genuinely in flight at once - expected, not a bug).
+# Atomically append $entry to reservation $id's data.hooks.history array, evicting oldest-first
+# down to at most $cap rows once appending would exceed it - but only rows in a terminal state
+# ($_->{'exitCode'} defined), never a still-running one (item B's storage-model rule: an
+# unrelated, more-frequent *other* hook name's invocations must never push a genuinely
+# still-running row out from under it, so the array can transiently exceed $cap while enough
+# invocations are genuinely in flight at once - expected, not a bug).
 #
 # Deliberately its own atomic mutator, bypassing Reservation::store()'s usual whole-record
 # update() - update()'s cloneHash-based merge (Util.pm) recurses safely into nested *hashes*
