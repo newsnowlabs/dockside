@@ -262,6 +262,8 @@ sub validate ($self) {
          gitURLs=@
          IDEs=@
          options=@
+         hooks=%
+         manualHooks=@
       )
    );
 
@@ -406,6 +408,88 @@ sub validate_profile_options ($self, $type, $data) {
    }
 }
 
+# Reserved lifecycle hook names, namespaced under 'lifecycle:' so they can never
+# collide with a custom hook name (custom names forbid ':' entirely - see
+# $CUSTOM_HOOK_NAME_RE below). 'lifecycle:launch' and 'lifecycle:start' are
+# implemented today - both run once launch-time git/ssh/gh setup completes,
+# 'lifecycle:launch' only on this devtainer's true first launch and 'lifecycle:start'
+# on every launch including that one (see Reservation::exec), and both are
+# re-runnable on demand if listed in a profile's 'manualHooks' - see
+# Reservation::run_hook_sync. The remaining names are reserved for
+# docs/roadmap.md's broader (unimplemented) lifecycle-hooks ambition
+# (stop/rename/periodic), so the schema doesn't need to change shape again when
+# those land. Being schema-valid here is independent of being dispatchable:
+# run_hook_sync rejects every reserved name except 'lifecycle:launch'/
+# 'lifecycle:start' with a "not yet implemented" error regardless of this
+# allow-list or manualHooks.
+my @RESERVED_LIFECYCLE_HOOKS = map { "lifecycle:$_" } qw( launch start stop rename periodic );
+
+# Custom (non-lifecycle) hook names are free-form: lowercase, start with a letter,
+# hyphens allowed but not leading/trailing/doubled - mirrors the devtainer-name slug
+# rule (Reservation.pm's validate(), '/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/'). Never
+# matches a 'lifecycle:' name, since colons aren't a valid slug character.
+my $CUSTOM_HOOK_NAME_RE = qr/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/;
+
+sub validate_profile_hooks ($self, $type, $data) {
+   unless( ref($data) eq 'HASH' ) {
+      return $self->errors( $type, "must be a JSON Object" );
+   }
+
+   my %reserved = map { $_ => 1 } @RESERVED_LIFECYCLE_HOOKS;
+
+   foreach my $name ( sort keys %$data ) {
+      unless( $reserved{$name} || $name =~ $CUSTOM_HOOK_NAME_RE ) {
+         $self->errors( "$type.$name", sprintf(
+            "invalid hook name - must be a reserved lifecycle hook (%s) or a custom name " .
+            "(lowercase, starting with a letter, hyphens allowed but not leading/trailing/doubled)",
+            join( ', ', @RESERVED_LIFECYCLE_HOOKS )
+         ) );
+         next;
+      }
+
+      my $script = $data->{$name};
+
+      if( ref($script) || !length($script) ) {
+         $self->errors( "$type.$name", "must be a non-empty String" );
+         next;
+      }
+
+      unless( $script =~ m!^/! ) {
+         $self->errors( "$type.$name", "must be an absolute path to an executable in the image" );
+      }
+   }
+}
+
+# 'manualHooks': an optional array naming which reserved lifecycle hooks (only -
+# custom hooks are always manually invocable, since they never auto-fire, so
+# listing one here would be meaningless) may also be run on demand via
+# 'dockside hook run', in addition to their automatic invocation. Not an
+# allow-list of what's implemented - see validate_profile_hooks above and
+# Reservation::run_hook_sync's separate "is this actually implemented" gate.
+sub validate_profile_manualHooks ($self, $type, $data) {
+   unless( ref($data) eq 'ARRAY' ) {
+      return $self->errors( $type, "must be a JSON Array" );
+   }
+
+   my %reserved = map { $_ => 1 } @RESERVED_LIFECYCLE_HOOKS;
+   my $declaredHooks = $self->{'hooks'};
+   $declaredHooks = {} unless ref($declaredHooks) eq 'HASH';
+
+   foreach my $name ( @$data ) {
+      unless( $reserved{$name} ) {
+         $self->errors( $type, sprintf(
+            "'%s' is not a reserved lifecycle hook name - custom hooks are always " .
+            "manually invocable and must not be listed here", $name
+         ) );
+         next;
+      }
+
+      unless( exists $declaredHooks->{$name} ) {
+         $self->errors( $type, sprintf( "'%s' is not declared in this profile's hooks", $name ) );
+      }
+   }
+}
+
 sub validate_profile_mounts_tmpfs_dst ($self, $type, $data) {
    my $dstRE = '^/';
 
@@ -535,6 +619,14 @@ sub routers ($self) {
 
 sub options ($self) {
    return $self->{'options'} // [];
+}
+
+sub hooks ($self) {
+   return $self->{'hooks'} // {};
+}
+
+sub manualHooks ($self) {
+   return $self->{'manualHooks'} // [];
 }
 
 sub ssh ($self) {

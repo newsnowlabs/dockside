@@ -546,7 +546,7 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       # structured fields (access, options) themselves and treat viewers/developers
       # as comma-strings, so pre-decoding the body would corrupt them.
       #
-      if ( $route =~ m!^/containers/(?:create|[^/]+/(?:update|start|stop|remove))/?$!
+      if ( $route =~ m!^/containers/(?:create|[^/]+/(?:update|start|stop|remove|hook))/?$!
            && $r->request_method ne 'POST' ) {
          return json($r, 405, { 'status' => '405', 'msg' => 'Method Not Allowed: use POST' });
       }
@@ -598,6 +598,20 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
          $User->controlContainer($cmd, $id);
 
          return json($r, 200, { 'status' => '200', 'data' => $User->reservations({'client' => 1}) });
+      }
+
+      ######################################################
+      # Run a devtainer's profile-declared lifecycle hook now
+      #
+      if( $route =~ m!^/containers/([^\/]+)/hook/?$! ) {
+         my $id = $1;
+         # POST-only (see the container guard above): args in the request body,
+         # parsed raw — see the create handler's note on why not get_args.
+         my $args = { %{ split_args($r->request_body // '') }, %{ split_args($querystring) } };
+
+         my $result = $User->runContainerHook($id, $args);
+
+         return json($r, 200, { 'status' => '200', 'data' => $result });
       }
 
       ######################################

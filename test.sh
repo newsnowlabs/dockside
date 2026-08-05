@@ -205,6 +205,7 @@ check_shellcheck() {
     app/server/bin/upgrade
     app/server/bin/password-wrapper
     app/scripts/container/launch.sh
+    app/scripts/hooks/dockside-self-update.sh
     build/development/claude-code/statusline.sh
     t/integration/run_tests.sh
     t/integration/harness.sh
