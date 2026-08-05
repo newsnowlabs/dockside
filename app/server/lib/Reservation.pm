@@ -1346,26 +1346,29 @@ sub hook_status_completed ($self, $name, $fields) {
    record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
 }
 
-# Run a named hook (a reserved 'lifecycle:*' name or a profile-declared custom
-# name) synchronously inside the reservation's container, via the same
-# `docker exec ... launch.sh <fn>` dispatch pattern used elsewhere in this file,
-# but (unlike exec()'s fire-and-forget `-d`) waiting for it to finish so the
-# caller (see User::runContainerHook, App.pm's /containers/<id>/hook route, and the
-# `dockside hook run` CLI command) can report a real exit code, not just "we asked
-# the container to do something".
+# Dispatch a named hook (a reserved 'lifecycle:*' name or a profile-declared custom name)
+# inside the reservation's container, via the exec API directly (decided - see item B) rather
+# than forking the `docker` CLI. Non-blocking: forks and returns almost immediately, freeing
+# the caller (App::handlerHTTPS's nginx worker - see item B's "fork is mandatory" note) well
+# before the hook itself finishes; the forked child does the actual waiting and records the
+# outcome via hook_status_completed() above, for a status/log read endpoint (see
+# User::runContainerHook, App.pm's /containers/<id>/hook route, and the `dockside hook run`
+# CLI command, which polls it) to serve.
 #
-# $args->{'name'} is required (no default - every caller must say which hook).
-# Three gates, checked in order: (1) is it declared in this profile's `hooks` at
-# all; (2) if it's a 'lifecycle:*' name, is that lifecycle event actually
-# implemented yet (today: 'lifecycle:launch' and 'lifecycle:start' - the rest are
-# schema-valid, reserved for docs/roadmap.md's future stop/rename/periodic, but not
-# runnable); (3) still only for a 'lifecycle:*' name, is it listed in this
-# profile's `manualHooks` (custom names skip (2) and (3) entirely - they never
-# auto-fire, so declaring one always makes it manually invocable).
+# $args->{'name'} is required (no default - every caller must say which hook). Three gates,
+# checked in order, exactly as before this item B rework: (1) is it declared in this profile's
+# `hooks` at all; (2) if it's a 'lifecycle:*' name, is that lifecycle event actually
+# implemented yet (today: 'lifecycle:launch' and 'lifecycle:start' - the rest are schema-valid,
+# reserved for docs/roadmap.md's future stop/rename/periodic, but not runnable); (3) still only
+# for a 'lifecycle:*' name, is it listed in this profile's `manualHooks` (custom names skip (2)
+# and (3) entirely - they never auto-fire, so declaring one always makes it manually
+# invocable).
 #
-# Returns { exitCode, timedOut, busy, output } on any outcome where a docker exec was
-# actually attempted. Dies with a 400 Exception before attempting anything if any
-# of the above gates fail.
+# Returns { busy => 1 } immediately, no docker exec attempted at all, if hook_is_running()'s
+# cheap pre-check already shows $name running (still just an optimization, not the safety net -
+# see hook_is_running's own comment); otherwise { started => 1, name => $name } once
+# dispatched. Dies with a 400 Exception before attempting anything if any of the gates above
+# fail.
 sub run_hook_sync ($self, $args = {}) {
    my $name = $args->{'name'};
    die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
@@ -1414,68 +1417,83 @@ sub run_hook_sync ($self, $args = {}) {
 
    my $containerId = $self->containerId();
 
-   my @cmd = (
-      'timeout', '--kill-after=5', "${timeout}s",
-      $CONFIG->{'docker'}{'bin'}, 'exec', '-u', $self->unixuser(),
-      @env,
-      $containerId,
-      @Command
-   );
+   # Cheap, local, no docker round-trip - see hook_is_running's own comment for exactly what
+   # this does and doesn't guarantee (it is not the thing overlap-safety depends on).
+   if( $self->hook_is_running($name) ) {
+      return { 'busy' => 1 };
+   }
 
-   flog( "Reservation::run_hook_sync: RUNNING: " . join( '|', map { sanitize_sensitive_text($_) } @cmd ) );
+   my $invocationId = sprintf( "%08x", int(rand(0xffffffff)) ^ $$ );
+   my $logPath = "$CONFIG->{'tmpPath'}/r-" . $self->id() . "-hook-$invocationId.log";
+   $self->hook_status_started($name, $logPath);
 
-   # Magically prevent nginx from reaping the subprocess before we do (see run_system/run_pty).
+   flog( "Reservation::run_hook_sync: DISPATCHING (async, via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
+
+   # Fork - exactly Reservation::launch's existing pattern (see item B: "the pattern already
+   # exists in this codebase") - parent returns immediately, freeing the caller; the forked
+   # child does the actual dispatch-and-wait via docker_exec() directly, no CLI involved.
    local $SIG{'CHLD'} = 'DEFAULT';
-
-   # Fork + exec (no shell, list-form) with the child's stdout/stderr piped back to us,
-   # rather than touching this process's own STDOUT/STDERR - safer under a server that
-   # may be handling other requests concurrently in the same process.
-   my $pid = open( my $kid, '-|' );
-   die Exception->new( 'msg' => 'Internal error - failed to run hook', 'dbg' => "Reservation::run_hook_sync: fork failed: $!" ) unless defined $pid;
-
-   if( $pid == 0 ) {
-      open( STDERR, '>&STDOUT' ) or exit(126);
-      exec(@cmd) or exit(127);
+   my $pid;
+   if( $pid = fork ) {
+      # PARENT
+      $SIG{'CHLD'} = sub { waitpid $pid, 0; $SIG{'CHLD'} = 'DEFAULT'; };
+      return { 'started' => 1, 'name' => $name };
    }
 
-   my $output = '';
-   while( my $line = <$kid> ) {
-      $output .= $line;
+   # -------------
+   # CHILD PROCESS
+   # -------------
+   try {
+      open( my $log, '>>', $logPath )
+         or die Exception->new( 'dbg' => "Reservation::run_hook_sync child: cannot open log '$logPath': $!" );
+      $log->autoflush(1);
+
+      my $result = docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
+         'Cmd'  => \@Command,
+         'User' => $self->unixuser(),
+         'Env'  => \@env,
+      }, {
+         # A generous margin over $timeout, not $timeout itself - request_timeout below is
+         # what actually enforces the hook's own configured budget; this only guards against
+         # a truly stalled connection outliving that.
+         'inactivity_timeout' => $timeout + 30,
+         'request_timeout'    => $timeout,
+         # Fires before docker_exec's own (blocking) start-and-stream call, so the exec id
+         # reaches the status record as early as possible - see hook_status_started's comment
+         # for why this can't be known any earlier than this, from the child, using its own
+         # real pid ($$, not the parent's - the parent never learns the child's pid until
+         # fork() returns, well before the exec is even created).
+         'on_created' => sub ($execId) { $self->hook_status_set_running_details($name, $$, $execId); },
+         'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
+      } );
+
+      close($log);
+
+      my $rc = $result->{'exitCode'};
+      my $timedOut = $result->{'timedOut'} ? 1 : 0;
+      # run_hook's own mkdir-lock returns exit code 2 when a run is already in progress -
+      # the same signal the old timeout-CLI-wrapped implementation checked for, now read
+      # from docker_exec's real ExitCode instead of a host-side process's $?. Note: a
+      # request_timeout is purely client-side abandonment (see docker_exec's own comment) -
+      # the in-container mkdir lock remains what actually prevents a subsequent overlapping
+      # run; a timed-out hook may still be finishing in the background, discoverable later
+      # via the .hook-ready/.hook-failed sentinels launch.sh's run_hook writes.
+      my $busy = ( defined($rc) && $rc == 2 && !$timedOut ) ? 1 : 0;
+
+      $self->hook_status_completed( $name, {
+         'state'    => 'done',
+         'exitCode' => $rc,
+         'timedOut' => $timedOut,
+         'busy'     => $busy,
+      } );
    }
-   close($kid);
-   my $rc;
-   if( $? == -1 ) {
-      $rc = -1;
-   } elsif( $? & 127 ) {
-      # Child died from a signal (e.g. OOM-killed) rather than exiting normally -
-      # report it using the same 128+signum convention `timeout` itself uses for
-      # its own --kill-after SIGKILL (see $timedOut below), so a signal death is
-      # never mistaken for exit code 0/success.
-      $rc = 128 + ( $? & 127 );
-   } else {
-      $rc = $? >> 8;
-   }
-
-   # Keep the API response bounded regardless of how chatty the hook script is.
-   $output = substr( $output, -4096 ) if length($output) > 4096;
-
-   # `timeout` itself exits 124 on a plain timeout, or 128+signal (137 for SIGKILL,
-   # used after --kill-after) if the --kill-after grace period was needed too.
-   my $timedOut = ( $rc == 124 || $rc == 137 ) ? 1 : 0;
-   # run_hook's own mkdir-lock returns exit code 2 when a run is already in progress.
-   # Note: `timeout` killing the host-side docker exec process does not reliably kill
-   # the process running inside the container (a Docker CLI/API limitation) - the
-   # in-container mkdir lock is what actually prevents a subsequent overlapping run;
-   # a timed-out hook may still be finishing in the background, discoverable later via
-   # the .hook-ready/.hook-failed sentinels launch.sh's run_hook writes.
-   my $busy = ( $rc == 2 && !$timedOut ) ? 1 : 0;
-
-   return {
-      'exitCode' => $rc,
-      'timedOut' => $timedOut,
-      'busy'     => $busy,
-      'output'   => $output
+   catch {
+      my $dbg = ref($_) ? $_->dbg() : "$_";
+      flog("Reservation::run_hook_sync child: caught exception dispatching '$name': $dbg");
+      $self->hook_status_completed( $name, { 'state' => 'aborted' } );
    };
+
+   exit(0);
 }
 
 1;
