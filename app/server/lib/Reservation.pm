@@ -1045,6 +1045,13 @@ sub launch ($self) {
    };
 }
 
+# $command is undef for exactly one caller shape: docker-event-daemon's genuine container-start
+# dispatch (a live container-start event, or its deferred pendingLaunch retry once the launcher
+# is ready) - the only case that represents "this devtainer just started". Every other caller
+# (User::updateContainerReservation's 'update_ssh_authorized_keys', and 'restart_ide' if
+# re-enabled) always passes an explicit command naming a one-off action on an already-running
+# container. This distinction (not "is it 'restart_ide'?") is what gates the startCount
+# increment below - see docs/plans/lifecycle-hooks-review-followup.md item E.
 sub exec ($reservation, $command = undef) {
    my $reservationId = $reservation->id();
    my $containerId = $reservation->containerId();
@@ -1074,6 +1081,21 @@ sub exec ($reservation, $command = undef) {
 
       return 1;
    }
+
+   # Server-side start count, injected as DOCKSIDE_START_COUNT so launch.sh can tell a
+   # genuine first start (fires 'lifecycle:launch') from every later restart (fires
+   # 'lifecycle:start' instead - see below). Named for what it actually counts - every
+   # container-start event, including the first - not "launch" in the product-vocabulary sense
+   # of a one-time devtainer creation (see docs/plans/lifecycle-hooks-review-followup.md item E
+   # for the launch-vs-start distinction this whole split is built on). Computed here but only
+   # persisted after run_system() below confirms the exec dispatch itself succeeded (it dies on
+   # failure) - deliberately not before: incrementing first would burn a count on a dispatch
+   # that never reached the container at all, permanently skipping 'lifecycle:launch' on what
+   # is still genuinely this devtainer's first real start next time. This does not cover every
+   # failure mode (a dispatch that succeeds but dies inside the container before reaching the
+   # hook still consumes the count) - closing that gap needs a completion signal from inside
+   # the container, which is item D; not a blocker for this.
+   my $startCount = defined($command) ? undef : ($reservation->data('startCount') // 0) + 1;
 
    my $owner = $reservation->owner('username');
    my $user = User->load($owner);
@@ -1125,7 +1147,22 @@ sub exec ($reservation, $command = undef) {
       );
    }
 
-   my @envHook = $reservation->_hook_env($user, 'lifecycle:launch');
+   my @envCommonHook = $reservation->_hook_env($user);
+
+   # Two separate env slots, not one: this single exec runs the whole perpetual launch_ide
+   # process, which must be able to auto-fire BOTH 'lifecycle:launch' (only on this devtainer's
+   # true first start, gated below on DOCKSIDE_START_COUNT) and 'lifecycle:start' (every start,
+   # including this one) without a second `docker exec` - see item E. Each name's script is
+   # resolved separately since they may differ (or either may be unconfigured).
+   my @envHook;
+   if( my $script = $reservation->hook_script('lifecycle:launch') ) {
+      @envHook = ( "--env=DOCKSIDE_HOOK_SCRIPT=$script" );
+   }
+   my @envHookStart;
+   if( my $script = $reservation->hook_script('lifecycle:start') ) {
+      @envHookStart = ( "--env=DOCKSIDE_HOOK_SCRIPT_START=$script" );
+   }
+   my @envStartCount = defined($startCount) ? ( "--env=DOCKSIDE_START_COUNT=$startCount" ) : ();
 
    my @envIDE = (
       "--env=IDE=" . $reservation->meta('IDE')
@@ -1149,7 +1186,10 @@ sub exec ($reservation, $command = undef) {
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs_all() ),
+      @envCommonHook,
       @envHook,
+      @envHookStart,
+      @envStartCount,
       @envSSH,
       @envDevContainer,
       @envIDE,
@@ -1157,18 +1197,23 @@ sub exec ($reservation, $command = undef) {
       @Command
    );
 
+   # Persist the increment only now that run_system() has confirmed the exec dispatch itself
+   # succeeded (see the comment where $startCount was computed above).
+   $reservation->data('startCount', $startCount)->store() if defined $startCount;
+
    return 1;
 }
 
-# The env vars a hook invocation (whether the launch-time auto-invoke, dispatched
-# in-process by launch.sh itself, or a later `docker exec ... launch.sh run_hook`
-# built here) needs: the same GIT_URL/SSH_KNOWN_HOSTS_DOMAINS, DOCKSIDE_OPTION_*
-# and GH_TOKEN env this reservation's IDE launch already gets - shared here to
-# avoid duplicating/drifting that logic between exec() and run_hook_sync(). Takes
-# the hook name explicitly (no default) - exec() always passes 'lifecycle:launch'
-# (the one hook auto-invoked at launch), run_hook_sync() passes whichever name was
-# requested.
-sub _hook_env ($self, $user, $hookName) {
+# The env vars any hook invocation (the launch-time auto-invoke, dispatched in-process by
+# launch.sh itself, or a later `docker exec ... launch.sh run_hook` built here) needs
+# regardless of which specific hook is running: the same GIT_URL/SSH_KNOWN_HOSTS_DOMAINS,
+# DOCKSIDE_OPTION_* and GH_TOKEN env this reservation's IDE launch already gets - shared here
+# to avoid duplicating/drifting that logic between exec() and run_hook_sync(). Deliberately
+# does NOT resolve a hook script path itself (unlike an earlier version of this function) -
+# exec() may need up to two script paths at once ('lifecycle:launch' and 'lifecycle:start',
+# see above) and run_hook_sync passes its one script path directly as a launch.sh CLI
+# argument instead (see below), so each caller resolves whichever script(s) it needs itself.
+sub _hook_env ($self, $user) {
    my @envGit;
    if( $self->gitURL() ) {
       my ($git_domain) = $self->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
@@ -1187,12 +1232,7 @@ sub _hook_env ($self, $user, $hookName) {
       @envGhToken = ( "--env=GH_TOKEN=$token" );
    }
 
-   my @envHookScript;
-   if( my $script = $self->hook_script($hookName) ) {
-      @envHookScript = ( "--env=DOCKSIDE_HOOK_SCRIPT=$script" );
-   }
-
-   return (@envGit, @envOptions, @envGhToken, @envHookScript);
+   return (@envGit, @envOptions, @envGhToken);
 }
 
 # Run a named hook (a reserved 'lifecycle:*' name or a profile-declared custom
@@ -1206,8 +1246,8 @@ sub _hook_env ($self, $user, $hookName) {
 # $args->{'name'} is required (no default - every caller must say which hook).
 # Three gates, checked in order: (1) is it declared in this profile's `hooks` at
 # all; (2) if it's a 'lifecycle:*' name, is that lifecycle event actually
-# implemented yet (today: only 'lifecycle:launch' - the rest are schema-valid,
-# reserved for docs/roadmap.md's future start/stop/rename/periodic, but not
+# implemented yet (today: 'lifecycle:launch' and 'lifecycle:start' - the rest are
+# schema-valid, reserved for docs/roadmap.md's future stop/rename/periodic, but not
 # runnable); (3) still only for a 'lifecycle:*' name, is it listed in this
 # profile's `manualHooks` (custom names skip (2) and (3) entirely - they never
 # auto-fire, so declaring one always makes it manually invocable).
@@ -1224,7 +1264,7 @@ sub run_hook_sync ($self, $args = {}) {
 
    if( $name =~ /^lifecycle:/ ) {
       die Exception->new( 'msg' => "'$name' is reserved for a future release, not runnable yet", 'status' => 400 )
-         unless $name eq 'lifecycle:launch';
+         unless $name eq 'lifecycle:launch' || $name eq 'lifecycle:start';
 
       die Exception->new( 'msg' => "'$name' is not configured as manually invocable for this profile (see 'manualHooks')", 'status' => 400 )
          unless grep { $_ eq $name } @{ $self->profileObject->manualHooks };
@@ -1234,12 +1274,15 @@ sub run_hook_sync ($self, $args = {}) {
    die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::run_hook_sync: ide_command() returned empty' ) unless @Command;
    $Command[-1] = 'run_hook';
    push( @Command, $name );
+   # launch.sh's run_hook() takes the script path as an explicit argument (see item E) rather
+   # than reading a fixed env var, so every on-demand invocation passes it here directly.
+   push( @Command, $script );
 
    my $owner = $self->owner('username');
    my $user = User->load($owner);
    die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $user;
 
-   my @env = $self->_hook_env($user, $name);
+   my @env = $self->_hook_env($user);
 
    my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )

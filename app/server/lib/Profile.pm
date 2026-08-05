@@ -410,14 +410,18 @@ sub validate_profile_options ($self, $type, $data) {
 
 # Reserved lifecycle hook names, namespaced under 'lifecycle:' so they can never
 # collide with a custom hook name (custom names forbid ':' entirely - see
-# $CUSTOM_HOOK_NAME_RE below). Only 'lifecycle:launch' is implemented today (run
-# once launch-time git/ssh/gh setup completes, and re-runnable on demand if listed
-# in a profile's 'manualHooks' - see Reservation::run_hook_sync); the remaining
-# names are reserved for docs/roadmap.md's broader (unimplemented) lifecycle-hooks
-# ambition (start/stop/rename/periodic), so the schema doesn't need to change shape
-# again when those land. Being schema-valid here is independent of being
-# dispatchable: run_hook_sync rejects every reserved name except 'lifecycle:launch'
-# with a "not yet implemented" error regardless of this allow-list or manualHooks.
+# $CUSTOM_HOOK_NAME_RE below). 'lifecycle:launch' and 'lifecycle:start' are
+# implemented today - both run once launch-time git/ssh/gh setup completes,
+# 'lifecycle:launch' only on this devtainer's true first launch and 'lifecycle:start'
+# on every launch including that one (see Reservation::exec), and both are
+# re-runnable on demand if listed in a profile's 'manualHooks' - see
+# Reservation::run_hook_sync. The remaining names are reserved for
+# docs/roadmap.md's broader (unimplemented) lifecycle-hooks ambition
+# (stop/rename/periodic), so the schema doesn't need to change shape again when
+# those land. Being schema-valid here is independent of being dispatchable:
+# run_hook_sync rejects every reserved name except 'lifecycle:launch'/
+# 'lifecycle:start' with a "not yet implemented" error regardless of this
+# allow-list or manualHooks.
 my @RESERVED_LIFECYCLE_HOOKS = map { "lifecycle:$_" } qw( launch start stop rename periodic );
 
 # Custom (non-lifecycle) hook names are free-form: lowercase, start with a letter,

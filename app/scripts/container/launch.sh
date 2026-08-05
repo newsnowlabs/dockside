@@ -371,27 +371,30 @@ checkout_git_ref() {
    return 1
 }
 
-# Run a hook named $1 - either the reserved lifecycle name 'lifecycle:launch' or a
-# profile-declared custom name (an in-image, profile-author-trusted executable
-# resolved server-side into the DOCKSIDE_HOOK_SCRIPT env var for whichever name was
-# requested - see Reservation::hook_script/_hook_env). Invoked both automatically,
-# for 'lifecycle:launch' only, once per launch (from run_nonroot, after git/ssh/gh
-# setup), and on demand, for any declared name, any time later, via a fresh
-# `docker exec ... launch.sh run_hook <name>` (see Reservation::run_hook_sync).
-# Both paths call this same function, so it self-serializes per name via an
-# mkdir-based lock: a concurrent second invocation of the *same* name does not
-# block or double-run, it just reports "busy" (exit 2) and leaves the first run to
-# finish undisturbed - a concurrent invocation of a *different* name is unaffected,
-# since the lock and sentinels are scoped by name. Names are embedded raw in
-# filenames (no sanitization needed): only '/' and NUL are unsafe in a Linux
-# filename, and reserved lifecycle names' literal ':' can never collide with a
-# custom name, whose slug syntax forbids colons entirely (see Profile.pm).
+# Run a hook named $1, using the executable at path $2 - either the reserved lifecycle
+# names 'lifecycle:launch'/'lifecycle:start' or a profile-declared custom name (an
+# in-image, profile-author-trusted executable; $2 is resolved server-side per name - see
+# Reservation::hook_script/_hook_env). Invoked both automatically, from run_nonroot after
+# git/ssh/gh setup - 'lifecycle:launch' only on this devtainer's true first launch,
+# 'lifecycle:start' every launch including that one (see run_nonroot; the script paths for
+# each arrive as two separate env vars, DOCKSIDE_HOOK_SCRIPT/DOCKSIDE_HOOK_SCRIPT_START,
+# since a single exec must be able to fire both) - and on demand, for any declared name, any
+# time later, via a fresh `docker exec ... launch.sh run_hook <name> <script>` (see
+# Reservation::run_hook_sync, which passes its one resolved script path as $2 directly
+# rather than via an env var). Both paths call this same function, so it self-serializes per
+# name via an mkdir-based lock: a concurrent second invocation of the *same* name does not
+# block or double-run, it just reports "busy" (exit 2) and leaves the first run to finish
+# undisturbed - a concurrent invocation of a *different* name is unaffected, since the lock
+# and sentinels are scoped by name. Names are embedded raw in filenames (no sanitization
+# needed): only '/' and NUL are unsafe in a Linux filename, and reserved lifecycle names'
+# literal ':' can never collide with a custom name, whose slug syntax forbids colons
+# entirely (see Profile.pm).
 #
 # Returns 0 on success (or when no hook is configured for this profile), 1 if the
 # hook script itself failed, 2 if a run was already in progress.
 run_hook() {
    local NAME="$1"
-   local SCRIPT="${DOCKSIDE_HOOK_SCRIPT:-}"
+   local SCRIPT="$2"
    [ -n "$SCRIPT" ] || { log "run_hook: no hook configured"; return 0; }
    if [ ! -x "$SCRIPT" ]; then
       log "run_hook: ERROR: '$SCRIPT' not found or not executable"
@@ -931,13 +934,23 @@ run_nonroot() {
             exit 1
             ;;
       esac
-      # Run the profile-declared 'lifecycle:launch' hook (if any), once, now that
-      # git/ssh/gh setup for this launch has completed. This is the one place a hook
-      # name is ever hardcoded - the server's own fixed decision about which
-      # lifecycle event auto-fires today, not a caller-facing default. A hook
-      # failure is logged and surfaced via dockside_user_warning/.hook-failed.<name>
-      # by run_hook itself, but is not treated as fatal to the rest of this subshell.
-      run_hook 'lifecycle:launch' || true
+      # Run the profile-declared lifecycle hooks (if any), now that git/ssh/gh setup for
+      # this launch has completed. These are the only two places a hook name is ever
+      # hardcoded - the server's own fixed decision about which lifecycle events auto-fire
+      # today, not a caller-facing default. 'lifecycle:launch' fires only on this
+      # devtainer's true first start (DOCKSIDE_START_COUNT == 1, set server-side by
+      # Reservation::exec - see docs/plans/lifecycle-hooks-review-followup.md item E; named
+      # for what it counts, every container-start event, not "launch" in the one-time
+      # devtainer-creation sense): DOCKSIDE_OPTION_REF is frozen at reservation-creation time,
+      # so re-running it on a later restart has nothing new to do. 'lifecycle:start' fires on
+      # every start, including this one, for anything that genuinely wants to run every time
+      # (e.g. a `git pull` on resume). A hook failure is logged and surfaced via
+      # dockside_user_warning/.hook-failed.<name> by run_hook itself, but is not treated as
+      # fatal to the rest of this subshell.
+      if [ "$DOCKSIDE_START_COUNT" = "1" ]; then
+         run_hook 'lifecycle:launch' "$DOCKSIDE_HOOK_SCRIPT" || true
+      fi
+      run_hook 'lifecycle:start' "$DOCKSIDE_HOOK_SCRIPT_START" || true
 
       populate_vscode_extensions;
       populate_vscode_settings

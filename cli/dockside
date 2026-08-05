@@ -3566,16 +3566,17 @@ def build_parser():
             "Run a profile-declared hook (see docs/extensions/lifecycle-hooks.md) "
             'inside a devtainer now, synchronously, and report its outcome. Useful after '
             "changing a devtainer's branch/pr options without a full relaunch, or for any "
-            "custom hook a profile declares. HOOK is either 'lifecycle:launch' (if the "
-            "profile lists it in manualHooks) or any custom name the profile declares in "
-            "its hooks."
+            "custom hook a profile declares. HOOK is either 'lifecycle:launch' or "
+            "'lifecycle:start' (if the profile lists it in manualHooks) or any custom "
+            "name the profile declares in its hooks."
         ),
     )
     _add_global_flags(sp)
     sp.add_argument('devtainer', metavar='DEVTAINER',
                     help='Name, reservation ID, or container ID')
     sp.add_argument('hook_name', metavar='HOOK',
-                    help="Name of the hook to run, e.g. 'lifecycle:launch' or a custom hook name")
+                    help="Name of the hook to run, e.g. 'lifecycle:launch', 'lifecycle:start', "
+                         "or a custom hook name")
     sp.add_argument('--timeout', type=int, default=None, metavar='SECONDS',
                     help='Server-side time limit for the hook to run (default: server-configured, currently 120s)')
     sp.set_defaults(func=cmd_hook_run)
