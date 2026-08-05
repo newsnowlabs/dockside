@@ -154,6 +154,15 @@ sub call_socket_api ($socket, $path, $opts = {}) {
    # pass a generous inactivity_timeout explicitly; everything else keeps Mojo's own default.
    $ua->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
 
+   # Bounds the *whole* call, active or not - unlike inactivity_timeout. Verified empirically:
+   # when this fires, $ua->start() returns normally (does not die) with $tx->result undef and
+   # $tx->error set, rather than throwing - callers must check for that, not wrap this in a
+   # try/catch expecting an exception. Also verified: this is purely client-side abandonment -
+   # the in-container process is *not* killed by it (there is no Docker API endpoint to kill a
+   # running exec at all - see docs/plans/lifecycle-hooks-review-followup.md item F), matching
+   # `timeout`'s own pre-existing caveat in Reservation::run_hook_sync.
+   $ua->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
+
    my $method = uc($opts->{'method'} // 'GET');
    my $uri = 'http+unix://' . uri_escape($socket) . $path;
 
@@ -198,6 +207,13 @@ sub call_socket_api ($socket, $path, $opts = {}) {
       }
    }
    catch {
+      # Surprising, verified empirically: a request_timeout abort on a blocking $ua->start()
+      # does NOT leave $tx->result simply undef here - it actually throws (caught right here),
+      # unlike the same call made outside any try/catch at all. Capture the exception text via
+      # error_ref, if the caller wants to distinguish "timed out" from "some other failure"
+      # (docker_exec does) - the generic `return undef` below already matches every other
+      # caller's existing contract, this only adds detail for the one that asks for it.
+      ${ $opts->{'error_ref'} } = { 'message' => "$_" } if $opts->{'error_ref'};
       return undef;
    };
 
@@ -279,10 +295,16 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 #      discard output entirely (the caller only wants the final exit code).
 #   inactivity_timeout => seconds   optional, forwarded to call_socket_api - the exec can
 #      legitimately go quiet between output lines for longer than Mojo's 20s default.
-# Returns { execId, exitCode }. exitCode is undef if the final inspect call itself failed
-# (logged, not fatal - the exec's own output/completion already streamed successfully by that
-# point, so a caller with real output to show has already seen it). Dies with an Exception if
-# the create or start call fails outright - nothing was dispatched at all in that case.
+#   request_timeout    => seconds   optional, forwarded to call_socket_api - bounds the whole
+#      start-and-stream call regardless of activity. This is purely client-side abandonment:
+#      it does not kill the in-container process (see call_socket_api's own comment) - the
+#      hook may still be running/finishing in the background after docker_exec returns.
+# Returns { execId, exitCode, timedOut }. exitCode is undef if the start call itself timed out
+# (timedOut => 1; the in-container process's real outcome is then unknowable from here - see
+# above) or if the final inspect call failed after a successful stream (logged, not fatal - a
+# caller with real output to show has already seen it by that point). Dies with an Exception
+# if the create call fails outright, or the start call fails for any reason other than a
+# request_timeout - nothing was meaningfully dispatched in either case.
 sub docker_exec ($socket, $containerId, $args, $opts = {}) {
    my $createRes = call_socket_api($socket, "/containers/$containerId/exec", {
       'method' => 'POST',
@@ -323,13 +345,31 @@ sub docker_exec ($socket, $containerId, $args, $opts = {}) {
       }
    };
 
+   my $startError;
    my $startRes = call_socket_api($socket, "/exec/$execId/start", {
       'method'             => 'POST',
       'json'               => { 'Detach' => JSON::false, 'Tty' => JSON::false },
       'inactivity_timeout' => $opts->{'inactivity_timeout'},
+      'request_timeout'    => $opts->{'request_timeout'},
       'on_read'            => $onRead,
+      'error_ref'          => \$startError,
    });
-   die Exception->new( 'dbg' => "docker_exec: unable to start execId=$execId" ) unless $startRes;
+
+   unless( $startRes ) {
+      # Mojo's own error message text is the only signal call_socket_api's generic contract
+      # preserves here (verified empirically: a request_timeout gives "Request timeout"; a
+      # genuine connection failure gives a distinctly different message, e.g. "Can't
+      # connect: ...") - good enough to tell "we gave up waiting" apart from "nothing was
+      # dispatched at all", without needing call_socket_api to grow a more structured error
+      # contract for this one caller.
+      if( $startError && ($startError->{'message'} // '') =~ /timeout/i ) {
+         flog("docker_exec: execId=$execId timed out waiting for it to finish (client-side only - the in-container process is not killed by this)");
+         return { 'execId' => $execId, 'exitCode' => undef, 'timedOut' => 1 };
+      }
+      die Exception->new(
+         'dbg' => "docker_exec: unable to start execId=$execId" . ($startError ? ": $startError->{'message'}" : '')
+      );
+   }
 
    my $exitCode;
    my $inspectRes = call_socket_api($socket, "/exec/$execId/json", {});
@@ -340,7 +380,7 @@ sub docker_exec ($socket, $containerId, $args, $opts = {}) {
       flog("docker_exec: post-run inspect of execId=$execId failed; exitCode unavailable");
    }
 
-   return { 'execId' => $execId, 'exitCode' => $exitCode };
+   return { 'execId' => $execId, 'exitCode' => $exitCode, 'timedOut' => 0 };
 }
 
 sub get_uri ($uri) {
