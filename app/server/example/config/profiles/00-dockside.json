@@ -41,9 +41,11 @@
    // the repo, rebuilds the client and restarts Dockside's own services. See
    // docs/extensions/lifecycle-hooks.md.
    "hooks": {
-      "lifecycle:launch": "/home/dockside/dockside/app/scripts/hooks/dockside-self-update.sh"
+      "lifecycle:launch": {
+         "script": "/home/dockside/dockside/app/scripts/hooks/dockside-self-update.sh",
+         "manual": true
+      }
    },
-   "manualHooks": ["lifecycle:launch"],
    "options": [
       {
          "name": "ref",
