@@ -1346,24 +1346,15 @@ sub hook_is_running ($self, $name) {
 # reservation), for a status/log read endpoint to serve. Normalizes the numeric-ish fields
 # (exitCode/timedOut/busy/pid) back to real numbers before returning.
 #
-# Why this is needed - a real, non-obvious footgun found while verifying the read endpoint
-# live: every write to this record goes through store()/update(), which merges via
-# Util::cloneHash - and cloneHash decides whether to copy a value using Perl's `ne` (string
-# inequality) operator. Merely *evaluating* `ne` stringifies both operands as an unavoidable
-# side effect of how Perl's string-comparison operators work - it doesn't matter that
-# $busy/$timedOut/$rc started life as clean integers (literal `? 1 : 0` ternaries); once
-# cloneHash has compared them even once, they carry Perl's string flag too, and later
-# JSON::XS encoding (App.pm's json()) then emits them as quoted JSON strings, e.g. "busy":"0"
-# rather than the bare "busy":0 - confirmed empirically by reading the raw HTTP response and
-# the raw on-disk reservations.json. A quoted "0" is a real trap for any JSON consumer that
-# checks truthiness naively - e.g. Python's `if status.get('busy'):`, where the *string* "0"
-# is truthy, unlike the *number* 0. (This is a pre-existing, general characteristic of
-# cloneHash/update() - not something item B introduced, and not unique to hook fields - but
-# item B's read endpoint is the first place this codebase serves one of these round-tripped
-# fields back out over JSON for a non-Perl consumer to interpret as a boolean/number, so
-# that's where it needs correcting, rather than in cloneHash itself, which is a shared,
-# general-purpose utility used throughout the codebase - changing its comparison semantics
-# is a bigger, separate concern, out of scope here.)
+# The root cause this works around is fixed now (Util::cloneHash no longer stringifies
+# every value it copies as a side effect of comparing it via `ne` - see cloneHash's own
+# comment for the full story), so a freshly-written record no longer needs this. This stays
+# as a safety net for records already persisted to disk as JSON-quoted strings from before
+# that fix - decode_json on an on-disk `"busy":"0"` (a genuine JSON string in the file itself
+# now, not just a Perl-internal flag) always re-decodes as a Perl string, permanently, until
+# that exact field is next written - which normalizing here, rather than depending on every
+# such record eventually being rewritten, makes moot. Cheap, and harmless once every record
+# has been rewritten at least once post-fix, so left in rather than removed.
 sub hook_status ($self, $name) {
    my $status = ($self->data('hookStatus') // {})->{$name};
    return undef unless $status;
