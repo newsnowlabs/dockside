@@ -7,12 +7,12 @@ use Expect;
 use Try::Tiny;
 use Tie::File;
 use Storable qw(dclone);
-use Reservation::Mutate qw(update load_clean_map);
+use Reservation::Mutate qw(update load_clean_map record_hook_history);
 use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri sanitize_sensitive_text);
+use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
@@ -1233,6 +1233,117 @@ sub _hook_env ($self, $user) {
    }
 
    return (@envGit, @envOptions, @envGhToken);
+}
+
+# --- Hook status/history storage (item B) ---
+#
+# Two structures, deliberately different shapes for different jobs (see
+# docs/plans/lifecycle-hooks-review-followup.md item B):
+#
+# data('hookStatus') is the master record, a hash keyed by hook name - one entry per name,
+# holding its current/last invocation's state. This is what a pre-exec "is this already
+# running?" check (hook_is_running) and a "what happened last time?" query (hook_status) both
+# read. Safe to update via the ordinary store() below despite concurrent forked children
+# invoking *different* names on the same reservation: Util::cloneHash (which store()'s
+# update() uses) recurses into nested hashes key-by-key, so two such writes merge additively
+# rather than one clobbering the other.
+#
+# data('hookHistory') is a bounded, oldest-first array of past invocations across all names.
+# Deliberately NOT maintained via store() - cloneHash only recurses into hashes; an array
+# value is compared by reference and replaced wholesale, so two concurrent appends via that
+# path would race and the loser's row would simply be lost. record_hook_history()
+# (Reservation::Mutate) instead re-reads the reservation fresh under its own atomic mutate()
+# lock, appends, evicts, and writes back - safe under genuine concurrency.
+
+my $HOOK_HISTORY_MAX = 100;
+
+# Returns true if $name's last-known invocation is still running, per the master record. A
+# cheap, purely *optimizing* pre-exec check (see item B) - it has no visibility into an
+# auto-invoked lifecycle:launch/lifecycle:start run (those never touch this record at all - see
+# item B's auto-invoke exception), so a false "not running" is possible and expected in that
+# specific race. The in-container mkdir lock (run_hook() in launch.sh) remains the actual
+# safety net regardless, exactly as it already is today - this only ever saves a wasted
+# round-trip in the common case, it was never the thing overlap-safety depends on.
+sub hook_is_running ($self, $name) {
+   my $status = ($self->data('hookStatus') // {})->{$name};
+   return 0 unless $status && ($status->{'state'} // '') eq 'running';
+
+   # Newly-started, before the forked child has reached docker_exec()'s on_created callback
+   # yet (see hook_status_started/hook_status_set_running_details below) - neither liveness
+   # signal exists yet, so there is nothing to check; it is, definitionally, still running.
+   return 1 unless defined($status->{'pid'}) || defined($status->{'execId'});
+
+   # Stale-running detection, mirroring run_hook()'s own kill -0 reclaim for its in-container
+   # lock: a forked child that died without writing back (an nginx worker recycled from under
+   # it, OOM, etc.) would otherwise wedge this name as "running" forever. Two signals, cheapest
+   # first: the fork's own pid (same PID namespace as this process - a reused-pid false
+   # positive is the same accepted limitation run_hook()'s own check already has), then, if
+   # that's inconclusive, the exec API's own Running state.
+   if( defined $status->{'pid'} ) {
+      return 1 if kill(0, $status->{'pid'});
+   }
+   if( defined $status->{'execId'} ) {
+      my $res = call_socket_api($CONFIG->{'docker'}{'socket'}, "/exec/$status->{'execId'}/json", {});
+      if( $res && $res->is_success ) {
+         return 1 if decode_json($res->body)->{'Running'};
+      }
+   }
+
+   # Neither signal confirms liveness - self-heal the record (so a future check, and any
+   # status-read caller, sees 'aborted' rather than a misleadingly eternal 'running') and
+   # report not-running.
+   $self->hook_status_completed($name, { 'state' => 'aborted' });
+   return 0;
+}
+
+# Returns $name's master-record entry (undef if it has never been invoked on this
+# reservation), for a status/log read endpoint to serve.
+sub hook_status ($self, $name) {
+   return ($self->data('hookStatus') // {})->{$name};
+}
+
+# Called by the forking parent, before forking (see run_hook_sync below), to record that $name
+# has started - so both the parent and (via fork()'s copy-on-write memory) the child already
+# see 'running' in their own in-memory copy from the moment the child exists, and so a poller
+# sees 'running' immediately rather than a gap where the record doesn't exist yet. pid/execId
+# are deliberately not known yet at this point (the child's own pid only exists once fork()
+# returns, the exec id only once docker_exec's on_created fires) - see
+# hook_status_set_running_details, called by the child once both are known.
+sub hook_status_started ($self, $name, $logPath) {
+   my $all = $self->data('hookStatus') // {};
+   $all->{$name} = {
+      'name'      => $name,
+      'state'     => 'running',
+      'pid'       => undef,
+      'execId'    => undef,
+      'logPath'   => $logPath,
+      'startTime' => YYYYMMDDHHMMSS(time),
+   };
+   $self->data('hookStatus', $all)->store();
+}
+
+# Called by the forked child once it knows both its own pid ($$) and the exec id
+# (docker_exec's on_created callback) - see hook_status_started above for why these can't be
+# known any earlier.
+sub hook_status_set_running_details ($self, $name, $pid, $execId) {
+   my $all = $self->data('hookStatus') // {};
+   return unless $all->{$name};
+   $all->{$name}{'pid'} = $pid;
+   $all->{$name}{'execId'} = $execId;
+   $self->data('hookStatus', $all)->store();
+}
+
+# Called by the forked child once the hook has finished, timed out, or been confirmed aborted,
+# recording the outcome on both the master record and the bounded history array. $fields must
+# include 'state' explicitly ('done' or 'aborted') - never defaulted, so a caller can never
+# accidentally leave a completed entry reading 'running' by omission.
+sub hook_status_completed ($self, $name, $fields) {
+   my $all = $self->data('hookStatus') // {};
+   my $entry = { %{ $all->{$name} // { 'name' => $name } }, %$fields };
+   $all->{$name} = $entry;
+   $self->data('hookStatus', $all)->store();
+
+   record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
 }
 
 # Run a named hook (a reserved 'lifecycle:*' name or a profile-declared custom

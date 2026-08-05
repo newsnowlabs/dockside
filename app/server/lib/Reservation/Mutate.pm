@@ -4,7 +4,7 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map);
+our @EXPORT_OK = qw(update load_clean_map record_hook_history);
 
 use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash);
 use Exception;
@@ -149,7 +149,51 @@ sub load_clean_map ($class, @containerIds) {
 
          # Only rewrite the reservation db if there were actual updates.
          return $Updates;
-         
+
+      }
+   );
+}
+
+# record_hook_history:
+#
+# Atomically append $entry to reservation $id's data.hookHistory array, evicting oldest-first
+# down to at most $cap rows once appending would exceed it - but only rows in a terminal state
+# ($_->{'exitCode'} defined), never a still-running one (item B's storage-model rule: an
+# unrelated, more-frequent *other* hook name's invocations must never push a genuinely
+# still-running row out from under it, so the array can transiently exceed $cap while enough
+# invocations are genuinely in flight at once - expected, not a bug).
+#
+# Deliberately its own atomic mutator, bypassing Reservation::store()'s usual whole-record
+# update() - update()'s cloneHash-based merge (Util.pm) recurses safely into nested *hashes*
+# (data.hookStatus, keyed by hook name, merges key-by-key across concurrent forked children
+# updating different names, each blind to the other's simultaneous write), but an *array*
+# value is only ever compared by reference and replaced wholesale - two concurrent appends
+# via that path would race, and the loser's row would simply be lost. This function instead
+# re-reads the reservation fresh under mutate()'s own exclusive lock, appends, evicts, and
+# writes back - safe under genuine concurrency, unlike a read-append-store() round trip
+# through a possibly-stale in-memory copy of the whole array.
+sub record_hook_history ($id, $entry, $cap) {
+   return mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $data = $reservation->{'data'} //= {};
+         my $history = $data->{'hookHistory'} //= [];
+
+         push(@$history, $entry);
+
+         while( @$history > $cap ) {
+            my $evictIndex;
+            for my $i ( 0 .. $#$history ) {
+               if( defined $history->[$i]{'exitCode'} ) {
+                  $evictIndex = $i;
+                  last;
+               }
+            }
+            last unless defined $evictIndex;
+            splice(@$history, $evictIndex, 1);
+         }
+
+         return 1;
       }
    );
 }
