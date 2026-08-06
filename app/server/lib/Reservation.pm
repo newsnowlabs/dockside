@@ -1147,8 +1147,11 @@ sub exec ($reservation, $command = undef) {
 
       flog("exec: restarting IDE for reservationId=$reservationId, containerId=$containerId");
 
-      # Store before exec so the UI reflects the intended IDE immediately.
-      $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+      # Store before exec so the UI reflects the intended IDE immediately. Narrow store - see
+      # store_fields' own comment - since this reservation's own launch may concurrently be
+      # writing other, unrelated fields.
+      $reservation->data('runningIDE', $reservation->meta('IDE'));
+      $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
 
       run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', $reservation->unixuser(), $containerId, @Command);
 
@@ -1252,8 +1255,10 @@ sub exec ($reservation, $command = undef) {
    );
 
    # Store before exec so the UI reflects the intended IDE immediately,
-   # including during any retry window before the exec succeeds.
-   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+   # including during any retry window before the exec succeeds. Narrow store - see
+   # store_fields' own comment.
+   $reservation->data('runningIDE', $reservation->meta('IDE'));
+   $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
 
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
