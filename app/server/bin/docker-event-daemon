@@ -741,6 +741,14 @@ sub onContainerStart ($id, $eventCount) {
    # Clear any stale pending launch entry from a previous start of the same container.
    delete $pendingLaunch{$containerId};
 
+   # Also clear any stale %launchRecovering entry - a genuine new start event supersedes
+   # whatever a previous DED restart's still-unfinished recovery sweep was tracking for this
+   # containerId. Not clearing this is harmless in outcome (on_tick's own reload-and-check
+   # would just find this fresh cycle's own stages and no-op once they resolve) but wasteful and
+   # confusing to reason about - it would keep re-checking a reservation for an entirely
+   # unrelated launch cycle until that one, coincidentally, also finished.
+   delete $launchRecovering{$containerId};
+
    # Reset the launch:-DAG stage statuses for a fresh cycle - without this, this restart's
    # launch_advance call below (via launch_or_queue_until_launcher_ready) would see launch:prep's
    # still-persisted 'done' status from the *original* launch and skip the whole cascade
