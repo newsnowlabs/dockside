@@ -1334,32 +1334,38 @@ sub _hook_env ($self, $user) {
 # hooks.status is the master record, a hash keyed by hook name - one entry per name, holding
 # its current/last invocation's state. This is what a pre-exec "is this already running?"
 # check (hook_is_running) and a "what happened last time?" query (hook_status) both read.
-# Safe to update via the ordinary store() below despite concurrent forked children invoking
-# *different* names on the same reservation: Util::cloneHash (which store()'s update() uses)
-# recurses into nested hashes key-by-key, so two such writes merge additively rather than one
-# clobbering the other - the extra 'hooks' nesting level is just as safe, since cloneHash
-# recurses through it the same way.
+# Concurrent forked children invoking *different* names on the same reservation must never
+# clobber each other's entries - see Reservation::store_fields' own comment for exactly what
+# that requires (not just "it's a nested hash", which alone isn't sufficient - a writer whose
+# own in-memory copy carries a *stale* copy of a name it isn't even trying to change can still
+# clobber it via an ordinary whole-record store()). _hook_status_store_one below is what
+# actually makes this safe: it persists only the one name being written, via store_fields, so a
+# name genuinely absent from a writer's own payload is never touched on disk, no matter how
+# stale that writer's own snapshot of it is.
 #
 # hooks.history is a bounded, oldest-first array of past invocations across all names.
-# Deliberately NOT maintained via store() - cloneHash only recurses into hashes; an array
-# value is compared by reference and replaced wholesale, so two concurrent appends via that
-# path would race and the loser's row would simply be lost. record_hook_history()
+# Deliberately NOT maintained via store()/store_fields at all - cloneHash only recurses into
+# hashes; an array value is compared by reference and replaced wholesale, so two concurrent
+# appends via that path would race and the loser's row would simply be lost. record_hook_history()
 # (Reservation::Mutate) instead re-reads the reservation fresh under its own atomic mutate()
 # lock, appends, evicts, and writes back - safe under genuine concurrency.
 
 my $HOOK_HISTORY_MAX = 100;
 
-# Internal helpers isolating hooks.status's read/write boilerplate - every accessor below
-# reads the whole per-name status hash, mutates one entry, and writes the whole 'hooks' data
-# key back (history lives alongside it, untouched by these two).
+# Internal helpers isolating hooks.status's read/write boilerplate.
 sub _hook_status_all ($self) {
    return ($self->data('hooks') // {})->{'status'} // {};
 }
 
-sub _hook_status_store ($self, $all) {
-   my $hooks = $self->data('hooks') // {};
-   $hooks->{'status'} = $all;
-   $self->data('hooks', $hooks)->store();
+# Persists exactly one name's entry - never the whole status hash (see the block comment
+# above for why that distinction matters) - while keeping this process's own in-memory copy
+# consistent too, so a later read in the same process (e.g. hook_status_set_running_details
+# reading back what hook_status_started just wrote a moment earlier) still sees it; only the
+# disk write is narrowed, not this process's own view of its own writes.
+sub _hook_status_store_one ($self, $name, $entry) {
+   my $status = ( $self->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+   $status->{$name} = $entry;
+   $self->store_fields( { 'data' => { 'hooks' => { 'status' => { $name => $entry } } } } );
 }
 
 # Returns true if $name's last-known invocation is still running, per the master record. A
@@ -1433,27 +1439,22 @@ sub hook_status ($self, $name) {
 # returns, the exec id only once docker_exec's on_created fires) - see
 # hook_status_set_running_details, called by the child once both are known.
 sub hook_status_started ($self, $name, $logPath) {
-   my $all = $self->_hook_status_all;
-   $all->{$name} = {
+   $self->_hook_status_store_one( $name, {
       'name'      => $name,
       'state'     => 'running',
       'pid'       => undef,
       'execId'    => undef,
       'logPath'   => $logPath,
       'startTime' => YYYYMMDDHHMMSS(time),
-   };
-   $self->_hook_status_store($all);
+   } );
 }
 
 # Called by the forked child once it knows both its own pid ($$) and the exec id
 # (docker_exec's on_created callback) - see hook_status_started above for why these can't be
 # known any earlier.
 sub hook_status_set_running_details ($self, $name, $pid, $execId) {
-   my $all = $self->_hook_status_all;
-   return unless $all->{$name};
-   $all->{$name}{'pid'} = $pid;
-   $all->{$name}{'execId'} = $execId;
-   $self->_hook_status_store($all);
+   my $existing = $self->_hook_status_all->{$name} or return;
+   $self->_hook_status_store_one( $name, { %$existing, 'pid' => $pid, 'execId' => $execId } );
 }
 
 # Called by the forked child once the hook has finished, timed out, or been confirmed aborted,
@@ -1461,10 +1462,8 @@ sub hook_status_set_running_details ($self, $name, $pid, $execId) {
 # include 'state' explicitly ('done' or 'aborted') - never defaulted, so a caller can never
 # accidentally leave a completed entry reading 'running' by omission.
 sub hook_status_completed ($self, $name, $fields) {
-   my $all = $self->_hook_status_all;
-   my $entry = { %{ $all->{$name} // { 'name' => $name } }, %$fields };
-   $all->{$name} = $entry;
-   $self->_hook_status_store($all);
+   my $entry = { %{ $self->_hook_status_all->{$name} // { 'name' => $name } }, %$fields };
+   $self->_hook_status_store_one( $name, $entry );
 
    record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
 }
