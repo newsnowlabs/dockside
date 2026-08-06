@@ -107,8 +107,11 @@ sub queue_pending_launch ($reservation, $context, $launcher, $since) {
    my $containerId = $reservation->containerId;
 
    # The container is running but the IDE is not yet launched. Until it is,
-   # route UI IDE links according to the requested IDE, not any previous value.
-   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+   # route UI IDE links according to the requested IDE, not any previous value. Narrow store -
+   # see Reservation::store_fields' own comment - since this reservation may concurrently be
+   # written by other, unrelated fields.
+   $reservation->data('runningIDE', $reservation->meta('IDE'));
+   $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
 
    $pendingLaunch{$containerId} = {
       deadline      => time() + $LAUNCH_READY_MAX_WAIT,
