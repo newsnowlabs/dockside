@@ -1396,11 +1396,22 @@ sub hook_is_running ($self, $name) {
    if( defined $status->{'execId'} ) {
       my $res = call_socket_api($CONFIG->{'docker'}{'socket'}, "/exec/$status->{'execId'}/json", {});
       if( $res && $res->is_success ) {
-         return 1 if decode_json($res->body)->{'Running'};
+         my $info = decode_json($res->body);
+         return 1 if $info->{'Running'};
+
+         # Not running, and we have a real answer from the daemon about how it ended - use it,
+         # rather than defaulting to 'aborted' below regardless of what actually happened.
+         if( defined $info->{'ExitCode'} ) {
+            $self->hook_status_completed( $name, {
+               'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
+               'exitCode' => $info->{'ExitCode'},
+            } );
+            return 0;
+         }
       }
    }
 
-   # Neither signal confirms liveness - self-heal the record (so a future check, and any
+   # Neither signal gave a conclusive answer - self-heal the record (so a future check, and any
    # status-read caller, sees 'aborted' rather than a misleadingly eternal 'running') and
    # report not-running.
    $self->hook_status_completed($name, { 'state' => 'aborted' });
