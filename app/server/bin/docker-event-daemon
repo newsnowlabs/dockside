@@ -7,9 +7,20 @@
 # always has an up-to-date view of running containers.
 #
 # Event loop (eventHandler):
-# - Spawns `docker events --format "{{ json . }}"` as a subprocess.
-# - Uses IO::Async to process each event line as JSON in a non-blocking loop.
-# - Runs a 0.5s periodic timer alongside the event stream.
+# - A persistent, non-blocking streamed GET /events (Mojo::IOLoop, via Util::call_socket_api_async)
+#   - not a spawned `docker events` subprocess. Maps directly onto `docker events --format
+#   "{{ json . }}"`'s own output: newline-delimited JSON, one event object per line, verified
+#   live against this environment's own daemon (see
+#   docs/plans/lifecycle-hooks-review-followup.md item F3) - no demuxing needed here, unlike exec
+#   output.
+# - Runs a 0.5s recurring timer (Mojo::IOLoop->recurring) alongside the event stream, on the same
+#   reactor - verified live that a long-held-open stream and a recurring timer coexist correctly
+#   without blocking each other.
+# - The /events call's own inactivity_timeout is disabled (0) deliberately: this stream is meant
+#   to run forever, and Docker's own quiet periods routinely exceed Mojo's 20s default (verified
+#   live: idle for 22s with inactivity_timeout=>0 stayed open, no spurious error). No
+#   request_timeout either, for the same reason - that bounds the whole call regardless of
+#   activity, which is wrong for a perpetual stream.
 #
 # Debounced updates (timer tick):
 # Three tiers of update frequency:
@@ -25,7 +36,10 @@
 #                                     process inside the container via $reservation->exec().
 #
 # Container state update (_update / update):
-# - Calls the Docker API (/containers/json) via a Unix socket.
+# - Calls the Docker API (/containers/json) via a Unix socket - deliberately kept blocking (not
+#   migrated to the non-blocking primitive above): infrequent and fast in practice, not a real
+#   problem in this daemon's own history; migrating it is about reactor-design unity, not a need
+#   that's actually been hit, so it's out of scope for now (see item F3's own scope decision).
 # - Rebuilds the container map: short ID, name, status, image, ports, volume mounts
 #   (including the IDE volume path and host-data volume path).
 # - Preserves the last-known Size value when not requesting a fresh size calculation (avoiding slow calls).
@@ -34,10 +48,12 @@
 #   whose containers have disappeared.
 #
 # Lifecycle:
-# - Runs in an outer while(1) loop: if eventHandler crashes or the docker events stream closes,
-#   it restarts automatically after 1 second.
-# - Handles SIGTERM/SIGINT/SIGQUIT cleanly: sets a flag, stops the IO loop, terminates the
-#   docker events subprocess (SIGTERM then SIGKILL if needed), and exits.
+# - Runs in an outer while(1) loop: if eventHandler crashes or the /events stream closes (Docker
+#   restart, connection error, etc.), it restarts automatically after 1 second.
+# - Handles SIGTERM/SIGINT/SIGQUIT cleanly: sets a flag and stops the Mojo::IOLoop reactor -
+#   verified live that Mojo::IOLoop->stop cleanly interrupts an in-flight streamed request with
+#   no hang and no completion callback firing, so there is no subprocess-style two-stage
+#   SIGTERM-then-SIGKILL shutdown to do here any more; the process just exits.
 
 use v5.36;
 
@@ -45,17 +61,11 @@ use JSON;
 
 use Try::Tiny;
 use File::Path;
-use IO::Handle;
-use IO::Select;
-use IPC::Open2 qw(open2);
 use Time::HiRes qw(time);
-use URI::Escape;
 
-use IO::Async::Loop;
-use IO::Async::Protocol::LineStream;
-use IO::Async::Timer::Periodic;
+use Mojo::IOLoop;
 
-use Util qw(cacheReadWrite flog call_socket_api docker_container_path_exists);
+use Util qw(cacheReadWrite flog call_socket_api call_socket_api_async docker_container_path_exists);
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
@@ -74,7 +84,8 @@ my $SIGNAL_RECEIVED = 0;
 my $STOP_EVENT_LOOP = sub { };
 
 $SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = sub {
-   # This will interrupt can_read()/stop IO::Async loop.
+   # This will stop the Mojo::IOLoop reactor - see eventHandler's own comment on why that's a
+   # clean, sufficient shutdown now (verified live), with no subprocess to separately terminate.
    flog("eventHandler: Received SIGTERM; preparing to exit.");
    $SIGNAL_RECEIVED = 1;
    $STOP_EVENT_LOOP->();
@@ -350,23 +361,16 @@ sub onEvent ($event, $eventCount) {
    return 0; # Unrecognised event type/action; no update needed.
 }
 
-# Runs the main event loop: spawns 'docker events', wires up the async line reader and
-# periodic timer, then blocks until the stream closes, an exception occurs, or a signal fires.
-# On exit, cleans up the IO loop and terminates the subprocess gracefully.
+# Runs the main event loop: wires up the streamed /events reader and recurring timer on
+# Mojo::IOLoop's own (singleton) reactor, then blocks until the stream ends, an exception
+# occurs, or a signal fires. On exit, tears down this call's own timer/stream registrations -
+# necessary because Mojo::IOLoop is a singleton reused across every eventHandler() call (unlike
+# the old per-call `IO::Async::Loop->new`), so a restart that didn't clean up first would
+# accumulate a second, overlapping recurring timer alongside the first, each independently
+# calling update() and servicing %pendingLaunch - the same class of bug as the rogue
+# duplicate-daemon issue found elsewhere this session, just from a different cause.
 sub eventHandler {
    flog("eventHandler: Starting...");
-
-   my $IOHandle = IO::Handle->new();
-
-   my $pid = open2(
-      $IOHandle, undef, # undef: no stdin needed for 'docker events'.
-      $CONFIG->{'docker'}{'bin'}, 'events', '--format', "{{ json . }}"
-   ) || die Exception->new( 'msg' => "Unable to launch 'docker events'");
-
-   flog("eventHandler: Launched 'docker event' subprocess with PID $pid");
-
-   $IOHandle->autoflush(1);
-   $IOHandle->blocking(0); # Non-blocking I/O required for IO::Async multiplexing.
 
    my $eventCount = 0;
    my $lastSizesUpdateTime = 0;
@@ -376,128 +380,136 @@ sub eventHandler {
    my $debounceRelevantEventsPeriod = 1;
    my $relevantEvents = 1; # force a call to Update() on startup
 
-   my $timeout = IO::Async::Timer::Periodic->new(
-      interval => 0.5,
-      on_tick => sub {
-         try {
-            # Updating with sizes can be slow, so only do this if:
-            # - it's been more than 5s since the last event; and
-            # - it's been more than 55s since the last time sizes were updated.
-            if(time - $lastEventTime >= 5 && time - $lastSizesUpdateTime >= 55) {
-               $lastSizesUpdateTime = time;
-               flog("eventHandler:tick: updating docker containers with sizes");
-               update({ 'updateSizes' => 1 });
-            }
-            elsif($relevantEvents && time - $lastEventTime >= $debounceRelevantEventsPeriod) {
-               flog("eventHandler:tick: updating docker containers without sizes after ${debounceRelevantEventsPeriod}s after relevant events");
-               $relevantEvents = 0;
-               update();
-            }
-            elsif(time - $lastUpdateTime >= $debounceQuietPeriod) {
-               $lastUpdateTime = time;
-               flog("eventHandler:tick: updating docker containers without sizes after ${debounceQuietPeriod}s");
-               update();
-            }
+   my $recurringId = Mojo::IOLoop->recurring( 0.5 => sub ($loop) {
+      try {
+         # Updating with sizes can be slow, so only do this if:
+         # - it's been more than 5s since the last event; and
+         # - it's been more than 55s since the last time sizes were updated.
+         if(time - $lastEventTime >= 5 && time - $lastSizesUpdateTime >= 55) {
+            $lastSizesUpdateTime = time;
+            flog("eventHandler:tick: updating docker containers with sizes");
+            update({ 'updateSizes' => 1 });
          }
-         catch {
-            flog("eventHandler::on_tick: caught exception: " . (ref($_) ? $_->dbg : $_));
-         };
+         elsif($relevantEvents && time - $lastEventTime >= $debounceRelevantEventsPeriod) {
+            flog("eventHandler:tick: updating docker containers without sizes after ${debounceRelevantEventsPeriod}s after relevant events");
+            $relevantEvents = 0;
+            update();
+         }
+         elsif(time - $lastUpdateTime >= $debounceQuietPeriod) {
+            $lastUpdateTime = time;
+            flog("eventHandler:tick: updating docker containers without sizes after ${debounceQuietPeriod}s");
+            update();
+         }
+      }
+      catch {
+         flog("eventHandler::on_tick: caught exception: " . (ref($_) ? $_->dbg : $_));
+      };
 
-         # Start any pending IDE launches whose launcher path has appeared.
-         if (%pendingLaunch) {
-            try {
-               for my $cid (keys %pendingLaunch) {
-                  my $entry = $pendingLaunch{$cid};
-                  next if time() < $entry->{'nextTime'};
+      # Start any pending IDE launches whose launcher path has appeared.
+      if (%pendingLaunch) {
+         try {
+            for my $cid (keys %pendingLaunch) {
+               my $entry = $pendingLaunch{$cid};
+               next if time() < $entry->{'nextTime'};
 
-                  if (time() >= $entry->{'deadline'}) {
-                     flog("eventHandler:tick: giving up on pending IDE launch for reservationId=" . $entry->{'reservationId'} . " with containerId=$cid after ${LAUNCH_READY_MAX_WAIT}s waiting for launcher '" . $entry->{'launcher'} . "'");
-                     delete $pendingLaunch{$cid};
-                     next;
-                  }
-
-                  flog("eventHandler:tick: checking pending IDE launch for reservationId=" . $entry->{'reservationId'} . " with containerId=$cid");
-
-                  Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
-
-                  my $reservations = Reservation->load({ 'containerId' => $cid });
-                  if (!@$reservations) {
-                     flog("eventHandler:tick: containerId=$cid no longer managed; cancelling pending IDE launch");
-                     delete $pendingLaunch{$cid};
-                     next;
-                  }
-
-                  my $reservation = $reservations->[0];
-                  my $launcher = launcher_wait_path($reservation) // $entry->{'launcher'};
-
-                  if(defined($launcher) && $launcher ne '' && !launcher_path_exists($reservation, $launcher, $entry->{'startTime'})) {
-                     flog("eventHandler:tick: launcher '$launcher' still not present (or predates container start) for reservationId=" . $reservation->id . " with containerId=$cid");
-                     $entry->{'launcher'} = $launcher;
-                     $entry->{'nextTime'} = time() + $LAUNCH_READY_INTERVAL;
-                     next;
-                  }
-
-                  try {
-                     $reservation->exec();
-                     flog("eventHandler:tick: pending IDE launch succeeded for reservationId=" . $reservation->id . " with containerId=$cid");
-                     delete $pendingLaunch{$cid};
-                  }
-                  catch {
-                     my $dbg = ref($_) ? $_->dbg() : $_;
-                     flog("eventHandler:tick: pending IDE launch failed after launcher became ready for reservationId=" . $reservation->id . " with containerId=$cid; cancelling pending launch: $dbg");
-                     delete $pendingLaunch{$cid};
-                  };
+               if (time() >= $entry->{'deadline'}) {
+                  flog("eventHandler:tick: giving up on pending IDE launch for reservationId=" . $entry->{'reservationId'} . " with containerId=$cid after ${LAUNCH_READY_MAX_WAIT}s waiting for launcher '" . $entry->{'launcher'} . "'");
+                  delete $pendingLaunch{$cid};
+                  next;
                }
+
+               flog("eventHandler:tick: checking pending IDE launch for reservationId=" . $entry->{'reservationId'} . " with containerId=$cid");
+
+               Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+
+               my $reservations = Reservation->load({ 'containerId' => $cid });
+               if (!@$reservations) {
+                  flog("eventHandler:tick: containerId=$cid no longer managed; cancelling pending IDE launch");
+                  delete $pendingLaunch{$cid};
+                  next;
+               }
+
+               my $reservation = $reservations->[0];
+               my $launcher = launcher_wait_path($reservation) // $entry->{'launcher'};
+
+               if(defined($launcher) && $launcher ne '' && !launcher_path_exists($reservation, $launcher, $entry->{'startTime'})) {
+                  flog("eventHandler:tick: launcher '$launcher' still not present (or predates container start) for reservationId=" . $reservation->id . " with containerId=$cid");
+                  $entry->{'launcher'} = $launcher;
+                  $entry->{'nextTime'} = time() + $LAUNCH_READY_INTERVAL;
+                  next;
+               }
+
+               try {
+                  $reservation->exec();
+                  flog("eventHandler:tick: pending IDE launch succeeded for reservationId=" . $reservation->id . " with containerId=$cid");
+                  delete $pendingLaunch{$cid};
+               }
+               catch {
+                  my $dbg = ref($_) ? $_->dbg() : $_;
+                  flog("eventHandler:tick: pending IDE launch failed after launcher became ready for reservationId=" . $reservation->id . " with containerId=$cid; cancelling pending launch: $dbg");
+                  delete $pendingLaunch{$cid};
+               };
             }
-            catch {
-               flog("eventHandler::on_tick::pendingLaunch: caught exception: " . (ref($_) ? $_->dbg : $_));
-            };
-         }
-      },
-   );
-   
-   my $loop = IO::Async::Loop->new;
-
-   my $proto = IO::Async::Protocol::LineStream->new(
-      handle => $IOHandle,
-
-      on_read_line => sub ($self, $line) {
-         # $line does not include the newline
-         my $event;
-         eval { $event = decode_json($line); 1 } or do {
-            flog("docker events: JSON decode failed: $@ ; line=[$line]");
-            return;
-         };
-
-         $eventCount++;
-         $lastEventTime = time;
-
-         try {
-            $relevantEvents += onEvent($event, $eventCount);
          }
          catch {
-            flog("eventHandler::on_read_line #$eventCount: caught exception: " . (ref($_) ? $_->dbg : $_));
+            flog("eventHandler::on_tick::pendingLaunch: caught exception: " . (ref($_) ? $_->dbg : $_));
          };
-      },
+      }
+   } );
 
-      on_read_eof => sub ($self) {
-         flog("docker events: EOF");
-         $loop->stop;
-      },
+   # Persistent, non-blocking streamed GET /events - see this file's own header comment for the
+   # full reasoning (framing verified live, inactivity_timeout=>0 verified live, no
+   # request_timeout deliberately). Plain newline-delimited JSON, one event object per line - a
+   # running buffer is kept across on_read calls since a call may deliver a partial line or
+   # several at once, the same discipline Util::docker_exec's own frame demuxer uses for exec
+   # output.
+   my $buf = '';
+   call_socket_api_async(
+      $CONFIG->{'docker'}{'socket'},
+      '/events',
+      {
+         'inactivity_timeout' => 0,
+         'on_read' => sub ($bytes) {
+            $buf .= $bytes;
+            while( (my $i = index($buf, "\n")) >= 0 ) {
+               my $line = substr($buf, 0, $i);
+               $buf = substr($buf, $i + 1);
+               next unless length($line);
 
-      on_closed => sub ($self) {
-         flog("docker events: closed");
-         $loop->stop;
+               my $event;
+               eval { $event = decode_json($line); 1 } or do {
+                  flog("docker events: JSON decode failed: $@ ; line=[$line]");
+                  next;
+               };
+
+               $eventCount++;
+               $lastEventTime = time;
+
+               try {
+                  $relevantEvents += onEvent($event, $eventCount);
+               }
+               catch {
+                  flog("eventHandler::on_read #$eventCount: caught exception: " . (ref($_) ? $_->dbg : $_));
+               };
+            }
+         },
       },
+      sub ($result, $err) {
+         # Fires exactly once, whenever the stream ends for any reason - graceful EOF,
+         # connection error, or (verified live) NOT our own shutdown: Mojo::IOLoop->stop
+         # interrupts the stream without ever calling this back. So reaching here always means
+         # "the stream ended on its own" - stop the reactor so eventHandler returns and the
+         # outer while(1) loop below reconnects, exactly as it already did for the old
+         # subprocess's on_read_eof/on_closed.
+         flog("docker events: stream ended" . ( $err ? " with error: $err" : ( $result ? sprintf(" (code=%d)", $result->code) : '' ) ));
+         Mojo::IOLoop->stop;
+      }
    );
 
-   $timeout->start;
-   $loop->add($timeout);
-   $loop->add($proto);
-   $STOP_EVENT_LOOP = sub { $loop->stop; };
+   $STOP_EVENT_LOOP = sub { Mojo::IOLoop->stop; };
 
    try {
-      $loop->run;
+      Mojo::IOLoop->start;
    }
    catch {
       flog("eventHandler: caught exception: " . (ref($_) ? $_->dbg : $_));
@@ -506,20 +518,14 @@ sub eventHandler {
 
    # Reset to no-op so a late SIGTERM arriving after loop exit doesn't call stop on a dead loop.
    $STOP_EVENT_LOOP = sub {};
+
+   # Mojo::IOLoop is a singleton, reused across every eventHandler() call (unlike the old
+   # per-call IO::Async::Loop->new) - explicitly remove this call's own recurring timer or a
+   # later restart accumulates a second, overlapping one alongside it. See this sub's own
+   # header comment for why that matters, not just tidiness.
+   Mojo::IOLoop->remove($recurringId);
+
    flog("eventHandler: Ending...");
-   close $IOHandle;
-
-   flog(sprintf("eventHandler: Sending signal TERM=%d to 'docker events' subprocess PID $pid", kill(15, $pid)));
-   sleep 1;
-   
-   if( waitpid( $pid, 0 ) == $pid ) {
-      flog("eventHandler: Reaped 'docker events' subprocess PID $pid");
-   }
-   else {
-      flog(sprintf("eventHandler: Sending signal KILL=%d to 'docker events' subprocess PID $pid", kill(9, $pid)));
-   }
-
-   flog("eventHandler: Ended.");
 }
 
 ####################################################################################################
