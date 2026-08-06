@@ -41,11 +41,16 @@
 #                                     dependents, so a single launch_advance call drives the
 #                                     whole DAG to completion on its own.
 #
-# Container state update (_update / update):
-# - Calls the Docker API (/containers/json) via a Unix socket - deliberately kept blocking (not
-#   migrated to the non-blocking primitive above): infrequent and fast in practice, not a real
-#   problem in this daemon's own history; migrating it is about reactor-design unity, not a need
-#   that's actually been hit, so it's out of scope for now (see item F3's own scope decision).
+# Container state update (_update_merge / update_async):
+# - Calls the Docker API (/containers/json) via a Unix socket, non-blocking (call_socket_api_async).
+#   size=true (only when 'updateSizes' is requested and $CONFIG->{'docker'}{'sizes'} allows it)
+#   is genuinely, not just theoretically, slow - measured at ~30x the no-sizes call's own latency
+#   against a real daemon with a modest container count, scaling with fleet size - so this one
+#   was worth migrating even though it's infrequent (~every 55s at most): the reactor would
+#   otherwise stall for that whole duration, undermining the entire point of this daemon being
+#   async at all. docker_container_path_exists (used by launcher_path_exists) stays blocking -
+#   confirmed genuinely fast (a single-container stat, not proportional to fleet size) and not
+#   worth the conversion for its own sake.
 # - Rebuilds the container map: short ID, name, status, image, ports, volume mounts
 #   (including the IDE volume path and host-data volume path).
 # - Preserves the last-known Size value when not requesting a fresh size calculation (avoiding slow calls).
@@ -576,47 +581,18 @@ sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
    } );
 }
 
-# Updates the container state by retrieving the current container list
-# from the Docker API and merging it with the existing container data.
-#
-# Parameters:
-# - $oldJSON: A JSON string representing the previous state of the containers.
-# - $opts: A hash reference containing options, specifically
-#   - 'updateSizes' => undef|1
-#     whether to include container sizes in the API request.
-#
-# Returns:
-# A JSON string representing the updated container state, including
-# both the existing and newly retrieved container data.
-#
-# Throws:
-# Exception if unable to retrieve the container list from the Docker API
-# or if the API response is not successful.
-
-sub _update ($oldJSON, $opts) {
-   # $CONFIG->{'docker'}{'sizes'} can disable size tracking entirely, not just defer it.
-   my $path = '/containers/json?all=true' . (($CONFIG->{'docker'}{'sizes'} && $opts->{'updateSizes'}) ? '&size=true' : '');
-
-   flog("update: requesting container list" . ($opts->{'updateSizes'} ? ' with sizes' : ' without sizes'));
-
-   my $result = call_socket_api(
-      $CONFIG->{'docker'}{'socket'},
-      $path
-   );
-
-   unless($result) {
-      die Exception->new( 'dbg' => "Unable to execute Docker API call: $path #1", 'msg' => "Unable to retrieve container list" );
-   }
-
-   if(!$result->is_success) {
-      die Exception->new( 'msg' => sprintf("Unable to obtain container list via $path (response code %d, error '%s')", $result->code, $result->message) );
-   }
-
-   my $newContainersFromAPI;
+# Pure, synchronous merge of an already-fetched Docker /containers/json response with the
+# existing containers.json content - no I/O of its own. Split out from what used to be _update's
+# single function (fetch + merge in one, called from inside cacheReadWrite's own held lock) so
+# the (potentially slow - see update_async's own comment) fetch can happen *before* the lock is
+# ever taken, leaving only this fast, pure step to run under it. $newContainersFromAPI is the
+# decoded body of the API response; $oldJSON is cacheReadWrite's own existing-file content
+# (read fresh, right before this runs - see update_async's own comment on why that's a genuine,
+# if incidental, improvement over the old single-function shape, not just a refactor).
+sub _update_merge ($newContainersFromAPI, $oldJSON) {
    my $oldContainers;
    try {
       $oldContainers = $oldJSON ? decode_json($oldJSON)->{'containers'} : {};
-      $newContainersFromAPI = decode_json($result->body);
    }
    catch {
       $oldContainers = {};
@@ -670,104 +646,125 @@ sub _update ($oldJSON, $opts) {
    return encode_json($newContainersFile);
 }
 
-# Updates the container state by retrieving the current container list
-# from the Docker API and merging it with the existing container data.
+# Updates the container state by retrieving the current container list from the Docker API
+# (non-blocking) and merging it with the existing container data. $opts->{'updateSizes'} (only
+# when $CONFIG->{'docker'}{'sizes'} also allows it) adds Docker's own size=true, which computes
+# every container's RW-layer diff size - genuinely slow, not just theoretically: measured at
+# ~30x the no-sizes call's own latency against this host's real daemon with a modest container
+# count, and size=true's cost scales with fleet size/filesystem activity, not something a better
+# query fixes. This is exactly why this call is non-blocking at all: the point isn't to make
+# size=true itself faster (it can't be - that cost is Docker's own, not this call's), it's that
+# DED's own reactor - servicing /events and every in-flight launch dispatch - stays responsive
+# for that whole duration instead of stalling on it.
 #
-# Parameters:
-# - $opts: A hash reference containing options, specifically
-#   - 'updateSizes' => undef|1
-#     whether to include container sizes in the API request.
-#
-# Returns:
-# A JSON string representing the updated container state, including
-# both the existing and newly retrieved container data.
-#
-# Throws:
-# Exception if unable to retrieve the container list from the Docker API
-# or if the API response is not successful.
-sub update ($opts = {}) {
+# The fetch happens *before* cacheReadWrite is ever called, deliberately - nothing about
+# fetching depends on containers.json's own content, so there's no correctness reason to hold
+# its lock for the fetch's duration (unlike the old single-function _update, which held it for
+# exactly that - a side effect of being written as one plain synchronous function passed
+# straight into cacheReadWrite, not because the lock genuinely needed to span the fetch). cacheReadWrite
+# itself needs no changes at all: only the fast, pure merge (_update_merge, called from here)
+# ever runs under its lock now, exactly its existing synchronous contract, same as its other
+# callers throughout the codebase (Profile/User/Role management) still get.
+sub update_async ($opts, $cb) {
+   # $CONFIG->{'docker'}{'sizes'} can disable size tracking entirely, not just defer it.
+   my $path = '/containers/json?all=true' . (($CONFIG->{'docker'}{'sizes'} && $opts->{'updateSizes'}) ? '&size=true' : '');
 
-   # cacheReadWrite handles the atomic read-modify-write cycle: it reads the existing
-   # file, passes its content as $oldJSON to _update, then writes the returned JSON back.
-   my $containersJSON = cacheReadWrite(
-      $CONFIG->{'containersPath'},
-      \&_update,
-      $opts
-   );
+   flog("update: requesting container list" . ($opts->{'updateSizes'} ? ' with sizes' : ' without sizes'));
 
-   try {
-      my $containersFile = decode_json($containersJSON);
-      my $containers = $containersFile->{'containers'};
+   call_socket_api_async( $CONFIG->{'docker'}{'socket'}, $path, {}, sub ($result, $err) {
+      try {
+         unless ($result) {
+            die Exception->new( 'dbg' => "Unable to execute Docker API call: $path #1", 'msg' => "Unable to retrieve container list: $err" );
+         }
+         unless ($result->is_success) {
+            die Exception->new( 'msg' => sprintf("Unable to obtain container list via $path (response code %d, error '%s')", $result->code, $result->message) );
+         }
 
-      # Assign ExpiryTimes to Reservations missing containers, and clean up old Reservations.
-      Reservation->load_clean_map(keys %$containers);
-   }
-   catch {
-      flog("update: caught exception: " . (ref($_) ? $_->dbg : $_));
-   };
+         my $newContainersFromAPI = decode_json($result->body);
+
+         # cacheReadWrite reads containers.json's own current content fresh, right here, right
+         # before the merge - a genuine improvement over the old shape, not just incidental: the
+         # Size-preservation read below is now as recent as possible, rather than read once
+         # before a (possibly slow) fetch that has already happened by this point regardless.
+         my $containersJSON = cacheReadWrite(
+            $CONFIG->{'containersPath'},
+            sub ($oldJSON) { _update_merge($newContainersFromAPI, $oldJSON) },
+         );
+
+         my $containersFile = decode_json($containersJSON);
+         my $containers = $containersFile->{'containers'};
+
+         # Assign ExpiryTimes to Reservations missing containers, and clean up old Reservations.
+         Reservation->load_clean_map(keys %$containers);
+      }
+      catch {
+         flog("update: caught exception: " . (ref($_) ? $_->dbg : $_));
+      };
+      $cb->() if $cb;
+   } );
 }
 
 # Called when a container start event is received. Updates container state, reloads all
 # data files (config, users, reservations, containers), then launches the IDE process
-# inside the container if it belongs to a Dockside-managed reservation.
+# inside the container if it belongs to a Dockside-managed reservation. Non-blocking throughout
+# (update_async) - returns immediately, continuing via callback once the container-state update
+# settles; onEvent (its only caller) never used this function's own return value, so nothing
+# needed adjusting there.
 sub onContainerStart ($id, $eventCount) {
 
-   # Record the time the start event was received, before the slower update()/Data::load()
-   # calls below; used to detect stale launcher symlinks left over in the IDE volume from a
+   # Record the time the start event was received, before the slower update_async()/Data::load()
+   # work below; used to detect stale launcher symlinks left over in the IDE volume from a
    # previous container run. Capturing this later would let a launcher written by a fast
-   # entrypoint (before update()/Data::load() complete) look older than it really is.
+   # entrypoint (before that work completes) look older than it really is.
    my $T1 = time();
 
    # This container's details might not yet have been loaded. Do this now.
    flog("onContainerStart #$eventCount: Updating docker containers without sizes before reloading reservations");
-   update();
+   update_async( {}, sub {
+      # Reload config, reservations and containers, to access Reservation->load and %CONFIG.
+      # Reload users and roles too, in case we can update owner's name and email [at later date].
+      Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
 
-   # Reload config, reservations and containers, to access Reservation->load and %CONFIG.
-   # Reload users and roles too, in case we can update owner's name and email [at later date].
-   Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+      my $reservations = Reservation->load({ 'containerId' => $id });
+      if(!@$reservations) {
+         flog("onContainerStart #$eventCount: we don't manage containerId=$id");
+         return;
+      }
 
-   my $reservations = Reservation->load({ 'containerId' => $id });
-   if(!@$reservations) {
-      flog("onContainerStart #$eventCount: we don't manage containerId=$id");
-      return undef;
-   }
+      my $reservation = $reservations->[0]; # Safe: filtered by containerId, so at most one match.
+      my $reservationId = $reservation->id;
+      my $containerId = $reservation->containerId;
 
-   my $reservation = $reservations->[0]; # Safe: filtered by containerId, so at most one match.
-   my $reservationId = $reservation->id;
-   my $containerId = $reservation->containerId;
+      flog("onContainerStart #$eventCount: we manage reservationId=$reservationId with containerId=$containerId");
 
-   flog("onContainerStart #$eventCount: we manage reservationId=$reservationId with containerId=$containerId");
+      # Clear any stale pending launch entry from a previous start of the same container.
+      delete $pendingLaunch{$containerId};
 
-   # Clear any stale pending launch entry from a previous start of the same container.
-   delete $pendingLaunch{$containerId};
+      # Also clear any stale %launchRecovering entry - a genuine new start event supersedes
+      # whatever a previous DED restart's still-unfinished recovery sweep was tracking for this
+      # containerId. Not clearing this is harmless in outcome (on_tick's own reload-and-check
+      # would just find this fresh cycle's own stages and no-op once they resolve) but wasteful
+      # and confusing to reason about - it would keep re-checking a reservation for an entirely
+      # unrelated launch cycle until that one, coincidentally, also finished.
+      delete $launchRecovering{$containerId};
 
-   # Also clear any stale %launchRecovering entry - a genuine new start event supersedes
-   # whatever a previous DED restart's still-unfinished recovery sweep was tracking for this
-   # containerId. Not clearing this is harmless in outcome (on_tick's own reload-and-check
-   # would just find this fresh cycle's own stages and no-op once they resolve) but wasteful and
-   # confusing to reason about - it would keep re-checking a reservation for an entirely
-   # unrelated launch cycle until that one, coincidentally, also finished.
-   delete $launchRecovering{$containerId};
+      # Reset the launch:-DAG stage statuses for a fresh cycle - without this, this restart's
+      # launch_advance call below (via launch_or_queue_until_launcher_ready) would see
+      # launch:prep's still-persisted 'done' status from the *original* launch and skip the
+      # whole cascade (including lifecycle:start, which must fire on every restart - see
+      # launch_reset_stages' own comment). Exactly once here, not inside the pendingLaunch retry
+      # loop below (on_tick) - those retries are for this *same* start event, and must keep
+      # seeing what this reset already put in place.
+      launch_reset_stages($reservation);
 
-   # Reset the launch:-DAG stage statuses for a fresh cycle - without this, this restart's
-   # launch_advance call below (via launch_or_queue_until_launcher_ready) would see launch:prep's
-   # still-persisted 'done' status from the *original* launch and skip the whole cascade
-   # (including lifecycle:start, which must fire on every restart - see launch_reset_stages' own
-   # comment). Exactly once here, not inside the pendingLaunch retry loop below (on_tick) - those
-   # retries are for this *same* start event, and must keep seeing what this reset already put
-   # in place.
-   launch_reset_stages($reservation);
-
-   my $launched;
-   try {
-      $launched = launch_or_queue_until_launcher_ready($reservation, "onContainerStart #$eventCount", $T1);
-   }
-   catch {
-      my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
-      flog("onContainerStart #$eventCount: failed to launch IDE for reservationId=$reservationId with containerId=$containerId: dbg='$dbg'; msg='$msg'");
-   };
-
-   return $launched ? 1 : undef;
+      try {
+         launch_or_queue_until_launcher_ready($reservation, "onContainerStart #$eventCount", $T1);
+      }
+      catch {
+         my ($msg, $dbg) = ref($_) ? ($_->msg(), $_->dbg()) : ($_,$_);
+         flog("onContainerStart #$eventCount: failed to launch IDE for reservationId=$reservationId with containerId=$containerId: dbg='$dbg'; msg='$msg'");
+      };
+   } );
 }
 
 # Classifies a raw Docker event and dispatches to the appropriate handler.
@@ -814,7 +811,7 @@ sub onEvent ($event, $eventCount) {
 # necessary because Mojo::IOLoop is a singleton reused across every eventHandler() call (unlike
 # the old per-call `IO::Async::Loop->new`), so a restart that didn't clean up first would
 # accumulate a second, overlapping recurring timer alongside the first, each independently
-# calling update() and servicing %pendingLaunch - the same class of bug as the rogue
+# calling update_async() and servicing %pendingLaunch - the same class of bug as the rogue
 # duplicate-daemon issue found elsewhere this session, just from a different cause.
 sub eventHandler {
    flog("eventHandler: Starting...");
@@ -833,19 +830,22 @@ sub eventHandler {
          # - it's been more than 5s since the last event; and
          # - it's been more than 55s since the last time sizes were updated.
          if(time - $lastEventTime >= 5 && time - $lastSizesUpdateTime >= 55) {
-            $lastSizesUpdateTime = time;
+            $lastSizesUpdateTime = time;   # set at dispatch, not completion - prevents a second
+                                            # overlapping sizes fetch being kicked off before this
+                                            # one (genuinely slow - see update_async's own
+                                            # comment) has had a chance to land
             flog("eventHandler:tick: updating docker containers with sizes");
-            update({ 'updateSizes' => 1 });
+            update_async( { 'updateSizes' => 1 }, undef );
          }
          elsif($relevantEvents && time - $lastEventTime >= $debounceRelevantEventsPeriod) {
             flog("eventHandler:tick: updating docker containers without sizes after ${debounceRelevantEventsPeriod}s after relevant events");
             $relevantEvents = 0;
-            update();
+            update_async( {}, undef );
          }
          elsif(time - $lastUpdateTime >= $debounceQuietPeriod) {
             $lastUpdateTime = time;
             flog("eventHandler:tick: updating docker containers without sizes after ${debounceQuietPeriod}s");
-            update();
+            update_async( {}, undef );
          }
       }
       catch {
@@ -1030,8 +1030,16 @@ if( ! -d $CONFIG->{'tmpPath'} ) {
 # This ensures the Perl API server (nginx) always finds a current containers.json
 # on its first request, avoiding the startup race where profiles are loaded with
 # an empty network list because containers.json has not yet been written.
+# update_async only ever queues its request; nothing is driving Mojo::IOLoop's reactor yet at
+# this point in the script, so run it just long enough to let this one call settle - the same
+# "run until done, then stop" pattern any of this file's own dispatch closures use implicitly
+# once eventHandler's own Mojo::IOLoop->start is running, just applied once, standalone, here.
+# There is nothing else this process could usefully be doing concurrently with this one
+# call anyway (no /events stream, no launch dispatch - both start only once eventHandler runs),
+# so there's no concurrency to lose by waiting for it inline.
 flog("Writing initial container state synchronously...");
-try { update() } catch { flog("Initial update failed (non-fatal): " . (ref($_) ? $_->dbg : $_)) };
+update_async( {}, sub { Mojo::IOLoop->stop; } );
+Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
 
 # Restart-recovery: a launch stage left 'running' in hooks.status belonged to a dispatch of the
 # *previous* docker-event-daemon process - that process is gone, so there is no completion
