@@ -185,6 +185,12 @@ class HooksTests(TestCase):
         # 'lifecycle:launch', and no auto-invoke of its own.
         name = self._sfx('inttest-hook-custom')
         self._create_hook_container(name, marker='auto1')
+        # Wait for the auto-invoked 'lifecycle:launch' to actually settle before proceeding -
+        # otherwise the final assertions below race its own async completion, relying purely on
+        # the 'update' hook's own round-trip (below) incidentally taking long enough. Other
+        # tests in this file (test_01/02/03/08/12) already wait explicitly for exactly this
+        # reason; this one just hadn't been given the same treatment.
+        self._wait_hook_settled(name)
 
         # 'lifecycle:launch' auto-invokes at launch; 'update' does not - assert its
         # sentinel is entirely absent before we ever call it.

@@ -70,6 +70,17 @@ my $LAUNCH_READY_INTERVAL = 1;  # seconds between Docker API readiness checks
 
 my %pendingLaunch;  # containerId => { deadline => epoch, nextTime => epoch, launcher => path, reservationId => id }
 
+# containerId => 1, for reservations with a launch DAG cascade still in progress (see
+# Reservation::launch_advance/launch_in_flight). A different concern from %pendingLaunch above
+# (which is only about waiting for the launcher script to exist) - this covers the whole DAG,
+# from launch:prep's first dispatch through to lifecycle:start settling. Scanned every tick
+# (see on_tick below) so a stage that resolves synchronously (a skip) or asynchronously (a real
+# dispatch's forked child completing) gets its dependents considered without anything needing to
+# trigger that directly - see launch_advance's own comment for why nothing does. Entries are
+# removed once launch_in_flight says there's nothing left to do, keeping this bounded to
+# reservations genuinely mid-launch, not every reservation docker-event-daemon has ever seen.
+my %launchInFlight;
+
 my $SIGNAL_RECEIVED = 0;
 my $STOP_EVENT_LOOP = sub { };
 
@@ -107,8 +118,11 @@ sub queue_pending_launch ($reservation, $context, $launcher, $since) {
    my $containerId = $reservation->containerId;
 
    # The container is running but the IDE is not yet launched. Until it is,
-   # route UI IDE links according to the requested IDE, not any previous value.
-   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+   # route UI IDE links according to the requested IDE, not any previous value. Narrow store -
+   # see Reservation::store_fields' own comment - since this reservation's launch DAG may
+   # concurrently be writing other, unrelated fields.
+   $reservation->data('runningIDE', $reservation->meta('IDE'));
+   $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
 
    $pendingLaunch{$containerId} = {
       deadline      => time() + $LAUNCH_READY_MAX_WAIT,
@@ -129,7 +143,16 @@ sub launch_or_queue_until_launcher_ready ($reservation, $context, $since) {
       return undef;
    }
 
-   return $reservation->exec();
+   # Kicks off the whole launch:prep -> {launch:git, launch:ide, lifecycle:*} DAG (item F).
+   # Track this reservation so every subsequent tick's launch_advance call keeps the cascade
+   # moving (see %launchInFlight's own comment) - then run one scan immediately, rather than
+   # waiting for the next tick, so launch:prep itself dispatches without delay. Unlike the old
+   # $reservation->exec() this replaces, a truthy return here only means dispatch was
+   # *attempted* - real success/failure is recorded asynchronously in data('hooks') as each
+   # stage resolves, not known synchronously to this caller.
+   $launchInFlight{$reservation->containerId} = 1;
+   $reservation->launch_advance();
+   return 1;
 }
 
 # Updates the container state by retrieving the current container list
@@ -297,6 +320,15 @@ sub onContainerStart ($id, $eventCount) {
    # Clear any stale pending launch entry from a previous start of the same container.
    delete $pendingLaunch{$containerId};
 
+   # Reset the launch:-DAG stage statuses for a fresh cycle - without this, a restart's
+   # launch_advance call below (via launch_or_queue_until_launcher_ready) would see launch:prep's
+   # still-persisted 'done' status from the *original* launch and skip the whole cascade
+   # (including lifecycle:start, which must fire on every restart - see launch_reset_stages'
+   # own comment). Exactly once here, not inside the pendingLaunch retry loop below (on_tick) -
+   # those retries are for this *same* start event, and must keep seeing what this reset just
+   # put in place.
+   $reservation->launch_reset_stages();
+
    my $launched;
    try {
       $launched = launch_or_queue_until_launcher_ready($reservation, "onContainerStart #$eventCount", $T1);
@@ -435,8 +467,14 @@ sub eventHandler {
                   }
 
                   try {
-                     $reservation->exec();
-                     flog("eventHandler:tick: pending IDE launch succeeded for reservationId=" . $reservation->id . " with containerId=$cid");
+                     # See launch_or_queue_until_launcher_ready's own comment - dispatch is
+                     # fire-and-forget (forks internally), so "succeeded" below means the DAG
+                     # was kicked off, not that launch:prep itself has actually finished yet;
+                     # %launchInFlight (checked in the block below, every tick from now on)
+                     # is what carries the rest of the cascade forward.
+                     $launchInFlight{$cid} = 1;
+                     $reservation->launch_advance();
+                     flog("eventHandler:tick: pending IDE launch dispatched for reservationId=" . $reservation->id . " with containerId=$cid");
                      delete $pendingLaunch{$cid};
                   }
                   catch {
@@ -448,6 +486,42 @@ sub eventHandler {
             }
             catch {
                flog("eventHandler::on_tick::pendingLaunch: caught exception: " . (ref($_) ? $_->dbg : $_));
+            };
+         }
+
+         # Advance every reservation with a launch DAG still in progress (see %launchInFlight's
+         # own comment) - dispatches whatever's newly eligible, self-heals a stage stuck
+         # 'running' behind a dead process, and drops any reservation whose DAG has settled so
+         # this stays bounded to genuinely in-flight launches, not every reservation ever seen.
+         if (%launchInFlight) {
+            try {
+               for my $cid (keys %launchInFlight) {
+                  # Reload immediately before each fetch, not once before the whole loop - this
+                  # is DED's own long-standing discipline (see %pendingLaunch's block above,
+                  # which already does this per-entry) applied here too: with several containers
+                  # in flight at once, a single Data::load() call before the loop would leave
+                  # later iterations reading a snapshot that's already one or more store()
+                  # writes stale by the time they're reached.
+                  Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+                  my $reservations = Reservation->load({ 'containerId' => $cid });
+                  if (!@$reservations) {
+                     delete $launchInFlight{$cid};
+                     next;
+                  }
+
+                  my $reservation = $reservations->[0];
+                  try {
+                     $reservation->launch_advance();
+                  }
+                  catch {
+                     flog("eventHandler:tick:launchInFlight: caught exception advancing reservationId=" . $reservation->id . " with containerId=$cid: " . (ref($_) ? $_->dbg : $_));
+                  };
+
+                  delete $launchInFlight{$cid} unless $reservation->launch_in_flight();
+               }
+            }
+            catch {
+               flog("eventHandler::on_tick::launchInFlight: caught exception: " . (ref($_) ? $_->dbg : $_));
             };
          }
       },
@@ -537,6 +611,40 @@ if( ! -d $CONFIG->{'tmpPath'} ) {
 # an empty network list because containers.json has not yet been written.
 flog("Writing initial container state synchronously...");
 try { update() } catch { flog("Initial update failed (non-fatal): " . (ref($_) ? $_->dbg : $_)) };
+
+# Restart-recovery (item F coupling 4's "Polling hooks on restart"): a launch stage left
+# 'running' in hooks.status belonged to a fork of the *previous* docker-event-daemon process -
+# that process is gone, so nothing will ever advance it on its own. Seed %launchInFlight from
+# every reservation whose DAG isn't fully settled (launch_in_flight - covers both "stuck
+# 'running'" and "never got past a 'pending' stage before the previous process died"), then run
+# one launch_advance pass immediately for each: a stuck-'running' stage gets hook_is_running()'s
+# self-heal poll (real pid/exec-id liveness), and ordinary ticks (see on_tick's own
+# %launchInFlight block) carry each one the rest of the way from here - this is no longer a
+# separate one-time-only mechanism, just the normal seeding a fresh process needs before its
+# first tick. Deliberately placed only here, not inside eventHandler (which restarts on
+# crash/stream-close - see the file banner) - this must run once per *process* lifetime, not
+# once per eventHandler restart.
+try {
+   Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+   my $allReservations = Reservation->load();
+   my @inFlightIds = map { $_->containerId } grep { $_->launch_in_flight() } @$allReservations;
+   flog(sprintf("Restart-recovery: %d of %d reservation(s) have a launch still in progress...", scalar @inFlightIds, scalar @$allReservations));
+   for my $cid (@inFlightIds) {
+      # Reload immediately before each fetch, not just once before the whole discovery scan
+      # above - same reasoning as on_tick's own %launchInFlight block: with several
+      # reservations found in-flight, a stale-by-then snapshot for a later one in the list is
+      # avoidable at negligible cost.
+      Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+      my $reservations = Reservation->load({ 'containerId' => $cid });
+      next unless @$reservations;
+      my $reservation = $reservations->[0];
+      $launchInFlight{$cid} = 1;
+      $reservation->launch_advance();
+   }
+}
+catch {
+   flog("Restart-recovery sweep failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
+};
 
 # Restart eventHandler if the 'docker events' stream closes unexpectedly (e.g. Docker restart).
 while(1) {

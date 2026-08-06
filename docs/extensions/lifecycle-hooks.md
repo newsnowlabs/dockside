@@ -118,7 +118,7 @@ Hook names fall into two kinds:
 - Runs as the devtainer's own unix user (not root) — use `sudo` inside the script for anything privileged, the same way you would by hand.
 - `DOCKSIDE_OPTION_<NAME>` env vars for every option your profile defines (not just `ref` — define whatever option names your app needs, including per-repo ones for a multi-repo app).
 - `GH_TOKEN`, `GIT_URL`/`SSH_KNOWN_HOSTS_DOMAINS` if this profile also uses `gitURLs`.
-- `SSH_AUTH_SOCK` already pointed at a live ssh-agent socket — no setup needed, unlike writing your own entrypoint under pattern C: `run_hook()` discovers it automatically for an on-demand invocation, and the launch-time/start-time auto-invoke already has one from the same process tree's own `spawn_ssh_agent`.
+- `SSH_AUTH_SOCK` already pointed at a live ssh-agent socket — no setup needed, unlike writing your own entrypoint under pattern C: every hook invocation, whether the launch-time/start-time auto-invoke or an on-demand one, is its own independent `docker exec` and so never inherits the socket from `spawn_ssh_agent`'s own process tree — `run_hook()` discovers Dockside's managed agent itself before running your script, the same way for both.
 - Exit code `0` for success, non-zero for failure. `launch.sh` records the outcome as `/tmp/dockside/.hook-ready.<name>` or `.hook-failed.<name>` (scoped by hook name, so two different hooks' sentinels never collide), and (on failure) surfaces a warning via the same mechanism used for other launch-time warnings, visible in the devtainer's IDE/SSH terminal on next login.
 - Exit code `2` specifically means "a run was already in progress" (see [Concurrency](#concurrency) below) — not a script failure.
 

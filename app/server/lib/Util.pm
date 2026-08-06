@@ -279,13 +279,22 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 }
 
 # Runs $args->{'Cmd'} inside container $containerId via the Docker exec API directly (create,
-# then start non-detached) rather than forking the `docker` CLI - reusable primitive for item
-# B's non-blocking hook dispatch, and later item F's launch dispatch restructure (see
+# then start) rather than forking the `docker` CLI - reusable primitive for item B's
+# non-blocking hook dispatch, and item F's launch dispatch restructure (see
 # docs/plans/lifecycle-hooks-review-followup.md). $args:
 #   Cmd  => [...]   required, argv
 #   User => "..."   optional, exec as this user (matches `docker exec -u`)
 #   Env  => [...]   optional, "KEY=VALUE" strings (matches `docker exec --env`)
 # $opts:
+#   Detach             => 1   optional. Start detached (fire-and-forget) instead of the default
+#      non-detached start-and-stream: no output is ever attached or read (on_output is
+#      meaningless here and never called), and the call returns immediately after creation -
+#      { execId, exitCode => undef, timedOut => 0 } - without waiting for the process to finish
+#      or inspecting its outcome at all. Required for item F's perpetual launch:ide exec: the
+#      caller retains execId (via on_created, below) for its own later liveness polling instead
+#      - see item F's Enabler section for why Detach:true is a hard requirement there, not a
+#      convenience (a non-detached dispatch of a perpetual process would hold the connection
+#      open for the container's whole life).
 #   on_created         => sub ($execId) { ... }  optional, called once the exec exists but
 #      *before* it is started - lets a caller that needs to fork persist the exec id (for
 #      later abort/liveness detection - see item B) right away, without having to split the
@@ -325,6 +334,17 @@ sub docker_exec ($socket, $containerId, $args, $opts = {}) {
 
    my $execId = decode_json($createRes->body)->{'Id'};
    $opts->{'on_created'}->($execId) if $opts->{'on_created'};
+
+   if( $opts->{'Detach'} ) {
+      my $startRes = call_socket_api($socket, "/exec/$execId/start", {
+         'method' => 'POST',
+         'json'   => { 'Detach' => JSON::true, 'Tty' => JSON::false },
+      });
+      die Exception->new(
+         'dbg' => "docker_exec: unable to start (detached) execId=$execId"
+      ) unless $startRes && $startRes->code == 200;
+      return { 'execId' => $execId, 'exitCode' => undef, 'timedOut' => 0 };
+   }
 
    # Demultiplex Docker's own stream-multiplexed frame format directly: byte 0 is the stream
    # type (1=stdout, 2=stderr), bytes 4-7 a big-endian payload length, that many content bytes

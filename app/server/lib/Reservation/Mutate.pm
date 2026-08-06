@@ -4,7 +4,7 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map record_hook_history);
+our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field);
 
 use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash);
 use Exception;
@@ -197,6 +197,39 @@ sub record_hook_history ($id, $entry, $cap) {
          return 1;
       }
    );
+}
+
+# increment_data_field:
+#
+# Atomically increments $reservation.data.$key by 1 and returns the new value. Same rationale
+# and pattern as record_hook_history just above (its own comment explains the general
+# principle in full) - the read and the write both happen inside mutate()'s own exclusive lock,
+# against a freshly re-read reservation, never against this process's own in-memory copy.
+#
+# Deliberately not just "narrow the eventual store() payload down to {data => {$key => N}}":
+# narrowing what gets *sent* (see Reservation::store_fields) only protects fields a writer
+# isn't trying to change, by leaving them absent from its payload entirely - it does nothing
+# for a field the writer *is* trying to change, whose new value is computed by reading the
+# field's own prior value first (an increment, unlike an authoritative "set to X"). Two
+# increments computed from the same stale read would still silently lose one, no matter how
+# narrowly the write is scoped - only recomputing from a fresh value, under the same lock as
+# the write, closes that. (Today's calling code only ever attempts one increment per launch
+# cycle, per stage's own idempotency guard, so this isn't defending against a currently-known
+# concurrent second incrementer - it's closing the same class of gap record_hook_history
+# already closes for the history array, on the same principle, so a future caller doesn't
+# reopen it.)
+sub increment_data_field ($id, $key) {
+   my $newValue;
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $data = $reservation->{'data'} //= {};
+         $newValue = ( $data->{$key} // 0 ) + 1;
+         $data->{$key} = $newValue;
+         return 1;
+      }
+   );
+   return $newValue;
 }
 
 1;
