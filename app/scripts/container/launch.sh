@@ -232,11 +232,12 @@ gh_authenticate() {
    log "Authenticating to Github with token '${TOKEN:0:16}' ..."
    # Run in a subshell so `unset` (needed to stop `gh` warning that GH_TOKEN itself
    # is what's authenticating, instead of storing credentials) only strips GH_TOKEN
-   # from this subshell's own copy of the environment. gh_authenticate now runs
-   # directly in run_nonroot's own shell (see the comment at its call site), so an
-   # unscoped `unset` here would also strip GH_TOKEN from everything that runs
-   # afterwards in that same shell - including the later 'lifecycle:launch' hook
-   # subshell, which needs it.
+   # from this subshell's own copy of the environment, not from run_prep_nonroot's
+   # own shell that calls this function - defensive scoping for whatever else might
+   # run later in that shell, even though nothing currently does (the lifecycle
+   # hooks that used to run in this same shell/subshell are now their own
+   # independent execs, each with GH_TOKEN freshly injected via _hook_env - see
+   # docs/plans/lifecycle-hooks-review-followup.md item F).
    ( unset GH_TOKEN; $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") ) || log "WARN: gh auth login failed"
 }
 
@@ -395,14 +396,18 @@ checkout_git_ref() {
 # Run a hook named $1, using the executable at path $2 - either the reserved lifecycle
 # names 'lifecycle:launch'/'lifecycle:start' or a profile-declared custom name (an
 # in-image, profile-author-trusted executable; $2 is resolved server-side per name - see
-# Reservation::hook_script/_hook_env). Invoked both automatically, from run_nonroot after
-# git/ssh/gh setup - 'lifecycle:launch' only on this devtainer's true first launch,
-# 'lifecycle:start' every launch including that one (see run_nonroot; the script paths for
-# each arrive as two separate env vars, DOCKSIDE_HOOK_SCRIPT/DOCKSIDE_HOOK_SCRIPT_START,
-# since a single exec must be able to fire both) - and on demand, for any declared name, any
-# time later, via a fresh `docker exec ... launch.sh run_hook <name> <script>` (see
-# Reservation::run_hook_sync, which passes its one resolved script path as $2 directly
-# rather than via an env var). Both paths call this same function, so it self-serializes per
+# Reservation::hook_script/_hook_env). Every invocation - auto-fired or on demand - reaches
+# this the same way: its own independent `docker exec ... launch.sh run_hook <name> <script>`,
+# script path passed as a plain argument (see Reservation::dispatch_hook_exec). Auto-fire is
+# DED dispatching this exec itself, after launch:git (the git/ssh/gh setup phase) succeeds or
+# has nothing to do - 'lifecycle:launch' only when this devtainer's DOCKSIDE_START_COUNT is 1,
+# 'lifecycle:start' every launch including that one - see
+# docs/plans/lifecycle-hooks-review-followup.md item F's "Dispatch orchestration" section for
+# the full dispatch DAG. This is not a special case of this function at all: on-demand
+# invocation (Reservation::run_hook_sync) reaches it through the identical path, which is
+# exactly what keeps a hook's own status record consistent regardless of how it was fired -
+# there's only ever one recorder. Every invocation calls this same function, so it
+# self-serializes per
 # name via an mkdir-based lock: a concurrent second invocation of the *same* name does not
 # block or double-run, it just reports "busy" (exit 2) and leaves the first run to finish
 # undisturbed - a concurrent invocation of a *different* name is unaffected, since the lock
@@ -418,12 +423,13 @@ run_hook() {
    local SCRIPT="$2"
    [ -n "$SCRIPT" ] || { log "run_hook: no hook configured"; return 0; }
 
-   # A separate `docker exec ... launch.sh run_hook` invocation (Reservation::run_hook_sync's
-   # on-demand dispatch) does not go through run_nonroot's spawn_ssh_agent, so it has no
-   # SSH_AUTH_SOCK inherited from that process tree yet - discover Dockside's own managed agent
-   # instead (see find_ssh_auth_sock below). The launch-time/start-time auto-invoke (called from
-   # within run_nonroot, in the same process spawn_ssh_agent already ran in) already has a live
-   # one, so ssh_auth_sock_is_live short-circuits this to a no-op there.
+   # Every invocation of this function - on demand (Reservation::run_hook_sync) or
+   # auto-fired by DED (see this function's own header comment) - is its own independent
+   # `docker exec`, never sharing spawn_ssh_agent's process tree, so SSH_AUTH_SOCK is never
+   # inherited either way: discover Dockside's own managed agent instead (see
+   # find_ssh_auth_sock below). ssh_auth_sock_is_live still short-circuits this to a no-op
+   # on the rare chance SSH_AUTH_SOCK already arrived live some other way, but neither path
+   # can rely on that.
    if ! ssh_auth_sock_is_live "$SSH_AUTH_SOCK"; then
       SSH_AUTH_SOCK=$(find_ssh_auth_sock) && export SSH_AUTH_SOCK
    fi
@@ -518,10 +524,13 @@ ssh_auth_sock_is_live() {
 }
 
 # Discover a live ssh-agent socket for the current unix user, for a caller that did not itself
-# spawn the agent and so has no SSH_AUTH_SOCK inherited from that process tree - namely, a
-# separate `docker exec ... launch.sh run_hook` invocation dispatched by
-# Reservation::run_hook_sync (see run_hook below); the launch-time/start-time auto-invoke runs
-# inside run_nonroot's own process tree, right after spawn_ssh_agent, so it already has one.
+# spawn the agent and so has no SSH_AUTH_SOCK inherited from that process tree - every
+# `docker exec ... launch.sh run_hook` invocation (see run_hook below), on demand or
+# auto-fired by DED alike, since each is its own independent exec, never sharing
+# spawn_ssh_agent's process tree (see docs/plans/lifecycle-hooks-review-followup.md item F).
+# Also used directly by launch_git/launch_ide (item F's launch:git/launch:ide), for the same
+# reason - neither shares launch:prep's process tree either, despite launch:prep being where
+# spawn_ssh_agent actually runs.
 # Scans Dockside's own managed agent's default socket naming (/tmp/ssh-*/agent.* - OpenSSH's
 # own convention) newest-first by mtime, validating each candidate's liveness rather than
 # trusting mtime alone. Deliberately does not scan /tmp/dropbear-*/auth-* - dropbear's own,
@@ -825,18 +834,28 @@ populate_vscode_settings() {
    fi
 }
 
+# Drops from root to $IDE_USER and continues launch by running $1 (default: run_prep_nonroot)
+# there, via the same top-level dispatch mechanism ("launch.sh <function>") every entry point
+# uses - so the su'd child gets exactly the same init() setup (LOG_PATH, PATH, fd redirection)
+# a freshly-dispatched exec would. Generalized from a single hardcoded target (item F split
+# what used to be one function, run_nonroot, into launch_prep's own non-root tail plus the
+# separate launch_git entry point - both need this same su-transition machinery, only
+# launch_prep's since launch_git is dispatched directly as the non-root user by DED, needing
+# no su at all - see the root-vs-non-root guardrail in
+# docs/plans/lifecycle-hooks-review-followup.md item F).
 launch_nonroot() {
-   log "Continuing launch as non-root user '$IDE_USER' ..."
+   local FUNCTION="${1:-run_prep_nonroot}"
+   log "Continuing launch as non-root user '$IDE_USER' (running '$FUNCTION') ..."
 
    local HOME=$(getent passwd $IDE_USER | cut -d':' -f6)
    cd $HOME
 
-   # Exported env vars made available to run_nonroot:
+   # Exported env vars made available to the non-root function:
    export DEVCONTAINER_VSCODE
 
    # Without -l, su passes all inherited/exported env vars to the child process unchanged,
    # so only PATH and HOME need to be stated here as they require new values for $IDE_USER.
-   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" $DOCKSIDE_ROOT/bin/launch.sh run_nonroot"
+   $IDE_PATH/bin/su $IDE_USER -c "env PATH=\"$_PATH\" HOME=\"$HOME\" $DOCKSIDE_ROOT/bin/launch.sh $FUNCTION"
 }
 
 launch_theia() {
@@ -926,7 +945,7 @@ dockside_user_warning() {
 
 # Idempotently add a snippet to the user's shell rc files that prints any launch
 # warnings. Covers bash (~/.bashrc) and POSIX/ash/dash login shells (~/.profile),
-# guarded by a marker so relaunches do not duplicate it. run_nonroot runs as
+# guarded by a marker so relaunches do not duplicate it. run_prep_nonroot runs as
 # $IDE_USER (invoked via su), so the rc files are created/owned by the user.
 install_launch_status_notice() {
    local marker='# dockside-launch-status'
@@ -944,18 +963,23 @@ install_launch_status_notice() {
    done
 }
 
-run_nonroot() {
-   log "User account launch started ..."
+# The non-root tail of exec #1 (item F's launch:prep) - ssh-agent/credentials only. Reached
+# via launch_prep -> launch_nonroot's su-transition, never dispatched directly. Git repo setup
+# and the lifecycle hooks that used to run inline here (in a backgrounded subshell, concurrent
+# with the IDE loop below) are now launch_git and their own separately-dispatched execs
+# respectively - see docs/plans/lifecycle-hooks-review-followup.md item F. This function no
+# longer starts the IDE at all: that's launch:ide, dispatched independently by DED the moment
+# launch:prep (this whole chain) succeeds, not sequenced behind git/hooks - preserving exactly
+# the concurrency the old backgrounded-subshell-plus-inline-restart_ide shape gave for free.
+run_prep_nonroot() {
+   log "User account prep started ..."
    # Surface launch-time warnings to the user's interactive shells: clear any stale
-   # warnings from a previous launch, then ensure the rc snippet is installed.
-   # Also clear .credentials-ready and .git-repo-ready/.git-repo-failed from a
-   # previous launch here, for the same reason: /tmp survives a stop/start, so a
-   # stale ready sentinel from a prior successful launch would otherwise still read
-   # as "ready" the instant this launch starts - before this launch's own setup has
-   # run again - masking a genuine failure on this restart (verified: a stale
-   # .git-repo-ready and a freshly-written .git-repo-failed can coexist, each with
-   # its own launch's timestamp, until this clear removes the former).
-   rm -f "$LOG_PATH/launch-status.txt" "$LOG_PATH/.credentials-ready" "$LOG_PATH/.git-repo-ready" "$LOG_PATH/.git-repo-failed" 2>/dev/null
+   # warnings from a previous launch, then ensure the rc snippet is installed. Also clear
+   # .credentials-ready from a previous launch here, for the same reason: /tmp survives a
+   # stop/start, so a stale ready sentinel from a prior successful launch would otherwise
+   # still read as "ready" the instant this launch starts - before this launch's own setup
+   # has run again - masking a genuine failure on this restart.
+   rm -f "$LOG_PATH/launch-status.txt" "$LOG_PATH/.credentials-ready" 2>/dev/null
    install_launch_status_notice
    spawn_ssh_agent
    # A failed key load is non-fatal (the IDE still launches), but no longer silent:
@@ -966,84 +990,94 @@ run_nonroot() {
    populate_known_hosts
    # Authenticate gh, and signal that credentials (ssh-agent + known_hosts + gh) are
    # ready, unconditionally and before any git-repo-specific work — so this signal is
-   # available regardless of whether this profile even has a GIT_URL, and is not
-   # skipped when a git clone happens to fail. This is what lets an application's own
-   # entrypoint (started long before this script runs) poll for
-   # "$LOG_PATH/.credentials-ready" and then use the same ssh-agent/gh auth Dockside
-   # set up here, without needing to wait for or depend on the git-repo setup below.
+   # available regardless of whether this profile even has a GIT_URL, and is not skipped
+   # when a later, independently-dispatched git clone happens to fail. This is what lets an
+   # application's own entrypoint (started long before this script runs) poll for
+   # "$LOG_PATH/.credentials-ready" and then use the same ssh-agent/gh auth Dockside set up
+   # here, without needing to wait for or depend on git-repo setup at all.
    gh_authenticate
    touch "$LOG_PATH/.credentials-ready"
-   (
-      log "Repo setup subproc started ..."
-      create_git_repo
-      case $? in
-         0|2)
-            # Either a fresh clone just succeeded, or the repo already existed (a restart -
-            # the clone was skipped) - either way, a usable repo now exists at $REPO. Whether
-            # to run checkout_git_ref is decided independently of *which* of these two
-            # happened, purely by DOCKSIDE_START_COUNT below: "did launch.sh's own clone just
-            # run" is not the same question as "is this this devtainer's genuine first start" -
-            # a profile could conceivably ship a repo already cloned/baked into the image, in
-            # which case create_git_repo would report "already existed" (2) even on a true
-            # first start, and a requested ref must still be honoured then. DOCKSIDE_OPTION_REF
-            # is frozen at reservation-creation time and can never change, so there is no
-            # legitimate reason to run checkout_git_ref on any later start regardless - see
-            # docs/plans/lifecycle-hooks-review-followup.md item H.
-            if [ "$DOCKSIDE_START_COUNT" = "1" ]; then
-               # A requested ref checkout failure is a hard error: abort the rest of repo
-               # setup, log it, and write .git-repo-failed instead of the success sentinel so a
-               # consumer can detect it immediately rather than waiting for a timeout.
-               #
-               # On success (or when no ref was requested), write .git-repo-ready. With a
-               # hard clone failure now handled above, this signals that a GIT_URL clone
-               # succeeded and any requested ref was checked out; it does NOT wait for the
-               # later VS Code population, and Dockside does not guarantee an otherwise error-free
-               # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
-               # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
-               if checkout_git_ref; then
-                  [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
-               else
-                  dockside_user_warning "Checkout of the requested ref failed; the repository may be on the wrong ref (see $LOG)."
-                  touch "$LOG_PATH/.git-repo-failed"
-                  exit 1
-               fi
-            else
-               [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
-            fi
-            ;;
-         *)
-            # A failed clone is a hard error: there is no repository to set up, so
-            # abort before any sentinel is written (checkout_git_ref would otherwise
-            # return 0 on the absent repo and let .git-repo-ready be touched anyway).
-            dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
-            touch "$LOG_PATH/.git-repo-failed"
-            exit 1
-            ;;
-      esac
-      # Run the profile-declared lifecycle hooks (if any), now that git/ssh/gh setup for
-      # this launch has completed. These are the only two places a hook name is ever
-      # hardcoded - the server's own fixed decision about which lifecycle events auto-fire
-      # today, not a caller-facing default. 'lifecycle:launch' fires only on this
-      # devtainer's true first start (DOCKSIDE_START_COUNT == 1, set server-side by
-      # Reservation::exec - see docs/plans/lifecycle-hooks-review-followup.md item E; named
-      # for what it counts, every container-start event, not "launch" in the one-time
-      # devtainer-creation sense): DOCKSIDE_OPTION_REF is frozen at reservation-creation time,
-      # so re-running it on a later restart has nothing new to do. 'lifecycle:start' fires on
-      # every start, including this one, for anything that genuinely wants to run every time
-      # (e.g. a `git pull` on resume). A hook failure is logged and surfaced via
-      # dockside_user_warning/.hook-failed.<name> by run_hook itself, but is not treated as
-      # fatal to the rest of this subshell.
-      if [ "$DOCKSIDE_START_COUNT" = "1" ]; then
-         run_hook 'lifecycle:launch' "$DOCKSIDE_HOOK_SCRIPT" || true
-      fi
-      run_hook 'lifecycle:start' "$DOCKSIDE_HOOK_SCRIPT_START" || true
+   log "User account prep finished."
+}
 
-      populate_vscode_extensions;
-      populate_vscode_settings
-      log "Repo setup subproc finished";
-   ) &
-   restart_ide
-   log "User account launch finished."
+# Exec #2 (item F's launch:git) - the optional git repo setup only, no hook invocation inside
+# it at all (unlike the old run_nonroot, which fired both lifecycle hooks inline, in the same
+# backgrounded subshell, right after this same git logic). Dispatched directly as the non-root
+# unix user by DED (no su-transition needed, unlike launch_prep - see the root-vs-non-root
+# guardrail in item F), only when the profile declares gitURLs at all. On success (or having
+# nothing to do), DED dispatches lifecycle:launch/lifecycle:start as their own separate execs,
+# via the ordinary run_hook entry point every on-demand invocation already uses - see item F's
+# "Couplings to resolve first" for why (real per-hook status, one recorder instead of two kept
+# in sync by hand).
+launch_git() {
+   log "Git repo setup started ..."
+   # Docker's exec API 'User' field sets the euid/env correctly (proven already by every
+   # on-demand hook dispatched this same way - see run_hook above) but not necessarily the
+   # initial cwd the way `su -c` (used by launch_nonroot) does - be explicit rather than
+   # assume, since create_git_repo's `git clone` (no explicit destination dir) depends on it.
+   cd "$HOME" || { log "launch_git: ERROR: cannot cd to HOME='$HOME'"; exit 1; }
+
+   # This exec never shares launch:prep's process tree, so SSH_AUTH_SOCK is never inherited
+   # from spawn_ssh_agent there - discover Dockside's own managed agent instead, exactly as
+   # run_hook does (see its own comment and find_ssh_auth_sock's header comment). Needed for
+   # any SSH-based GIT_URL clone/checkout below.
+   if ! ssh_auth_sock_is_live "$SSH_AUTH_SOCK"; then
+      SSH_AUTH_SOCK=$(find_ssh_auth_sock) && export SSH_AUTH_SOCK
+   fi
+
+   # Clear stale sentinels from a previous launch - see run_prep_nonroot's own comment for why
+   # this matters even though /tmp usually survives a stop/start.
+   rm -f "$LOG_PATH/.git-repo-ready" "$LOG_PATH/.git-repo-failed" 2>/dev/null
+
+   create_git_repo
+   case $? in
+      0|2)
+         # Either a fresh clone just succeeded, or the repo already existed (a restart -
+         # the clone was skipped) - either way, a usable repo now exists at $REPO. Whether
+         # to run checkout_git_ref is decided independently of *which* of these two
+         # happened, purely by DOCKSIDE_START_COUNT below: "did launch.sh's own clone just
+         # run" is not the same question as "is this this devtainer's genuine first start" -
+         # a profile could conceivably ship a repo already cloned/baked into the image, in
+         # which case create_git_repo would report "already existed" (2) even on a true
+         # first start, and a requested ref must still be honoured then. DOCKSIDE_OPTION_REF
+         # is frozen at reservation-creation time and can never change, so there is no
+         # legitimate reason to run checkout_git_ref on any later start regardless - see
+         # docs/plans/lifecycle-hooks-review-followup.md item H.
+         if [ "$DOCKSIDE_START_COUNT" = "1" ]; then
+            # A requested ref checkout failure is a hard error: abort the rest of repo
+            # setup, log it, and write .git-repo-failed instead of the success sentinel so a
+            # consumer can detect it immediately rather than waiting for a timeout.
+            #
+            # On success (or when no ref was requested), write .git-repo-ready. With a
+            # hard clone failure now handled above, this signals that a GIT_URL clone
+            # succeeded and any requested ref was checked out; it does NOT wait for the
+            # later VS Code population, and Dockside does not guarantee an otherwise error-free
+            # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
+            # consumer (t/integration/tests/06_git_profile.py) still verifies the repo state.
+            if checkout_git_ref; then
+               [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+            else
+               dockside_user_warning "Checkout of the requested ref failed; the repository may be on the wrong ref (see $LOG)."
+               touch "$LOG_PATH/.git-repo-failed"
+               exit 1
+            fi
+         else
+            [ -n "$GIT_URL" ] && touch "$LOG_PATH/.git-repo-ready"
+         fi
+         ;;
+      *)
+         # A failed clone is a hard error: there is no repository to set up, so
+         # abort before any sentinel is written (checkout_git_ref would otherwise
+         # return 0 on the absent repo and let .git-repo-ready be touched anyway).
+         dockside_user_warning "Git clone of '$GIT_URL' failed; the repository was not set up (see $LOG)."
+         touch "$LOG_PATH/.git-repo-failed"
+         exit 1
+         ;;
+   esac
+
+   populate_vscode_extensions
+   populate_vscode_settings
+   log "Git repo setup finished."
 }
 
 restart_ide() {
@@ -1064,14 +1098,50 @@ restart_ide() {
    esac
 }
 
+# Exec #3 (item F's launch:ide) - IDE supervision only, perpetual. Dispatched independently by
+# DED the moment launch:prep succeeds - not waiting on launch:git or either hook exec - which
+# is what preserves the old backgrounded-subshell design's "IDE comes up while cloning
+# continues" concurrency. Dispatched directly as the non-root unix user, with Detach:true (a
+# hard requirement, not a convenience - see item F's Enabler section: a non-detached dispatch
+# of a perpetual process would hold DED's connection open for the container's whole life).
+# launch_theia/launch_openvscode already handle both "already non-root" and "still root, needs
+# su" cases internally (see their own `id -u` check) - dispatching this non-root directly, as
+# DED now does, simply takes their already-existing non-root branch, one layer of su removed
+# from what launch_ide used to need when it ran as root.
 launch_ide() {
-   log "Launch started ..."
+   log "IDE launch started ..."
+   cd "$HOME" || { log "launch_ide: ERROR: cannot cd to HOME='$HOME'"; exit 1; }
+
+   # This exec never shares launch:prep's process tree, so SSH_AUTH_SOCK is never inherited
+   # from spawn_ssh_agent there - discover Dockside's own managed agent instead, exactly as
+   # run_hook/launch_git do. Needed before restart_ide: launch_theia/launch_openvscode's own
+   # already-non-root branch explicitly passes SSH_AUTH_SOCK into the IDE launcher's env.
+   if ! ssh_auth_sock_is_live "$SSH_AUTH_SOCK"; then
+      SSH_AUTH_SOCK=$(find_ssh_auth_sock) && export SSH_AUTH_SOCK
+   fi
+
+   restart_ide
+   log "IDE launch finished."
+}
+
+# Exec #1 (item F) - core setup, nothing hook- or git-related: create_user, ssh authorized
+# keys, sshd, then drops to $IDE_USER for ssh-agent/credentials via launch_nonroot's default
+# target, run_prep_nonroot. Dispatched as root (the one stage that is - create_user and
+# launch_sshd's dropbear genuinely need it, see the root-vs-non-root guardrail in
+# docs/plans/lifecycle-hooks-review-followup.md item F). Deliberately does not add new
+# fatal-on-failure checks beyond what each of these steps already had (e.g.
+# populate_ssh_agent_keys inside run_prep_nonroot stays a non-fatal warning, exactly as
+# before) - hardening individual steps' failure semantics is a separate, later decision, not
+# part of this restructure; DED observes whatever real exit code this function naturally
+# produces today, which is a strict improvement over no observability at all regardless.
+launch_prep() {
+   log "Prep launch started ..."
    create_user
    create_git_config
    update_ssh_authorized_keys
    launch_sshd
-   launch_nonroot
-   log "Launch finished."
+   launch_nonroot run_prep_nonroot
+   log "Prep launch finished."
 }
 
 init() {
