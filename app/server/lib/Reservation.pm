@@ -7,7 +7,7 @@ use Expect;
 use Try::Tiny;
 use Tie::File;
 use Storable qw(dclone);
-use Reservation::Mutate qw(update load_clean_map record_hook_history);
+use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field);
 use Reservation::Load;
 use Reservation::Launch;
 use Containers;
@@ -924,6 +924,45 @@ sub store ($self) {
    } );
 
    return $self;
+}
+
+# store_fields:
+#
+# Like store() above, but persists only the specific fields given, instead of this process's
+# entire in-memory record. $fields is a hashref shaped exactly like update()'s own $e (e.g.
+# { data => { runningIDE => 'openvscode/latest' } }, or { meta => { access => {...} } }, or
+# both) - never the whole 'data'/'meta' hash unless every key in it is genuinely being
+# authoritatively set right now.
+#
+# Why this matters, not just "is tidier": store()'s whole-record write only merges safely
+# nested-hash-by-nested-hash where BOTH the incoming payload and the fresh on-disk record are
+# hashes at every level down to the changed key (see Util::cloneHash's own comment) - a scalar
+# leaf, or a hash present in one but not the other, is blindly overwritten with whatever this
+# process happens to be carrying, however old. store()'s $e always includes this process's
+# *entire* in-memory 'data'/'meta' - so any field this process loaded a while ago and never
+# refreshed, but is NOT trying to change right now, still rides along and can clobber a fresher
+# value some *other* concurrent writer already persisted. That's not a rare edge case for a
+# forked child that did several seconds of blocking work before finally writing: its own
+# snapshot of every unrelated field is exactly that many seconds stale by the time it stores.
+# store_fields avoids this at the source - a key genuinely absent from $fields is never sent at
+# all, so cloneHash never touches it.
+#
+# Only safe for "authoritative overwrite" values - ones that don't need reading their own prior
+# persisted value to compute (see Reservation::Mutate::increment_data_field for that case,
+# e.g. startCount).
+sub store_fields ($self, $fields) {
+   $self->update( { 'id' => $self->id(), %$fields } );
+   return $self;
+}
+
+# Atomically increments data.startCount and returns the new value - see
+# Reservation::Mutate::increment_data_field's own comment for why this needs a genuine
+# read-under-lock, not just a narrowly-scoped store_fields call. Also updates this process's
+# own in-memory copy, so a later read in the same process sees the value it just committed.
+sub increment_start_count ($self) {
+   my $newValue = increment_data_field( $self->id(), 'startCount' );
+   $self->{'data'}{'startCount'} = $newValue;
+   return $newValue;
 }
 
 sub getGitDevContainer ($self) {
