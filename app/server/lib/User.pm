@@ -913,11 +913,21 @@ sub updateContainerReservation ($self, $args) {
    # Create a deep clone of the original reservation for comparison
    my $origReservation = dclone($reservation);
 
-   # Update metadata fields if they are defined in the arguments
+   # Update metadata fields if they are defined in the arguments. Tracks which ones were
+   # actually touched (split by whether each lives under meta vs data - see set()'s own
+   # per-property branches) so the eventual store only sends what this request actually
+   # changed, not this process's entire in-memory copy of every meta/data field - see
+   # Reservation::store_fields' own comment for why a blind full store() risks clobbering a
+   # fresher value some concurrent writer (another admin's own edit, or this same devtainer's
+   # own docker-event-daemon launch dispatch if it's still mid-launch) already persisted.
+   my %touchedMeta;
+   my %touchedData;
    foreach my $m (qw( access viewers developers private network description IDE )) {
       if(defined($args->{$m})) {
-         $self->set($reservation, $m, $args->{$m}) || 
+         $self->set($reservation, $m, $args->{$m}) ||
             die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
+         if( $m eq 'network' ) { $touchedData{$m} = $reservation->data($m); }
+         else { $touchedMeta{$m} = $reservation->meta($m); }
       }
    }
 
@@ -925,9 +935,13 @@ sub updateContainerReservation ($self, $args) {
    # (if container is not running runningIDE should mirror requested IDE immediately)
    if(!$reservation->is_running) {
       $reservation->data('runningIDE', $reservation->meta('IDE'));
+      $touchedData{'runningIDE'} = $reservation->data('runningIDE');
    }
 
-   $reservation->store();
+   $reservation->store_fields( {
+      ( %touchedMeta ? ( 'meta' => \%touchedMeta ) : () ),
+      ( %touchedData ? ( 'data' => \%touchedData ) : () ),
+   } );
 
    # Only reconcile Docker network attachment when the requested network changed.
    if( ($origReservation->data('network') // '') ne ($reservation->data('network') // '') ) {
@@ -974,9 +988,12 @@ sub controlContainer ($self, $cmd, $id, $args = {}) {
       die Exception->new( 'msg' => "You need the 'develop' permission to execute '$cmd' on this devtainer" );
    }
 
-   # Execute the requested command.
+   # Execute the requested command. Narrow store - see Reservation::store_fields' own comment -
+   # since this container's own launch DAG (docker-event-daemon) may concurrently be writing
+   # other, unrelated fields once 'start' actually takes effect.
    if($cmd eq 'start' && !$container->is_running) {
-      $container->data('runningIDE', $container->meta('IDE'))->store();
+      $container->data('runningIDE', $container->meta('IDE'));
+      $container->store_fields( { 'data' => { 'runningIDE' => $container->data('runningIDE') } } );
    }
 
    return $container->action($cmd, $args);
@@ -1088,6 +1105,10 @@ sub createContainerReservation ($self, $args) {
    }
 
    # Store, launch, and create a sanitised clone of the reservation object, before returning.
+   # A full (not narrowed) store() is correct here specifically: this reservation id has never
+   # been persisted before this call, so no other process can possibly be concurrently writing
+   # to it - none of Reservation::store_fields' concerns (a stale in-memory copy of some
+   # unrelated field clobbering a fresher one) apply to a record's very first write.
    return $self->createClientReservation( $reservation->store()->launch() );
 }
 
