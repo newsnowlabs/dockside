@@ -32,8 +32,14 @@
 # Listens for specific Docker event types:
 # - network connect/disconnect     -> triggers a container update.
 # - container stop/create/destroy  -> triggers a container update.
-# - container start                -> triggers onContainerStart, which also launches the IDE
-#                                     process inside the container via $reservation->exec().
+# - container start                -> triggers onContainerStart, which kicks off the launch:-DAG
+#                                     (launch:prep -> {launch:git, launch:ide, lifecycle:*} -
+#                                     see this file's own "Launch dispatch orchestration"
+#                                     section) via launch_advance. Every dispatch is a
+#                                     non-blocking docker_exec_async call, never a fork; each
+#                                     stage's own completion callback re-scans for newly-eligible
+#                                     dependents, so a single launch_advance call drives the
+#                                     whole DAG to completion on its own.
 #
 # Container state update (_update / update):
 # - Calls the Docker API (/containers/json) via a Unix socket - deliberately kept blocking (not
@@ -65,7 +71,7 @@ use Time::HiRes qw(time);
 
 use Mojo::IOLoop;
 
-use Util qw(cacheReadWrite flog call_socket_api call_socket_api_async docker_container_path_exists);
+use Util qw(cacheReadWrite flog call_socket_api call_socket_api_async docker_container_path_exists docker_exec_async sanitize_sensitive_text unique);
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
@@ -79,6 +85,22 @@ my $LAUNCH_READY_MAX_WAIT = 60; # seconds
 my $LAUNCH_READY_INTERVAL = 1;  # seconds between Docker API readiness checks
 
 my %pendingLaunch;  # containerId => { deadline => epoch, nextTime => epoch, launcher => path, reservationId => id }
+
+# containerId => 1, seeded *only* by the restart-recovery sweep, for a reservation whose launch
+# was still genuinely in-flight (a real, live exec, not yet actually finished) at the exact
+# moment this DED process started - never added during ordinary operation, where every live
+# dispatch's own completion callback is the sole, sufficient resolver (see this file's own
+# "Launch dispatch orchestration" section header comment on why per-tick polling is otherwise
+# unnecessary). Found live, not assumed: restart-recovery's own hook_is_running self-heal check
+# correctly does nothing when a stage's exec really is still running (it must not falsely
+# resolve a genuinely live exec) - but the process that owned that exec's completion callback is
+# gone, permanently, and no Docker event exists that this daemon treats as "an exec finished, go
+# check on it" (docker events' own exec_die carries no reservation/stage context). Left
+# unaddressed, such a stage stays 'running' forever even after its real exec genuinely
+# completes. on_tick below re-checks every entry here until launch_in_flight() says there's
+# nothing left to recover, then drops it - scoped to this one, self-limiting, restart-only case,
+# not a return to polling every in-flight launch.
+my %launchRecovering;
 
 my $SIGNAL_RECEIVED = 0;
 my $STOP_EVENT_LOOP = sub { };
@@ -143,7 +165,415 @@ sub launch_or_queue_until_launcher_ready ($reservation, $context, $since) {
       return undef;
    }
 
-   return $reservation->exec();
+   # Kicks off the whole launch:prep -> {launch:git, launch:ide, lifecycle:*} DAG (item F3) -
+   # fire-and-forget in the sense that dispatch is non-blocking, but self-propagating: each
+   # stage's own dispatch closure calls launch_advance again once it resolves, so a single call
+   # here drives the whole DAG to completion without anything needing to poll it - see
+   # launch_advance's own comment. A truthy return here only means the DAG was successfully
+   # kicked off, not that it's finished; real progress is recorded asynchronously in
+   # data('hooks') as each stage resolves.
+   launch_advance($reservation);
+   return 1;
+}
+
+# --- Launch dispatch orchestration (item F3) ---
+#
+# Small, declarative dependency table + one generic driver, owned entirely by docker-event-
+# daemon itself - not Reservation.pm (see docs/plans/lifecycle-hooks-review-followup.md item K:
+# Reservation.pm should not own concurrency/orchestration, only pure data operations and
+# fork-agnostic building blocks; DED owns "what to dispatch next"). Reservation.pm/
+# Reservation::Launch.pm's existing pure accessors (ide_command/hook_script/_hook_env/
+# ide_command_env) and pure state-recording methods (hook_status_*/increment_start_count/
+# store_fields) are called directly from here - reused as-is, not reimplemented.
+#
+# TRANSPORT: every dispatch below is non-blocking (Util::docker_exec_async), never a fork. This
+# is what collapses the entire self-heal-vs-on_success race class that a forked, fork-per-tick
+# design was vulnerable to (see item F2's own history in this doc for the bug that motivated
+# this rewrite): there is only ever one process, so "which of two paths resolves this stage
+# first" is not a question that can be asked any more - the completion callback is the sole,
+# unambiguous resolver. It also means self-heal (polling a 'running' stage to check whether its
+# owning process died) is *only* ever needed once, at DED's own startup, for a stage left
+# 'running' by a *previous*, now-dead DED process - see this file's own restart-recovery sweep,
+# near the bottom. During normal operation, launch_advance below deliberately does NOT poll a
+# 'running' stage at all: it will resolve via its own completion callback, guaranteed, unless
+# DED itself dies - a case the restart-recovery sweep alone exists to cover. This removes the
+# old fork model's %launchInFlight per-tick polling entirely, not just relocates it - nothing
+# needs to keep re-checking an in-flight launch, because the callback chain drives itself to
+# completion on its own.
+my $ROOT_USER    = sub ($reservation) { 'root' };
+my $NONROOT_USER = sub ($reservation) { $reservation->unixuser() };
+
+# Two genuinely different dispatch shapes, not one forced-uniform shape: launch:prep/launch:git/
+# launch:ide are bare launch.sh entry-point functions (no hook name/script involved - see
+# _launch_dispatch_exec below), while lifecycle:launch/lifecycle:start are real, profile-
+# declared hooks, dispatched via _launch_dispatch_hook_stage's own (non-blocking) exec logic -
+# deliberately not Reservation::dispatch_hook_exec, which is blocking and stays reserved for
+# run_hook_sync's on-demand path (item K point 8) - see _launch_dispatch_hook_stage's own
+# comment for the resulting, accepted duplication.
+my %LAUNCH_STAGES = (
+   'launch:prep' => {
+      depends_on => [],
+      dispatch   => \&_launch_dispatch_prep,
+   },
+   'launch:git' => {
+      depends_on => ['launch:prep'],
+      applicable => sub ($reservation) { !!@{ $reservation->profileObject->gitURLs // [] } },
+      dispatch   => sub ($reservation, $cb) {
+         _launch_dispatch_exec( $reservation, 'launch:git', 'launch_git', $NONROOT_USER->($reservation), {
+            'extra_env' => [
+               "DOCKSIDE_START_COUNT=" . ( $reservation->data('startCount') // 0 ),
+               "DEVCONTAINER_VSCODE_EXTENSIONS=" . encode_json( $reservation->data('vscode') ),
+            ],
+         }, $cb );
+      },
+   },
+   'launch:ide' => {
+      depends_on => ['launch:prep'],
+      dispatch   => sub ($reservation, $cb) {
+         _launch_dispatch_exec( $reservation, 'launch:ide', 'launch_ide', $NONROOT_USER->($reservation), {
+            'detach'    => 1,
+            'extra_env' => [ "IDE=" . $reservation->meta('IDE') ],
+         }, $cb );
+      },
+   },
+   'lifecycle:launch' => {
+      depends_on => ['launch:git'],
+      applicable => sub ($reservation) {
+         !!( $reservation->profileObject->hooks->{'lifecycle:launch'} && ( $reservation->data('startCount') // 0 ) == 1 )
+      },
+      dispatch   => sub ($reservation, $cb) { _launch_dispatch_hook_stage( $reservation, 'lifecycle:launch', $cb ) },
+   },
+   'lifecycle:start' => {
+      depends_on => ['lifecycle:launch'],
+      applicable => sub ($reservation) { !!$reservation->profileObject->hooks->{'lifecycle:start'} },
+      dispatch   => sub ($reservation, $cb) { _launch_dispatch_hook_stage( $reservation, 'lifecycle:start', $cb ) },
+   },
+);
+
+my @LAUNCH_STAGE_NAMES = keys %LAUNCH_STAGES;
+
+# Maps a raw hook_status() record to the DAG's simpler done/failed/timedOut vocabulary - shared
+# by _launch_dispatch_hook_stage and anywhere else that needs to translate a settled hookStatus
+# entry into a state to record via launch_resolve_stage.
+sub _launch_state_from_hook_status ($status) {
+   return 'failed'   unless $status;
+   return 'failed'   if $status->{'state'} eq 'aborted';
+   return 'timedOut' if $status->{'timedOut'};
+   return ( $status->{'exitCode'} // 1 ) == 0 ? 'done' : 'failed';
+}
+
+sub launch_resolve_stage ($reservation, $stage, $state) {
+   $reservation->hook_status_completed( $stage, { 'state' => $state } );
+}
+
+sub _launch_deps_cleared ($reservation, $stage) {
+   for my $dep ( @{ $LAUNCH_STAGES{$stage}{'depends_on'} } ) {
+      my $status = $reservation->hook_status($dep);
+      return 0 unless $status && $status->{'state'} =~ /^(?:done|skipped)$/;
+   }
+   return 1;
+}
+
+# Marks every launch:-DAG stage 'pending' for a fresh launch cycle. Called exactly once per
+# genuine container 'start' Docker event (onContainerStart, before its first launch_advance
+# call for that event) - never from the pendingLaunch retry loop, which is for waiting out the
+# *same* start event and must keep seeing whatever this reset already put in place. Sends only
+# the 5 launch:-stage names, via store_fields - never the whole hooks.status hash, which may
+# also hold entries for on-demand/custom hook names this has no business touching.
+#
+# Also updates $reservation's own in-memory hooks.status directly, mirroring
+# Reservation::_hook_status_store_one's own discipline (see its comment) - store_fields/update()
+# only ever writes a *fresh*, separately-loaded copy under mutate()'s lock (see
+# Reservation::Mutate::update: it mutates $by_id->{$id}, never $self), so without this,
+# launch_advance's own very next call - using this same $reservation object - would still see
+# every stage's *previous* launch cycle's resolved state and dispatch nothing at all. Found
+# exactly this way, live: a restart's onContainerStart correctly reached this function, but the
+# whole DAG then silently never dispatched anything, because _launch_deps_cleared/
+# launch_maybe_dispatch's own 'pending' checks were reading stale, pre-reset state.
+sub launch_reset_stages ($reservation) {
+   my $entries = { map { $_ => { 'name' => $_, 'state' => 'pending' } } @LAUNCH_STAGE_NAMES };
+   my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+   %$status = ( %$status, %$entries );
+   $reservation->store_fields( { 'data' => { 'hooks' => { 'status' => $entries } } } );
+}
+
+# True if this reservation's launch DAG still has work left. launch:ide is deliberately excluded
+# once dispatched: unlike every other stage it never resolves in the happy path (it's the
+# perpetual IDE process, not a script that exits) and has no dependents, so treating its ongoing
+# 'running' state as "still needs attention" would mean every healthy devtainer stays flagged
+# forever. Used only by the restart-recovery sweep below to decide which reservations need
+# reconciling at DED startup.
+sub launch_in_flight ($reservation) {
+   for my $name (@LAUNCH_STAGE_NAMES) {
+      next if $name eq 'launch:ide';
+      my $state = ( $reservation->hook_status($name) // {} )->{'state'} // 'pending';
+      return 1 if $state eq 'pending' || $state eq 'running';
+   }
+   return 0;
+}
+
+# Advances this reservation's launch DAG by one scan: dispatches whatever's newly eligible
+# ('pending' with its dependencies cleared - see _launch_deps_cleared). Deliberately does NOT
+# poll anything 'running' - see this section's own header comment for why that's only ever
+# needed once, at startup, not here. Each dispatch attempt is individually wrapped: a synchronous
+# failure building one stage's request (an exception before any I/O even begins) must not stop
+# the rest of this scan, and - since launch_advance is reached from asynchronous completion
+# callbacks as often as from a synchronous caller - cannot rely on an outer try/catch existing
+# at all (see docs/plans/lifecycle-hooks-review-followup.md item F3 concern 1).
+sub launch_advance ($reservation) {
+   for my $name (@LAUNCH_STAGE_NAMES) {
+      my $status = $reservation->hook_status($name);
+      my $state = ( $status // {} )->{'state'} // 'pending';
+
+      next unless $state eq 'pending' && _launch_deps_cleared($reservation, $name);
+
+      try {
+         launch_maybe_dispatch($reservation, $name);
+      }
+      catch {
+         flog("docker-event-daemon::launch_advance: caught exception dispatching '$name' for reservationId=" . $reservation->id . ": " . (ref($_) ? $_->dbg : $_));
+         launch_resolve_stage($reservation, $name, 'failed');
+      };
+   }
+}
+
+# Dispatches $stage if applicable, or resolves it 'skipped' (synchronous). Idempotency guard:
+# with no forking, hook_status_started (called synchronously, before any async I/O begins, by
+# _launch_dispatch_exec/_launch_dispatch_hook_stage below) is what makes a stage's 'running'
+# status visible to *this same process* immediately - there is no IPC gap for a second,
+# re-entrant launch_advance call (from this stage's own completion callback, or a differently-
+# triggered call) to race against, unlike the old fork model where a forked child's write
+# landed asynchronously relative to the parent's own view. This is a direct, structural
+# consequence of there being only one process now, not a guard bolted on afterward.
+sub launch_maybe_dispatch ($reservation, $stage) {
+   my $status = $reservation->hook_status($stage);
+   return if $status && ( $status->{'state'} // '' ) ne 'pending';
+
+   my $spec = $LAUNCH_STAGES{$stage};
+   if ( $spec->{'applicable'} && !$spec->{'applicable'}->($reservation) ) {
+      launch_resolve_stage( $reservation, $stage, 'skipped' );
+      launch_advance($reservation);   # synchronous resolution - re-scan now for newly-eligible dependents
+      return;
+   }
+
+   $spec->{'dispatch'}->( $reservation, sub { launch_advance($reservation); } );
+}
+
+# Dispatches a bare launch.sh entry-point function (launch:prep/launch:git/launch:ide - no hook
+# name/script involved, unlike _launch_dispatch_hook_stage) via docker_exec_async, and records
+# its outcome. Base env is _hook_env() (GIT_URL/SSH_KNOWN_HOSTS_DOMAINS/DOCKSIDE_OPTION_*/
+# GH_TOKEN) plus ide_command_env() (the reservation's own IDE-record env) - both were already
+# part of every launch before this split, for every stage that came from it. $opts:
+#   detach     => 1        required for launch:ide specifically - dispatches via Detach:true and
+#      returns immediately: only hook_status_started/hook_status_set_running_details ever get
+#      called for it in the normal case, never launch_resolve_stage - it stays 'running'
+#      indefinitely, either overwritten by the next restart's fresh dispatch or lazily
+#      self-healed by the restart-recovery sweep.
+#   extra_env  => [...]    "KEY=VALUE" strings specific to this stage, on top of the base env.
+#   on_success => sub ($reservation) { ... }   optional, called (only on real, confirmed
+#      success) after the exec completes but before launch_resolve_stage - synchronous, not
+#      given its own callback: increment_start_count (the only current user) is a fast,
+#      synchronous file write like every other Reservation.pm state operation, not a Docker
+#      socket call, so it needs no async treatment of its own.
+#   $cb->()    called exactly once, once this stage has been resolved (or, for Detach, once
+#      dispatch is confirmed to have at least started) - drives launch_advance's own re-scan.
+sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
+   my @Command = $reservation->ide_command();
+   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'docker-event-daemon::_launch_dispatch_exec: ide_command() returned empty' ) unless @Command;
+   $Command[-1] = $function;
+
+   my $owner = $reservation->owner('username');
+   my $userObj = User->load($owner);
+   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $userObj;
+
+   my @env = (
+      ( map { my $e = $_; $e =~ s/^--env=//; $e } $reservation->_hook_env($userObj) ),
+      ( map { my $e = $_; $e =~ s/^--env=//; $e } $reservation->ide_command_env() ),
+      @{ $opts->{'extra_env'} // [] },
+   );
+
+   my $timeout = $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   my $containerId = $reservation->containerId();
+
+   # No logPath - launch:prep/launch:git still log in-container to $LOG as today. launch:ide
+   # never had one to begin with (perpetual, Detach:true). Synchronous, before any async I/O
+   # begins - see launch_maybe_dispatch's own comment on why that alone is what makes a
+   # re-entrant launch_advance call safe.
+   $reservation->hook_status_started($stage, undef);
+
+   flog( "docker-event-daemon::_launch_dispatch_exec: DISPATCHING '$stage' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
+
+   docker_exec_async( $CONFIG->{'docker'}{'socket'}, $containerId, {
+      'Cmd' => \@Command, 'User' => $user, 'Env' => \@env,
+   }, {
+      ( $opts->{'detach'}
+         ? ( 'Detach' => 1 )
+         : ( 'inactivity_timeout' => $timeout + 30, 'request_timeout' => $timeout ) ),
+      # No real pid to pass (DED never forks for this any more) - hook_status_set_running_details
+      # accepts undef here exactly as designed; only the restart-recovery sweep's own
+      # hook_is_running check ever reads it, and that falls through to the execId-based check
+      # gracefully when pid is undef (see hook_is_running's own comment).
+      'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($stage, undef, $execId); },
+   }, sub ($result, $err) {
+      try {
+         if ( !$result ) {
+            flog("docker-event-daemon::_launch_dispatch_exec: '$stage' failed to dispatch: $err");
+            launch_resolve_stage($reservation, $stage, 'failed');
+            $cb->();
+            return;
+         }
+
+         if ( $opts->{'detach'} ) {
+            $opts->{'on_success'}->($reservation) if $opts->{'on_success'};
+            $cb->();
+            return;
+         }
+
+         my $rc = $result->{'exitCode'};
+         my $timedOut = $result->{'timedOut'} ? 1 : 0;
+         my $success = !$timedOut && defined($rc) && $rc == 0;
+
+         $opts->{'on_success'}->($reservation) if $success && $opts->{'on_success'};
+         launch_resolve_stage( $reservation, $stage, $timedOut ? 'timedOut' : ( $success ? 'done' : 'failed' ) );
+         $cb->();
+      }
+      catch {
+         flog("docker-event-daemon::_launch_dispatch_exec: caught exception resolving '$stage': " . (ref($_) ? $_->dbg : $_));
+         $cb->();
+      };
+   } );
+}
+
+# launch:prep's own dispatch - not just a plain _launch_dispatch_exec call, because this stage
+# carries two things specific to it alone, both preserved from the pre-item-F single-exec
+# design this whole split replaces: (1) SSH-related env (only when this profile has ssh enabled
+# at all) plus OWNER_DETAILS/SSH_AGENT_KEYS; (2) DOCKSIDE_START_COUNT's compute-before/persist-
+# after-confirmed-success dance - computed here as a *prospective* value (purely informational
+# for the container), but only ever persisted via on_success once _launch_dispatch_exec confirms
+# real success - never on a failed or merely-attempted dispatch, which would otherwise burn a
+# count on a launch that never actually happened. This is exactly the moment data('startCount')
+# becomes the value launch:git's own dispatch and the lifecycle:launch/lifecycle:start
+# 'applicable' predicates read afterward - by the time either dispatches, launch:prep has
+# already succeeded, so the count is already final.
+sub _launch_dispatch_prep ($reservation, $cb) {
+   my $owner = $reservation->owner('username');
+   my $userObj = User->load($owner);
+   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $userObj;
+
+   my @env;
+   if ( $reservation->profileObject->ssh ) {
+      my @developersMeta = split( ',', $reservation->meta('developers') );
+      my @developers = grep { !/^role:/ } @developersMeta;
+      my %developerRoles = map { s/^role://; ( $_ => 1 ); } grep { /^role:/ } @developersMeta;
+      my @usersHavingDeveloperRoles = map { $developerRoles{ $_->{'role'} } ? $_->{'username'} : () } @{ User->viewers };
+      my @usernames = unique(
+         $reservation->owner('username'),
+         $reservation->meta('access')->{'ssh'} eq 'developer' ? ( @developers, @usersHavingDeveloperRoles ) : ()
+      );
+      my @Users = map { User->load($_) } @usernames;
+      my @authorized_keys = sort { $a cmp $b } unique map { $_ ? @{ $_->authorized_keys() } : () } @Users;
+      push @env,
+         "AUTHORIZED_KEYS=" . encode_json( \@authorized_keys ),
+         "HOSTDATA_PATH=$CONFIG->{'ssh'}{'path'}",
+         "SSHD_ENABLE=1";
+   }
+   push @env,
+      "OWNER_DETAILS=" . encode_json( $userObj->details_full ),
+      "SSH_AGENT_KEYS=" . encode_json( $userObj->keypairs_all() );
+
+   # Store before dispatch so the UI reflects the intended IDE immediately, including during
+   # any retry window before the dispatch succeeds. Narrow store - see store_fields' own comment.
+   $reservation->data( 'runningIDE', $reservation->meta('IDE') );
+   $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
+
+   # A *prospective* value, purely informational for the container - launch:prep dispatches at
+   # most once per cycle (the same idempotency guard every launch:-stage gets), so nothing else
+   # can be concurrently incrementing this reservation's startCount right now. Not the persisted
+   # source of truth lifecycle:launch's own applicable() gate reads - see
+   # Reservation::increment_start_count's own comment for why that needs a genuine
+   # read-under-lock, not a value computed here and stored later.
+   my $startCount = ( $reservation->data('startCount') // 0 ) + 1;
+
+   return _launch_dispatch_exec( $reservation, 'launch:prep', 'launch_prep', $ROOT_USER->($reservation), {
+      'extra_env'  => [ @env, "DOCKSIDE_START_COUNT=$startCount" ],
+      'on_success' => sub ($reservation) { $reservation->increment_start_count(); },
+   }, $cb );
+}
+
+# Dispatches $name (lifecycle:launch/lifecycle:start) via docker_exec_async directly - not
+# Reservation::dispatch_hook_exec, which is blocking and stays reserved for run_hook_sync's
+# on-demand path (item K point 8). This does duplicate dispatch_hook_exec's own dispatch-and-
+# record shape (open a log, wire on_created/on_output, interpret the result, call
+# hook_status_completed) - a genuine, accepted consequence of the two paths needing genuinely
+# different underlying primitives (blocking docker_exec vs non-blocking docker_exec_async), not
+# an oversight; the parts that *can* be shared (env/Command building, via _hook_env/ide_command)
+# already are, unchanged. Then translates the outcome into a launch_resolve_stage() call -
+# deliberately not folded into hook_status_completed itself, since that's shared with genuinely
+# on-demand invocations (including manual re-runs of these same two names via `dockside hook
+# run`), which must never affect DAG state.
+sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
+   my $script = $reservation->hook_script($name);
+   my @Command = $reservation->ide_command();
+   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'docker-event-daemon::_launch_dispatch_hook_stage: ide_command() returned empty' ) unless @Command;
+   $Command[-1] = 'run_hook';
+   push( @Command, $name, $script );
+
+   my $owner = $reservation->owner('username');
+   my $userObj = User->load($owner);
+   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $userObj;
+
+   my @env = map { my $e = $_; $e =~ s/^--env=//; $e } $reservation->_hook_env($userObj);
+
+   my $timeout = $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   my $containerId = $reservation->containerId();
+
+   my $invocationId = sprintf( "%08x", int(rand(0xffffffff)) );
+   my $logPath = "$CONFIG->{'tmpPath'}/r-" . $reservation->id() . "-hook-$invocationId.log";
+   $reservation->hook_status_started($name, $logPath);   # synchronous - see _launch_dispatch_exec's own comment
+
+   flog( "docker-event-daemon::_launch_dispatch_hook_stage: DISPATCHING '$name' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
+
+   open( my $log, '>>', $logPath )
+      or die Exception->new( 'dbg' => "docker-event-daemon::_launch_dispatch_hook_stage: cannot open log '$logPath': $!" );
+   $log->autoflush(1);
+
+   docker_exec_async( $CONFIG->{'docker'}{'socket'}, $containerId, {
+      'Cmd' => \@Command, 'User' => $reservation->unixuser(), 'Env' => \@env,
+   }, {
+      'inactivity_timeout' => $timeout + 30,
+      'request_timeout'    => $timeout,
+      'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($name, undef, $execId); },
+      'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
+   }, sub ($result, $err) {
+      try {
+         close($log);
+
+         if ( !$result ) {
+            flog("docker-event-daemon::_launch_dispatch_hook_stage: '$name' failed to dispatch: $err");
+            $reservation->hook_status_completed( $name, { 'state' => 'aborted' } );
+            launch_resolve_stage($reservation, $name, 'failed');
+            $cb->();
+            return;
+         }
+
+         my $rc = $result->{'exitCode'};
+         my $timedOut = $result->{'timedOut'} ? 1 : 0;
+         my $busy = ( defined($rc) && $rc == 2 && !$timedOut ) ? 1 : 0;
+
+         $reservation->hook_status_completed( $name, {
+            'state'    => 'done',
+            'exitCode' => $rc,
+            'timedOut' => $timedOut,
+            'busy'     => $busy,
+         } );
+         launch_resolve_stage( $reservation, $name, _launch_state_from_hook_status( $reservation->hook_status($name) ) );
+         $cb->();
+      }
+      catch {
+         flog("docker-event-daemon::_launch_dispatch_hook_stage: caught exception resolving '$name': " . (ref($_) ? $_->dbg : $_));
+         $cb->();
+      };
+   } );
 }
 
 # Updates the container state by retrieving the current container list
@@ -311,6 +741,15 @@ sub onContainerStart ($id, $eventCount) {
    # Clear any stale pending launch entry from a previous start of the same container.
    delete $pendingLaunch{$containerId};
 
+   # Reset the launch:-DAG stage statuses for a fresh cycle - without this, this restart's
+   # launch_advance call below (via launch_or_queue_until_launcher_ready) would see launch:prep's
+   # still-persisted 'done' status from the *original* launch and skip the whole cascade
+   # (including lifecycle:start, which must fire on every restart - see launch_reset_stages' own
+   # comment). Exactly once here, not inside the pendingLaunch retry loop below (on_tick) - those
+   # retries are for this *same* start event, and must keep seeing what this reset already put
+   # in place.
+   launch_reset_stages($reservation);
+
    my $launched;
    try {
       $launched = launch_or_queue_until_launcher_ready($reservation, "onContainerStart #$eventCount", $T1);
@@ -440,8 +879,11 @@ sub eventHandler {
                }
 
                try {
-                  $reservation->exec();
-                  flog("eventHandler:tick: pending IDE launch succeeded for reservationId=" . $reservation->id . " with containerId=$cid");
+                  # See launch_or_queue_until_launcher_ready's own comment - dispatch is
+                  # non-blocking and self-propagating, so "dispatched" below means the DAG was
+                  # kicked off, not that launch:prep itself has actually finished yet.
+                  launch_advance($reservation);
+                  flog("eventHandler:tick: pending IDE launch dispatched for reservationId=" . $reservation->id . " with containerId=$cid");
                   delete $pendingLaunch{$cid};
                }
                catch {
@@ -453,6 +895,42 @@ sub eventHandler {
          }
          catch {
             flog("eventHandler::on_tick::pendingLaunch: caught exception: " . (ref($_) ? $_->dbg : $_));
+         };
+      }
+
+      # Re-check any reservation restart-recovery found still genuinely in-flight after its own
+      # first pass - see %launchRecovering's own comment for why this, and only this, case needs
+      # per-tick polling under the async model. Self-limiting: each entry removes itself the
+      # moment launch_in_flight() says there's nothing left to recover, and nothing is ever added
+      # here except by the startup sweep - an empty %launchRecovering (the overwhelmingly common
+      # case) costs this tick nothing beyond the truth test below.
+      if (%launchRecovering) {
+         try {
+            for my $cid (keys %launchRecovering) {
+               Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+               my $reservations = Reservation->load({ 'containerId' => $cid });
+               if (!@$reservations) {
+                  delete $launchRecovering{$cid};
+                  next;
+               }
+
+               my $reservation = $reservations->[0];
+               try {
+                  for my $name (@LAUNCH_STAGE_NAMES) {
+                     my $state = ( $reservation->hook_status($name) // {} )->{'state'} // 'pending';
+                     $reservation->hook_is_running($name) if $state eq 'running';
+                  }
+                  launch_advance($reservation);
+               }
+               catch {
+                  flog("eventHandler:tick:launchRecovering: caught exception reconciling reservationId=" . $reservation->id . ": " . (ref($_) ? $_->dbg : $_));
+               };
+
+               delete $launchRecovering{$cid} unless launch_in_flight($reservation);
+            }
+         }
+         catch {
+            flog("eventHandler::on_tick::launchRecovering: caught exception: " . (ref($_) ? $_->dbg : $_));
          };
       }
    } );
@@ -546,6 +1024,48 @@ if( ! -d $CONFIG->{'tmpPath'} ) {
 # an empty network list because containers.json has not yet been written.
 flog("Writing initial container state synchronously...");
 try { update() } catch { flog("Initial update failed (non-fatal): " . (ref($_) ? $_->dbg : $_)) };
+
+# Restart-recovery: a launch stage left 'running' in hooks.status belonged to a dispatch of the
+# *previous* docker-event-daemon process - that process is gone, so there is no completion
+# callback left anywhere that will ever resolve it on its own (see this file's own "Launch
+# dispatch orchestration" section header comment for why every *other* case resolves via its own
+# callback, guaranteed, by construction). Seed from every reservation whose DAG isn't fully
+# settled, self-heal any 'running' stage via the existing hook_is_running check where its exec
+# has genuinely already finished, then run launch_advance to pick up wherever the DAG can now
+# continue.
+#
+# Not necessarily settled by this one pass: hook_is_running correctly does nothing when a
+# stage's exec is still genuinely running - it must not falsely resolve a live exec - but that
+# leaves it exactly as orphaned as before (no callback anywhere will ever notice it finish).
+# Found live, not assumed: restarting DED mid-dispatch, then confirming a stage stayed 'running'
+# indefinitely, well after its real exec had actually completed. %launchRecovering (see its own
+# comment) is what covers this: seeded here for anything still in-flight after this first pass,
+# then on_tick re-checks it until settled. Deliberately placed only here, not inside eventHandler
+# (which restarts on stream-close/crash - see the file's own banner) - this must run once per
+# *process* lifetime, not once per eventHandler restart.
+try {
+   Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
+   my $allReservations = Reservation->load();
+   my @inFlight = grep { launch_in_flight($_) } @$allReservations;
+   flog(sprintf("Restart-recovery: %d of %d reservation(s) have a launch still in progress...", scalar @inFlight, scalar @$allReservations));
+   for my $reservation (@inFlight) {
+      try {
+         for my $name (@LAUNCH_STAGE_NAMES) {
+            my $state = ( $reservation->hook_status($name) // {} )->{'state'} // 'pending';
+            $reservation->hook_is_running($name) if $state eq 'running';   # self-heals in place if dead
+         }
+         launch_advance($reservation);
+         $launchRecovering{ $reservation->containerId } = 1 if launch_in_flight($reservation);
+      }
+      catch {
+         flog("Restart-recovery: caught exception reconciling reservationId=" . $reservation->id . ": " . (ref($_) ? $_->dbg : $_));
+      };
+   }
+   flog(sprintf("Restart-recovery: %d reservation(s) still in flight after the first pass; on_tick will keep re-checking them", scalar keys %launchRecovering)) if %launchRecovering;
+}
+catch {
+   flog("Restart-recovery sweep failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
+};
 
 # Restart eventHandler if the 'docker events' stream closes unexpectedly (e.g. Docker restart).
 while(1) {
