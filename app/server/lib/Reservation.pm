@@ -1530,13 +1530,59 @@ sub run_hook_sync ($self, $args = {}) {
          unless $self->profileObject->hooks->{$name}{'manual'};
    }
 
+   my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
+      unless $timeout =~ /^[1-9][0-9]*$/;
+
+   # Cheap, local, no docker round-trip - see hook_is_running's own comment for exactly what
+   # this does and doesn't guarantee (it is not the thing overlap-safety depends on). Checked
+   # here too, not just inside dispatch_hook_exec below, so a busy reply returns before ever
+   # forking - no point paying for a fork just to immediately discover there's nothing to do.
+   if( $self->hook_is_running($name) ) {
+      return { 'busy' => 1 };
+   }
+
+   # Fork - exactly Reservation::launch's existing pattern (see item B: "the pattern already
+   # exists in this codebase") - parent returns immediately, freeing the caller (the API
+   # server has no event loop of its own and must free the nginx worker - see item B's "fork
+   # is mandatory" note); the forked child does the actual dispatch-and-wait via
+   # dispatch_hook_exec() below, blocking freely since it has nothing else to do concurrently.
+   local $SIG{'CHLD'} = 'DEFAULT';
+   my $pid;
+   if( $pid = fork ) {
+      # PARENT
+      $SIG{'CHLD'} = sub { waitpid $pid, 0; $SIG{'CHLD'} = 'DEFAULT'; };
+      return { 'started' => 1, 'name' => $name };
+   }
+
+   # -------------
+   # CHILD PROCESS
+   # -------------
+   $self->dispatch_hook_exec( $name, $script, { 'timeout' => $timeout, 'pid' => $$ } );
+   exit(0);
+}
+
+# Shared core: dispatch a named hook via the exec API and record its outcome start to finish
+# (hook_status_started -> hook_status_set_running_details -> hook_status_completed). Used by
+# run_hook_sync above, wrapped in fork() - see its own comment for why - and intended to be
+# reusable, without forking, by a future dispatch driver running on a genuine event loop; see
+# docs/plans/lifecycle-hooks-review-followup.md item F. Blocking today - a caller on an event
+# loop cannot call this as-is without stalling it.
+#
+# Deliberately does NOT repeat run_hook_sync's on-demand-specific validation gates (declared?
+# implemented? manual?) or its busy pre-check (already done by the caller, before forking, in
+# run_hook_sync's case) - a different caller may have entirely different gating. $args:
+#   user    - exec user (default: $self->unixuser())
+#   pid     - recorded via hook_status_set_running_details alongside the exec id; run_hook_sync
+#             passes its own forked child's real $$
+#   timeout - seconds; defaults to $CONFIG->{'hooks'}{'defaultTimeoutSeconds'}
+sub dispatch_hook_exec ($self, $name, $script, $args = {}) {
    my @Command = $self->ide_command();
-   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::run_hook_sync: ide_command() returned empty' ) unless @Command;
+   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::dispatch_hook_exec: ide_command() returned empty' ) unless @Command;
    $Command[-1] = 'run_hook';
-   push( @Command, $name );
    # launch.sh's run_hook() takes the script path as an explicit argument (see item E) rather
-   # than reading a fixed env var, so every on-demand invocation passes it here directly.
-   push( @Command, $script );
+   # than reading a fixed env var, so every invocation passes it here directly.
+   push( @Command, $name, $script );
 
    my $owner = $self->owner('username');
    my $user = User->load($owner);
@@ -1549,45 +1595,22 @@ sub run_hook_sync ($self, $args = {}) {
    my @env = map { my $e = $_; $e =~ s/^--env=//; $e } $self->_hook_env($user);
 
    my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
-   die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
-      unless $timeout =~ /^[1-9][0-9]*$/;
-
    my $containerId = $self->containerId();
-
-   # Cheap, local, no docker round-trip - see hook_is_running's own comment for exactly what
-   # this does and doesn't guarantee (it is not the thing overlap-safety depends on).
-   if( $self->hook_is_running($name) ) {
-      return { 'busy' => 1 };
-   }
 
    my $invocationId = sprintf( "%08x", int(rand(0xffffffff)) ^ $$ );
    my $logPath = "$CONFIG->{'tmpPath'}/r-" . $self->id() . "-hook-$invocationId.log";
    $self->hook_status_started($name, $logPath);
 
-   flog( "Reservation::run_hook_sync: DISPATCHING (async, via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
+   flog( "Reservation::dispatch_hook_exec: DISPATCHING (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
-   # Fork - exactly Reservation::launch's existing pattern (see item B: "the pattern already
-   # exists in this codebase") - parent returns immediately, freeing the caller; the forked
-   # child does the actual dispatch-and-wait via docker_exec() directly, no CLI involved.
-   local $SIG{'CHLD'} = 'DEFAULT';
-   my $pid;
-   if( $pid = fork ) {
-      # PARENT
-      $SIG{'CHLD'} = sub { waitpid $pid, 0; $SIG{'CHLD'} = 'DEFAULT'; };
-      return { 'started' => 1, 'name' => $name };
-   }
-
-   # -------------
-   # CHILD PROCESS
-   # -------------
    try {
       open( my $log, '>>', $logPath )
-         or die Exception->new( 'dbg' => "Reservation::run_hook_sync child: cannot open log '$logPath': $!" );
+         or die Exception->new( 'dbg' => "Reservation::dispatch_hook_exec: cannot open log '$logPath': $!" );
       $log->autoflush(1);
 
       my $result = docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
          'Cmd'  => \@Command,
-         'User' => $self->unixuser(),
+         'User' => $args->{'user'} // $self->unixuser(),
          'Env'  => \@env,
       }, {
          # A generous margin over $timeout, not $timeout itself - request_timeout below is
@@ -1597,10 +1620,8 @@ sub run_hook_sync ($self, $args = {}) {
          'request_timeout'    => $timeout,
          # Fires before docker_exec's own (blocking) start-and-stream call, so the exec id
          # reaches the status record as early as possible - see hook_status_started's comment
-         # for why this can't be known any earlier than this, from the child, using its own
-         # real pid ($$, not the parent's - the parent never learns the child's pid until
-         # fork() returns, well before the exec is even created).
-         'on_created' => sub ($execId) { $self->hook_status_set_running_details($name, $$, $execId); },
+         # for why this can't be known any earlier than this.
+         'on_created' => sub ($execId) { $self->hook_status_set_running_details($name, $args->{'pid'}, $execId); },
          'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
       } );
 
@@ -1626,11 +1647,11 @@ sub run_hook_sync ($self, $args = {}) {
    }
    catch {
       my $dbg = ref($_) ? $_->dbg() : "$_";
-      flog("Reservation::run_hook_sync child: caught exception dispatching '$name': $dbg");
+      flog("Reservation::dispatch_hook_exec: caught exception dispatching '$name': $dbg");
       $self->hook_status_completed( $name, { 'state' => 'aborted' } );
    };
 
-   exit(0);
+   return { 'started' => 1, 'name' => $name };
 }
 
 1;
