@@ -7,12 +7,12 @@ use Expect;
 use Try::Tiny;
 use Tie::File;
 use Storable qw(dclone);
-use Reservation::Mutate qw(update load_clean_map);
+use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running);
 use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri sanitize_sensitive_text);
+use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
@@ -489,6 +489,40 @@ sub load_launch_logs ($self) {
    return $data;
 }
 
+# Tails a hook invocation's outer log file (run_hook_sync's forked child, below, writes the
+# hook's stdout+stderr frames here as they arrive - see item B,
+# docs/plans/lifecycle-hooks-review-followup.md) for a status/log read endpoint to serve -
+# see User::runContainerHookStatus and App.pm's GET /containers/<id>/hook/status route. Mirrors
+# load_launch_logs() above (last $maxLines lines via Tie::File, read fresh from disk on every
+# call, no in-process caching) - cheap for "poll a status field, fetch the tail" use, exactly
+# like load_launch_logs already is for r-<id>.log. Unlike load_launch_logs, there is no
+# synthetic '=== EXIT CODE ===' termination line to strip: docker_exec()'s on_output callback
+# writes only the hook's own raw stdout/stderr bytes.
+#
+# Returns [] (never undef) if $name has never been invoked (no status record yet, so no
+# logPath to read) or its log file cannot be opened (e.g. already cleaned up - see item I, not
+# yet built) - a caller can treat "no status" and "no log lines" as the same "nothing to show
+# yet" case without special-casing either.
+sub load_hook_log ($self, $name, $maxLines = 200) {
+   my $status = $self->hook_status($name) or return [];
+   my $logPath = $status->{'logPath'} or return [];
+
+   my @lines;
+   tie @lines, 'Tie::File', $logPath
+   || do {
+      flog("Cannot open hook log file '$logPath' for reservation " . $self->id() . ": $!");
+      return [];
+   };
+
+   my $data = [];
+   for( my $i = (@lines) - $maxLines; $i < (@lines); $i++ ) {
+      push(@$data, $lines[$i]) if $i >= 0;
+   }
+   untie @lines;
+
+   return $data;
+}
+
 # Gets the container logs for the Reservation:
 # Inputs:
 # - stdout => { 'clean_pty' => [0|1] }
@@ -577,7 +611,7 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description IDE ) ],
             'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
-            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options startCount hooks ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId createStatus) ]
@@ -892,6 +926,45 @@ sub store ($self) {
    return $self;
 }
 
+# store_fields:
+#
+# Like store() above, but persists only the specific fields given, instead of this process's
+# entire in-memory record. $fields is a hashref shaped exactly like update()'s own $e (e.g.
+# { data => { runningIDE => 'openvscode/latest' } }, or { meta => { access => {...} } }, or
+# both) - never the whole 'data'/'meta' hash unless every key in it is genuinely being
+# authoritatively set right now.
+#
+# Why this matters, not just "is tidier": store()'s whole-record write only merges safely
+# nested-hash-by-nested-hash where BOTH the incoming payload and the fresh on-disk record are
+# hashes at every level down to the changed key (see Util::cloneHash's own comment) - a scalar
+# leaf, or a hash present in one but not the other, is blindly overwritten with whatever this
+# process happens to be carrying, however old. store()'s $e always includes this process's
+# *entire* in-memory 'data'/'meta' - so any field this process loaded a while ago and never
+# refreshed, but is NOT trying to change right now, still rides along and can clobber a fresher
+# value some *other* concurrent writer already persisted. That's not a rare edge case for a
+# forked child that did several seconds of blocking work before finally writing: its own
+# snapshot of every unrelated field is exactly that many seconds stale by the time it stores.
+# store_fields avoids this at the source - a key genuinely absent from $fields is never sent at
+# all, so cloneHash never touches it.
+#
+# Only safe for "authoritative overwrite" values - ones that don't need reading their own prior
+# persisted value to compute (see Reservation::Mutate::increment_data_field for that case,
+# e.g. startCount).
+sub store_fields ($self, $fields) {
+   $self->update( { 'id' => $self->id(), %$fields } );
+   return $self;
+}
+
+# Atomically increments data.startCount and returns the new value - see
+# Reservation::Mutate::increment_data_field's own comment for why this needs a genuine
+# read-under-lock, not just a narrowly-scoped store_fields call. Also updates this process's
+# own in-memory copy, so a later read in the same process sees the value it just committed.
+sub increment_start_count ($self) {
+   my $newValue = increment_data_field( $self->id(), 'startCount' );
+   $self->{'data'}{'startCount'} = $newValue;
+   return $newValue;
+}
+
 sub getGitDevContainer ($self) {
    my $uri = $self->data('gitURL');
    flog("getGitDevContainer: uri=$uri");
@@ -1045,6 +1118,13 @@ sub launch ($self) {
    };
 }
 
+# $command is undef for exactly one caller shape: docker-event-daemon's genuine container-start
+# dispatch (a live container-start event, or its deferred pendingLaunch retry once the launcher
+# is ready) - the only case that represents "this devtainer just started". Every other caller
+# (User::updateContainerReservation's 'update_ssh_authorized_keys', and 'restart_ide' if
+# re-enabled) always passes an explicit command naming a one-off action on an already-running
+# container. This distinction (not "is it 'restart_ide'?") is what gates the startCount
+# increment below - see docs/plans/lifecycle-hooks-review-followup.md item E.
 sub exec ($reservation, $command = undef) {
    my $reservationId = $reservation->id();
    my $containerId = $reservation->containerId();
@@ -1067,13 +1147,31 @@ sub exec ($reservation, $command = undef) {
 
       flog("exec: restarting IDE for reservationId=$reservationId, containerId=$containerId");
 
-      # Store before exec so the UI reflects the intended IDE immediately.
-      $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+      # Store before exec so the UI reflects the intended IDE immediately. Narrow store - see
+      # store_fields' own comment - since this reservation's own launch may concurrently be
+      # writing other, unrelated fields.
+      $reservation->data('runningIDE', $reservation->meta('IDE'));
+      $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
 
       run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', $reservation->unixuser(), $containerId, @Command);
 
       return 1;
    }
+
+   # Server-side start count, injected as DOCKSIDE_START_COUNT so launch.sh can tell a
+   # genuine first start (fires 'lifecycle:launch') from every later restart (fires
+   # 'lifecycle:start' instead - see below). Named for what it actually counts - every
+   # container-start event, including the first - not "launch" in the product-vocabulary sense
+   # of a one-time devtainer creation (see docs/plans/lifecycle-hooks-review-followup.md item E
+   # for the launch-vs-start distinction this whole split is built on). Computed here but only
+   # persisted after run_system() below confirms the exec dispatch itself succeeded (it dies on
+   # failure) - deliberately not before: incrementing first would burn a count on a dispatch
+   # that never reached the container at all, permanently skipping 'lifecycle:launch' on what
+   # is still genuinely this devtainer's first real start next time. This does not cover every
+   # failure mode (a dispatch that succeeds but dies inside the container before reaching the
+   # hook still consumes the count) - closing that gap needs a completion signal from inside
+   # the container, which is item D; not a blocker for this.
+   my $startCount = defined($command) ? undef : ($reservation->data('startCount') // 0) + 1;
 
    my $owner = $reservation->owner('username');
    my $user = User->load($owner);
@@ -1125,23 +1223,22 @@ sub exec ($reservation, $command = undef) {
       );
    }
 
-   my @envGit;
-   if( $reservation->gitURL() ) {
-      my ($git_domain) = $reservation->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
-      @envGit = (
-         "--env=GIT_URL=" . $reservation->gitURL(),
-         "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"
-      );
-   }
+   my @envCommonHook = $reservation->_hook_env($user);
 
-   my @envOptions = map {
-      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($reservation->data('options') // {})->{$_}
-   } keys %{ $reservation->data('options') // {} };
-
-   my @envGhToken;
-   if( my $token = $user->gh_token() ) {
-      @envGhToken = ( "--env=GH_TOKEN=$token" );
+   # Two separate env slots, not one: this single exec runs the whole perpetual launch_ide
+   # process, which must be able to auto-fire BOTH 'lifecycle:launch' (only on this devtainer's
+   # true first start, gated below on DOCKSIDE_START_COUNT) and 'lifecycle:start' (every start,
+   # including this one) without a second `docker exec` - see item E. Each name's script is
+   # resolved separately since they may differ (or either may be unconfigured).
+   my @envHook;
+   if( my $script = $reservation->hook_script('lifecycle:launch') ) {
+      @envHook = ( "--env=DOCKSIDE_HOOK_SCRIPT=$script" );
    }
+   my @envHookStart;
+   if( my $script = $reservation->hook_script('lifecycle:start') ) {
+      @envHookStart = ( "--env=DOCKSIDE_HOOK_SCRIPT_START=$script" );
+   }
+   my @envStartCount = defined($startCount) ? ( "--env=DOCKSIDE_START_COUNT=$startCount" ) : ();
 
    my @envIDE = (
       "--env=IDE=" . $reservation->meta('IDE')
@@ -1158,16 +1255,19 @@ sub exec ($reservation, $command = undef) {
    );
 
    # Store before exec so the UI reflects the intended IDE immediately,
-   # including during any retry window before the exec succeeds.
-   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+   # including during any retry window before the exec succeeds. Narrow store - see
+   # store_fields' own comment.
+   $reservation->data('runningIDE', $reservation->meta('IDE'));
+   $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
 
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs_all() ),
-      @envGit,
-      @envOptions,
-      @envGhToken,
+      @envCommonHook,
+      @envHook,
+      @envHookStart,
+      @envStartCount,
       @envSSH,
       @envDevContainer,
       @envIDE,
@@ -1175,7 +1275,406 @@ sub exec ($reservation, $command = undef) {
       @Command
    );
 
+   # Persist the increment only now that run_system() has confirmed the exec dispatch itself
+   # succeeded (see the comment where $startCount was computed above).
+   $reservation->data('startCount', $startCount)->store() if defined $startCount;
+
    return 1;
+}
+
+# The env vars any hook invocation (the launch-time auto-invoke, dispatched in-process by
+# launch.sh itself, or a later `docker exec ... launch.sh run_hook` built here) needs
+# regardless of which specific hook is running: the same GIT_URL/SSH_KNOWN_HOSTS_DOMAINS,
+# DOCKSIDE_OPTION_* and GH_TOKEN env this reservation's IDE launch already gets - shared here
+# to avoid duplicating/drifting that logic between exec() and run_hook_sync(). Deliberately
+# does NOT resolve a hook script path itself (unlike an earlier version of this function) -
+# exec() may need up to two script paths at once ('lifecycle:launch' and 'lifecycle:start',
+# see above) and run_hook_sync passes its one script path directly as a launch.sh CLI
+# argument instead (see below), so each caller resolves whichever script(s) it needs itself.
+#
+# Returns `docker` CLI flag strings ("--env=KEY=VALUE"), not plain "KEY=VALUE" - matching
+# exec()'s own @envHook/@envIDE/etc. below, since exec() still shells out to the `docker` CLI
+# directly (run_system(...'exec','-d',...,@envCommonHook,...)). run_hook_sync (see item B)
+# dispatches via the Docker Engine API's exec/create instead, whose `Env` field wants plain
+# "KEY=VALUE" strings - a real bug, caught by the integration suite, not by this session's own
+# manual testing (which never actually inspected DOCKSIDE_OPTION_* forwarding specifically):
+# passing "--env=KEY=VALUE" straight into that JSON field doesn't error, it just silently
+# creates a nonsense env var literally named "--env" whose value is "KEY=VALUE" - so
+# DOCKSIDE_OPTION_* (and GIT_URL/GH_TOKEN) never reached the hook process at all. Fixed at
+# run_hook_sync's own call site (strips the prefix there) rather than changing this function's
+# output format, since exec() still needs the CLI-flag form.
+sub _hook_env ($self, $user) {
+   my @envGit;
+   if( $self->gitURL() ) {
+      my ($git_domain) = $self->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
+      @envGit = (
+         "--env=GIT_URL=" . $self->gitURL(),
+         "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"
+      );
+   }
+
+   my @envOptions = map {
+      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($self->data('options') // {})->{$_}
+   } keys %{ $self->data('options') // {} };
+
+   my @envGhToken;
+   if( my $token = $user->gh_token() ) {
+      @envGhToken = ( "--env=GH_TOKEN=$token" );
+   }
+
+   return (@envGit, @envOptions, @envGhToken);
+}
+
+# --- Hook status/history storage ---
+#
+# data('hooks') = { status => {...}, history => [...] } - two structures nested under one
+# top-level data key, deliberately different shapes for different jobs (see
+# docs/plans/lifecycle-hooks-review-followup.md item B):
+#
+# hooks.status is the master record, a hash keyed by hook name - one entry per name, holding
+# its current/last invocation's state. This is what a pre-exec "is this already running?"
+# check (hook_is_running) and a "what happened last time?" query (hook_status) both read.
+# Concurrent forked children invoking *different* names on the same reservation must never
+# clobber each other's entries - see Reservation::store_fields' own comment for exactly what
+# that requires (not just "it's a nested hash", which alone isn't sufficient - a writer whose
+# own in-memory copy carries a *stale* copy of a name it isn't even trying to change can still
+# clobber it via an ordinary whole-record store()). _hook_status_store_one below is what
+# actually makes this safe: it persists only the one name being written, via store_fields, so a
+# name genuinely absent from a writer's own payload is never touched on disk, no matter how
+# stale that writer's own snapshot of it is.
+#
+# hooks.history is a bounded, oldest-first array of past invocations across all names.
+# Deliberately NOT maintained via store()/store_fields at all - cloneHash only recurses into
+# hashes; an array value is compared by reference and replaced wholesale, so two concurrent
+# appends via that path would race and the loser's row would simply be lost. record_hook_history()
+# (Reservation::Mutate) instead re-reads the reservation fresh under its own atomic mutate()
+# lock, appends, evicts, and writes back - safe under genuine concurrency.
+
+# Package (not lexical) so docker-event-daemon's own _launch_dispatch_hook_stage - which needs
+# the identical cap for its own hook_claim_if_not_running call, dispatching the same two
+# externally-reachable stage names (lifecycle:launch/lifecycle:start) - can reference it as
+# $Reservation::HOOK_HISTORY_MAX without a second, independently-drifting constant.
+our $HOOK_HISTORY_MAX = 100;
+
+# Internal helpers isolating hooks.status's read/write boilerplate.
+sub _hook_status_all ($self) {
+   return ($self->data('hooks') // {})->{'status'} // {};
+}
+
+# Persists exactly one name's entry - never the whole status hash (see the block comment
+# above for why that distinction matters) - while keeping this process's own in-memory copy
+# consistent too, so a later read in the same process (e.g. hook_status_set_running_details
+# reading back what hook_status_started just wrote a moment earlier) still sees it; only the
+# disk write is narrowed, not this process's own view of its own writes.
+sub _hook_status_store_one ($self, $name, $entry) {
+   my $status = ( $self->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+   $status->{$name} = $entry;
+   $self->store_fields( { 'data' => { 'hooks' => { 'status' => { $name => $entry } } } } );
+}
+
+# Returns true if $name's last-known invocation is still running, per the master record. A
+# cheap, purely *optimizing* pre-exec check (see item B) - it has no visibility into an
+# auto-invoked lifecycle:launch/lifecycle:start run (those never touch this record at all - see
+# item B's auto-invoke exception), so a false "not running" is possible and expected in that
+# specific race. The in-container mkdir lock (run_hook() in launch.sh) remains the actual
+# safety net regardless, exactly as it already is today - this only ever saves a wasted
+# round-trip in the common case, it was never the thing overlap-safety depends on.
+sub hook_is_running ($self, $name) {
+   my $status = $self->_hook_status_all->{$name};
+   return 0 unless $status && ($status->{'state'} // '') eq 'running';
+
+   # Newly-started, before the forked child has reached docker_exec()'s on_created callback
+   # yet (see hook_status_started/hook_status_set_running_details below) - neither liveness
+   # signal exists yet, so there is nothing to check; it is, definitionally, still running.
+   return 1 unless defined($status->{'pid'}) || defined($status->{'execId'});
+
+   # Stale-running detection, mirroring run_hook()'s own kill -0 reclaim for its in-container
+   # lock: a forked child that died without writing back (an nginx worker recycled from under
+   # it, OOM, etc.) would otherwise wedge this name as "running" forever. Two signals, cheapest
+   # first: the fork's own pid (same PID namespace as this process - a reused-pid false
+   # positive is the same accepted limitation run_hook()'s own check already has), then, if
+   # that's inconclusive, the exec API's own Running state.
+   if( defined $status->{'pid'} ) {
+      return 1 if kill(0, $status->{'pid'});
+   }
+   if( defined $status->{'execId'} ) {
+      my $res = call_socket_api($CONFIG->{'docker'}{'socket'}, "/exec/$status->{'execId'}/json", {});
+      if( $res && $res->is_success ) {
+         my $info = decode_json($res->body);
+         return 1 if $info->{'Running'};
+
+         # Not running, and we have a real answer from the daemon about how it ended - use it,
+         # rather than defaulting to 'aborted' below regardless of what actually happened.
+         if( defined $info->{'ExitCode'} ) {
+            $self->hook_status_completed( $name, {
+               'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
+               'exitCode' => $info->{'ExitCode'},
+            } );
+            return 0;
+         }
+      }
+   }
+
+   # Neither signal gave a conclusive answer - self-heal the record (so a future check, and any
+   # status-read caller, sees 'aborted' rather than a misleadingly eternal 'running') and
+   # report not-running.
+   $self->hook_status_completed($name, { 'state' => 'aborted' });
+   return 0;
+}
+
+# Returns $name's master-record entry (undef if it has never been invoked on this
+# reservation), for a status/log read endpoint to serve. Normalizes the numeric-ish fields
+# (exitCode/timedOut/busy/pid) back to real numbers before returning.
+#
+# The root cause this works around is fixed now (Util::cloneHash no longer stringifies
+# every value it copies as a side effect of comparing it via `ne` - see cloneHash's own
+# comment for the full story), so a freshly-written record no longer needs this. This stays
+# as a safety net for records already persisted to disk as JSON-quoted strings from before
+# that fix - decode_json on an on-disk `"busy":"0"` (a genuine JSON string in the file itself
+# now, not just a Perl-internal flag) always re-decodes as a Perl string, permanently, until
+# that exact field is next written - which normalizing here, rather than depending on every
+# such record eventually being rewritten, makes moot. Cheap, and harmless once every record
+# has been rewritten at least once post-fix, so left in rather than removed.
+sub hook_status ($self, $name) {
+   my $status = $self->_hook_status_all->{$name};
+   return undef unless $status;
+
+   my $clean = { %$status };
+   for my $f (qw(exitCode timedOut busy pid)) {
+      $clean->{$f} = 0 + $clean->{$f} if defined $clean->{$f};
+   }
+   return $clean;
+}
+
+# Called by the forking parent, before forking (see run_hook_sync below), to record that $name
+# has started - so both the parent and (via fork()'s copy-on-write memory) the child already
+# see 'running' in their own in-memory copy from the moment the child exists, and so a poller
+# sees 'running' immediately rather than a gap where the record doesn't exist yet. pid/execId
+# are deliberately not known yet at this point (the child's own pid only exists once fork()
+# returns, the exec id only once docker_exec's on_created fires) - see
+# hook_status_set_running_details, called by the child once both are known.
+sub hook_status_started ($self, $name, $logPath) {
+   $self->_hook_status_store_one( $name, {
+      'name'      => $name,
+      'state'     => 'running',
+      'pid'       => undef,
+      'execId'    => undef,
+      'logPath'   => $logPath,
+      'startTime' => YYYYMMDDHHMMSS(time),
+   } );
+}
+
+# Called by the forked child once it knows both its own pid ($$) and the exec id
+# (docker_exec's on_created callback) - see hook_status_started above for why these can't be
+# known any earlier.
+sub hook_status_set_running_details ($self, $name, $pid, $execId) {
+   my $existing = $self->_hook_status_all->{$name} or return;
+   $self->_hook_status_store_one( $name, { %$existing, 'pid' => $pid, 'execId' => $execId } );
+}
+
+# Called by the forked child once the hook has finished, timed out, or been confirmed aborted,
+# recording the outcome on both the master record and the bounded history array. $fields must
+# include 'state' explicitly ('done' or 'aborted') - never defaulted, so a caller can never
+# accidentally leave a completed entry reading 'running' by omission.
+sub hook_status_completed ($self, $name, $fields) {
+   my $entry = { %{ $self->_hook_status_all->{$name} // { 'name' => $name } }, %$fields };
+   $self->_hook_status_store_one( $name, $entry );
+
+   record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
+}
+
+# Dispatch a named hook (a reserved 'lifecycle:*' name or a profile-declared custom name)
+# inside the reservation's container, via the exec API directly (decided - see item B) rather
+# than forking the `docker` CLI. Non-blocking: forks and returns almost immediately, freeing
+# the caller (App::handlerHTTPS's nginx worker - see item B's "fork is mandatory" note) well
+# before the hook itself finishes; the forked child does the actual waiting and records the
+# outcome via hook_status_completed() above, for a status/log read endpoint (see
+# User::runContainerHookStatus, App.pm's GET /containers/<id>/hook/status route, and the
+# `dockside hook run` CLI command, which will poll it - see item B's task list) to serve.
+#
+# $args->{'name'} is required (no default - every caller must say which hook). Three gates,
+# checked in order, exactly as before this item B rework: (1) is it declared in this profile's
+# `hooks` at all; (2) if it's a 'lifecycle:*' name, is that lifecycle event actually
+# implemented yet (today: 'lifecycle:launch' and 'lifecycle:start' - the rest are schema-valid,
+# reserved for docs/roadmap.md's future stop/rename/periodic, but not runnable); (3) still only
+# for a 'lifecycle:*' name, does its own `hooks` entry set `manual` true (custom names skip (2)
+# and (3) entirely - they never auto-fire, so declaring one always makes it manually
+# invocable).
+#
+# Returns { busy => 1 } immediately, no docker exec attempted at all, if hook_is_running()'s
+# cheap pre-check already shows $name running (still just an optimization, not the safety net -
+# see hook_is_running's own comment); otherwise { started => 1, name => $name } once
+# dispatched. Dies with a 400 Exception before attempting anything if any of the gates above
+# fail.
+sub run_hook_sync ($self, $args = {}) {
+   my $name = $args->{'name'};
+   die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
+
+   # $self->profileObject is this reservation's own profile snapshot from creation time, not a
+   # live lookup - so this check can only ever say whether $name is configured for *this
+   # devtainer*, not whether it exists in the profile's current config (which may have changed
+   # since, in either direction). The message below names both possible causes without a live
+   # profile comparison to pick between them (out of scope - see
+   # docs/plans/lifecycle-hooks-review-followup.md item C): a genuinely wrong name, or a hook
+   # added to the profile after this devtainer was created (recreating it is the fix only for
+   # the latter).
+   my $script = $self->hook_script($name);
+   die Exception->new(
+      'msg' => "No hook '$name' is configured for this devtainer - check the hook name's " .
+               "spelling, or recreate the devtainer if this hook has been added to the " .
+               "profile since it was created",
+      'status' => 400
+   ) unless length($script);
+
+   if( $name =~ /^lifecycle:/ ) {
+      die Exception->new( 'msg' => "'$name' is reserved for a future release, not runnable yet", 'status' => 400 )
+         unless $name eq 'lifecycle:launch' || $name eq 'lifecycle:start';
+
+      die Exception->new( 'msg' => "'$name' is not configured as manually invocable for this profile (see its 'hooks' entry's 'manual' field)", 'status' => 400 )
+         unless $self->profileObject->hooks->{$name}{'manual'};
+   }
+
+   my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
+      unless $timeout =~ /^[1-9][0-9]*$/;
+
+   # Atomic check-and-claim - computed and reserved here, in the parent, before forking, so two
+   # concurrent callers (different nginx workers) can never both see "not running" and both
+   # proceed. Replaces the old two-step hook_is_running()-then-hook_status_started() sequence.
+   # which was NOT safe under real concurrency across nginx's multiple worker processes - found
+   # live, not assumed: 2 of 4 genuinely concurrent invokes both actually executed the hook
+   # script (confirmed against the container's own execution log, not just the API response).
+   # See Reservation::Mutate::hook_claim_if_not_running's own comment for the full reasoning.
+   # $logPath is computed here too (not inside dispatch_hook_exec, as before), so the claim's
+   # very first write already has it; $invocationId no longer needs the child's own $$ for
+   # uniqueness - a plain rand() is just as sufficient, and this runs before the fork exists.
+   my $invocationId = sprintf( "%08x", int(rand(0xffffffff)) );
+   my $logPath = "$CONFIG->{'tmpPath'}/r-" . $self->id() . "-hook-$invocationId.log";
+   my $claimedEntry = hook_claim_if_not_running( $self->id(), $name, $logPath, $HOOK_HISTORY_MAX );
+   unless( $claimedEntry ) {
+      return { 'busy' => 1 };
+   }
+   # Sync this process's own in-memory copy - mutate() only ever wrote a fresh, separately-
+   # loaded copy of the reservation (see hook_claim_if_not_running's own comment), not $self -
+   # so the forked child below (via fork()'s copy-on-write memory) sees the claim too, and its
+   # own later hook_status_set_running_details call merges pid/execId onto this fresh entry,
+   # not stale pre-claim state.
+   ( $self->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $claimedEntry;
+
+   # Fork - exactly Reservation::launch's existing pattern (see item B: "the pattern already
+   # exists in this codebase") - parent returns immediately, freeing the caller (the API
+   # server has no event loop of its own and must free the nginx worker - see item B's "fork
+   # is mandatory" note); the forked child does the actual dispatch-and-wait via
+   # dispatch_hook_exec() below, blocking freely since it has nothing else to do concurrently.
+   local $SIG{'CHLD'} = 'DEFAULT';
+   my $pid;
+   if( $pid = fork ) {
+      # PARENT
+      $SIG{'CHLD'} = sub { waitpid $pid, 0; $SIG{'CHLD'} = 'DEFAULT'; };
+      return { 'started' => 1, 'name' => $name };
+   }
+
+   # -------------
+   # CHILD PROCESS
+   # -------------
+   $self->dispatch_hook_exec( $name, $script, { 'timeout' => $timeout, 'pid' => $$, 'logPath' => $logPath } );
+   exit(0);
+}
+
+# Shared core: dispatch a named hook via the exec API and record its outcome start to finish
+# (hook_status_started -> hook_status_set_running_details -> hook_status_completed). Used by
+# run_hook_sync above, wrapped in fork() - see its own comment for why - and intended to be
+# reusable, without forking, by a future dispatch driver running on a genuine event loop; see
+# docs/plans/lifecycle-hooks-review-followup.md item F. Blocking today - a caller on an event
+# loop cannot call this as-is without stalling it.
+#
+# Deliberately does NOT repeat run_hook_sync's on-demand-specific validation gates (declared?
+# implemented? manual?) or its busy pre-check (already done by the caller, before forking, in
+# run_hook_sync's case) - a different caller may have entirely different gating. $args:
+#   user    - exec user (default: $self->unixuser())
+#   pid     - recorded via hook_status_set_running_details alongside the exec id; run_hook_sync
+#             passes its own forked child's real $$
+#   timeout - seconds; defaults to $CONFIG->{'hooks'}{'defaultTimeoutSeconds'}
+sub dispatch_hook_exec ($self, $name, $script, $args = {}) {
+   my @Command = $self->ide_command();
+   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::dispatch_hook_exec: ide_command() returned empty' ) unless @Command;
+   $Command[-1] = 'run_hook';
+   # launch.sh's run_hook() takes the script path as an explicit argument (see item E) rather
+   # than reading a fixed env var, so every invocation passes it here directly.
+   push( @Command, $name, $script );
+
+   my $owner = $self->owner('username');
+   my $user = User->load($owner);
+   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $user;
+
+   # _hook_env returns `docker` CLI flag strings ("--env=KEY=VALUE" - see its own comment) for
+   # exec()'s sake; docker_exec() below dispatches via the Docker Engine API instead, whose
+   # `Env` field wants plain "KEY=VALUE" strings - strip the CLI-flag prefix here, at this
+   # call site only, rather than changing _hook_env's own output format.
+   my @env = map { my $e = $_; $e =~ s/^--env=//; $e } $self->_hook_env($user);
+
+   my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   my $containerId = $self->containerId();
+
+   # $logPath is now computed by, and the 'running' record already written by, the caller's own
+   # atomic claim (Reservation::Mutate::hook_claim_if_not_running, run_hook_sync's own comment)
+   # before it forked - required so, not just passed here for convenience.
+   my $logPath = $args->{'logPath'} or die Exception->new(
+      'dbg' => 'Reservation::dispatch_hook_exec: no logPath given - caller must claim via '
+             . 'hook_claim_if_not_running before calling this'
+   );
+
+   flog( "Reservation::dispatch_hook_exec: DISPATCHING (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
+
+   try {
+      open( my $log, '>>', $logPath )
+         or die Exception->new( 'dbg' => "Reservation::dispatch_hook_exec: cannot open log '$logPath': $!" );
+      $log->autoflush(1);
+
+      my $result = docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
+         'Cmd'  => \@Command,
+         'User' => $args->{'user'} // $self->unixuser(),
+         'Env'  => \@env,
+      }, {
+         # A generous margin over $timeout, not $timeout itself - request_timeout below is
+         # what actually enforces the hook's own configured budget; this only guards against
+         # a truly stalled connection outliving that.
+         'inactivity_timeout' => $timeout + 30,
+         'request_timeout'    => $timeout,
+         # Fires before docker_exec's own (blocking) start-and-stream call, so the exec id
+         # reaches the status record as early as possible - see hook_status_started's comment
+         # for why this can't be known any earlier than this.
+         'on_created' => sub ($execId) { $self->hook_status_set_running_details($name, $args->{'pid'}, $execId); },
+         'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
+      } );
+
+      close($log);
+
+      my $rc = $result->{'exitCode'};
+      my $timedOut = $result->{'timedOut'} ? 1 : 0;
+      # run_hook's own mkdir-lock returns exit code 2 when a run is already in progress -
+      # the same signal the old timeout-CLI-wrapped implementation checked for, now read
+      # from docker_exec's real ExitCode instead of a host-side process's $?. Note: a
+      # request_timeout is purely client-side abandonment (see docker_exec's own comment) -
+      # the in-container mkdir lock remains what actually prevents a subsequent overlapping
+      # run; a timed-out hook may still be finishing in the background, discoverable later
+      # via the .hook-ready/.hook-failed sentinels launch.sh's run_hook writes.
+      my $busy = ( defined($rc) && $rc == 2 && !$timedOut ) ? 1 : 0;
+
+      $self->hook_status_completed( $name, {
+         'state'    => 'done',
+         'exitCode' => $rc,
+         'timedOut' => $timedOut,
+         'busy'     => $busy,
+      } );
+   }
+   catch {
+      my $dbg = ref($_) ? $_->dbg() : "$_";
+      flog("Reservation::dispatch_hook_exec: caught exception dispatching '$name': $dbg");
+      $self->hook_status_completed( $name, { 'state' => 'aborted' } );
+   };
+
+   return { 'started' => 1, 'name' => $name };
 }
 
 1;

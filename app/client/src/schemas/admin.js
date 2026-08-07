@@ -17,6 +17,7 @@ export const PERMISSIONS = [
    { key: 'stopContainer',              label: 'Stop containers',         group: 'Per-container' },
    { key: 'removeContainer',            label: 'Remove containers',       group: 'Per-container' },
    { key: 'getContainerLogs',           label: 'View container logs',     group: 'Per-container' },
+   { key: 'runContainerHooks',          label: 'Run container hooks',     group: 'Per-container' },
    // Admin
    { key: 'manageUsers',                label: 'Manage users & roles',    group: 'Admin' },
    { key: 'manageProfiles',             label: 'Manage profiles',         group: 'Admin' },
