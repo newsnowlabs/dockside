@@ -80,7 +80,7 @@ use Util qw(cacheReadWrite flog call_socket_api call_socket_api_async docker_con
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
-use Reservation::Mutate qw(hook_claim_if_not_running);
+use Reservation::Mutate qw(hook_claim_if_not_running launch_reset_stages_if_idle);
 use Containers;
 use User;
 
@@ -288,27 +288,33 @@ sub _launch_deps_cleared ($reservation, $stage) {
    return 1;
 }
 
-# Marks every launch:-DAG stage 'pending' for a fresh launch cycle. Called exactly once per
+# Marks every launch:-DAG stage 'pending' for a fresh launch cycle - except any name that's
+# genuinely still running right now, left untouched (see
+# Reservation::Mutate::launch_reset_stages_if_idle's own comment for why: lifecycle:launch/
+# lifecycle:start are also reachable via a concurrent on-demand run_hook_sync invocation, unlike
+# the other three DAG stages, which are docker-event-daemon-exclusive). Called exactly once per
 # genuine container 'start' Docker event (onContainerStart, before its first launch_advance
 # call for that event) - never from the pendingLaunch retry loop, which is for waiting out the
-# *same* start event and must keep seeing whatever this reset already put in place. Sends only
-# the 5 launch:-stage names, via store_fields - never the whole hooks.status hash, which may
-# also hold entries for on-demand/custom hook names this has no business touching.
+# *same* start event and must keep seeing whatever this reset already put in place. Touches only
+# the 5 launch:-stage names - never the whole hooks.status hash, which may also hold entries for
+# on-demand/custom hook names this has no business touching.
 #
-# Also updates $reservation's own in-memory hooks.status directly, mirroring
-# Reservation::_hook_status_store_one's own discipline (see its comment) - store_fields/update()
-# only ever writes a *fresh*, separately-loaded copy under mutate()'s lock (see
+# Also updates $reservation's own in-memory hooks.status directly for whichever names were
+# actually reset, mirroring Reservation::_hook_status_store_one's own discipline (see its
+# comment) - mutate() only ever writes a *fresh*, separately-loaded copy (see
 # Reservation::Mutate::update: it mutates $by_id->{$id}, never $self), so without this,
 # launch_advance's own very next call - using this same $reservation object - would still see
 # every stage's *previous* launch cycle's resolved state and dispatch nothing at all. Found
 # exactly this way, live: a restart's onContainerStart correctly reached this function, but the
 # whole DAG then silently never dispatched anything, because _launch_deps_cleared/
-# launch_maybe_dispatch's own 'pending' checks were reading stale, pre-reset state.
+# launch_maybe_dispatch's own 'pending' checks were reading stale, pre-reset state. A name left
+# running (not reset) is correctly excluded from this sync too - its true current state is
+# whatever the concurrent invocation that owns it last wrote, not something this process knows.
 sub launch_reset_stages ($reservation) {
-   my $entries = { map { $_ => { 'name' => $_, 'state' => 'pending' } } @LAUNCH_STAGE_NAMES };
+   my $written = launch_reset_stages_if_idle(
+      $reservation->id(), \@LAUNCH_STAGE_NAMES, $Reservation::HOOK_HISTORY_MAX );
    my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
-   %$status = ( %$status, %$entries );
-   $reservation->store_fields( { 'data' => { 'hooks' => { 'status' => $entries } } } );
+   %$status = ( %$status, %$written );
 }
 
 # True if this reservation's launch DAG still has work left. launch:ide is deliberately excluded

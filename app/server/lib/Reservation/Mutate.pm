@@ -4,7 +4,7 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running);
+our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running launch_reset_stages_if_idle);
 
 use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api);
 use Exception;
@@ -232,6 +232,45 @@ sub increment_data_field ($id, $key) {
    return $newValue;
 }
 
+# Shared by hook_claim_if_not_running and launch_reset_stages_if_idle below - both need the
+# identical "is this status entry genuinely still running" decision, now performed inside
+# mutate()'s lock rather than hook_is_running's unlocked, single-process form. Mirrors
+# hook_is_running's own liveness/self-heal reasoning exactly (same two signals - pid, then
+# execId - same order, same fallback to 'aborted' if neither is conclusive). The execId probe
+# is a real HTTP round-trip to dockerd, so a caller with an existing 'running' entry does hold
+# the reservations-db file lock for its duration - only on that path, never on the common
+# "nothing recorded" path, which this returns from after a single hash lookup.
+#
+# Returns ($isLive, $healedEntry): $isLive true means genuinely still running - the caller must
+# not touch this slot. $healedEntry is a resolved entry (done/failed/aborted), for the caller to
+# persist and record_hook_history, if $existing was stale and needed self-healing; undef if
+# $existing was already terminal, absent, or genuinely live (nothing to heal either way).
+sub _hook_entry_liveness ($existing) {
+   return ( 0, undef ) unless $existing && ( $existing->{'state'} // '' ) eq 'running';
+
+   if ( !defined( $existing->{'pid'} ) && !defined( $existing->{'execId'} ) ) {
+      return ( 1, undef );   # newly-started elsewhere, neither signal exists yet - genuinely live
+   }
+   if ( defined( $existing->{'pid'} ) && kill( 0, $existing->{'pid'} ) ) {
+      return ( 1, undef );   # genuinely still running
+   }
+   if ( defined( $existing->{'execId'} ) ) {
+      my $res = call_socket_api( $CONFIG->{'docker'}{'socket'}, "/exec/$existing->{'execId'}/json", {} );
+      if ( $res && $res->is_success ) {
+         my $info = decode_json( $res->body );
+         return ( 1, undef ) if $info->{'Running'};   # genuinely still running
+
+         if ( defined $info->{'ExitCode'} ) {
+            return ( 0, { %$existing,
+               'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
+               'exitCode' => $info->{'ExitCode'},
+            } );
+         }
+      }
+   }
+   return ( 0, { %$existing, 'state' => 'aborted' } );   # neither signal conclusive - self-heal
+}
+
 # Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely
 # running, marks it running (with $logPath) and returns true (the caller should proceed to
 # dispatch); if it genuinely is, returns false (the caller should report busy / skip) - all
@@ -252,14 +291,6 @@ sub increment_data_field ($id, $key) {
 # workers) and docker-event-daemon's own auto-dispatch of lifecycle:launch/lifecycle:start (the
 # only two DAG stage names externally reachable via run_hook_sync too, when a profile's hooks
 # entry sets "manual": true on them).
-#
-# Mirrors hook_is_running's own liveness/self-heal reasoning (same two signals, same order,
-# same fallback to 'aborted' if neither is conclusive) - just performed inside the lock, on raw
-# hash data, so the "is it stale" decision and the claim are one atomic step instead of two.
-# The execId liveness probe is a real HTTP round-trip to dockerd, so this does hold the
-# reservations-db file lock for its duration - only on the self-heal path (an existing 'running'
-# entry with an unresolved liveness question), never on the common "nothing recorded yet" path,
-# which returns after a single hash lookup.
 #
 # A self-heal here (finding a stale entry and resolving it 'done'/'failed'/'aborted' before
 # claiming the slot fresh) also needs a history-array append, exactly like hook_is_running's own
@@ -283,31 +314,12 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
       sub ($by_id, $by_name) {
          my $reservation = $by_id->{$id} or return 0;
          my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
-         my $existing = $status->{$name};
 
-         if ( $existing && ( $existing->{'state'} // '' ) eq 'running' ) {
-            if ( !defined( $existing->{'pid'} ) && !defined( $existing->{'execId'} ) ) {
-               return 0;   # newly-started elsewhere, neither signal exists yet - genuinely busy
-            }
-            if ( defined( $existing->{'pid'} ) && kill( 0, $existing->{'pid'} ) ) {
-               return 0;   # genuinely still running
-            }
-            if ( defined( $existing->{'execId'} ) ) {
-               my $res = call_socket_api( $CONFIG->{'docker'}{'socket'}, "/exec/$existing->{'execId'}/json", {} );
-               if ( $res && $res->is_success ) {
-                  my $info = decode_json( $res->body );
-                  return 0 if $info->{'Running'};   # genuinely still running
-
-                  if ( defined $info->{'ExitCode'} ) {
-                     $healedEntry = { %$existing,
-                        'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
-                        'exitCode' => $info->{'ExitCode'},
-                     };
-                  }
-               }
-            }
-            $healedEntry //= { %$existing, 'state' => 'aborted' };
-            $status->{$name} = $healedEntry;
+         my ( $isLive, $healed ) = _hook_entry_liveness( $status->{$name} );
+         return 0 if $isLive;
+         if ( $healed ) {
+            $healedEntry = $healed;
+            $status->{$name} = $healed;
             # Falls through to claim the now-free slot below.
          }
 
@@ -325,6 +337,49 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
 
    record_hook_history( $id, { %$healedEntry }, $cap ) if $healedEntry;
    return $claimedEntry;
+}
+
+# Atomically resets every name in @$stageNames to 'pending' for a fresh launch cycle - except
+# any name that's genuinely still running right now (same live-check as
+# hook_claim_if_not_running), which is left untouched rather than blindly overwritten.
+#
+# docker-event-daemon's own launch_reset_stages used to send all 5 DAG stage names
+# unconditionally, every container-start event including ordinary restarts. Fine for
+# launch:prep/launch:git/launch:ide (docker-event-daemon-exclusive - nothing else ever writes
+# them), but lifecycle:launch/lifecycle:start are also reachable via a concurrent on-demand
+# run_hook_sync invocation (same two names hook_claim_if_not_running exists for) - genuinely
+# possible for a manually-triggered lifecycle:start to be mid-flight in one process at the
+# exact moment another restart's reset fires in docker-event-daemon. Blindly overwriting that
+# entry's 'running' state to 'pending' wouldn't cause a second dispatch (nothing reads this
+# reset as a signal to dispatch anything already-applicable-false or already-dispatched-
+# elsewhere), but would corrupt the status record's own accuracy for the duration - checked the
+# same way for all 5 names here rather than special-casing which two actually need it.
+#
+# Returns the entries actually written (a hashref, name => entry) - the caller must sync these
+# onto its own in-memory Reservation, exactly as hook_claim_if_not_running's callers do (mutate()
+# only ever operates on a fresh, separately-loaded copy, never the caller's own object).
+sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
+   my $written = {};
+   my @healedEntries;
+
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+
+         for my $name (@$stageNames) {
+            my ( $isLive, $healed ) = _hook_entry_liveness( $status->{$name} );
+            next if $isLive;   # leave it running, untouched - not ours to reset
+
+            push( @healedEntries, $healed ) if $healed;
+            $status->{$name} = $written->{$name} = { 'name' => $name, 'state' => 'pending' };
+         }
+         return 1;
+      }
+   );
+
+   record_hook_history( $id, { %$_ }, $cap ) for @healedEntries;
+   return $written;
 }
 
 1;
