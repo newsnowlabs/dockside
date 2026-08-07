@@ -38,6 +38,7 @@ import json
 import os
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
@@ -345,6 +346,70 @@ class HooksTests(TestCase):
         self.assert_equal(
             self._log_lines(launch_state_after), launch_lines_before,
             'lifecycle:launch ran again after a restart - it must fire only once',
+        )
+
+    def test_13_concurrent_invoke_exactly_once(self):
+        """Tightens test_05 (which only asserts 'does not hang') with a
+        ground-truth check: N concurrent manual invokes of the same hook on the
+        same devtainer must produce exactly one real execution, not just N
+        individually-clean responses.
+
+        Uses test_profile_hook_race's dedicated 'slow' custom hook (sleeps 3s),
+        not test_profile_hook's near-instant lifecycle:launch - a hook that
+        completes before the next concurrent call even reaches the server lets
+        a *second* invocation legitimately claim and run for real once the
+        first releases the slot (correct sequential behavior, not overlap),
+        which makes "did N calls actually overlap" unreliable to assert on
+        against a fast hook (found this exact way: an earlier draft of this
+        test, against the fast hook, intermittently saw more than one success
+        purely from real per-call CLI dispatch jitter - not a broken lock).
+        A custom hook also needs no auto-invoke-settled wait first, unlike
+        lifecycle:launch - nothing auto-fires it.
+
+        Regression check for a real bug found and fixed on the ded-async-
+        rewrite branch: Reservation::run_hook_sync's busy-guard used to be a
+        two-step, unlocked check-then-write (hook_is_running() then
+        hook_status_started()), racy across nginx's multiple worker processes -
+        2 of 4 genuinely concurrent invokes were both observed to actually
+        execute the hook script for real, confirmed against the container's
+        own execution log, not just the API's response. Fixed via
+        Reservation::Mutate::hook_claim_if_not_running, an atomic check-and-
+        claim under mutate()'s exclusive lock.
+        """
+        name = self._sfx('inttest-hook-race-exact')
+        self.register_cleanup(name)
+        result = self.dev1.create(profile=self.test_profile_hook_race, name=name)
+        self.assert_true(result is not None)
+        self.wait_running(self.dev1, name, timeout=90)
+
+        n = 4
+        results = {}
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            futures = {
+                pool.submit(self.dev1.hook_run, name, 'slow', 20): i
+                for i in range(n)
+            }
+            for future in as_completed(futures):
+                i = futures[future]
+                try:
+                    future.result()
+                    results[i] = 'ok'
+                except APIError as e:
+                    results[i] = str(e)
+
+        succeeded = [i for i, r in results.items() if r == 'ok']
+        busy = [i for i, r in results.items() if r != 'ok']
+        self.assert_equal(
+            len(succeeded), 1,
+            f'expected exactly one concurrent invoke to succeed, got {len(succeeded)}: {results!r}',
+        )
+        self.assert_equal(len(busy), n - 1, f'unexpected outcome shape: {results!r}')
+
+        state = self._inspect(name, hook_name='slow', log_path='/tmp/slow-hook-runs.log')
+        lines = self._log_lines(state)
+        self.assert_equal(
+            len(lines), 1,
+            f'expected exactly one hook execution on the container itself, found {len(lines)}: {lines!r}',
         )
 
 

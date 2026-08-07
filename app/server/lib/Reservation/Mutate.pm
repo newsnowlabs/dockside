@@ -4,9 +4,9 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field);
+our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running);
 
-use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash);
+use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api);
 use Exception;
 use Data qw($CONFIG);
 use JSON;
@@ -230,6 +230,101 @@ sub increment_data_field ($id, $key) {
       }
    );
    return $newValue;
+}
+
+# Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely
+# running, marks it running (with $logPath) and returns true (the caller should proceed to
+# dispatch); if it genuinely is, returns false (the caller should report busy / skip) - all
+# inside one mutate() call, so two concurrent callers (different nginx workers dispatching
+# run_hook_sync, or an nginx worker racing docker-event-daemon's own launch-DAG auto-dispatch
+# of lifecycle:launch/lifecycle:start) can never both see "not running" and both proceed, the
+# way Reservation::hook_is_running + hook_status_started could when called as two separate,
+# unlocked steps (found live: 2 of 4 genuinely concurrent `dockside hook run` calls against the
+# same devtainer both actually executed the hook script, confirmed against the container's own
+# execution log, not just against the API's response).
+#
+# Deliberately not built on top of hook_is_running/hook_status_started - those remain as they
+# are (a fast, unlocked, best-effort pre-check and a plain recording write respectively), still
+# used on their own by callers that only ever have a single writer for the name in question
+# (docker-event-daemon's own restart-recovery/on_tick self-heal, and the read-only hook_status()
+# endpoint) and don't need this. This is for the two call sites where a second, concurrent
+# writer for the *same* name is genuinely possible: Reservation::run_hook_sync (multiple nginx
+# workers) and docker-event-daemon's own auto-dispatch of lifecycle:launch/lifecycle:start (the
+# only two DAG stage names externally reachable via run_hook_sync too, when a profile's hooks
+# entry sets "manual": true on them).
+#
+# Mirrors hook_is_running's own liveness/self-heal reasoning (same two signals, same order,
+# same fallback to 'aborted' if neither is conclusive) - just performed inside the lock, on raw
+# hash data, so the "is it stale" decision and the claim are one atomic step instead of two.
+# The execId liveness probe is a real HTTP round-trip to dockerd, so this does hold the
+# reservations-db file lock for its duration - only on the self-heal path (an existing 'running'
+# entry with an unresolved liveness question), never on the common "nothing recorded yet" path,
+# which returns after a single hash lookup.
+#
+# A self-heal here (finding a stale entry and resolving it 'done'/'failed'/'aborted' before
+# claiming the slot fresh) also needs a history-array append, exactly like hook_is_running's own
+# self-heal does via hook_status_completed - done as a separate, sequential record_hook_history
+# call *after* this mutate() returns (nesting a second mutate() call inside this one's own
+# closure would try to flock() the same file twice from this process and deadlock - mutate()'s
+# lock is not reentrant).
+#
+# Returns the claimed entry (a hashref) if this call won and should proceed to dispatch, or
+# undef if another invocation already owns $name. mutate() only ever operates on a fresh,
+# separately-loaded copy of the reservation, never the caller's own in-memory object (see
+# Reservation::Mutate::update's own comment) - a winning caller MUST sync this returned entry
+# onto its own in-memory Reservation, exactly mirroring _hook_status_store_one's existing
+# discipline, or its own subsequent hook_status_set_running_details call would merge pid/execId
+# onto stale (pre-claim) in-memory state instead of this fresh entry.
+sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
+   my $claimedEntry;
+   my $healedEntry;
+
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+         my $existing = $status->{$name};
+
+         if ( $existing && ( $existing->{'state'} // '' ) eq 'running' ) {
+            if ( !defined( $existing->{'pid'} ) && !defined( $existing->{'execId'} ) ) {
+               return 0;   # newly-started elsewhere, neither signal exists yet - genuinely busy
+            }
+            if ( defined( $existing->{'pid'} ) && kill( 0, $existing->{'pid'} ) ) {
+               return 0;   # genuinely still running
+            }
+            if ( defined( $existing->{'execId'} ) ) {
+               my $res = call_socket_api( $CONFIG->{'docker'}{'socket'}, "/exec/$existing->{'execId'}/json", {} );
+               if ( $res && $res->is_success ) {
+                  my $info = decode_json( $res->body );
+                  return 0 if $info->{'Running'};   # genuinely still running
+
+                  if ( defined $info->{'ExitCode'} ) {
+                     $healedEntry = { %$existing,
+                        'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
+                        'exitCode' => $info->{'ExitCode'},
+                     };
+                  }
+               }
+            }
+            $healedEntry //= { %$existing, 'state' => 'aborted' };
+            $status->{$name} = $healedEntry;
+            # Falls through to claim the now-free slot below.
+         }
+
+         $status->{$name} = $claimedEntry = {
+            'name'      => $name,
+            'state'     => 'running',
+            'pid'       => undef,
+            'execId'    => undef,
+            'logPath'   => $logPath,
+            'startTime' => YYYYMMDDHHMMSS(time),
+         };
+         return 1;
+      }
+   );
+
+   record_hook_history( $id, { %$healedEntry }, $cap ) if $healedEntry;
+   return $claimedEntry;
 }
 
 1;

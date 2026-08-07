@@ -286,6 +286,56 @@ _HOOK_PROFILE = {
     ],
 }
 
+# Fixture for 14_hooks.py's test_13_concurrent_invoke_exactly_once: a dedicated custom hook
+# ('slow') that sleeps 3s before recording its run - deliberately separate from _HOOK_PROFILE's
+# own near-instant lifecycle:launch/update scripts, not a shared/reused fixture. A near-instant
+# hook makes "did N concurrent invokes overlap" unreliable to assert on: if invocation #1's own
+# claim-run-release cycle finishes before invocation #2's CLI subprocess even reaches the server
+# (real, measurable jitter across N separate `subprocess.run` calls - fork+exec a fresh
+# interpreter, TLS handshake, per call), #2 legitimately gets to claim and run too - correct
+# sequential behavior, not a broken lock, but indistinguishable from one at the API-response
+# level. A multi-second sleep makes genuine overlap deterministic, the same reasoning the
+# ded-async-rewrite branch's own manual thrash-testing session used when it first found this bug
+# (a sleep 4 hook, not the fast one). Uses a plain custom name, not lifecycle:launch, so the test
+# needs no auto-invoke settling step first - a custom hook never auto-fires.
+_HOOK_RACE_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Hook Race (slow)",
+    "active": True,
+    "routers": [
+        {
+            "name": "www", "prefixes": ["www"], "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "hooks": {
+        "slow": {"script": "/usr/local/bin/dockside-test-slow-hook.sh"},
+    },
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "cat > /usr/local/bin/dockside-test-slow-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "n=$(wc -l < /tmp/slow-hook-runs.log 2>/dev/null || echo 0)\n"
+        "sleep 3\n"
+        "echo \"ran:$n\" >> /tmp/slow-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-slow-hook.sh; "
+        "sleep infinity",
+    ],
+}
+
 # Fixture for 15_entrypoint_signaling.py: tests only the mechanism pattern B relies on
 # ({option.<name>} resolving into the container's own command argv at container-create
 # time) - no git, no hook, no credentials of any kind, so this launches/settles fast.
@@ -1059,6 +1109,7 @@ class _EnvManager:
         self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
         self.profile_git        = self._ensure_profile('inttest-git',        _GIT_PROFILE)
         self.profile_hook       = self._ensure_profile('inttest-hook',       _HOOK_PROFILE)
+        self.profile_hook_race  = self._ensure_profile('inttest-hook-race',  _HOOK_RACE_PROFILE)
         self.profile_option_argv = self._ensure_profile('inttest-option-argv', _OPTION_ARGV_PROFILE)
         self.profile_hook_git   = self._ensure_profile('inttest-hook-git',   _HOOK_GIT_PROFILE)
         self.profile_hook_edge_case = self._ensure_profile('inttest-hook-edge-case', _EDGE_CASE_HOOK_PROFILE)
@@ -1254,6 +1305,7 @@ def main():
         test_profile_nginx      = _env_manager.profile_nginx
         test_profile_git        = _env_manager.profile_git
         test_profile_hook       = _env_manager.profile_hook
+        test_profile_hook_race  = _env_manager.profile_hook_race
         test_profile_option_argv = _env_manager.profile_option_argv
         test_profile_hook_git   = _env_manager.profile_hook_git
         test_profile_hook_edge_case = _env_manager.profile_hook_edge_case
@@ -1285,6 +1337,7 @@ def main():
             'test_profile_nginx':      test_profile_nginx,
             'test_profile_git':        test_profile_git,
             'test_profile_hook':       test_profile_hook,
+            'test_profile_hook_race':  test_profile_hook_race,
             'test_profile_option_argv': test_profile_option_argv,
             'test_profile_hook_git':   test_profile_hook_git,
             'test_profile_hook_edge_case': test_profile_hook_edge_case,

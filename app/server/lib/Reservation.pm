@@ -7,7 +7,7 @@ use Expect;
 use Try::Tiny;
 use Tie::File;
 use Storable qw(dclone);
-use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field);
+use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running);
 use Reservation::Load;
 use Reservation::Launch;
 use Containers;
@@ -611,7 +611,7 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description IDE ) ],
             'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
-            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options ) ],
+            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options startCount hooks ) ],
             'dockerLaunchLogs' => 1
          },
          [ qw(id name owner profile status containerId createStatus) ]
@@ -1350,7 +1350,11 @@ sub _hook_env ($self, $user) {
 # (Reservation::Mutate) instead re-reads the reservation fresh under its own atomic mutate()
 # lock, appends, evicts, and writes back - safe under genuine concurrency.
 
-my $HOOK_HISTORY_MAX = 100;
+# Package (not lexical) so docker-event-daemon's own _launch_dispatch_hook_stage - which needs
+# the identical cap for its own hook_claim_if_not_running call, dispatching the same two
+# externally-reachable stage names (lifecycle:launch/lifecycle:start) - can reference it as
+# $Reservation::HOOK_HISTORY_MAX without a second, independently-drifting constant.
+our $HOOK_HISTORY_MAX = 100;
 
 # Internal helpers isolating hooks.status's read/write boilerplate.
 sub _hook_status_all ($self) {
@@ -1534,13 +1538,28 @@ sub run_hook_sync ($self, $args = {}) {
    die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
       unless $timeout =~ /^[1-9][0-9]*$/;
 
-   # Cheap, local, no docker round-trip - see hook_is_running's own comment for exactly what
-   # this does and doesn't guarantee (it is not the thing overlap-safety depends on). Checked
-   # here too, not just inside dispatch_hook_exec below, so a busy reply returns before ever
-   # forking - no point paying for a fork just to immediately discover there's nothing to do.
-   if( $self->hook_is_running($name) ) {
+   # Atomic check-and-claim - computed and reserved here, in the parent, before forking, so two
+   # concurrent callers (different nginx workers) can never both see "not running" and both
+   # proceed. Replaces the old two-step hook_is_running()-then-hook_status_started() sequence.
+   # which was NOT safe under real concurrency across nginx's multiple worker processes - found
+   # live, not assumed: 2 of 4 genuinely concurrent invokes both actually executed the hook
+   # script (confirmed against the container's own execution log, not just the API response).
+   # See Reservation::Mutate::hook_claim_if_not_running's own comment for the full reasoning.
+   # $logPath is computed here too (not inside dispatch_hook_exec, as before), so the claim's
+   # very first write already has it; $invocationId no longer needs the child's own $$ for
+   # uniqueness - a plain rand() is just as sufficient, and this runs before the fork exists.
+   my $invocationId = sprintf( "%08x", int(rand(0xffffffff)) );
+   my $logPath = "$CONFIG->{'tmpPath'}/r-" . $self->id() . "-hook-$invocationId.log";
+   my $claimedEntry = hook_claim_if_not_running( $self->id(), $name, $logPath, $HOOK_HISTORY_MAX );
+   unless( $claimedEntry ) {
       return { 'busy' => 1 };
    }
+   # Sync this process's own in-memory copy - mutate() only ever wrote a fresh, separately-
+   # loaded copy of the reservation (see hook_claim_if_not_running's own comment), not $self -
+   # so the forked child below (via fork()'s copy-on-write memory) sees the claim too, and its
+   # own later hook_status_set_running_details call merges pid/execId onto this fresh entry,
+   # not stale pre-claim state.
+   ( $self->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $claimedEntry;
 
    # Fork - exactly Reservation::launch's existing pattern (see item B: "the pattern already
    # exists in this codebase") - parent returns immediately, freeing the caller (the API
@@ -1558,7 +1577,7 @@ sub run_hook_sync ($self, $args = {}) {
    # -------------
    # CHILD PROCESS
    # -------------
-   $self->dispatch_hook_exec( $name, $script, { 'timeout' => $timeout, 'pid' => $$ } );
+   $self->dispatch_hook_exec( $name, $script, { 'timeout' => $timeout, 'pid' => $$, 'logPath' => $logPath } );
    exit(0);
 }
 
@@ -1597,9 +1616,13 @@ sub dispatch_hook_exec ($self, $name, $script, $args = {}) {
    my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    my $containerId = $self->containerId();
 
-   my $invocationId = sprintf( "%08x", int(rand(0xffffffff)) ^ $$ );
-   my $logPath = "$CONFIG->{'tmpPath'}/r-" . $self->id() . "-hook-$invocationId.log";
-   $self->hook_status_started($name, $logPath);
+   # $logPath is now computed by, and the 'running' record already written by, the caller's own
+   # atomic claim (Reservation::Mutate::hook_claim_if_not_running, run_hook_sync's own comment)
+   # before it forked - required so, not just passed here for convenience.
+   my $logPath = $args->{'logPath'} or die Exception->new(
+      'dbg' => 'Reservation::dispatch_hook_exec: no logPath given - caller must claim via '
+             . 'hook_claim_if_not_running before calling this'
+   );
 
    flog( "Reservation::dispatch_hook_exec: DISPATCHING (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 

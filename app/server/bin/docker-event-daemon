@@ -80,6 +80,7 @@ use Util qw(cacheReadWrite flog call_socket_api call_socket_api_async docker_con
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
+use Reservation::Mutate qw(hook_claim_if_not_running);
 use Containers;
 use User;
 
@@ -91,10 +92,10 @@ my $LAUNCH_READY_INTERVAL = 1;  # seconds between Docker API readiness checks
 
 my %pendingLaunch;  # containerId => { deadline => epoch, nextTime => epoch, launcher => path, reservationId => id }
 
-# containerId => 1, seeded *only* by the restart-recovery sweep, for a reservation whose launch
+# containerId => 1, seeded by the restart-recovery sweep, for a reservation whose launch
 # was still genuinely in-flight (a real, live exec, not yet actually finished) at the exact
-# moment this DED process started - never added during ordinary operation, where every live
-# dispatch's own completion callback is the sole, sufficient resolver (see this file's own
+# moment this DED process started - never added during ordinary operation otherwise, where every
+# live dispatch's own completion callback is the sole, sufficient resolver (see this file's own
 # "Launch dispatch orchestration" section header comment on why per-tick polling is otherwise
 # unnecessary). Found live, not assumed: restart-recovery's own hook_is_running self-heal check
 # correctly does nothing when a stage's exec really is still running (it must not falsely
@@ -103,8 +104,16 @@ my %pendingLaunch;  # containerId => { deadline => epoch, nextTime => epoch, lau
 # check on it" (docker events' own exec_die carries no reservation/stage context). Left
 # unaddressed, such a stage stays 'running' forever even after its real exec genuinely
 # completes. on_tick below re-checks every entry here until launch_in_flight() says there's
-# nothing left to recover, then drops it - scoped to this one, self-limiting, restart-only case,
-# not a return to polling every in-flight launch.
+# nothing left to recover, then drops it - scoped to this one, self-limiting case.
+#
+# Second, ordinary-operation seeding source: _launch_dispatch_hook_stage below, when its own
+# hook_claim_if_not_running loses the claim on lifecycle:launch/lifecycle:start to a concurrent
+# on-demand run_hook_sync invocation of the same name (the only two DAG stage names externally
+# reachable that way). DED isn't the owner of that dispatch's completion in this case, so it
+# can't rely on its own completion callback the way every other stage can - the same "who
+# resolves this" gap the restart case has, just triggered by losing a race instead of by a
+# process restart. Reusing this mechanism rather than inventing a second one: the reconciliation
+# loop's own logic (re-check until settled, then drop) is identical either way.
 my %launchRecovering;
 
 my $SIGNAL_RECEIVED = 0;
@@ -534,7 +543,31 @@ sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
 
    my $invocationId = sprintf( "%08x", int(rand(0xffffffff)) );
    my $logPath = "$CONFIG->{'tmpPath'}/r-" . $reservation->id() . "-hook-$invocationId.log";
-   $reservation->hook_status_started($name, $logPath);   # synchronous - see _launch_dispatch_exec's own comment
+
+   # Atomic claim, not a plain hook_status_started() write - lifecycle:launch/lifecycle:start
+   # are the only two DAG stage names also reachable via run_hook_sync's on-demand path (when a
+   # profile's hooks entry sets "manual": true on them), so a concurrent on-demand invocation of
+   # the *same* name is genuinely possible here, unlike launch:prep/launch:git/launch:ide
+   # (DED-exclusive, single writer, run_hook_sync rejects those as "not yet implemented" - no
+   # lock needed). See Reservation::Mutate::hook_claim_if_not_running's own comment.
+   my $claimedEntry = hook_claim_if_not_running( $reservation->id(), $name, $logPath, $Reservation::HOOK_HISTORY_MAX );
+   unless ( $claimedEntry ) {
+      # Lost the race to a concurrent on-demand invocation of the same name - it owns
+      # completion now, not us. Don't resolve this stage (it isn't ours to resolve) and don't
+      # dispatch a second real exec on top of it (exactly the bug this exists to prevent) - defer
+      # to the restart-recovery reconciliation loop instead, widened to cover this case too (see
+      # %launchRecovering's own comment above).
+      flog( "docker-event-daemon::_launch_dispatch_hook_stage: '$name' already claimed by a "
+          . "concurrent on-demand invocation - deferring to launchRecovering" );
+      $launchRecovering{ $reservation->containerId } = 1;
+      $cb->();
+      return;
+   }
+   # Sync this process's own in-memory copy - mutate() only ever wrote a fresh, separately-
+   # loaded copy (see hook_claim_if_not_running's own comment), not $reservation - so the
+   # on_created callback below (hook_status_set_running_details) merges pid/execId onto this
+   # fresh entry, not stale pre-claim state.
+   ( $reservation->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $claimedEntry;
 
    flog( "docker-event-daemon::_launch_dispatch_hook_stage: DISPATCHING '$name' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
