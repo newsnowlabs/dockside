@@ -1,5 +1,5 @@
-# The use of ngx_http_perl_module for the App UI, and Proxy,
-# has its limitations. In particular:
+# The use of ngx_http_perl_module for Proxy (routing every request - UI/API and devtainer
+# alike - to its upstream) has its limitations. In particular:
 #
 #   "While the Perl module is performing a long-running operation, such
 #    as resolving a domain name, connecting to another server, or querying
@@ -10,14 +10,19 @@
 #
 # See:
 # - http://nginx.org/en/docs/http/ngx_http_perl_module.html
+#
+# This caveat now applies to Proxy only - the App UI/API content itself no longer runs
+# embedded in nginx at all (see docs/plans/mojolicious-app-server-split-plan.md): it's a
+# standalone Mojolicious process (bin/app-server), reverse-proxied to like any other upstream,
+# not perl_require'd here.
 
 perl_modules /home/dockside/dockside/app/server/lib;
 perl_require Proxy.pm;
-perl_require App.pm;
 
 perl_set $upstream_http Proxy::http_server_port;
 perl_set $upstream_https Proxy::https_server_port;
 perl_set $upstream_cookie Proxy::upstream_cookie;
+perl_set $forwarded_host Proxy::forwarded_host;
 
 log_format proxy_http '$host - $upstream_http - $remote_addr - $remote_user [$time_local] ' '"$request" $status $body_bytes_sent ' '"$http_referer" "$http_user_agent"';
 log_format proxy_https '$host - $upstream_https - $remote_addr - $remote_user [$time_local] ' '"$request" $status $body_bytes_sent ' '"$http_referer" "$http_user_agent"';
@@ -77,11 +82,6 @@ server {
   listen 0.0.0.0:80;
 
   location / {
-  
-    # This will only be called, if proxy_pass is *not* set, and the
-    # request is not otherwise handled by e.g. 'return 410'.
-    #
-    perl App::handlerHTTP;
 
     if ($upstream_http = '400') {
       # Container not found.
@@ -103,11 +103,20 @@ server {
       access_log /var/log/nginx/access.log proxy_http;
     }
 
+    # Fail closed: previously, an $upstream_http that matched none of the above (a bug, or an
+    # unexpected value) fell through to nginx's own `perl App::handlerHTTP;` content-handler
+    # directive as an accidental fallback. That directive is gone now (see this file's own
+    # header comment) - without this guard, execution would instead fall through to
+    # proxy_pass'ing to nothing, which nginx handles far less predictably than an explicit 400.
+    if ($upstream_http !~ '^http') {
+      return 400;
+    }
+
     proxy_pass_header Authorization;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Host $forwarded_host;
     proxy_set_header X-Forwarded-Proto http;
     proxy_set_header X-Nest-Level 1-$http_x_nest_level;
     proxy_set_header Cookie $upstream_cookie;
@@ -148,14 +157,6 @@ server {
 
   location / {
 
-    # This will only be called, if proxy_pass is *not* set, and the
-    # request is not otherwise handled by e.g. 'return 410'.
-    #
-    perl App::handlerHTTPS;
-
-    # This will only be served statically, if the above handler returns nginx::DECLINED.
-    root /home/dockside/dockside/app/server/nginx/html;
-
     if ($upstream_https = '400') {
       # Container not found.
       expires 5s;
@@ -175,7 +176,18 @@ server {
       proxy_pass $upstream_https;
       access_log /var/log/nginx/access.log proxy_https;
     }
-    
+
+    # Fail closed: previously, an $upstream_https that matched none of the above (a bug, or an
+    # unexpected value) fell through to nginx's own `perl App::handlerHTTPS;` content-handler
+    # directive as an accidental fallback, itself falling through further to this location's own
+    # `root` for a static-file DECLINED case. Both are gone now (see this file's own header
+    # comment - /docs moved into the app itself, reached only via ui_uri() proxying, since a
+    # plain nginx `location /docs` here would hijack that path on every devtainer host too) -
+    # without this guard, execution would instead fall through to proxy_pass'ing to nothing.
+    if ($upstream_https !~ '^http') {
+      return 400;
+    }
+
     # Enable SNI
     proxy_ssl_server_name on;
     proxy_ssl_name $host;
@@ -184,7 +196,7 @@ server {
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Host $forwarded_host;
     proxy_set_header X-Forwarded-Proto https;
     proxy_set_header X-Nest-Level 1-$http_x_nest_level;
     proxy_set_header Cookie $upstream_cookie;
