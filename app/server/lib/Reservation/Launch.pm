@@ -3,6 +3,8 @@ package Reservation;
 
 use v5.36;
 
+use JSON;
+use Exception;
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
 ################################################################################
@@ -310,6 +312,168 @@ sub cmdline ($self) {
       $self->cmdline_image(),
       $self->cmdline_command()
    );
+}
+
+# Docker CLI size-string parsing (--memory=1G, tmpfs-size, ...): digits + an optional
+# b/k/kb/m/mb/g/gb unit (case-insensitive), matching Docker CLI's own convention -
+# not a general-purpose parser, just what the flags below actually use.
+sub _parse_docker_size ($str) {
+   return 0 + $str if $str =~ /^\d+$/;
+   my ( $num, $unit ) = $str =~ /^([\d.]+)\s*([a-zA-Z]*)$/
+      or die Exception->new( 'msg' => "Internal error - cannot parse docker size string '$str'" );
+   my %mult = ( '' => 1, 'b' => 1, 'k' => 1024, 'kb' => 1024, 'm' => 1024**2, 'mb' => 1024**2, 'g' => 1024**3, 'gb' => 1024**3 );
+   my $m = $mult{ lc($unit) };
+   die Exception->new( 'msg' => "Internal error - unknown docker size unit '$unit' in '$str'" ) unless defined $m;
+   return int( $num * $m );
+}
+
+# Sibling to cmdline() above, emitting a hash for the Docker Engine API's
+# POST /containers/create body (see Reservation::create_async) instead of a CLI
+# argv list - same specification (the cmdline_* builders' own underlying data),
+# a second rendering. Built by reading the *same* structured profile/reservation
+# data each cmdline_* builder above reads, not by parsing those builders' own CLI-
+# string output back into structured data - that would be the wrong direction,
+# fragile by construction (lossy string round-tripping) where this is direct.
+#
+# --name is deliberately not in this hash: on the CLI it's a flag, but on the
+# Create API it's the ?name= query parameter, not part of the body - the caller
+# (create_async) already has $self->name directly and supplies it there.
+#
+# dockerArgs (profile-declared, free-form CLI flags - cmdline_docker_args() above)
+# has no generic CLI-flag-to-JSON translation available - unlike every other
+# field here, these are arbitrary strings a profile author can put anything into.
+# Scoped instead to exactly the flag patterns every profile in this repo actually
+# uses today (--memory, --pids-limit, --cpus, --env - verified by grep across
+# app/server/example/config/profiles/*.json and the integration test fixtures) -
+# anything else fails loudly with a clear message naming the unsupported flag,
+# rather than silently dropping it or creating a container that doesn't match
+# what the profile declared. Extending this list for a new flag pattern is
+# straightforward if/when a profile actually needs one outside this set.
+sub cmdline_json ($self) {
+   my @securityOpt = map { my $s = $_; $s =~ s/^--security-opt=//; $s } $self->cmdline_security();
+
+   my $hostConfig = {};
+   $hostConfig->{'SecurityOpt'} = \@securityOpt if @securityOpt;
+
+   if ( my $runtime = $self->data('runtime') ) {
+      $hostConfig->{'Runtime'} = $runtime;
+   }
+   if ( my $network = $self->data('network') ) {
+      $hostConfig->{'NetworkMode'} = $network;
+   }
+
+   my $exposedPorts = {};
+   if ( $CONFIG->{'gatewayMode'} ) {
+      my $portBindings = {};
+      for my $port ( $self->profileObject->ports() ) {
+         $exposedPorts->{"$port/tcp"}  = {};
+         $portBindings->{"$port/tcp"} = [ {} ];   # empty binding = Docker picks the host port
+      }
+      $hostConfig->{'PortBindings'} = $portBindings if %$portBindings;
+   }
+
+   my @env;
+   if ( ref( $self->profileObject->{'dockerArgs'} ) eq 'ARRAY' ) {
+      for my $raw ( @{ $self->profileObject->{'dockerArgs'} } ) {
+         my $arg = $self->_placeholders($raw);
+         if ( $arg =~ /^--memory=(.+)$/ ) {
+            $hostConfig->{'Memory'} = _parse_docker_size($1);
+         }
+         elsif ( $arg =~ /^--pids-limit=(-?\d+)$/ ) {
+            $hostConfig->{'PidsLimit'} = 0 + $1;
+         }
+         elsif ( $arg =~ /^--cpus=([\d.]+)$/ ) {
+            $hostConfig->{'NanoCpus'} = int( $1 * 1_000_000_000 );
+         }
+         elsif ( $arg =~ /^--env=(.+)$/ ) {
+            push( @env, $1 );
+         }
+         else {
+            die Exception->new( 'msg' => "Internal error - dockerArgs entry '$arg' has no JSON Create API equivalent implemented" );
+         }
+      }
+   }
+
+   my @mounts;
+   for my $m ( @{ $self->profileObject->{'mounts'}{'tmpfs'} } ) {
+      die Exception->new( 'msg' => "Internal error - tmpfs mount options beyond size/mode have no JSON Create API equivalent implemented (dst='$m->{'dst'}')" )
+         if $m->{'tmpfs-uid'} || $m->{'tmpfs-gid'} || $m->{'tmpfs-noexec'} || $m->{'tmpfs-nosuid'} || $m->{'tmpfs-nodev'};
+      my $tmpfsOptions = {};
+      $tmpfsOptions->{'SizeBytes'} = _parse_docker_size( $m->{'tmpfs-size'} ) if $m->{'tmpfs-size'};
+      $tmpfsOptions->{'Mode'}      = oct( $m->{'tmpfs-mode'} )               if $m->{'tmpfs-mode'};
+      push( @mounts, {
+         'Type'         => 'tmpfs',
+         'Target'       => $self->_placeholders( $m->{'dst'} ),
+         'TmpfsOptions' => $tmpfsOptions,
+      } );
+   }
+   for my $m ( @{ $self->profileObject->{'mounts'}{'bind'} } ) {
+      push( @mounts, {
+         'Type'   => 'bind',
+         'Source' => $m->{'src'},
+         'Target' => $self->_placeholders( $m->{'dst'} ),
+         ( $m->{'readonly'} ? ( 'ReadOnly' => JSON::true ) : () ),
+      } );
+   }
+   for my $m ( @{ $self->profileObject->{'mounts'}{'volume'} } ) {
+      push( @mounts, {
+         'Type'   => 'volume',
+         ( $m->{'src'} ? ( 'Source' => $self->_placeholders( $m->{'src'} ) ) : () ),
+         'Target' => $self->_placeholders( $m->{'dst'} ),
+         ( $m->{'readonly'} ? ( 'ReadOnly' => JSON::true ) : () ),
+      } );
+   }
+   if ( $self->profileObject->has_lxcfs_enabled ) {
+      my $mountpoint = $CONFIG->{'lxcfs'}{'mountpoint'} // '/var/lib/lxcfs';
+      $mountpoint =~ s!/+$!!;
+      for my $mp ( @{ $CONFIG->{'lxcfs'}{'mountpoints'} } ) {
+         my ( $src, $dst ) = $mp =~ m!^/! ? ( "$mountpoint$mp", $mp ) : ( "$mountpoint/proc/$mp", "/proc/$mp" );
+         push( @mounts, { 'Type' => 'bind', 'Source' => $src, 'Target' => $dst } );
+      }
+   }
+
+   # Mirrors cmdline_ide_mount's own logic (see its own comment for the
+   # INNER_DOCKERD/HOSTNAME source-discovery reasoning) - unchanged here, just
+   # rendered as Mounts entries instead of --mount= strings.
+   die Exception->new( 'msg' => "Failed to locate IDE and/or host data volumes because expected Dockside container hostname is undefined" )
+      unless $HOSTNAME || $INNER_DOCKERD;
+   my $idePath      = $CONFIG->{'ide'}{'path'};
+   my $hostDataPath = $CONFIG->{'ssh'}{'path'};
+   if ( $self->profileObject->should_mount_ide ) {
+      my $ide = $INNER_DOCKERD ? [ 'bind', $idePath ]
+              : $HOSTNAME       ? Containers->containers->{$HOSTNAME}{'inspect'}{'ideVolume'}
+              : undef;
+      die Exception->new( 'msg' => "Failed to locate IDE volume for host '$HOSTNAME'" ) unless $ide;
+      push( @mounts, { 'Type' => $$ide[0], 'Source' => $$ide[1], 'Target' => $idePath, 'ReadOnly' => JSON::true } );
+   }
+   if ( $self->profileObject->ssh ) {
+      my $hostData = $INNER_DOCKERD ? [ 'bind', $hostDataPath ]
+                   : $HOSTNAME       ? Containers->containers->{$HOSTNAME}{'inspect'}{'hostDataVolume'}
+                   : undef;
+      if ($hostData) {
+         push( @mounts, { 'Type' => $$hostData[0], 'Source' => $$hostData[1], 'Target' => $hostDataPath, 'ReadOnly' => JSON::true } );
+      }
+   }
+   $hostConfig->{'Mounts'} = \@mounts if @mounts;
+
+   $hostConfig->{'Init'} = JSON::true if $self->profileObject->run_docker_init;
+
+   my $entrypoint = $self->data('entrypoint') || $self->profileObject->entrypoint || undef;
+
+   my @command = ref( $self->data('command') ) eq 'ARRAY'
+      ? @{ $self->data('command') }
+      : $self->profileObject->default_command();
+   @command = map { $self->_placeholders($_) } @command;
+
+   return {
+      'Image'    => $self->data('image'),
+      'Hostname' => $self->name,
+      ( defined($entrypoint) ? ( 'Entrypoint' => [$entrypoint] ) : () ),
+      'Cmd'      => \@command,
+      ( @env             ? ( 'Env'          => \@env )          : () ),
+      ( %$exposedPorts    ? ( 'ExposedPorts' => $exposedPorts )  : () ),
+      'HostConfig' => $hostConfig,
+   };
 }
 
 sub ide_command ($self) {
