@@ -80,7 +80,7 @@ use Util qw(cacheReadWrite flog call_socket_api call_socket_api_async docker_con
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
-use Reservation::Mutate qw(hook_claim_if_not_running launch_reset_stages_if_idle);
+use Reservation::Mutate qw(launch_reset_stages_if_idle);
 use Containers;
 use User;
 
@@ -265,16 +265,6 @@ my %LAUNCH_STAGES = (
 );
 
 my @LAUNCH_STAGE_NAMES = keys %LAUNCH_STAGES;
-
-# Maps a raw hook_status() record to the DAG's simpler done/failed/timedOut vocabulary - shared
-# by _launch_dispatch_hook_stage and anywhere else that needs to translate a settled hookStatus
-# entry into a state to record via launch_resolve_stage.
-sub _launch_state_from_hook_status ($status) {
-   return 'failed'   unless $status;
-   return 'failed'   if $status->{'state'} eq 'aborted';
-   return 'timedOut' if $status->{'timedOut'};
-   return ( $status->{'exitCode'} // 1 ) == 0 ? 'done' : 'failed';
-}
 
 sub launch_resolve_stage ($reservation, $stage, $state) {
    $reservation->hook_status_completed( $stage, { 'state' => $state } );
@@ -531,93 +521,29 @@ sub _launch_dispatch_prep ($reservation, $cb) {
 # deliberately not folded into hook_status_completed itself, since that's shared with genuinely
 # on-demand invocations (including manual re-runs of these same two names via `dockside hook
 # run`), which must never affect DAG state.
+# Thin wrapper around Reservation::dispatch_hook_exec_async (the one canonical async hook-
+# dispatch core - see its own comment) - was a full, deliberately-duplicated implementation
+# during F3 (the API server had no event loop to run a shared non-blocking version on at the
+# time); now just supplies this DAG stage's two callback points: on-claim-lost, defer to
+# %launchRecovering (see its own comment above) rather than resolving a stage that isn't ours;
+# on-settled, translate the outcome into a launch_resolve_stage() call.
 sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
    my $script = $reservation->hook_script($name);
-   my @Command = $reservation->ide_command();
-   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'docker-event-daemon::_launch_dispatch_hook_stage: ide_command() returned empty' ) unless @Command;
-   $Command[-1] = 'run_hook';
-   push( @Command, $name, $script );
 
-   my $owner = $reservation->owner('username');
-   my $userObj = User->load($owner);
-   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $userObj;
-
-   my @env = map { my $e = $_; $e =~ s/^--env=//; $e } $reservation->_hook_env($userObj);
-
-   my $timeout = $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
-   my $containerId = $reservation->containerId();
-
-   my $invocationId = sprintf( "%08x", int(rand(0xffffffff)) );
-   my $logPath = "$CONFIG->{'tmpPath'}/r-" . $reservation->id() . "-hook-$invocationId.log";
-
-   # Atomic claim, not a plain hook_status_started() write - lifecycle:launch/lifecycle:start
-   # are the only two DAG stage names also reachable via run_hook_sync's on-demand path (when a
-   # profile's hooks entry sets "manual": true on them), so a concurrent on-demand invocation of
-   # the *same* name is genuinely possible here, unlike launch:prep/launch:git/launch:ide
-   # (DED-exclusive, single writer, run_hook_sync rejects those as "not yet implemented" - no
-   # lock needed). See Reservation::Mutate::hook_claim_if_not_running's own comment.
-   my $claimedEntry = hook_claim_if_not_running( $reservation->id(), $name, $logPath, $Reservation::HOOK_HISTORY_MAX );
-   unless ( $claimedEntry ) {
-      # Lost the race to a concurrent on-demand invocation of the same name - it owns
-      # completion now, not us. Don't resolve this stage (it isn't ours to resolve) and don't
-      # dispatch a second real exec on top of it (exactly the bug this exists to prevent) - defer
-      # to the restart-recovery reconciliation loop instead, widened to cover this case too (see
-      # %launchRecovering's own comment above).
-      flog( "docker-event-daemon::_launch_dispatch_hook_stage: '$name' already claimed by a "
-          . "concurrent on-demand invocation - deferring to launchRecovering" );
-      $launchRecovering{ $reservation->containerId } = 1;
-      $cb->();
-      return;
-   }
-   # Sync this process's own in-memory copy - mutate() only ever wrote a fresh, separately-
-   # loaded copy (see hook_claim_if_not_running's own comment), not $reservation - so the
-   # on_created callback below (hook_status_set_running_details) merges pid/execId onto this
-   # fresh entry, not stale pre-claim state.
-   ( $reservation->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $claimedEntry;
-
-   flog( "docker-event-daemon::_launch_dispatch_hook_stage: DISPATCHING '$name' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
-
-   open( my $log, '>>', $logPath )
-      or die Exception->new( 'dbg' => "docker-event-daemon::_launch_dispatch_hook_stage: cannot open log '$logPath': $!" );
-   $log->autoflush(1);
-
-   docker_exec_async( $CONFIG->{'docker'}{'socket'}, $containerId, {
-      'Cmd' => \@Command, 'User' => $reservation->unixuser(), 'Env' => \@env,
-   }, {
-      'inactivity_timeout' => $timeout + 30,
-      'request_timeout'    => $timeout,
-      'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($name, undef, $execId); },
-      'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
-   }, sub ($result, $err) {
-      try {
-         close($log);
-
-         if ( !$result ) {
-            flog("docker-event-daemon::_launch_dispatch_hook_stage: '$name' failed to dispatch: $err");
-            $reservation->hook_status_completed( $name, { 'state' => 'aborted' } );
-            launch_resolve_stage($reservation, $name, 'failed');
-            $cb->();
-            return;
-         }
-
-         my $rc = $result->{'exitCode'};
-         my $timedOut = $result->{'timedOut'} ? 1 : 0;
-         my $busy = ( defined($rc) && $rc == 2 && !$timedOut ) ? 1 : 0;
-
-         $reservation->hook_status_completed( $name, {
-            'state'    => 'done',
-            'exitCode' => $rc,
-            'timedOut' => $timedOut,
-            'busy'     => $busy,
-         } );
-         launch_resolve_stage( $reservation, $name, _launch_state_from_hook_status( $reservation->hook_status($name) ) );
+   $reservation->dispatch_hook_exec_async(
+      $name, $script, {},
+      sub ($claimedEntry) {
+         return if $claimedEntry;   # claimed - dispatch_hook_exec_async continues on its own
+         flog( "docker-event-daemon::_launch_dispatch_hook_stage: '$name' already claimed by a "
+             . "concurrent on-demand invocation - deferring to launchRecovering" );
+         $launchRecovering{ $reservation->containerId } = 1;
+         $cb->();
+      },
+      sub ( $outcome, $err ) {
+         launch_resolve_stage( $reservation, $name, $outcome // 'failed' );
          $cb->();
       }
-      catch {
-         flog("docker-event-daemon::_launch_dispatch_hook_stage: caught exception resolving '$name': " . (ref($_) ? $_->dbg : $_));
-         $cb->();
-      };
-   } );
+   );
 }
 
 # Pure, synchronous merge of an already-fetched Docker /containers/json response with the
