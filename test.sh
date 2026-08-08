@@ -86,6 +86,7 @@ check_perl() {
   local modules=(
     app/server/lib/App.pm
     app/server/lib/App/Metadata.pm
+    app/server/lib/App/NginxAdapter.pm
     app/server/lib/Containers.pm
     app/server/lib/Data.pm
     app/server/lib/Exception.pm
@@ -103,6 +104,7 @@ check_perl() {
 
   # Note: upgrade and password-wrapper are bash scripts, also excluded.
   local scripts=(
+    app/server/bin/app-server
     app/server/bin/docker-event-daemon
     app/server/bin/mkpasswd
     app/server/bin/password
@@ -198,6 +200,7 @@ check_shellcheck() {
     app/scripts/runscripts/nginx/run
     app/scripts/runscripts/dockerd/run
     app/scripts/runscripts/docker-event-daemon/run
+    app/scripts/runscripts/app-server/run
     app/scripts/runscripts/bind/run
     app/scripts/runscripts/dehydrated/run
     app/scripts/runscripts/logrotate/run
