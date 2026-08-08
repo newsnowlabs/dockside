@@ -17,8 +17,11 @@ Simply:
 
 The main components of the Dockside application are:
 
-1. The Request Proxy, written in Perl and embedded in NGINX using mod-http-perl 
-2. The [Dockside Server](#dockside-server), currently written in Perl and also embedded in NGINX using mod-http-perl
+1. The Request Proxy, written in Perl and embedded in NGINX using mod-http-perl — routes every
+   request (UI/API and devtainer alike) to its upstream, but doesn't serve UI/API content itself
+2. The [Dockside Server](#dockside-server), written in Perl, running standalone (a Mojolicious
+   app, `app/server/bin/app-server`) — reverse-proxied to by NGINX/the Request Proxy above, not
+   embedded in NGINX
 3. The [Dockside Client](#dockside-client), written in Vue (HTML/CSS/JavaScript)
 4. The [Dockside Event Daemon](#dockside-event-daemon), written in Perl
 5. The [IDE layer](#ide-layer-theia-and-openvscode) — [Eclipse Theia](https://theia-ide.org/) and [OpenVSCode](https://github.com/gitpod-io/openvscode-server), open-source IDE frameworks written in TypeScript; each has its own Dockerfile build stage
@@ -50,8 +53,23 @@ cd /home/dockside/dockside/app/client && npm run start
 To restart the Dockside server, run:
 
 ```sh
+sudo s6-svc -t /etc/service/app-server
+```
+
+To restart the Request Proxy (`app/server/lib/Proxy.pm`, or the NGINX config itself) - a
+separate process, embedded in NGINX - run:
+
+```sh
 sudo s6-svc -t /etc/service/nginx
 ```
+
+Both the Dockside server and the event daemon below load shared library code
+(`app/server/lib/{Reservation,User,Data,Util,...}.pm`) - the Request Proxy loads some of it too
+(`Reservation.pm`, `Data.pm`, `Request.pm`). A change there needs all three services restarted;
+restarting just one leaves the others running the pre-edit code silently (Perl modules compile
+once per process, no hot-reload) - genuinely easy to get wrong and hard to notice until
+something depending on the new code behaves as if it were never changed, so when in doubt,
+restart all three.
 
 ## Dockside event daemon
 

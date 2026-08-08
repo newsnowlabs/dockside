@@ -268,7 +268,7 @@ if [ "$OPT_RUN_DOCKERD" != "1" ]; then
 fi
 
 log "Configuring standard services ..."
-for s in bind nginx docker-event-daemon logrotate dehydrated playwright-proxy
+for s in bind nginx app-server docker-event-daemon logrotate dehydrated playwright-proxy
 do
   log "- Configuring $s"
   mkdir -p /etc/service/$s /etc/service/$s/data
