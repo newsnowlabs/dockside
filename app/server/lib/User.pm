@@ -972,7 +972,7 @@ sub updateContainerReservation ($self, $args) {
 
 # Stops, starts or removed a container.
 # Named in camelCase for consistency with current REST API call.
-sub controlContainer ($self, $cmd, $id, $args = {}) {
+sub controlContainer ($self, $cmd, $id, $args = {}, $cb = undef) {
    if( $id !~ m!^([0-9a-f]+)$! || $cmd !~ m!^(stop|start|remove|getLogs)$! ) {
       die Exception->new( 'msg' => "command '$cmd' with invalid argument '$id' failed" );
    }
@@ -996,15 +996,25 @@ sub controlContainer ($self, $cmd, $id, $args = {}) {
       $container->store_fields( { 'data' => { 'runningIDE' => $container->data('runningIDE') } } );
    }
 
+   # $cb present (bin/app-server's native stop/start/remove routes - see
+   # docs/plans/mojolicious-app-server-split-plan.md) => async, via action_async, no fork, no
+   # docker CLI subprocess. $cb absent => the original synchronous path, still used by anything
+   # not yet migrated (audit before removing - see that plan's own "Open, not resolved here").
+   return $container->action_async($cmd, $args, $cb) if $cb;
    return $container->action($cmd, $args);
 }
 
-# Runs a container's profile-declared hook (named by $args->{'name'}) synchronously,
-# on demand (e.g. a user has changed the 'branch'/'pr' options and wants their
-# devtainer to switch now, without a full relaunch). Named/shaped like
-# controlContainer above. $args is forwarded opaquely to run_hook_sync, which
-# requires and validates 'name' itself - nothing here needs to know its shape.
-sub runContainerHook ($self, $id, $args = {}) {
+# Runs a container's profile-declared hook (named by $args->{'name'}) on demand (e.g. a user has
+# changed the 'branch'/'pr' options and wants their devtainer to switch now, without a full
+# relaunch). Named/shaped like controlContainer above. $args is forwarded opaquely to
+# run_hook_sync_async, which requires and validates 'name' itself - nothing here needs to know
+# its shape.
+#
+# $cb is required: bin/app-server's native hook route (see
+# docs/plans/mojolicious-app-server-split-plan.md) is this method's only caller now - the old
+# synchronous (forking) fallback, and the App.pm route that was its only caller, are both gone
+# (Stage 4; audited first - no other caller existed).
+sub runContainerHook ($self, $id, $args, $cb) {
    if( $id !~ m!^([0-9a-f]+)$! ) {
       die Exception->new( 'msg' => "hook run with invalid argument '$id' failed" );
    }
@@ -1019,7 +1029,7 @@ sub runContainerHook ($self, $id, $args = {}) {
       die Exception->new( 'msg' => "You need the 'develop' permission to run a hook on this devtainer" );
    }
 
-   return $container->run_hook_sync($args);
+   return $container->run_hook_sync_async($args, $cb);
 }
 
 # Reads a container's hook invocation status/log (named by $args->{'name'}), for a client to
@@ -1056,7 +1066,13 @@ sub runContainerHookStatus ($self, $id, $args = {}) {
 
 # Creates a Reservation object, stores it, and attempts to launch a container for that Reservation.
 # Named in camelCase for consistency with current REST API call.
-sub createContainerReservation ($self, $args) {
+#
+# $cb is required: bin/app-server's native create route (see
+# docs/plans/mojolicious-app-server-split-plan.md) is this method's only caller now - async
+# throughout (getGitDevContainer_async, then store(), then create_async - no fork, no blocking
+# GitHub fetch, no docker CLI subprocess). The old synchronous fallback, and the App.pm route
+# that was its only caller, are both gone (Stage 4; audited first - no other caller existed).
+sub createContainerReservation ($self, $args, $cb) {
    # Launch new container.
    if( !$self->has_permission( 'createContainerReservation' ) ) {
       die Exception->new( 'msg' => "You need the 'createContainerReservation' permission to launch a devtainer" );
@@ -1078,7 +1094,7 @@ sub createContainerReservation ($self, $args) {
    );
 
    foreach my $m (qw( profile image runtime network unixuser access viewers developers private description gitURL IDE options )) {
-      $self->set($reservation, $m, $args->{$m}) || 
+      $self->set($reservation, $m, $args->{$m}) ||
          die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
    }
 
@@ -1087,29 +1103,43 @@ sub createContainerReservation ($self, $args) {
    # Test if we can construct the command line; on failure, we'll throw an error.
    $reservation->cmdline();
 
-   my $dc = $reservation->getGitDevContainer();
-   if($dc) {
+   $reservation->getGitDevContainer_async( sub ($dc) {
+      if ($dc) {
+         if($dc->{'image'}) {
+            $reservation->data('image', $dc->{'image'});
 
-      if($dc->{'image'}) {
-         $reservation->data('image', $dc->{'image'});
-         
-         if(!$dc->{'overrideCommand'}) {
-            $reservation->data('entrypoint', '/bin/sh');
-            $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+            if(!$dc->{'overrideCommand'}) {
+               $reservation->data('entrypoint', '/bin/sh');
+               $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+            }
          }
+
+         $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
+         $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
+         $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
       }
 
-      $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
-      $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
-      $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
-   }
-
-   # Store, launch, and create a sanitised clone of the reservation object, before returning.
-   # A full (not narrowed) store() is correct here specifically: this reservation id has never
-   # been persisted before this call, so no other process can possibly be concurrently writing
-   # to it - none of Reservation::store_fields' concerns (a stale in-memory copy of some
-   # unrelated field clobbering a fresher one) apply to a record's very first write.
-   return $self->createClientReservation( $reservation->store()->launch() );
+      # Store, then create/launch asynchronously, then hand $cb a sanitised clone of the
+      # reservation object. A full (not narrowed) store() is correct here specifically: this
+      # reservation id has never been persisted before this call, so no other process can
+      # possibly be concurrently writing to it - none of Reservation::store_fields' concerns (a
+      # stale in-memory copy of some unrelated field clobbering a fresher one) apply to a
+      # record's very first write. Wrapped in try/catch because this whole callback runs outside
+      # the caller's own try/catch frame (it fires later, off the event loop, once the GitHub
+      # fetch above resolves) - an uncaught die here would be an uncaught exception inside a Mojo
+      # completion callback, not something bin/app-server's own surrounding try/catch could ever
+      # see (see docker_exec_async's own comment on this same hazard, Util.pm).
+      try {
+         $reservation->store()->create_async( sub ($createdReservation, $err) {
+            return $cb->( undef, $err ) if $err;
+            return $cb->( $self->createClientReservation($createdReservation), undef );
+         } );
+      }
+      catch {
+         $cb->( undef, $_ );
+      };
+   } );
+   return;
 }
 
 1;
