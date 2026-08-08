@@ -542,29 +542,17 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       # reachable via GET (GET is cacheable, prefetchable and logged). Reads
       # (/containers, .../logs, /resources) stay GET. NB unlike the admin routes
       # (guard further below), the container args are still parsed RAW via split_args,
-      # not parse_body_args/get_args — createContainerReservation()/set() decode
+      # not parse_body_args/get_args — updateContainerReservation()/set() (below) decode
       # structured fields (access, options) themselves and treat viewers/developers
-      # as comma-strings, so pre-decoding the body would corrupt them.
+      # as comma-strings, so pre-decoding the body would corrupt them. create/start/
+      # stop/remove/hook stay in this regex for the 405 (not 404) they'd otherwise lose -
+      # their own handling has moved to bin/app-server's native routes (see
+      # docs/plans/mojolicious-app-server-split-plan.md), which only match POST anyway,
+      # so a wrong-method request to one of those five still falls through to here.
       #
       if ( $route =~ m!^/containers/(?:create|[^/]+/(?:update|start|stop|remove|hook))/?$!
            && $r->request_method ne 'POST' ) {
          return json($r, 405, { 'status' => '405', 'msg' => 'Method Not Allowed: use POST' });
-      }
-
-      #############################################
-      # Create a Reservation and launch a container
-      #
-      if( $route =~ m!^/containers/create/?$! ) {
-         # POST-only (see the guard above): args arrive in the request body. Parse
-         # raw via split_args (NOT get_args) — see the rationale on the guard above.
-         my $args = { %{ split_args($r->request_body // '') }, %{ split_args($querystring) } };
-
-         # Use the current host's parentFQDN string to generate the child
-         # container's hostname, if none has been provided.
-         $args->{'parentFQDN'} ||= $parentFQDN;
-
-         my $reservation = $User->createContainerReservation( $args );
-         return json($r, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation });
       }
 
       ##########################
@@ -573,45 +561,12 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
       if( $route =~ m!^/containers/([^\/]+)/update/?$! ) {
          my $id = $1;
          # POST-only (see the container guard above): args in the request body,
-         # parsed raw — see the create handler's note on why not get_args.
+         # parsed raw — see the guard's own comment above for why not get_args.
          my $args = { %{ split_args($r->request_body // '') }, %{ split_args($querystring) } };
          $args->{'id'} = $id if $id;
 
          my $reservation = $User->updateContainerReservation($args);
          return json($r, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation });
-      }
-
-      ###################
-      # Start/Stop/Remove
-      #
-      if( $route =~ m!^/containers/([^\/]+)/(stop|start|remove)/?$! ) {
-         my $id = $1;
-         my $cmd = $2;
-
-         # Currently we ignore the return value. This is not ideal, but:
-         # (a) it is not strictly necessary, the current state of the container will be updated in the Vue app
-         #     and the success/failure of their request to change container state will ultimately be apparent.
-         # (b) some commands like 'docker start' can also return success, but then the container can fail
-         #     to start anyway.
-         # (c) until there is better support in the Vue app to display errors, there is no point in returning;
-
-         $User->controlContainer($cmd, $id);
-
-         return json($r, 200, { 'status' => '200', 'data' => $User->reservations({'client' => 1}) });
-      }
-
-      ######################################################
-      # Run a devtainer's profile-declared lifecycle hook now
-      #
-      if( $route =~ m!^/containers/([^\/]+)/hook/?$! ) {
-         my $id = $1;
-         # POST-only (see the container guard above): args in the request body,
-         # parsed raw — see the create handler's note on why not get_args.
-         my $args = { %{ split_args($r->request_body // '') }, %{ split_args($querystring) } };
-
-         my $result = $User->runContainerHook($id, $args);
-
-         return json($r, 200, { 'status' => '200', 'data' => $result });
       }
 
       ###############################################################
