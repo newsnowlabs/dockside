@@ -15,7 +15,7 @@ log() {
 LOG=$LOG_PATH/theia.log
 
 log "Switching logging to '$LOG' ..."
-touch $LOG && chmod 666 $LOG
+touch $LOG && chmod 600 $LOG
 
 exec 1>>$LOG
 exec 2>>$LOG
@@ -47,8 +47,5 @@ log "Launching IDE using: $THEIA_PATH/bin/node $THEIA_PATH/theia/src-gen/backend
 
 unset IDE_PATH IIDE_PATH IDE LOG_PATH
 cd $THEIA_PATH/theia || exit 1
-
-log "- environment variables:"
-env | sort | sed -r 's/^/    /' >&2
 
 exec $THEIA_PATH/bin/node $THEIA_PATH/theia/lib/backend/main.js $HOME --hostname 0.0.0.0 --port 3131 --plugins=local-dir:$THEIA_PATH/theia/plugins,local-dir:$HOME/theia-plugins

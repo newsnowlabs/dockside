@@ -1,4 +1,4 @@
-# ADR-0003: Restrict client-facing error detail to a sanitised `msg`
+# ADR: Restrict client-facing error detail to a sanitised `msg`
 
 - **Status:** Proposed (draft — part of the `OtdcG` curated merge)
 - **Date:** 2026-06-14

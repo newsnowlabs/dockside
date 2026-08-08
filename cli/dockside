@@ -1502,6 +1502,51 @@ def _fmt_detail(c):
     )
 
 
+def _fmt_user_detail(record):
+    """Render a user record as a key-value text block.
+
+    Shared by `account show` and the admin `user get`/`create`/`edit`
+    commands. Secrets (gh_token, private keys, secret=1 env var values)
+    arrive already masked from the server unless --sensitive was passed.
+    """
+    lines = [
+        f"username:  {record.get('username', '')}",
+        f"id:        {record.get('id', '')}",
+        f"role:      {record.get('role', '')}",
+        f"name:      {record.get('name', '')}",
+        f"email:     {record.get('email', '')}",
+    ]
+    gh_token = record.get('gh_token')
+    if gh_token:
+        lines.append(f"gh_token:  {gh_token}")
+    keypairs = ((record.get('ssh') or {}).get('keypairs')) or {}
+    if keypairs:
+        lines.append('ssh keypairs:')
+        for name in sorted(keypairs):
+            pub = ((keypairs[name] or {}).get('public') or '').strip()
+            lines.append(f'  {name}: {pub}' if pub else f'  {name}')
+    env_vars = record.get('env') or {}
+    if env_vars:
+        lines.append('env vars:')
+        for key in sorted(env_vars):
+            entry = env_vars[key] or {}
+            val = entry.get('value', '')
+            secret_marker = ' [secret]' if entry.get('secret') else ''
+            targets = ','.join(t for t in ('docker', 'ide', 'ssh') if (entry.get('targets') or {}).get(t)) or '(none)'
+            lines.append(f'  {key}={val}{secret_marker}  targets={targets}')
+    perms = (record.get('permissions') or {}).get('actions') or {}
+    if perms:
+        lines.append('permissions:')
+        for k, v in sorted(perms.items()):
+            lines.append(f'  {k}: {v}')
+    resources = record.get('resources') or {}
+    if resources:
+        lines.append('resources:')
+        for k, v in sorted(resources.items()):
+            lines.append(f'  {k}: {json.dumps(v)}')
+    return '\n'.join(lines)
+
+
 # ── Argument helpers ──────────────────────────────────────────────────────────
 
 def _add_global_flags(p):
@@ -2527,7 +2572,7 @@ def cmd_user_get(args):
     if args._fmt in ('json', 'yaml'):
         emit(record, args._fmt)
     else:
-        print(_fmt_detail(record))
+        print(_fmt_user_detail(record))
 
 
 def cmd_user_create(args):
@@ -2543,7 +2588,7 @@ def cmd_user_create(args):
     if args._fmt in ('json', 'yaml'):
         emit(record, args._fmt)
     else:
-        print(_fmt_detail(record))
+        print(_fmt_user_detail(record))
 
 
 def cmd_user_edit(args):
@@ -2559,7 +2604,7 @@ def cmd_user_edit(args):
     if args._fmt in ('json', 'yaml'):
         emit(record, args._fmt)
     else:
-        print(_fmt_detail(record))
+        print(_fmt_user_detail(record))
 
 
 def cmd_account_edit(args):
@@ -2575,7 +2620,7 @@ def cmd_account_edit(args):
     if args._fmt in ('json', 'yaml'):
         emit(record, args._fmt)
     else:
-        print(_fmt_detail(record))
+        print(_fmt_user_detail(record))
 
 
 def cmd_user_remove(args):
@@ -3270,9 +3315,10 @@ def cmd_account_show(args):
 
     `whoami` is the quick "who am I + effective permissions" view; `account show`
     is the companion to `account edit`, so its text output also lists the fields
-    that command can change — display name, email, GitHub token and SSH keypairs.
-    Secrets (gh_token, private keys) arrive already masked from the server.
-    JSON/YAML output emits the full record either way.
+    that command can change — display name, email, GitHub token, SSH keypairs,
+    and custom env vars. Secrets (gh_token, private keys, secret=1 env var
+    values) arrive already masked from the server. JSON/YAML output emits the
+    full record either way.
     """
     opener, server = _client(args)
     try:
@@ -3285,30 +3331,7 @@ def cmd_account_show(args):
         emit(record, args._fmt)
         return
 
-    print(f"username:  {record.get('username', '')}")
-    print(f"id:        {record.get('id', '')}")
-    print(f"role:      {record.get('role', '')}")
-    print(f"name:      {record.get('name', '')}")
-    print(f"email:     {record.get('email', '')}")
-    gh_token = record.get('gh_token')
-    if gh_token:
-        print(f"gh_token:  {gh_token}")
-    keypairs = ((record.get('ssh') or {}).get('keypairs')) or {}
-    if keypairs:
-        print('ssh keypairs:')
-        for name in sorted(keypairs):
-            pub = ((keypairs[name] or {}).get('public') or '').strip()
-            print(f'  {name}: {pub}' if pub else f'  {name}')
-    perms = (record.get('permissions') or {}).get('actions') or {}
-    if perms:
-        print('permissions:')
-        for k, v in sorted(perms.items()):
-            print(f'  {k}: {v}')
-    resources = record.get('resources') or {}
-    if resources:
-        print('resources:')
-        for k, v in sorted(resources.items()):
-            print(f'  {k}: {json.dumps(v)}')
+    print(_fmt_user_detail(record))
 
 
 # ── Argument parser ───────────────────────────────────────────────────────────

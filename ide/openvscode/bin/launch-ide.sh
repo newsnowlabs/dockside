@@ -15,7 +15,7 @@ log() {
 LOG=$LOG_PATH/openvscode.log
 
 log "Switching logging to '$LOG' ..."
-touch $LOG && chmod 666 $LOG
+touch $LOG && chmod 600 $LOG
 
 exec 1>>$LOG
 exec 2>>$LOG
@@ -36,7 +36,19 @@ SETTINGS_DIR="$HOME/.openvscode-server/data/Machine"
 SETTINGS_FILE="$SETTINGS_DIR/settings.json"
 mkdir -p $SETTINGS_DIR
 [ -f "$SETTINGS_FILE" ] || echo '{}' >$SETTINGS_FILE
+
+# Belt-and-braces delivery of per-user custom env vars (target: ide) into
+# integrated terminals, independent of apply_user_env/process-env
+# inheritance: read the same KEY=VALUE file populate_user_env (launch.sh)
+# already wrote, and merge it into terminal.integrated.env.linux below.
+USER_ENV_IDE_FILE="$HOME/.dockside/user-env-ide.env"
+USER_ENV_IDE_JSON='{}'
+if [ -f "$USER_ENV_IDE_FILE" ]; then
+  USER_ENV_IDE_JSON="$(jq -R -n '[inputs | select(length>0) | capture("(?<k>[^=]+)=(?<v>.*)")] | map({(.k):.v}) | add // {}' "$USER_ENV_IDE_FILE")"
+fi
+
 jq --arg binpath "$IDE_PATH/bin" \
+  --argjson userenv "$USER_ENV_IDE_JSON" \
   -f /dev/stdin \
   "$SETTINGS_FILE" >"$SETTINGS_FILE.new" <<'EOF' && mv "$SETTINGS_FILE.new" "$SETTINGS_FILE"
 # set git binary path
@@ -45,6 +57,8 @@ jq --arg binpath "$IDE_PATH/bin" \
 | ."telemetry.telemetryLevel"="off"
 # extend terminal PATH with bin dir
 | ."terminal.integrated.env.linux".PATH="${env:PATH}:"+$binpath
+# merge per-user custom env vars (target: ide) into the integrated terminal env
+| ."terminal.integrated.env.linux" += $userenv
 # disable AI/Copilot features, while GitHub.copilot-chat VSIX is unavailable on OpenVSX
 | ."chat.disableAIFeatures"=true
 EOF
@@ -52,8 +66,5 @@ EOF
 GZIP_STATIC="$IIDE_PATH/bin/gzip-static.js"
 cd $IIDE_PATH/openvscode
 unset IDE_PATH IDE IIDE_PATH LOG_PATH
-
-log "- environment variables:"
-env | sort | sed -r 's/^/    /' >&2
 
 exec ./node --require "$GZIP_STATIC" ./out/server-main.js --host 0.0.0.0 --port 3131 --without-connection-token --telemetry-level off

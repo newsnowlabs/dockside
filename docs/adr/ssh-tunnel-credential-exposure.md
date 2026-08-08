@@ -1,4 +1,4 @@
-# ADR-0004: SSH ProxyCommand credential exposure — fix with the wstunnel upgrade
+# ADR: SSH ProxyCommand credential exposure — fix with the wstunnel upgrade
 
 - **Status:** Implemented — landed with the wstunnel v6→v10 upgrade
   (`devel-20260628-wstunnel-upgrade`)

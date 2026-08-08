@@ -1,4 +1,4 @@
-# ADR-0001: Cookiejar isolation for the CLI-driven integration harness
+# ADR: Cookiejar isolation for the CLI-driven integration harness
 
 - **Status:** Proposed (draft — part of the `OtdcG` curated merge)
 - **Date:** 2026-06-13

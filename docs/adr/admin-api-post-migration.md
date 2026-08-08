@@ -1,4 +1,4 @@
-# ADR-0002: Migrate state-changing API routes from GET to POST
+# ADR: Migrate state-changing API routes from GET to POST
 
 - **Status:** Proposed (draft — part of the `OtdcG` curated merge)
 - **Date:** 2026-06-13

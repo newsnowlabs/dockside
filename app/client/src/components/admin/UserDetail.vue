@@ -146,6 +146,17 @@
             />
          </b-form-group>
 
+         <!-- Env vars — available in selfEdit too: self-service users may set
+              all three targets on their own account, same trust level as the
+              GitHub token above. -->
+         <b-form-group label="Env vars" label-cols="3">
+            <EnvVarsEditor
+               :env="form.env"
+               :readonly="!isEditMode && !isNew"
+               @input="form.env = $event"
+            />
+         </b-form-group>
+
          <!-- Save / Cancel buttons -->
          <div v-if="isEditMode || isNew" class="detail-form-actions">
             <b-button type="submit" variant="primary" size="sm" :disabled="saving">
@@ -178,6 +189,7 @@
    import PermissionsEditor from '@/components/admin/PermissionsEditor';
    import ResourcesEditor   from '@/components/admin/ResourcesEditor';
    import SshEditor         from '@/components/admin/SshEditor';
+   import EnvVarsEditor     from '@/components/admin/EnvVarsEditor';
    import ConfirmModal      from '@/components/shared/ConfirmModal';
    import { getSelf }       from '@/services/account';
 
@@ -195,11 +207,12 @@
       permissions:     {},
       resources:       {},
       ssh:             {},
+      env:             {},
    });
 
    export default {
       name: 'UserDetail',
-      components: { PermissionsEditor, ResourcesEditor, SshEditor, ConfirmModal },
+      components: { PermissionsEditor, ResourcesEditor, SshEditor, EnvVarsEditor, ConfirmModal },
 
       props: {
          username: {
@@ -232,6 +245,7 @@
             localEditMode: false,  // view/edit toggle used for selfEdit
             savedForm:     null,   // snapshot of form taken when entering edit mode
             sshLoaded:     false,  // true once SSH data has been fetched from server
+            envLoaded:     false,  // true once env var data has been fetched from server
          };
       },
 
@@ -303,6 +317,10 @@
             const ssh = this.form.ssh || {};
             return Object.keys(ssh).length > 0;
          },
+
+         hasEnvChanges() {
+            return Object.keys(this.form.env || {}).length > 0;
+         },
       },
 
       created() {
@@ -350,8 +368,10 @@
                permissions:     record.permissions ? { ...record.permissions } : {},
                resources:       record.resources   ? { ...record.resources }   : {},
                ssh:             record.ssh         ? { ...record.ssh }         : {},
+               env:             record.env         ? { ...record.env }         : {},
             };
             if (record.ssh !== undefined) this.sshLoaded = true;
+            if (record.env !== undefined) this.envLoaded = true;
          },
 
          startEdit() {
@@ -403,6 +423,8 @@
                // the payload prevents a partial (bootstrap-only) ssh block from
                // overwriting keys the server has but the client never received.
                if (this.isNew || this.sshLoaded || this.hasSshChanges) payload.ssh = this.form.ssh;
+               // Same reasoning as ssh above, applied to env vars.
+               if (this.isNew || this.envLoaded || this.hasEnvChanges) payload.env = this.form.env;
                // Only send gh_token when the user has typed a new value.
                if (this.form.gh_token) payload.gh_token = this.form.gh_token;
 
@@ -417,7 +439,14 @@
                   await this.$store.dispatch('account/updateSelf', payload);
                   this.savedForm     = null;
                   this.localEditMode = false;
-                  // currentUserRecord watcher fires after store update and re-populates form.
+                  // Re-populate explicitly rather than relying solely on the
+                  // currentUserRecord watcher: the store commit (inside the
+                  // dispatch above) can trigger that watcher's callback before
+                  // localEditMode flips to false on the line above, so its
+                  // `!this.isEditMode` guard skips the repopulation and it
+                  // never fires again — leaving stale (unmasked, just-typed)
+                  // values in the form, e.g. for freshly-saved secret env vars.
+                  if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
                } else if (this.isNew) {
                   payload.username = this.form.username;
                   const record = await this.$store.dispatch('admin/createUser', payload);
@@ -427,6 +456,9 @@
                } else {
                   await this.$store.dispatch('admin/updateUser', { username: this.username, data: payload });
                   this.$store.commit('admin/setSelectedMode', 'view');
+                  // Same explicit repopulation, and for the same reason, as the
+                  // selfEdit branch above.
+                  if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
                }
             } catch (e) {
                this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;

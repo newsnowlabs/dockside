@@ -955,7 +955,15 @@ sub launch ($self) {
    my $cmd = join(' ', @cmd);
    $cmd =~ s!\s+! !g;
 
-   flog("Reservation::launch: FORKING TO RUN: $cmd");
+   # Secret-flagged 'docker'-target env var names, so the flog/run_pty calls
+   # below can redact their values (see Util::sanitize_sensitive_text) — these
+   # aren't known ahead of time like GH_TOKEN/OWNER_DETAILS, so they must be
+   # passed through explicitly rather than hardcoded.
+   my $ownerUsername = $self->owner('username');
+   my $ownerUser = $ownerUsername ? User->load($ownerUsername) : undef;
+   my $secretDockerEnvKeys = $ownerUser ? $ownerUser->env_vars_secret_keys('docker') : [];
+
+   flog("Reservation::launch: FORKING TO RUN: " . sanitize_sensitive_text($cmd, $secretDockerEnvKeys));
 
    # FIXME: Debug this code by uncommenting this line
    # return { 'status' => undef, 'msg' => 'failed to launch container', 'cmd' => $cmd, 'dbg' => "XYZZY" };
@@ -984,7 +992,7 @@ sub launch ($self) {
    my $exitCode;
    try {
 
-      flog("Reservation::launch: RUNNING: $cmd");
+      flog("Reservation::launch: RUNNING: " . sanitize_sensitive_text($cmd, $secretDockerEnvKeys));
 
       # Set PATH required for 'docker create' to launch external credential helpers, like gcloud.
       local $ENV{'PATH'} = $CONFIG->{'docker'}{'PATH'};
@@ -994,7 +1002,7 @@ sub launch ($self) {
       # sleep(30);
 
       # Launch 'docker create' command in a subprocess with pty piped to specified file.
-      $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
+      $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log", $secretDockerEnvKeys );
 
       my $o = get_config("$CONFIG->{'tmpPath'}/r-$id.cid");
       flog("Reservation::launch: containerId='$o'; exitCode=$exitCode");
@@ -1152,6 +1160,18 @@ sub exec ($reservation, $command = undef) {
       "--env=DEVCONTAINER_VSCODE_EXTENSIONS=" . encode_json( $reservation->data('vscode') )
    );
 
+   # Per-user custom env vars targeting 'ide' and/or 'ssh', bundled into one
+   # JSON blob (rather than one --env= per var, like DOCKSIDE_OPTION_*) so
+   # launch.sh has a single documented shape to parse and write out to the
+   # per-target files consumed by apply_user_env / the SSH rc-file snippet.
+   # 'docker'-target vars are NOT included here — they are baked into
+   # `docker create` instead (see Reservation::Launch::cmdline_user_env).
+   my @envUserEnv;
+   my $ideEnv = $user->env_vars_for_target('ide');
+   my $sshEnv = $user->env_vars_for_target('ssh');
+   @envUserEnv = ( "--env=DOCKSIDE_USER_ENV=" . encode_json({ 'ide' => $ideEnv, 'ssh' => $sshEnv }) )
+      if %$ideEnv || %$sshEnv;
+
    # TODO: Configure Profiles to support launching IDE as non-root user
    flog("exec: launching IDE for reservationId=$reservationId, containerId=$containerId, with command: " .
       join(' ', @Command)
@@ -1170,6 +1190,7 @@ sub exec ($reservation, $command = undef) {
       @envGhToken,
       @envSSH,
       @envDevContainer,
+      @envUserEnv,
       @envIDE,
       $containerId,
       @Command
