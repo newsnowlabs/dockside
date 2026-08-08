@@ -1,0 +1,268 @@
+#!/usr/bin/perl
+
+# app-server
+#
+# Dockside's UI/API server, standalone and async (see
+# docs/plans/mojolicious-app-server-split-plan.md) - no longer embedded in nginx via
+# ngx_http_perl_module. nginx proxy_passes UI/API traffic to this process on loopback
+# (Proxy::ui_uri); Proxy.pm itself stays embedded in nginx for access-controlled
+# devtainer routing, unaffected by this split.
+#
+# Two calling conventions, not one rewrite:
+# - The bulk of App.pm (permission checks, CRUD reads, JSON building - no I/O wait)
+#   is unchanged and reached via a catch-all route that wraps the request in
+#   App::NginxAdapter and calls App::handler($r, $proto) exactly as it runs under
+#   real nginx today.
+# - The five routes that do genuinely slow Docker/HTTP I/O (create, stop, start,
+#   remove, on-demand hook-run) are native async Mojolicious routes, registered
+#   ahead of the catch-all, calling the *_async siblings in Reservation.pm/User.pm
+#   via docker_exec_async/call_socket_api_async - the same non-blocking primitives
+#   docker-event-daemon already runs, on this process's own Mojo::IOLoop reactor.
+#   They reuse App::NginxAdapter for request-side parsing only, never its buffered
+#   response-side contract (status/header_out/finalize), which has no way to
+#   express "hold on, I'm waiting on Docker".
+
+use v5.36;
+
+use App::NginxAdapter;   # before App - pre-seeds the nginx:: constants App.pm's own
+                          # BEGIN block expects (see NginxAdapter's own header comment)
+
+use Mojolicious;
+use Mojo::Server::Prefork;
+
+use Try::Tiny;
+
+use Util qw(flog wlog sanitize_sensitive_text YYYYMMDDHHMMSS);
+use Exception;
+use Data qw($CONFIG);
+use Request;
+use User;
+use App;   # split_args/get_args, handler - after NginxAdapter, for the constants
+
+flog({ 'service' => 'dockside-app', 'file' => "/var/log/$ENV{'USER'}/$ENV{'USER'}.log" });
+flog("Starting...");
+
+Data::load();
+
+my $port    = $CONFIG->{'appServer'}{'port'};
+my $workers = $CONFIG->{'appServer'}{'workers'};
+
+my $app = Mojolicious->new;
+$app->max_request_size( $CONFIG->{'appServer'}{'maxRequestSize'} );
+
+# ── Shared helpers for the five native async routes ─────────────────────────
+
+# Authenticates the request and enforces the globalCookieRequired gate exactly as
+# App::_handler does today (App.pm:363-372) - a real, configured, instance-wide
+# access gate (config.json's globalCookie.name/.secret) that every other route
+# still enforces via _handler, so these five must too, not just the authenticate()
+# call the plan's own "Two calling conventions" section names explicitly. Returns
+# $User on success. On failure, renders the response directly - matching
+# _handler's own plain-text 401 shape exactly (not the JSON shape _render_error
+# below produces) - and returns undef; callers must check for that and stop
+# rather than proceed to dispatch.
+#
+# Data::load() here mirrors App::handler's own first line (App.pm:887) - each of
+# Mojo::Server::Prefork's worker processes has its own independent memory (forked at
+# startup, not shared), so a reservation another worker just created/mutated (e.g. via
+# its own create_async, or docker-event-daemon's own writes) is otherwise invisible to
+# this one until something reloads it. The catch-all path already gets this for free
+# via App::handler; these five native routes bypass App::handler entirely, so they
+# need their own call. Verified live: a create/stop pair against real app-server
+# workers - stop landed on a different worker than the one that created the
+# reservation, gave 401 "Container not found" (User::reservation's own not-found
+# shape, not an auth failure) - fixed by adding this line, confirmed live.
+sub _authenticate ($r, $c) {
+   Data::load();
+
+   my $protocol = lc( $r->header_in('X-Forwarded-Proto') // 'http' );
+   my $User = Request->authenticate( { 'cookie' => $r->header_in('Cookie'), 'protocol' => $protocol } );
+
+   if ( $User->authstate('globalCookieRequired') && !$User->authstate('globalCookie') ) {
+      $c->res->headers->add( 'Cache-Control', 'no-store' );
+      $c->render( text => "Not found!\n", status => 401 );
+      return undef;
+   }
+
+   return $User;
+}
+
+# Mirrors _api_handler's own catch block (App.pm) exactly - same Exception shape,
+# same sanitize_sensitive_text treatment, same 401 default - so a client sees an
+# identical error response whether a request landed on the adapter path or one of
+# these five native routes.
+sub _render_error ($c, $err) {
+   my ( $msg, $dbg, $time, $status );
+   if ( ref($err) eq 'Exception' ) {
+      ( $msg, $dbg, $time, $status ) = ( $err->msg(), $err->dbg(), $err->time(), $err->status() );
+   }
+   else {
+      ( $msg, $dbg, $time ) = ( $err, $err, time() );
+   }
+   $status //= 401;
+   ( $msg, $dbg ) = map { sanitize_sensitive_text($_) } ( $msg, $dbg );
+   my $Time = YYYYMMDDHHMMSS($time);
+   flog("app-server: reporting exception at '$Time': msg='$msg'; dbg='$dbg'; status='$status'");
+   return $c->render(
+      json   => { 'status' => "$status", 'msg' => "$msg (at $Time)", 'time' => $time },
+      status => $status,
+   );
+}
+
+# ── The five native async routes (see the plan's "Async actions" section) ───
+# Registered ahead of the catch-all so Mojolicious's router matches these
+# literal paths before ever trying the wildcard (it would anyway, regardless of
+# registration order, but registering them first keeps the intent readable).
+
+my $routes = $app->routes;
+
+$routes->post('/containers/create')->to(
+   cb => sub ($c) {
+      $c->render_later;
+      my $r = App::NginxAdapter->new($c);
+      try {
+         my $User = _authenticate( $r, $c ) or return;
+
+         my $args = { %{ App::split_args( $r->request_body // '' ) }, %{ App::split_args( $r->args ) } };
+         my $parentFQDN = $r->header_in('Host');
+         $parentFQDN =~ s!^[^\-\.]+!!;
+         $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+         $args->{'parentFQDN'} ||= $parentFQDN;
+
+         $User->createContainerReservation(
+            $args,
+            sub ( $reservation, $err ) {
+               return _render_error( $c, $err ) if $err;
+               return $c->render( json => {
+                  'status'      => $reservation ? '200' : '401',
+                  'reservation' => $reservation,
+               } );
+            }
+         );
+      }
+      catch {
+         _render_error( $c, $_ );
+      };
+   }
+);
+
+for my $action (qw(stop start remove)) {
+   $routes->post("/containers/:id/$action")->to(
+      cb => sub ($c) {
+         $c->render_later;
+         my $r  = App::NginxAdapter->new($c);
+         my $id = $c->stash('id');
+         try {
+            my $User = _authenticate( $r, $c ) or return;
+
+            # Outcome deliberately ignored, matching _api_handler's own existing
+            # behaviour (App.pm:591-596: "until there is better support in the
+            # Vue app to display errors, there is no point in returning") - the
+            # client reflects state from the fresh reservations list below
+            # regardless of whether the underlying action itself succeeded.
+            $User->controlContainer(
+               $action, $id, {},
+               sub ( $result, $err ) {
+                  return $c->render( json => {
+                     'status' => '200',
+                     'data'   => $User->reservations( { 'client' => 1 } ),
+                  } );
+               }
+            );
+         }
+         catch {
+            _render_error( $c, $_ );
+         };
+      }
+   );
+}
+
+$routes->post('/containers/:id/hook')->to(
+   cb => sub ($c) {
+      $c->render_later;
+      my $r  = App::NginxAdapter->new($c);
+      my $id = $c->stash('id');
+      try {
+         my $User = _authenticate( $r, $c ) or return;
+         my $args = { %{ App::split_args( $r->request_body // '' ) }, %{ App::split_args( $r->args ) } };
+
+         $User->runContainerHook(
+            $id, $args,
+            sub ( $result, $err ) {
+               return _render_error( $c, $err ) if $err;
+               return $c->render( json => { 'status' => '200', 'data' => $result } );
+            }
+         );
+      }
+      catch {
+         _render_error( $c, $_ );
+      };
+   }
+);
+
+# ── Static /docs (the sole nginx::DECLINED source - App.pm:375, verified) ───
+# nginx's own `root` directive (sites-available/default) served this directly;
+# now this process must, since nginx no longer perl_requires App.pm at all post-
+# cutover. Mojolicious::Static::serve only matches exact files, not directories -
+# unlike nginx's own implicit index/redirect behaviour, so both are replicated
+# here explicitly.
+$app->static->paths( [ $CONFIG->{'appServer'}{'docsPath'} ] );
+
+sub _serve_static ($c) {
+   my $path = $c->req->url->path->to_string;
+   my $root = $CONFIG->{'appServer'}{'docsPath'};
+
+   if ( -d "$root$path" ) {
+      if ( $path !~ m{/$} ) {
+         $c->res->headers->location("$path/");
+         return $c->rendered(301);
+      }
+      $path .= 'index.html';
+   }
+
+   # Mojolicious::Static::serve sets $c->res->code/content directly (not via
+   # render()/rendered()) - it has no idea this call is happening from inside a route
+   # callback at all. Mojolicious's own request cycle only considers a request complete
+   # once something calls render()/rendered() on it; skipping that call here (as an
+   # earlier version of this did, only calling it in the 404 branch below) left every
+   # successful static response - a 200 with the file's own bytes already attached to
+   # $c->res, ready to send - never actually sent: the worker just sat there forever.
+   # Verified live: reproduced in isolation (a scratch Mojolicious::Lite script hitting
+   # exactly this), Mojolicious's own trace log names it precisely - "Nothing has been
+   # rendered, expecting delayed response" - then nothing, ever, confirming this is what
+   # was silently hanging every /docs/ request before this fix.
+   $c->app->static->serve( $c, $path );
+   return $c->rendered( $c->res->code || 404 );
+}
+
+# ── Catch-all: everything else, unchanged, via the $r-adapter + App::handler ─
+
+$routes->any('/*whatever')->to(
+   'whatever' => '',
+   cb         => sub ($c) {
+      my $r        = App::NginxAdapter->new($c);
+      my $protocol = lc( $r->header_in('X-Forwarded-Proto') // 'http' );
+
+      my $rc = eval { App::handler( $r, $protocol ) };
+
+      if ( !defined $rc ) {
+         flog("app-server: adapter/handler error: $@");
+         return $c->render( text => 'Internal Server Error', status => 500 );
+      }
+      if ( $rc == nginx::DECLINED ) {
+         return _serve_static($c);
+      }
+      if ( $rc == nginx::HTTP_BAD_REQUEST ) {
+         return $c->render( text => 'Bad Request', status => 400 );
+      }
+      # nginx::OK
+      return $r->finalize($c);
+   }
+);
+
+flog("Listening on 127.0.0.1:$port with $workers worker(s)...");
+
+Mojo::Server::Prefork->new(
+   listen  => ["http://127.0.0.1:$port"],
+   workers => $workers,
+)->app($app)->run;
