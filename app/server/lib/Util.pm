@@ -8,7 +8,7 @@ our @EXPORT_OK = ( qw(
    get_config
    trim is_true
    call_socket_api call_socket_api_async call_socket_json_api docker_container_path_exists docker_exec docker_exec_async
-   get_uri
+   get_uri get_uri_async
    run run_system clean_pty run_pty
    sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
@@ -265,8 +265,11 @@ sub call_socket_api_async ($socket, $path, $opts, $cb) {
 
    flog("call_socket_api_async: $method $uri");
 
+   # DELETE added for Reservation::action_async's 'remove' (DELETE /containers/{id}?v=true) -
+   # see docs/plans/mojolicious-app-server-split-plan.md. No body, same as GET/HEAD below -
+   # Docker's remove-container endpoint takes its options (v/force) as query params, not a body.
    die Exception->new( 'dbg' => "call_socket_api_async: unsupported method '$method' for $path" )
-      unless $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST';
+      unless $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE';
 
    my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
    my $tx = $method eq 'POST'
@@ -600,8 +603,48 @@ sub get_uri ($uri) {
    return $result;
 }
 
+# Non-blocking sibling of get_uri above - same "just GET a URI, return the result or undef on
+# any failure" contract, used by Reservation::getGitDevContainer_async (see
+# docs/plans/mojolicious-app-server-split-plan.md's "getGitDevContainer" section - added here,
+# not inlined, per that section's own suggestion, in case another caller needs the same
+# non-blocking fetch later). Manual build_tx/start (not the ->get($uri => $cb) shorthand) and
+# %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api_async above - same
+# empirically-verified "Premature connection close" GC hazard applies here (this function's own
+# $ua is otherwise unreferenced the instant it returns), same fix.
+sub get_uri_async ($uri, $cb) {
+   my $ua = Mojo::UserAgent->new();
+
+   flog("get_uri_async: $uri");
+
+   my $tx = $ua->build_tx( GET => $uri );
+   $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;
+
+   $ua->start( $tx => sub ($ua, $tx) {
+      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+
+      my $err = $tx->error;
+      if( $err && !defined($err->{'code'}) ) {
+         $cb->(undef);
+         return;
+      }
+      $cb->( $tx->result );
+   } );
+
+   return;
+}
+
 sub run ($cmd, $unsafe = undef) {
-   # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
+   # Locally reset SIG{CHLD} to 'DEFAULT' so this process (not an inherited handler)
+   # reaps $cmd's own exit status - a handler installed further up would otherwise race
+   # this subprocess's own wait, intermittently losing its exit code. Host-agnostic
+   # rationale, not nginx-specific: this code runs both embedded in nginx (via
+   # ngx_http_perl_module - nginx's own SIGCHLD handling is the original motivation
+   # here, see the links below) and standalone inside bin/app-server (a plain
+   # Mojolicious process, no nginx-specific quirk to guard against, but harmless/still
+   # correct to reset regardless). No fork sites remain in this codebase whose own
+   # handler installation this needs to defend against either way (Reservation::launch's
+   # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
+   # is gone; see docs/plans/mojolicious-app-server-split-plan.md).
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
@@ -626,7 +669,17 @@ sub run ($cmd, $unsafe = undef) {
 }
 
 sub run_system (@cmd) {
-   # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
+   # Locally reset SIG{CHLD} to 'DEFAULT' so this process (not an inherited handler)
+   # reaps $cmd's own exit status - a handler installed further up would otherwise race
+   # this subprocess's own wait, intermittently losing its exit code. Host-agnostic
+   # rationale, not nginx-specific: this code runs both embedded in nginx (via
+   # ngx_http_perl_module - nginx's own SIGCHLD handling is the original motivation
+   # here, see the links below) and standalone inside bin/app-server (a plain
+   # Mojolicious process, no nginx-specific quirk to guard against, but harmless/still
+   # correct to reset regardless). No fork sites remain in this codebase whose own
+   # handler installation this needs to defend against either way (Reservation::launch's
+   # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
+   # is gone; see docs/plans/mojolicious-app-server-split-plan.md).
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
@@ -700,7 +753,17 @@ sub run_pty ($cmd, $logfile) {
       $fh->flush();
    };
 
-   # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
+   # Locally reset SIG{CHLD} to 'DEFAULT' so this process (not an inherited handler)
+   # reaps $cmd's own exit status - a handler installed further up would otherwise race
+   # this subprocess's own wait, intermittently losing its exit code. Host-agnostic
+   # rationale, not nginx-specific: this code runs both embedded in nginx (via
+   # ngx_http_perl_module - nginx's own SIGCHLD handling is the original motivation
+   # here, see the links below) and standalone inside bin/app-server (a plain
+   # Mojolicious process, no nginx-specific quirk to guard against, but harmless/still
+   # correct to reset regardless). No fork sites remain in this codebase whose own
+   # handler installation this needs to defend against either way (Reservation::launch's
+   # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
+   # is gone; see docs/plans/mojolicious-app-server-split-plan.md).
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
