@@ -34,7 +34,8 @@ use Try::Tiny;
 
 use Util qw(flog wlog sanitize_sensitive_text YYYYMMDDHHMMSS);
 use Exception;
-use Data qw($CONFIG);
+use Data qw($CONFIG $HOSTNAME $HOSTINFO);
+use Containers;
 use Request;
 use User;
 use App;   # split_args/get_args, handler - after NginxAdapter, for the constants
@@ -107,6 +108,41 @@ sub _render_error ($c, $err) {
       json   => { 'status' => "$status", 'msg' => "$msg (at $Time)", 'time' => $time },
       status => $status,
    );
+}
+
+# Every _api_handler-derived route needs the same "not logged in" handling
+# _handler's own gate already provides for free today (App.pm:417-430) -
+# _api_handler itself is never reached at all for a non-logged-in user, so
+# every route inside it implicitly assumes a genuinely logged-in $User. Ported
+# routes need this explicitly.
+#
+# Deliberately *not* a verbatim port of _handler's own "always redirect to /"
+# behaviour: that made sense when every route rendered HTML for a browser, but
+# these are genuinely JSON API endpoints now, and a 302 is a poor response to
+# an AJAX/fetch caller (nothing about it is actionable - the browser doesn't
+# navigate on an XHR redirect, it just... returns the redirect response). A
+# clean 401 JSON is the more honest response for an API client, so pick
+# between the two via content negotiation: $c->accepts('json', 'html') reads
+# the client's own Accept header (Mojolicious::Types->detect, respecting
+# priority order) - json (or an ambiguous/absent Accept - accepts() defaults
+# to the first format listed, 'json' here) gets 401 JSON; html (a real
+# browser's own top-level navigation, whose default Accept always leads with
+# text/html) gets the redirect, matching today's behaviour exactly for that
+# case. Verified live against the three real clients this matters for: axios
+# (the Vue app's own HTTP client, unmodified) defaults to
+# "application/json, text/plain, */*" -> json; the CLI sends "application/json"
+# explicitly -> json; a browser navigating sends "text/html,..." -> html. No
+# client-side change needed for any of them.
+sub _require_login ($c, $r, $User) {
+   return 1 if $User->username;
+   if ( ( $c->accepts( 'json', 'html' ) // 'json' ) eq 'html' ) {
+      App::redirect( $r, 302, '/' );
+   }
+   else {
+      App::json( $r, 401, { 'status' => '401', 'msg' => 'Not logged in' } );
+   }
+   $r->finalize($c);
+   return 0;
 }
 
 # ── The five native async routes (see the plan's "Async actions" section) ───
@@ -338,6 +374,115 @@ for my $prefix (qw(container admin account)) {
    $authed->any( "/$prefix" => $spa_shell_or_login );
    $authed->any( "/$prefix/*rest" => { rest => '' } => $spa_shell_or_login );
 }
+
+# ── _api_handler's own container routes (App.pm:544-642), ported verbatim ───
+# Same bodies, same User.pm calls, same json()/text() rendering (still
+# adapter-based - see the SPA-shell/login routes' own comment on why) - only
+# the dispatch mechanism (native route vs if-chain), the explicit
+# _require_login call (previously implicit via _handler's own gate - see
+# _require_login's own comment), and per-route try/catch (previously one big
+# try wrapping all of _api_handler's blocks together - each block is its own
+# route now, so each needs its own; the catch body is _render_error, unchanged,
+# giving the identical Exception-aware status/sanitize/json-or-text handling
+# _api_handler's own single catch block already provides today) are new. The
+# five mutating container routes (create/stop/start/remove/hook) are already
+# native, above; update is POST-only exactly like those five, but stayed a
+# synchronous User.pm call (updateContainerReservation was never converted to
+# *_async) so it's ported here with the rest of _api_handler instead.
+$authed->post( '/containers/:id/update' => sub ($c) {
+   my $r    = App::NginxAdapter->new($c);
+   my $User = $c->stash('user');
+   _require_login( $c, $r, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = { %{ App::split_args( $r->request_body // '' ) }, %{ App::split_args( $r->args ) } };
+      $args->{'id'} = $id if $id;
+
+      my $reservation = $User->updateContainerReservation($args);
+      App::json( $r, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation } );
+      $r->finalize($c);
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+$authed->get( '/containers/:id/hook/status' => sub ($c) {
+   my $r    = App::NginxAdapter->new($c);
+   my $User = $c->stash('user');
+   _require_login( $c, $r, $User ) or return;
+   try {
+      my $id     = $c->stash('id');
+      my $args   = App::split_args( $r->args );
+      my $result = $User->runContainerHookStatus( $id, $args );
+      App::json( $r, 200, { 'status' => '200', 'data' => $result } );
+      $r->finalize($c);
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+$authed->get( '/containers/:id/logs' => sub ($c) {
+   my $r    = App::NginxAdapter->new($c);
+   my $User = $c->stash('user');
+   _require_login( $c, $r, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = App::split_args( $r->args );
+      my $logs = $User->controlContainer( 'getLogs', $id, $args );
+      if ( ( $args->{'format'} // '' ) eq 'text' ) {
+         App::text( $r, 200, join( '', @$logs ) );
+      }
+      else {
+         App::json( $r, 200, { 'status' => '200', 'data' => $logs } );
+      }
+      $r->finalize($c);
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+$authed->get( '/containers' => sub ($c) {
+   my $r    = App::NginxAdapter->new($c);
+   my $User = $c->stash('user');
+   _require_login( $c, $r, $User ) or return;
+   try {
+      my $containers = $User->reservations( { 'client' => 1 } );
+      App::json( $r, 200, { 'status' => '200', 'data' => $containers } );
+      $r->finalize($c);
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+$authed->get( '/resources' => sub ($c) {
+   my $r    = App::NginxAdapter->new($c);
+   my $User = $c->stash('user');
+   _require_login( $c, $r, $User ) or return;
+   try {
+      die Exception->new( 'msg' => "You need the 'manageUsers' or 'manageProfiles' permission" )
+         unless $User->has_permission('manageUsers') || $User->has_permission('manageProfiles');
+      my @networks = sort { $a cmp $b } keys %{ ( Containers->containers // {} )->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} };
+      my @runtimes = sort { $a cmp $b } keys %{ ( $HOSTINFO->{'docker'} // {} )->{'Runtimes'} // {} };
+      my @IDEs     = @{ $HOSTINFO->{'IDEs'} // [] };
+      App::json( $r, 200, {
+         'status' => '200',
+         'data'   => {
+            'runtimes'  => \@runtimes,
+            'networks'  => \@networks,
+            'IDEs'      => \@IDEs,
+            'authModes' => [ 'user', 'developer', 'public', 'viewer', 'owner' ],
+         }
+      } );
+      $r->finalize($c);
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
 
 # ── Static /docs (the sole nginx::DECLINED source - App.pm:375, verified) ───
 # nginx's own `root` directive (sites-available/default) served this directly;
