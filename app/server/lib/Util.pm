@@ -7,8 +7,8 @@ our @EXPORT_OK = ( qw(
    flog wlog
    get_config
    trim is_true
-   call_socket_api call_socket_api_async call_socket_json_api docker_container_path_exists docker_exec docker_exec_async
-   get_uri get_uri_async
+   call_socket_api call_socket_api_async call_socket_json_api docker_container_path_exists docker_exec_async
+   get_uri_async
    run run_system clean_pty run_pty
    sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
@@ -210,9 +210,9 @@ sub call_socket_api ($socket, $path, $opts = {}) {
       # Surprising, verified empirically: a request_timeout abort on a blocking $ua->start()
       # does NOT leave $tx->result simply undef here - it actually throws (caught right here),
       # unlike the same call made outside any try/catch at all. Capture the exception text via
-      # error_ref, if the caller wants to distinguish "timed out" from "some other failure"
-      # (docker_exec does) - the generic `return undef` below already matches every other
-      # caller's existing contract, this only adds detail for the one that asks for it.
+      # error_ref, for a caller that wants to distinguish "timed out" from "some other
+      # failure" - the generic `return undef` below already matches every other caller's
+      # existing contract, this only adds detail for one that asks for it.
       ${ $opts->{'error_ref'} } = { 'message' => "$_" } if $opts->{'error_ref'};
       return undef;
    };
@@ -359,148 +359,40 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 }
 
 # Runs $args->{'Cmd'} inside container $containerId via the Docker exec API directly (create,
-# then start) rather than forking the `docker` CLI - reusable primitive for item B's
-# non-blocking hook dispatch, and item F's launch dispatch restructure (see
-# docs/plans/lifecycle-hooks-review-followup.md). $args:
+# then start) rather than forking the `docker` CLI - never blocks the caller's own event loop
+# (Mojo::IOLoop). $args:
 #   Cmd  => [...]   required, argv
 #   User => "..."   optional, exec as this user (matches `docker exec -u`)
 #   Env  => [...]   optional, "KEY=VALUE" strings (matches `docker exec --env`)
 # $opts:
 #   Detach             => 1   optional. Start detached (fire-and-forget) instead of the default
 #      non-detached start-and-stream: no output is ever attached or read (on_output is
-#      meaningless here and never called), and the call returns immediately after creation -
+#      meaningless here and never called), and $cb fires immediately after creation -
 #      { execId, exitCode => undef, timedOut => 0 } - without waiting for the process to finish
-#      or inspecting its outcome at all. Required for item F's perpetual launch:ide exec: the
-#      caller retains execId (via on_created, below) for its own later liveness polling instead
-#      - see item F's Enabler section for why Detach:true is a hard requirement there, not a
-#      convenience (a non-detached dispatch of a perpetual process would hold the connection
-#      open for the container's whole life).
+#      or inspecting its outcome at all. Needed for a perpetual process (e.g. the IDE launcher):
+#      the caller retains execId (via on_created, below) for its own later liveness polling
+#      instead - a non-detached dispatch of a perpetual process would hold the connection open
+#      for the container's whole life.
 #   on_created         => sub ($execId) { ... }  optional, called once the exec exists but
-#      *before* it is started - lets a caller that needs to fork persist the exec id (for
-#      later abort/liveness detection - see item B) right away, without having to split the
-#      create and start calls across the fork boundary itself.
+#      *before* it is started - lets a caller persist the exec id (for later abort/liveness
+#      detection) right away.
 #   on_output          => sub ($stream, $bytes) { ... }  optional, called for each frame of
 #      output as it arrives (not buffered/batched) - $stream is 'stdout' or 'stderr'. Omit to
 #      discard output entirely (the caller only wants the final exit code).
-#   inactivity_timeout => seconds   optional, forwarded to call_socket_api - the exec can
+#   inactivity_timeout => seconds   optional, forwarded to call_socket_api_async - the exec can
 #      legitimately go quiet between output lines for longer than Mojo's 20s default.
-#   request_timeout    => seconds   optional, forwarded to call_socket_api - bounds the whole
-#      start-and-stream call regardless of activity. This is purely client-side abandonment:
-#      it does not kill the in-container process (see call_socket_api's own comment) - the
-#      hook may still be running/finishing in the background after docker_exec returns.
-# Returns { execId, exitCode, timedOut }. exitCode is undef if the start call itself timed out
-# (timedOut => 1; the in-container process's real outcome is then unknowable from here - see
-# above) or if the final inspect call failed after a successful stream (logged, not fatal - a
-# caller with real output to show has already seen it by that point). Dies with an Exception
-# if the create call fails outright, or the start call fails for any reason other than a
-# request_timeout - nothing was meaningfully dispatched in either case.
-sub docker_exec ($socket, $containerId, $args, $opts = {}) {
-   my $createRes = call_socket_api($socket, "/containers/$containerId/exec", {
-      'method' => 'POST',
-      'json'   => {
-         'AttachStdout' => JSON::true,
-         'AttachStderr' => JSON::true,
-         'Tty'          => JSON::false,
-         ( $args->{'User'} ? ( 'User' => $args->{'User'} ) : () ),
-         ( $args->{'Env'}  ? ( 'Env'  => $args->{'Env'}  ) : () ),
-         'Cmd' => $args->{'Cmd'},
-      },
-   });
-   die Exception->new( 'dbg' => "docker_exec: unable to create exec for containerId=$containerId" )
-      unless $createRes;
-   die Exception->new(
-      'dbg' => sprintf("docker_exec: create failed for containerId=%s: %d %s", $containerId, $createRes->code, $createRes->body)
-   ) unless $createRes->code == 201;
-
-   my $execId = decode_json($createRes->body)->{'Id'};
-   $opts->{'on_created'}->($execId) if $opts->{'on_created'};
-
-   if( $opts->{'Detach'} ) {
-      my $startRes = call_socket_api($socket, "/exec/$execId/start", {
-         'method' => 'POST',
-         'json'   => { 'Detach' => JSON::true, 'Tty' => JSON::false },
-      });
-      die Exception->new(
-         'dbg' => "docker_exec: unable to start (detached) execId=$execId"
-      ) unless $startRes && $startRes->code == 200;
-      return { 'execId' => $execId, 'exitCode' => undef, 'timedOut' => 0 };
-   }
-
-   # Demultiplex Docker's own stream-multiplexed frame format directly: byte 0 is the stream
-   # type (1=stdout, 2=stderr), bytes 4-7 a big-endian payload length, that many content bytes
-   # follow (verified empirically against this environment's own daemon). on_read may deliver
-   # a partial frame, or several frames at once, so a running buffer is kept across calls
-   # rather than assuming each call aligns with a frame boundary.
-   my $onOutput = $opts->{'on_output'};
-   my $buf = '';
-   my $onRead = sub ($bytes) {
-      $buf .= $bytes;
-      while( length($buf) >= 8 ) {
-         my $type = unpack('C', substr($buf, 0, 1));
-         my $len  = unpack('N', substr($buf, 4, 4));
-         last if length($buf) < 8 + $len;
-         my $payload = substr($buf, 8, $len);
-         $buf = substr($buf, 8 + $len);
-         $onOutput->( ($type == 2) ? 'stderr' : 'stdout', $payload ) if $onOutput;
-      }
-   };
-
-   my $startError;
-   my $startRes = call_socket_api($socket, "/exec/$execId/start", {
-      'method'             => 'POST',
-      'json'               => { 'Detach' => JSON::false, 'Tty' => JSON::false },
-      'inactivity_timeout' => $opts->{'inactivity_timeout'},
-      'request_timeout'    => $opts->{'request_timeout'},
-      'on_read'            => $onRead,
-      'error_ref'          => \$startError,
-   });
-
-   unless( $startRes ) {
-      # Mojo's own error message text is the only signal call_socket_api's generic contract
-      # preserves here (verified empirically: a request_timeout gives "Request timeout"; a
-      # genuine connection failure gives a distinctly different message, e.g. "Can't
-      # connect: ...") - good enough to tell "we gave up waiting" apart from "nothing was
-      # dispatched at all", without needing call_socket_api to grow a more structured error
-      # contract for this one caller.
-      if( $startError && ($startError->{'message'} // '') =~ /timeout/i ) {
-         flog("docker_exec: execId=$execId timed out waiting for it to finish (client-side only - the in-container process is not killed by this)");
-         return { 'execId' => $execId, 'exitCode' => undef, 'timedOut' => 1 };
-      }
-      die Exception->new(
-         'dbg' => "docker_exec: unable to start execId=$execId" . ($startError ? ": $startError->{'message'}" : '')
-      );
-   }
-
-   my $exitCode;
-   my $inspectRes = call_socket_api($socket, "/exec/$execId/json", {});
-   if( $inspectRes && $inspectRes->is_success ) {
-      $exitCode = decode_json($inspectRes->body)->{'ExitCode'};
-   }
-   else {
-      flog("docker_exec: post-run inspect of execId=$execId failed; exitCode unavailable");
-   }
-
-   return { 'execId' => $execId, 'exitCode' => $exitCode, 'timedOut' => 0 };
-}
-
-# Non-blocking sibling of docker_exec above, built on call_socket_api_async - same $args/$opts
-# (Cmd/User/Env, Detach/on_created/on_output/inactivity_timeout/request_timeout), same demux
-# logic (reused verbatim, not reimplemented), same three-way outcome shape
-# ({execId,exitCode,timedOut}). Both this and the blocking docker_exec stay - this does not
-# replace it. docker_exec keeps serving Reservation::dispatch_hook_exec (run_hook_sync's
-# still-forking on-demand path - item K point 8, unchanged); this serves docker-event-daemon's
-# own non-blocking dispatch closures directly, never through Reservation.pm at all - see
-# docs/plans/lifecycle-hooks-review-followup.md item F3.
-#
-# Structurally different from docker_exec in one way that can't be avoided, not just a style
-# choice: docker_exec dies on a create failure or non-201 create response, letting its caller's
-# own surrounding try/catch handle it. An async caller has no such surrounding frame by the time
-# any of this actually runs - dying here would be an uncaught exception inside a Mojo completion
-# callback (see docs/plans/lifecycle-hooks-review-followup.md item F3's concern 1), not something
-# any caller could catch. So every failure path here - create failure, non-201 create, start
-# failure - reports via $cb->(undef, $error) instead of dying; only a genuine, complete success
-# calls $cb->($result, undef). $cb is called exactly once, always, for every path including
-# Detach.
+#   request_timeout    => seconds   optional, forwarded to call_socket_api_async - bounds the
+#      whole start-and-stream call regardless of activity. This is purely client-side
+#      abandonment: it does not kill the in-container process (see call_socket_api's own
+#      comment) - the hook may still be running/finishing in the background after $cb fires.
+# $cb->($result, $error) fires exactly once, always, for every path including Detach: $result
+# is { execId, exitCode, timedOut } on success (exitCode undef if the start call itself timed
+# out - timedOut => 1, the in-container process's real outcome then unknowable from here - or
+# if the final inspect call failed after a successful stream, logged not fatal), or undef with
+# $error set for a create failure, a non-201 create response, or a start failure other than a
+# request_timeout. Every failure path reports via $cb rather than dying: an async caller has no
+# surrounding try/catch frame by the time any of this runs, so dying here would be an uncaught
+# exception inside a Mojo completion callback, not something any caller could catch.
 sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
    call_socket_api_async( $socket, "/containers/$containerId/exec", {
       'method' => 'POST',
@@ -539,9 +431,11 @@ sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
          return;
       }
 
-      # Same demux logic as docker_exec above - see its own comment for the frame format. A
-      # fresh $buf/$onRead closure per call, exactly as docker_exec has, since each dispatch is
-      # independent.
+      # Demultiplex Docker's own stream-multiplexed frame format directly: byte 0 is the stream
+      # type (1=stdout, 2=stderr), bytes 4-7 a big-endian payload length, that many content bytes
+      # follow. on_read may deliver a partial frame, or several frames at once, so a running
+      # buffer is kept across calls rather than assuming each call aligns with a frame boundary.
+      # A fresh $buf/$onRead closure per call, since each dispatch is independent.
       my $onOutput = $opts->{'on_output'};
       my $buf = '';
       my $onRead = sub ($bytes) {
@@ -587,30 +481,13 @@ sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
    } );
 }
 
-sub get_uri ($uri) {
-   my $ua = Mojo::UserAgent->new();
-
-   flog("get_uri: $uri");
-
-   my $result;
-   try {
-      $result = $ua->get($uri)->result;
-   }
-   catch {
-      return undef;
-   };
-
-   return $result;
-}
-
-# Non-blocking sibling of get_uri above - same "just GET a URI, return the result or undef on
-# any failure" contract, used by Reservation::getGitDevContainer_async (see
-# docs/plans/mojolicious-app-server-split-plan.md's "getGitDevContainer" section - added here,
-# not inlined, per that section's own suggestion, in case another caller needs the same
-# non-blocking fetch later). Manual build_tx/start (not the ->get($uri => $cb) shorthand) and
-# %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api_async above - same
-# empirically-verified "Premature connection close" GC hazard applies here (this function's own
-# $ua is otherwise unreferenced the instant it returns), same fix.
+# Just GET a URI, non-blocking - $cb->($result) fires with the response object, or undef on
+# any failure (connection error, timeout, ...). Used by Reservation::getGitDevContainer_async;
+# kept as its own function here, not inlined, in case another caller needs the same non-blocking
+# fetch later. Manual build_tx/start (not the ->get($uri => $cb) shorthand) and
+# %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api_async above - the same
+# "Premature connection close" GC hazard applies here (this function's own $ua is otherwise
+# unreferenced the instant it returns), same fix.
 sub get_uri_async ($uri, $cb) {
    my $ua = Mojo::UserAgent->new();
 
