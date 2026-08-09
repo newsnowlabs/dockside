@@ -9,10 +9,8 @@
 # Event loop (eventHandler):
 # - A persistent, non-blocking streamed GET /events (Mojo::IOLoop, via Util::call_socket_api_async)
 #   - not a spawned `docker events` subprocess. Maps directly onto `docker events --format
-#   "{{ json . }}"`'s own output: newline-delimited JSON, one event object per line, verified
-#   live against this environment's own daemon (see
-#   docs/plans/lifecycle-hooks-review-followup.md item F3) - no demuxing needed here, unlike exec
-#   output.
+#   "{{ json . }}"`'s own output: newline-delimited JSON, one event object per line - no
+#   demuxing needed here, unlike exec output.
 # - Runs a 0.5s recurring timer (Mojo::IOLoop->recurring) alongside the event stream, on the same
 #   reactor - verified live that a long-held-open stream and a recurring timer coexist correctly
 #   without blocking each other.
@@ -190,12 +188,11 @@ sub launch_or_queue_until_launcher_ready ($reservation, $context, $since) {
    return 1;
 }
 
-# --- Launch dispatch orchestration (item F3) ---
+# --- Launch dispatch orchestration ---
 #
 # Small, declarative dependency table + one generic driver, owned entirely by docker-event-
-# daemon itself - not Reservation.pm (see docs/plans/lifecycle-hooks-review-followup.md item K:
-# Reservation.pm should not own concurrency/orchestration, only pure data operations and
-# fork-agnostic building blocks; DED owns "what to dispatch next"). Reservation.pm/
+# daemon itself - not Reservation.pm, which stays limited to pure data operations and
+# fork-agnostic building blocks; DED owns "what to dispatch next". Reservation.pm/
 # Reservation::Launch.pm's existing pure accessors (ide_command/hook_script/_hook_env/
 # ide_command_env) and pure state-recording methods (hook_status_*/increment_start_count/
 # store_fields) are called directly from here - reused as-is, not reimplemented.
@@ -327,7 +324,7 @@ sub launch_in_flight ($reservation) {
 # failure building one stage's request (an exception before any I/O even begins) must not stop
 # the rest of this scan, and - since launch_advance is reached from asynchronous completion
 # callbacks as often as from a synchronous caller - cannot rely on an outer try/catch existing
-# at all (see docs/plans/lifecycle-hooks-review-followup.md item F3 concern 1).
+# at all.
 sub launch_advance ($reservation) {
    for my $name (@LAUNCH_STAGE_NAMES) {
       my $status = $reservation->hook_status($name);

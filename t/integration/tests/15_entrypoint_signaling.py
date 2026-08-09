@@ -105,9 +105,10 @@ class SshAgentCredentialsReadyTests(SshTestMixin, TestCase):
     """Once .credentials-ready appears, a live ssh-agent socket genuinely has the
     launching user's key loaded - using dev1, who already has a full SSH keypair
     fixture (see run_tests_main.py's _ensure_user call for user_dev1). launch.sh
-    lets ssh-agent choose its own socket path rather than pinning it (see
-    docs/plans/lifecycle-hooks-review-followup.md item A), so this discovers it
-    the same way launch.sh's own run_hook()/find_ssh_auth_sock() and
+    lets ssh-agent choose its own socket path rather than pinning it (a fixed,
+    world-writable path would let another UID in the container squat it before
+    the real agent starts and harvest keys via the ssh-add that follows), so this
+    discovers it the same way launch.sh's own run_hook()/find_ssh_auth_sock() and
     10_ssh_outbound.py's _AGENT_LIST_SCRIPT do: scan /tmp/ssh-*/agent.*, validate
     with `ssh-add -l` (exit 0 or 1 both mean a live agent - 1 just means no keys
     loaded, still a real answer; only something else, e.g. 2, means dead/unreachable)."""

@@ -2,12 +2,10 @@
 17_concurrency_at_scale.py — devtainer launch/restart at realistic concurrency.
 
 Coverage:
-  - N devtainers created concurrently (not the 2-3 overlapping launches
-    exercised live during original development - see docs/plans/lifecycle-
-    hooks-review-followup.md's Concern #7 / the ded-async-rewrite branch's own
-    task #16 tracking pointer) all reach running state, with no cross-talk
-    between concurrent launch-dispatch DAGs (one container's own name/profile
-    never bleeding into another's).
+  - N devtainers created concurrently (not just the 2-3 overlapping launches
+    exercised during original development) all reach running state, with no
+    cross-talk between concurrent launch-dispatch DAGs (one container's own
+    name/profile never bleeding into another's).
   - the same N devtainers, stopped and started concurrently across multiple
     rounds, correctly increment data.startCount per container each round (see
     16_ded_restart_recovery.py for the DAG-recovery angle on restarts;

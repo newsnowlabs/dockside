@@ -159,8 +159,8 @@ def _truthy_flag(v):
     """Coerce a boolean-ish JSON API field to a real bool, treating the *string* "0"
     (and "") as false - unlike Python's default truthiness, where any non-empty string,
     including "0", is true. Needed because some server-side fields (e.g. a dispatched
-    hook's status record - see item B, docs/plans/lifecycle-hooks-review-followup.md)
-    can arrive JSON-quoted ("busy":"0") rather than bare ("busy":0), a side effect of
+    hook's status record) can arrive JSON-quoted ("busy":"0") rather than bare ("busy":0),
+    a side effect of
     Perl's cloneHash comparing values with `ne` before storing them - fixed at the
     server now, but cheap to guard against defensively here too, since a silent
     false positive here (treating a real "0" as busy) is easy to miss."""
@@ -859,8 +859,7 @@ def api_control(opener, server, res_id, cmd):
 
 def api_hook(opener, server, res_id, name, timeout=None):
     """Dispatch a devtainer's profile-declared hook named `name` now. The hook
-    runs asynchronously server-side (see item B,
-    docs/plans/lifecycle-hooks-review-followup.md) - this call returns almost
+    runs asynchronously server-side - this call returns almost
     immediately with the dispatch outcome: {started:1, name} once the hook has
     been kicked off, or {busy:1} if a previous invocation of the same name was
     already running (no docker call attempted). Use api_hook_status/
@@ -1049,8 +1048,7 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
 def wait_for_hook(opener, server, res_id, name, timeout=120, interval=1.0, quiet=False):
     """
     Poll a dispatched hook's status/log (api_hook_status above) until it
-    reaches a terminal state ('done' or 'aborted' - see item B,
-    docs/plans/lifecycle-hooks-review-followup.md), or `timeout` (+ a fixed
+    reaches a terminal state ('done' or 'aborted'), or `timeout` (+ a fixed
     margin, mirroring the old single-blocking-call client_timeout's margin
     over the server-side hook timeout) elapses.
 
@@ -2486,11 +2484,10 @@ def cmd_stop(args):
 def cmd_hook_run(args):
     """Run a devtainer's profile-declared hook now (see docs/extensions/lifecycle-hooks.md).
 
-    Dispatches the hook - which runs asynchronously server-side, see item B,
-    docs/plans/lifecycle-hooks-review-followup.md - then polls its status until
-    it settles, preserving this command's previous synchronous, run-to-
-    completion user experience even though the underlying call is no longer
-    a single blocking request.
+    Dispatches the hook - which runs asynchronously server-side - then polls its
+    status until it settles, preserving this command's previous synchronous,
+    run-to-completion user experience even though the underlying call is no
+    longer a single blocking request.
 
     Exit codes: 0 success; 1 hook script failed, aborted before completion, or
     the client gave up waiting for its outcome (see below); 3 a run was
