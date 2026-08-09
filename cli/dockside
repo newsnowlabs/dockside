@@ -994,6 +994,22 @@ def api_logs(opener, server, res_id):
     return _do_get_text(opener, url, timeout=60)
 
 
+def create_status_error(c):
+    """Human-readable launch-failure message from a reservation's createStatus field, or
+    None if there wasn't one. Two shapes on the wire, both handled: the current
+    Reservation::create_async {stage, failed, layers, error} hash - truthy at *every*
+    stage, including 'done', so only .failed means a real failure, and .error already
+    carries a clean message - or the legacy plain-scalar Docker CLI exit code from before
+    create_async existed, which (unlike the hash) was only ever recorded on failure, so
+    any truthy value there does mean one."""
+    cs = c.get('createStatus')
+    if isinstance(cs, dict):
+        if not cs.get('failed'):
+            return None
+        return cs.get('error') or 'launch failed (no further detail available)'
+    return f'docker create exited non-zero (code {cs})' if cs else None
+
+
 # ── Wait for state ────────────────────────────────────────────────────────────
 
 def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=False):
@@ -1560,7 +1576,7 @@ def _fmt_detail(c):
         ('Options',       options_str),
         ('Docker status', docker.get('Status', '')),
         ('Created',       created),
-        ('Launch error',  f'docker create exit code {c["createStatus"]}' if c.get('createStatus') else ''),
+        ('Launch error',  create_status_error(c) or ''),
     ]
 
     # Append a labelled URL line for each non-passthru router
@@ -2389,8 +2405,7 @@ def cmd_create(args):
                 launch_failed = True
                 print(
                     f'Error: {name!r} failed to launch '
-                    f'(docker create exit code: {failed_c.get("createStatus")}). '
-                    f'Check launch logs for details.',
+                    f'({create_status_error(failed_c) or "no further detail available"}).',
                     file=sys.stderr,
                 )
             else:
@@ -2444,8 +2459,8 @@ def cmd_start(args):
                 # A failed (re)launch is a hard error: exit non-zero so callers
                 # do not treat it as a successful start.
                 print(f'Error: {name!r} failed to start '
-                      f'(docker create exit code: {failed_c.get("createStatus")}). '
-                      f'Check launch logs for details.', file=sys.stderr)
+                      f'({create_status_error(failed_c) or "no further detail available"}).',
+                      file=sys.stderr)
                 sys.exit(1)
             print(f'Warning: timed out after {args.timeout}s. '
                   f'{name!r} may still be starting.', file=sys.stderr)
