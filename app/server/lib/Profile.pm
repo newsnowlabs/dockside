@@ -744,7 +744,7 @@ sub default_image ($self) {
 }
 
 sub default_gitURL ($self) {
-   my @nonWildcardGitURLs = grep { !/\*/ } @{$self->{'GitURLs'}};
+   my @nonWildcardGitURLs = grep { !/\*/ } @{$self->{'gitURLs'}};
    return $nonWildcardGitURLs[0] if @nonWildcardGitURLs;
 
    # Default gitURL is '' if none is specified
