@@ -298,7 +298,7 @@ docker exec -u dockside dockside bash -c "
     --nickname local \
     --server https://www.local.dockside.dev/ \
     --username admin \
-    --password \"\$(cat /tmp/dockside-password.txt | grep -o \"'[^']*'\" | tr -d \"'\")\"
+    --password \"\$(grep -oP \"password '\K[^']*\" /tmp/dockside-password.txt)\"
 "
 
 # Run all tests

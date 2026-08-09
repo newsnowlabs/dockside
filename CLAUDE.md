@@ -10,22 +10,68 @@
 - Before running tests that exercise **server** changes, restart the services above —
   the running server is **not** auto-reloaded. Rebuild the Vue bundle
   (`cd app/client && npm run build`) for **client** changes.
-- Integration suite invocation (local mode). Authenticate the CLI once first if not
-  already done — the hostname depends on your environment:
-  - **Personal laptop/server running Dockside:** `www-<name>.local.dockside.dev`
-  - **Inner Dockside dev container inside an outer production Dockside:** your inner
-    container's public hostname (e.g. `www-<name>.staging.dockside.example.com`)
-  ```
-  dockside login --connect-to 127.0.0.1 --no-verify --nickname local \
-    --server https://www-<name>.<your-domain>/
-  ```
-  Then run (host is inferred from the stored session; GitHub token needed only for module 06):
-  ```
+
+## The `dockside` CLI
+
+Needed for two things: running the integration suite, and ad-hoc HTTP checks against a live
+instance mid-session (both below). Nothing else in this repo — static checks, restarting
+services, editing code — needs a CLI session at all.
+
+### Session setup
+
+**Check for an existing session before assuming there isn't one or that you need
+credentials**: run `python3 cli/dockside server list` (or `dockside server list` if it's on
+PATH). Recommended usage is for the developer to already be logged in as admin locally and
+hand that session to you, so one usually exists — never ask the user for credentials over
+chat. If none is found, ask the user whether they'd rather log in themselves (remind them of
+the login command below) or have you try it — don't just assume either way.
+
+If asked to try it yourself: the hostname depends on your environment:
+- **Personal laptop/server running Dockside:** `www-<name>.local.dockside.dev`
+- **Inner Dockside dev container inside an outer production Dockside:** your inner
+  container's public hostname (e.g. `www-<name>.dockside-domain.com` — the outer server's
+  domain is whatever it actually is, no fixed convention to assume) — derive it rather than
+  asking or guessing: `ssl.domains[0]` in `/data/config/config.json` gives the base domain
+  (e.g. `<name>.dockside-domain.com`); prepend `www-` to its first label for the actual UI
+  hostname (`www-<name>.dockside-domain.com`). Don't trust the container's own "Navigate
+  to ..." boot-log line for this — confirmed unreliable: on a real instance it printed a
+  `www.<name>...` form (dot, not hyphen) that 400s, while the actual working hostname was
+  the hyphenated `www-<name>...` form above.
+
+Admin credentials, if you don't already have them: recover from this container's own
+first-boot log rather than guessing or asking over chat (username is always `admin`) —
+only present if the password hasn't been rotated since first boot; if this comes back
+empty, fall back to asking the user.
+```
+export DOCKSIDE_PASSWORD=$(docker logs "$(hostname)" 2>&1 | grep -oP "password '\K[^']*")
+```
+```
+dockside login --connect-to 127.0.0.1 --no-verify --nickname local \
+  --server https://www-<name>.<your-domain>/ --username admin
+```
+(`--password` is read from `$DOCKSIDE_PASSWORD` automatically, keeping the secret out of
+the process list, unlike passing `--password` directly.)
+
+### Ad-hoc HTTP checks
+
+Use `dockside check-url <URL>` (or `python3 cli/dockside check-url <URL>`), not a handcrafted
+`curl` — it reuses the CLI's own already-working session/TLS/connection setup. Confirmed this
+session: a raw `curl` against the public hostname hung, while `check-url` against the
+identical URL worked immediately.
+
+### Integration suite invocation (local mode)
+
+Once you have a session, run (host is inferred from the stored session; GitHub token needed
+only for module 06; `PYTHONUNBUFFERED=1` matters — without it, Python block-buffers stdout
+when it isn't a TTY, so TAP output queues up invisibly until exit instead of streaming live,
+and a running suite can look hung after "Test environment ready." when it's actually working):
+```
+PYTHONUNBUFFERED=1 \
   DOCKSIDE_TEST_MODE=local \
-    DOCKSIDE_TEST_GITHUB_TOKEN=$(/opt/dockside/system/latest/bin/gh auth token) \
-    bash t/integration/run_tests.sh [--only NN]
-  ```
-  Run modules individually with `--only NN` for targeted testing.
+  DOCKSIDE_TEST_GITHUB_TOKEN=$(/opt/dockside/system/latest/bin/gh auth token) \
+  bash t/integration/run_tests.sh [--only NN]
+```
+Run modules individually with `--only NN` for targeted testing.
 
 ## Commit authorship
 
@@ -87,6 +133,17 @@ without rebuilding an image:
 With `mountIDE: true` the full suite still runs, but it exercises the **outer** Dockside's
 `launch.sh`/IDEs — so repo `launch.sh`/IDE changes aren't reflected there; test those under a
 `mountIDE: false` env or by rebuilding the image.
+
+**Browser-driven testing (Playwright MCP)**: only present if this container was built from the
+`development` Docker stage (`newsnowlabs/dockside:development`), not the plain production
+image — it bakes in a Playwright MCP server + headless Chromium for driving the Vue UI directly,
+wired via `/etc/claude-code/managed-mcp.json`. Check rather than assume either way:
+```
+ls /etc/claude-code/managed-mcp.json 2>/dev/null   # present => development image, Playwright MCP configured
+```
+Confirmed absent in this session's own container — but that's not conclusive either way in
+general: this particular container was launched long enough ago to predate `:development`'s
+existence, so its absence here reflects the container's age, not its launch profile.
 
 ## Writing integration tests (hard rules)
 
