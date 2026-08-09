@@ -417,13 +417,12 @@ sub update_container_info ($class) {
          }
       }
       # We have no containerId: either launch is in-flight (-2) or docker create failed (-4).
-      # createStatus is a plain truthy/falsy exit code from the old synchronous launch() (still
-      # in active use until Stage 4 of docs/plans/mojolicious-app-server-split-plan.md removes
-      # it), or a structured {stage, failed, layers} hash from create_async - shape-tolerant
-      # here so both can coexist during the migration. A bare truthy-hashref check would be
-      # wrong for the new shape: {} is truthy in Perl regardless of whether 'failed' is set, so
-      # create_async's very first (in-flight, not-yet-failed) write would otherwise show -4
-      # immediately.
+      # createStatus is a structured {stage, failed, layers} hash written by create_async -
+      # shape-tolerant here because a reservation created before this branch's own launch()
+      # (deleted) may still have the old plain truthy/falsy exit-code value on disk. A bare
+      # truthy-hashref check would be wrong for the new shape: {} is truthy in Perl regardless
+      # of whether 'failed' is set, so create_async's very first (in-flight, not-yet-failed)
+      # write would otherwise show -4 immediately.
       else {
          my $cs = $r->{'createStatus'};
          my $failed = ref($cs) eq 'HASH' ? $cs->{'failed'} : $cs;
@@ -880,9 +879,9 @@ sub action ($self, $action, $args = {}) {
 
 # Async sibling of action() above - stop/start/remove via the Docker Engine API directly
 # (call_socket_api_async), no docker CLI subprocess, no fork at all. Idempotent at Docker's own
-# level for all three (verified live: repeat calls return 304/304/404 respectively) - no guard
-# needed, unlike create_async below. getLogs stays on action() only, a fast local read never
-# routed through this async sibling - see docs/plans/mojolicious-app-server-split-plan.md.
+# level for all three (repeat calls return 304/304/404 respectively) - no guard needed, unlike
+# create_async below. getLogs stays on action() only, a fast local read never routed through
+# this async sibling.
 sub action_async ($self, $action, $args, $cb) {
    my $containerId = $self->containerId();
    my ( $method, $path );
@@ -1053,39 +1052,31 @@ sub getGitDevContainer_async ($self, $cb) {
 # cloneWithConstraints/sanitise, and hence anything that returns $self to a client after this
 # point - see it immediately) and on disk (so a later poller reading a *fresh* Reservation->load()
 # sees it too) - the same "set in-memory, then persist" shape containerId's own accessor +
-# update() call already used in the now-removed launch() (superseded by create_async below -
-# see docs/plans/mojolicious-app-server-split-plan.md). $extra merges in any other top-level
-# fields that need to change atomically with it (currently only 'expiryTime', on the failure
-# paths below).
+# update() call already uses. $extra merges in any other top-level fields that need to change
+# atomically with it (currently only 'expiryTime', on the failure paths below).
 sub _create_status_set ($self, $value, $extra = {}) {
    $self->{'createStatus'} = $value;
    $self->update( { 'createStatus' => $value, %$extra } );
    return $self;
 }
 
-# Async sibling of launch() above (see docs/plans/mojolicious-app-server-split-plan.md's
-# "create" section) - no fork, no PTY, no docker CLI subprocess: builds the Docker Create API
-# body from cmdline_json() (Reservation/Launch.pm), pulls the image first if it isn't already
-# present (with real per-layer progress, not a PTY log-tail), then POST /containers/create and
-# POST /containers/{id}/start, all via call_socket_api_async. docker-event-daemon's own
-# onContainerStart (/events-driven, unconditional on who issued the docker start) fires the
-# launch DAG exactly as it does today - no signal to DED needed at all.
+# Creates and starts this reservation's container - no fork, no PTY, no docker CLI subprocess:
+# builds the Docker Create API body from cmdline_json() (Reservation/Launch.pm), pulls the
+# image first if it isn't already present (with real per-layer progress, not a PTY log-tail),
+# then POST /containers/create and POST /containers/{id}/start, all via call_socket_api_async.
+# docker-event-daemon's own onContainerStart (/events-driven, unconditional on who issued the
+# docker start) fires the launch DAG exactly as it does today - no signal to DED needed at all.
 #
 # $cb fires exactly once, synchronously, right after the idempotency guard below is written -
-# mirroring launch()'s own parent-process return (which happens right after fork(), before
-# 'docker create' has even started running in the child) - not once the container is actually
-# created/started. The rest of this sub's own work (image check/pull, create, start) continues
-# independently afterwards, on this same process's event loop, visible only via polling
-# createStatus (see status()'s own comment on its shape) - this preserves today's fast-ack-then-
-# poll client UX (see docs/plans/ded-management-socket-plan.md's "Client-side (CLI) polling/wait
-# semantics", resolved there as needing no changes - which only holds if the initial API call
-# keeps returning quickly rather than waiting for the whole chain).
+# not once the container is actually created/started. The rest of this sub's own work (image
+# check/pull, create, start) continues independently afterwards, on this same process's event
+# loop, visible only via polling createStatus (see status()'s own comment on its shape) - this
+# preserves a fast-ack-then-poll client UX, which only holds if the initial API call keeps
+# returning quickly rather than waiting for the whole chain.
 #
 # Idempotency guard: writes an initial createStatus synchronously, before any Docker call
 # begins, then checks-then-sets with no yield point in between - race-free because a single
-# Mojolicious worker processes one request at a time (see
-# docs/plans/ded-management-socket-plan.md's "Resolved, this revision" section; mirrors
-# hook_status_started's own synchronous-write-before-fork pattern above it in this file).
+# Mojolicious worker processes one request at a time.
 #
 # Composed with Mojo::Promise, not nested callbacks - the one genuinely multi-step async chain
 # in this file (image check -> optional pull -> create -> start).
@@ -1167,9 +1158,7 @@ sub create_async ($self, $cb) {
                   $self->{'createStatus'} = $cs;
 
                   # Debounce the disk write - hundreds of progress events can arrive over a
-                  # large pull (333 events over 26.6s, measured live against a real daemon - see
-                  # docs/plans/ded-management-socket-plan.md's own "Still open" note asking
-                  # exactly this question). At most once/second is a reasonable default, not a
+                  # large pull. At most once/second is a reasonable default, not a
                   # precisely-tuned one - revisit if a real client ends up wanting smoother
                   # progress than that; the in-memory copy above is always current regardless.
                   my $now = time();
@@ -1265,7 +1254,7 @@ sub create_async ($self, $cb) {
 # (User::updateContainerReservation's 'update_ssh_authorized_keys', and 'restart_ide' if
 # re-enabled) always passes an explicit command naming a one-off action on an already-running
 # container. This distinction (not "is it 'restart_ide'?") is what gates the startCount
-# increment below - see docs/plans/lifecycle-hooks-review-followup.md item E.
+# increment below.
 sub exec ($reservation, $command = undef) {
    my $reservationId = $reservation->id();
    my $containerId = $reservation->containerId();
@@ -1303,10 +1292,9 @@ sub exec ($reservation, $command = undef) {
    # genuine first start (fires 'lifecycle:launch') from every later restart (fires
    # 'lifecycle:start' instead - see below). Named for what it actually counts - every
    # container-start event, including the first - not "launch" in the product-vocabulary sense
-   # of a one-time devtainer creation (see docs/plans/lifecycle-hooks-review-followup.md item E
-   # for the launch-vs-start distinction this whole split is built on). Computed here but only
-   # persisted after run_system() below confirms the exec dispatch itself succeeded (it dies on
-   # failure) - deliberately not before: incrementing first would burn a count on a dispatch
+   # of a one-time devtainer creation. Computed here but only persisted after run_system()
+   # below confirms the exec dispatch itself succeeded (it dies on failure) - deliberately
+   # not before: incrementing first would burn a count on a dispatch
    # that never reached the container at all, permanently skipping 'lifecycle:launch' on what
    # is still genuinely this devtainer's first real start next time. This does not cover every
    # failure mode (a dispatch that succeeds but dies inside the container before reaching the
@@ -1471,8 +1459,7 @@ sub _hook_env ($self, $user) {
 # --- Hook status/history storage ---
 #
 # data('hooks') = { status => {...}, history => [...] } - two structures nested under one
-# top-level data key, deliberately different shapes for different jobs (see
-# docs/plans/lifecycle-hooks-review-followup.md item B):
+# top-level data key, deliberately different shapes for different jobs:
 #
 # hooks.status is the master record, a hash keyed by hook name - one entry per name, holding
 # its current/last invocation's state. This is what a pre-exec "is this already running?"
