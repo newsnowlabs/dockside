@@ -787,6 +787,18 @@ $authed->get( '/getAuthCookies' => sub ($c) {
    };
 } );
 
+# Mojolicious::Static->dispatch runs on every request, before the router - and before
+# $app->static->paths is even set below, it already has a non-empty 'extra' map: a set of the
+# framework's own bundled fallback assets (favicon.ico, its logo PNGs, mojo.css, the
+# raptor/not-found images its own dev-mode error page uses), served automatically if nothing
+# in 'paths' matches first. That silently shadowed our own favicon.ico route below - it
+# never even ran, because static dispatch already returned a (Mojolicious-branded) response
+# before the router was ever consulted. 'paths' and any __DATA__ section are already entirely
+# ours (docsPath below, nothing else) - 'extra' was the only place anything not-Dockside could
+# ever be served from, so clear it outright rather than deleting keys one at a time as they're
+# noticed.
+$app->static->extra( {} );
+
 # ── Static /docs ──────────────────────────────────────────────────────────
 # nginx's own `root` directive (sites-available/default) served this directly;
 # now this process must, since nginx no longer perl_requires App.pm at all post-
