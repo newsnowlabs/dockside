@@ -998,10 +998,10 @@ sub controlContainer ($self, $cmd, $id, $args = {}, $cb = undef) {
       $container->store_fields( { 'data' => { 'runningIDE' => $container->data('runningIDE') } } );
    }
 
-   # $cb present (bin/app-server's native stop/start/remove routes - see
-   # docs/plans/mojolicious-app-server-split-plan.md) => async, via action_async, no fork, no
-   # docker CLI subprocess. $cb absent => the original synchronous path, still used by anything
-   # not yet migrated (audit before removing - see that plan's own "Open, not resolved here").
+   # $cb present (bin/app-server's native stop/start/remove routes) => async, via
+   # action_async, no fork, no docker CLI subprocess. $cb absent => the getLogs route, the
+   # one caller that stays on the synchronous action() path deliberately - see action()'s
+   # own comment for why.
    return $container->action_async($cmd, $args, $cb) if $cb;
    return $container->action($cmd, $args);
 }
@@ -1012,10 +1012,9 @@ sub controlContainer ($self, $cmd, $id, $args = {}, $cb = undef) {
 # run_hook_sync_async, which requires and validates 'name' itself - nothing here needs to know
 # its shape.
 #
-# $cb is required: bin/app-server's native hook route (see
-# docs/plans/mojolicious-app-server-split-plan.md) is this method's only caller now - the old
-# synchronous (forking) fallback, and the App.pm route that was its only caller, are both gone
-# (Stage 4; audited first - no other caller existed).
+# $cb is required: bin/app-server's native hook route is this method's only caller now - the
+# old synchronous (forking) fallback, and the App.pm route that was its only caller, are both
+# gone (audited first - no other caller existed).
 sub runContainerHook ($self, $id, $args, $cb) {
    if( $id !~ m!^([0-9a-f]+)$! ) {
       die Exception->new( 'msg' => "hook run with invalid argument '$id' failed" );
@@ -1069,11 +1068,11 @@ sub runContainerHookStatus ($self, $id, $args = {}) {
 # Creates a Reservation object, stores it, and attempts to launch a container for that Reservation.
 # Named in camelCase for consistency with current REST API call.
 #
-# $cb is required: bin/app-server's native create route (see
-# docs/plans/mojolicious-app-server-split-plan.md) is this method's only caller now - async
-# throughout (getGitDevContainer_async, then store(), then create_async - no fork, no blocking
-# GitHub fetch, no docker CLI subprocess). The old synchronous fallback, and the App.pm route
-# that was its only caller, are both gone (Stage 4; audited first - no other caller existed).
+# $cb is required: bin/app-server's native create route is this method's only caller now -
+# async throughout (getGitDevContainer_async, then store(), then create_async - no fork, no
+# blocking GitHub fetch, no docker CLI subprocess). The old synchronous fallback, and the
+# App.pm route that was its only caller, are both gone (audited first - no other caller
+# existed).
 sub createContainerReservation ($self, $args, $cb) {
    # Launch new container.
    if( !$self->has_permission( 'createContainerReservation' ) ) {
