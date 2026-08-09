@@ -108,7 +108,7 @@ my %pendingLaunch;  # containerId => { deadline => epoch, nextTime => epoch, lau
 #
 # Second, ordinary-operation seeding source: _launch_dispatch_hook_stage below, when its own
 # hook_claim_if_not_running loses the claim on lifecycle:launch/lifecycle:start to a concurrent
-# on-demand run_hook_sync invocation of the same name (the only two DAG stage names externally
+# on-demand run_hook_sync_async invocation of the same name (the only two DAG stage names externally
 # reachable that way). DED isn't the owner of that dispatch's completion in this case, so it
 # can't rely on its own completion callback the way every other stage can - the same "who
 # resolves this" gap the restart case has, just triggered by losing a race instead of by a
@@ -220,10 +220,8 @@ my $NONROOT_USER = sub ($reservation) { $reservation->unixuser() };
 # Two genuinely different dispatch shapes, not one forced-uniform shape: launch:prep/launch:git/
 # launch:ide are bare launch.sh entry-point functions (no hook name/script involved - see
 # _launch_dispatch_exec below), while lifecycle:launch/lifecycle:start are real, profile-
-# declared hooks, dispatched via _launch_dispatch_hook_stage's own (non-blocking) exec logic -
-# deliberately not Reservation::dispatch_hook_exec, which is blocking and stays reserved for
-# run_hook_sync's on-demand path (item K point 8) - see _launch_dispatch_hook_stage's own
-# comment for the resulting, accepted duplication.
+# declared hooks, dispatched via _launch_dispatch_hook_stage's own thin wrapper around
+# Reservation::dispatch_hook_exec_async - see its own comment.
 my %LAUNCH_STAGES = (
    'launch:prep' => {
       depends_on => [],
@@ -281,7 +279,7 @@ sub _launch_deps_cleared ($reservation, $stage) {
 # Marks every launch:-DAG stage 'pending' for a fresh launch cycle - except any name that's
 # genuinely still running right now, left untouched (see
 # Reservation::Mutate::launch_reset_stages_if_idle's own comment for why: lifecycle:launch/
-# lifecycle:start are also reachable via a concurrent on-demand run_hook_sync invocation, unlike
+# lifecycle:start are also reachable via a concurrent on-demand run_hook_sync_async invocation, unlike
 # the other three DAG stages, which are docker-event-daemon-exclusive). Called exactly once per
 # genuine container 'start' Docker event (onContainerStart, before its first launch_advance
 # call for that event) - never from the pendingLaunch retry loop, which is for waiting out the

@@ -154,13 +154,12 @@ sub call_socket_api ($socket, $path, $opts = {}) {
    # pass a generous inactivity_timeout explicitly; everything else keeps Mojo's own default.
    $ua->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
 
-   # Bounds the *whole* call, active or not - unlike inactivity_timeout. Verified empirically:
-   # when this fires, $ua->start() returns normally (does not die) with $tx->result undef and
-   # $tx->error set, rather than throwing - callers must check for that, not wrap this in a
-   # try/catch expecting an exception. Also verified: this is purely client-side abandonment -
-   # the in-container process is *not* killed by it (there is no Docker API endpoint to kill a
-   # running exec at all - see docs/plans/lifecycle-hooks-review-followup.md item F), matching
-   # `timeout`'s own pre-existing caveat in Reservation::run_hook_sync.
+   # Bounds the *whole* call, active or not - unlike inactivity_timeout. When this fires,
+   # $ua->start() returns normally (does not die) with $tx->result undef and $tx->error set,
+   # rather than throwing - callers must check for that, not wrap this in a try/catch expecting
+   # an exception. This is purely client-side abandonment - the in-container process is *not*
+   # killed by it (there is no Docker API endpoint to kill a running exec at all), matching
+   # `timeout`'s own caveat in Reservation::dispatch_hook_exec_async.
    $ua->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
 
    my $method = uc($opts->{'method'} // 'GET');

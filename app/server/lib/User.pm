@@ -1035,10 +1035,10 @@ sub runContainerHook ($self, $id, $args, $cb) {
 }
 
 # Reads a container's hook invocation status/log (named by $args->{'name'}), for a client to
-# poll now that runContainerHook/run_hook_sync above dispatch non-blockingly and return almost
-# immediately - see item B, docs/plans/lifecycle-hooks-review-followup.md. Same permission
-# model as runContainerHook - reading a hook's own status/log needs the same permissions as
-# running it in the first place, not a separate lesser one. Returns { status, output }:
+# poll now that runContainerHook above dispatches non-blockingly and returns almost
+# immediately. Same permission model as runContainerHook - reading a hook's own status/log
+# needs the same permissions as running it in the first place, not a separate lesser one.
+# Returns { status, output }:
 # status is hook_status($name)'s master-record entry (undef if $name has never been invoked
 # on this devtainer), output is load_hook_log($name)'s tailed log lines ([] if there is
 # nothing to show yet, for either reason).

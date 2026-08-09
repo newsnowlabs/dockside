@@ -414,11 +414,11 @@ sub validate_profile_options ($self, $type, $data) {
 # 'lifecycle:launch' only on this devtainer's true first launch and 'lifecycle:start'
 # on every launch including that one (see Reservation::exec), and both are
 # re-runnable on demand if their own 'hooks' entry sets 'manual' true - see
-# Reservation::run_hook_sync. The remaining names are reserved for
+# Reservation::run_hook_sync_async. The remaining names are reserved for
 # docs/roadmap.md's broader (unimplemented) lifecycle-hooks ambition
 # (stop/rename/periodic), so the schema doesn't need to change shape again when
 # those land. Being schema-valid here is independent of being dispatchable:
-# run_hook_sync rejects every reserved name except 'lifecycle:launch'/
+# run_hook_sync_async rejects every reserved name except 'lifecycle:launch'/
 # 'lifecycle:start' with a "not yet implemented" error regardless of this
 # allow-list or 'manual'.
 my @RESERVED_LIFECYCLE_HOOKS = map { "lifecycle:$_" } qw( launch start stop rename periodic );
@@ -445,7 +445,7 @@ my $RESERVED_LAUNCH_NAME_RE = qr/^launch:/;
 # hooks are always manually invocable already (they never auto-fire), so setting 'manual' on
 # one would be meaningless and is rejected as a likely mistake. Neither 'manual' nor 'script'
 # says anything about whether the *lifecycle event itself* is implemented yet - see
-# Reservation::run_hook_sync's separate "is this actually implemented" gate.
+# Reservation::run_hook_sync_async's separate "is this actually implemented" gate.
 sub validate_profile_hooks ($self, $type, $data) {
    unless( ref($data) eq 'HASH' ) {
       return $self->errors( $type, "must be a JSON Object" );

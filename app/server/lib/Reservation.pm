@@ -501,10 +501,10 @@ sub load_launch_logs ($self) {
    return $data;
 }
 
-# Tails a hook invocation's outer log file (run_hook_sync's forked child, below, writes the
-# hook's stdout+stderr frames here as they arrive - see item B,
-# docs/plans/lifecycle-hooks-review-followup.md) for a status/log read endpoint to serve -
-# see User::runContainerHookStatus and App.pm's GET /containers/<id>/hook/status route. Mirrors
+# Tails a hook invocation's outer log file (dispatch_hook_exec_async's own on_output callback,
+# below, writes the hook's stdout+stderr frames here as they arrive) for a status/log read
+# endpoint to serve - see User::runContainerHookStatus and bin/app-server's GET
+# /containers/<id>/hook/status route. Mirrors
 # load_launch_logs() above (last $maxLines lines via Tie::File, read fresh from disk on every
 # call, no in-process caching) - cheap for "poll a status field, fetch the tail" use, exactly
 # like load_launch_logs already is for r-<id>.log. Unlike load_launch_logs, there is no
@@ -1427,23 +1427,22 @@ sub exec ($reservation, $command = undef) {
 # launch.sh itself, or a later `docker exec ... launch.sh run_hook` built here) needs
 # regardless of which specific hook is running: the same GIT_URL/SSH_KNOWN_HOSTS_DOMAINS,
 # DOCKSIDE_OPTION_* and GH_TOKEN env this reservation's IDE launch already gets - shared here
-# to avoid duplicating/drifting that logic between exec() and run_hook_sync(). Deliberately
-# does NOT resolve a hook script path itself (unlike an earlier version of this function) -
-# exec() may need up to two script paths at once ('lifecycle:launch' and 'lifecycle:start',
-# see above) and run_hook_sync passes its one script path directly as a launch.sh CLI
-# argument instead (see below), so each caller resolves whichever script(s) it needs itself.
+# to avoid duplicating/drifting that logic between exec() and dispatch_hook_exec_async().
+# Deliberately does NOT resolve a hook script path itself - exec() may need up to two script
+# paths at once ('lifecycle:launch' and 'lifecycle:start', see above) and
+# dispatch_hook_exec_async passes its one script path directly as a launch.sh CLI argument
+# instead (see below), so each caller resolves whichever script(s) it needs itself.
 #
 # Returns `docker` CLI flag strings ("--env=KEY=VALUE"), not plain "KEY=VALUE" - matching
 # exec()'s own @envHook/@envIDE/etc. below, since exec() still shells out to the `docker` CLI
-# directly (run_system(...'exec','-d',...,@envCommonHook,...)). run_hook_sync (see item B)
+# directly (run_system(...'exec','-d',...,@envCommonHook,...)). dispatch_hook_exec_async
 # dispatches via the Docker Engine API's exec/create instead, whose `Env` field wants plain
-# "KEY=VALUE" strings - a real bug, caught by the integration suite, not by this session's own
-# manual testing (which never actually inspected DOCKSIDE_OPTION_* forwarding specifically):
-# passing "--env=KEY=VALUE" straight into that JSON field doesn't error, it just silently
-# creates a nonsense env var literally named "--env" whose value is "KEY=VALUE" - so
-# DOCKSIDE_OPTION_* (and GIT_URL/GH_TOKEN) never reached the hook process at all. Fixed at
-# run_hook_sync's own call site (strips the prefix there) rather than changing this function's
-# output format, since exec() still needs the CLI-flag form.
+# "KEY=VALUE" strings, not "--env=KEY=VALUE" - passing the CLI-flag form straight into that
+# JSON field doesn't error, it just silently creates a nonsense env var literally named
+# "--env" whose value is "KEY=VALUE", so DOCKSIDE_OPTION_* (and GIT_URL/GH_TOKEN) never reach
+# the hook process at all. Fixed at dispatch_hook_exec_async's own call site (strips the
+# prefix there) rather than changing this function's output format, since exec() still needs
+# the CLI-flag form.
 sub _hook_env ($self, $user) {
    my @envGit;
    if( $self->gitURL() ) {
@@ -1590,13 +1589,13 @@ sub hook_status ($self, $name) {
    return $clean;
 }
 
-# Called by the forking parent, before forking (see run_hook_sync below), to record that $name
-# has started - so both the parent and (via fork()'s copy-on-write memory) the child already
-# see 'running' in their own in-memory copy from the moment the child exists, and so a poller
-# sees 'running' immediately rather than a gap where the record doesn't exist yet. pid/execId
-# are deliberately not known yet at this point (the child's own pid only exists once fork()
-# returns, the exec id only once docker_exec's on_created fires) - see
-# hook_status_set_running_details, called by the child once both are known.
+# Called synchronously before dispatch begins (docker-event-daemon's own launch:-DAG stages
+# only - dispatch_hook_exec_async's own claim/dispatch, below, uses hook_claim_if_not_running
+# instead), to record that $name has started, so a poller sees 'running' immediately rather
+# than a gap where the record doesn't exist yet. pid/execId are both deliberately undef at
+# this point - no fork is involved, and the exec id only exists once docker_exec_async's own
+# on_created callback fires - see hook_status_set_running_details, called from that callback
+# once it's known.
 sub hook_status_started ($self, $name, $logPath) {
    $self->_hook_status_store_one( $name, {
       'name'      => $name,
@@ -1627,16 +1626,12 @@ sub hook_status_completed ($self, $name, $fields) {
    record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
 }
 
-# The one canonical async hook-dispatch core (see
-# docs/plans/mojolicious-app-server-split-plan.md, "hook (on-demand)" section) - claims, dispatches
-# via the exec API, and records the outcome start to finish (hook_claim_if_not_running ->
-# hook_status_set_running_details -> hook_status_completed). Replaces two things that used to be
-# deliberate, acknowledged duplicates (docker-event-daemon:508-516's own former comment): this
-# sub's blocking predecessor (run_hook_sync's own dispatch_hook_exec, deleted - see
-# docs/plans/mojolicious-app-server-split-plan.md Stage 4, once run_hook_sync itself had no
-# remaining callers), and docker-event-daemon's own separate _launch_dispatch_hook_stage, which
-# now just wraps this. Correct to duplicate at F3 time, since the API server had no event loop
-# to run a non-blocking version on; that constraint is gone now that it does.
+# The one canonical async hook-dispatch core - claims, dispatches via the exec API, and
+# records the outcome start to finish (hook_claim_if_not_running -> hook_status_set_running_
+# details -> hook_status_completed). Both remaining dispatch paths - this on-demand entry
+# point's own run_hook_sync_async below, and docker-event-daemon's launch DAG (via
+# _launch_dispatch_hook_stage, which just wraps this) - go through it, so there is exactly one
+# place that knows how to dispatch a hook and record its outcome.
 #
 # Two callbacks, not one, because callers need to act at two different points:
 #   $on_claimed->($claimedEntry_or_undef) - fires synchronously, before any Docker I/O, once the
@@ -1651,9 +1646,9 @@ sub hook_status_completed ($self, $name, $fields) {
 #      needs to know the final result (docker-event-daemon's launch DAG, to call
 #      launch_resolve_stage) hooks in here.
 #
-# Deliberately does NOT repeat run_hook_sync's on-demand-specific validation gates (declared?
-# implemented? manual?) - a different caller may have entirely different gating; those stay in
-# each caller. $args:
+# Deliberately does NOT repeat run_hook_sync_async's own on-demand-specific validation gates
+# (declared? implemented? manual?) - a different caller may have entirely different gating;
+# those stay in each caller. $args:
 #   user    - exec user (default: $self->unixuser())
 #   timeout - seconds; defaults to $CONFIG->{'hooks'}{'defaultTimeoutSeconds'}
 sub dispatch_hook_exec_async ($self, $name, $script, $args, $on_claimed, $on_settled) {
@@ -1739,19 +1734,19 @@ sub _hook_outcome_state ($status) {
    return ( $status->{'exitCode'} // 1 ) == 0 ? 'done' : 'failed';
 }
 
-# Async sibling of run_hook_sync below (see docs/plans/mojolicious-app-server-split-plan.md) -
-# same validation gates (unchanged), then dispatches via the consolidated
-# dispatch_hook_exec_async core directly - no fork. $cb fires immediately once the claim
-# resolves (matching run_hook_sync's own fork - parent returns right away, the actual dispatch
-# continues in the background, pollable via hook_status/User::runContainerHookStatus) - not
-# once the hook itself finishes.
+# The on-demand entry point for running a hook now (User::runContainerHook, ultimately
+# `dockside hook run`): validates the request, then dispatches via dispatch_hook_exec_async.
+# $cb fires immediately once the claim resolves - not once the hook itself finishes; the
+# actual dispatch continues in the background, pollable via hook_status/
+# User::runContainerHookStatus.
 sub run_hook_sync_async ($self, $args, $cb) {
    my $name = $args->{'name'};
    die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length( $name // '' );
 
-   # $self->profileObject is this reservation's own profile snapshot from creation time - see
-   # run_hook_sync's own comment for why the message below names both possible causes without
-   # a live profile comparison to pick between them.
+   # $self->profileObject is this reservation's own profile snapshot from creation time, not a
+   # live read of the profile as it exists now - so if $script is empty, the message below
+   # names both possible causes (a typo, or the hook was added to the profile after this
+   # devtainer was created) without being able to tell which actually applies.
    my $script = $self->hook_script($name);
    die Exception->new(
       'msg' => "No hook '$name' is configured for this devtainer - check the hook name's " .

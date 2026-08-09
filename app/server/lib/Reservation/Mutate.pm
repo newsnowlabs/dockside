@@ -275,23 +275,24 @@ sub _hook_entry_liveness ($existing) {
 # Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely
 # running, marks it running (with $logPath) and returns true (the caller should proceed to
 # dispatch); if it genuinely is, returns false (the caller should report busy / skip) - all
-# inside one mutate() call, so two concurrent callers (different nginx workers dispatching
-# run_hook_sync, or an nginx worker racing docker-event-daemon's own launch-DAG auto-dispatch
-# of lifecycle:launch/lifecycle:start) can never both see "not running" and both proceed, the
-# way Reservation::hook_is_running + hook_status_started could when called as two separate,
-# unlocked steps (found live: 2 of 4 genuinely concurrent `dockside hook run` calls against the
-# same devtainer both actually executed the hook script, confirmed against the container's own
-# execution log, not just against the API's response).
+# inside one mutate() call, so two concurrent callers (different app-server workers
+# dispatching run_hook_sync_async, or an app-server worker racing docker-event-daemon's own
+# launch-DAG auto-dispatch of lifecycle:launch/lifecycle:start) can never both see "not
+# running" and both proceed, the way Reservation::hook_is_running + hook_status_started could
+# when called as two separate, unlocked steps (found live: 2 of 4 genuinely concurrent
+# `dockside hook run` calls against the same devtainer both actually executed the hook
+# script, confirmed against the container's own execution log, not just against the API's
+# response).
 #
 # Deliberately not built on top of hook_is_running/hook_status_started - those remain as they
 # are (a fast, unlocked, best-effort pre-check and a plain recording write respectively), still
 # used on their own by callers that only ever have a single writer for the name in question
 # (docker-event-daemon's own restart-recovery/on_tick self-heal, and the read-only hook_status()
 # endpoint) and don't need this. This is for the two call sites where a second, concurrent
-# writer for the *same* name is genuinely possible: Reservation::run_hook_sync (multiple nginx
-# workers) and docker-event-daemon's own auto-dispatch of lifecycle:launch/lifecycle:start (the
-# only two DAG stage names externally reachable via run_hook_sync too, when a profile's hooks
-# entry sets "manual": true on them).
+# writer for the *same* name is genuinely possible: Reservation::run_hook_sync_async (multiple
+# app-server workers) and docker-event-daemon's own auto-dispatch of lifecycle:launch/
+# lifecycle:start (the only two DAG stage names externally reachable via run_hook_sync_async
+# too, when a profile's hooks entry sets "manual": true on them).
 #
 # A self-heal here (finding a stale entry and resolving it 'done'/'failed'/'aborted' before
 # claiming the slot fresh) also needs a history-array append, exactly like hook_is_running's own
@@ -348,7 +349,7 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
 # unconditionally, every container-start event including ordinary restarts. Fine for
 # launch:prep/launch:git/launch:ide (docker-event-daemon-exclusive - nothing else ever writes
 # them), but lifecycle:launch/lifecycle:start are also reachable via a concurrent on-demand
-# run_hook_sync invocation (same two names hook_claim_if_not_running exists for) - genuinely
+# run_hook_sync_async invocation (same two names hook_claim_if_not_running exists for) - genuinely
 # possible for a manually-triggered lifecycle:start to be mid-flight in one process at the
 # exact moment another restart's reset fires in docker-event-daemon. Blindly overwriting that
 # entry's 'running' state to 'pending' wouldn't cause a second dispatch (nothing reads this
