@@ -21,7 +21,6 @@ use Profile;
 use Reservation;
 use Request;
 use User;
-use App::Metadata;
 
 ####################################################################################################
 # May be used in future to validate git branch references passed into launching containers.
@@ -392,10 +391,12 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # Ignore HEAD requests.
    return nginx::OK if $r->header_only;
 
-   # Check for, and handle, metadata requests.
-   if( App::Metadata::handle($r) == nginx::OK ) {
-      return nginx::OK;
-   }
+   # Metadata-server emulation now lives at its own native route
+   # (bin/app-server, App::Metadata::handle($c)) - registered ahead of the
+   # catch-all that reaches this sub, so a genuine /computeMetadata/v1/* request
+   # never gets here at all. This sub's only remaining caller is that same
+   # catch-all (see task #33 - the rest of it is dead once every route is
+   # natively ported), so there's nothing left for this sub itself to check.
 
    # Reject all requests for the UI, unless protocol is HTTPS.
    return nginx::HTTP_BAD_REQUEST unless $protocol eq 'https';

@@ -40,6 +40,7 @@ use Containers;
 use Request;
 use User;
 use App;   # split_args/get_args, handler - after NginxAdapter, for the constants
+use App::Metadata;   # $c-native, not adapter-backed - see its own route below
 
 flog({ 'service' => 'dockside-app', 'file' => "/var/log/$ENV{'USER'}/$ENV{'USER'}.log" });
 flog("Starting...");
@@ -274,6 +275,24 @@ $routes->post('/containers/:id/hook')->to(
       };
    }
 );
+
+# ── Metadata-server emulation (App::Metadata) ────────────────────────────────
+# Formerly an unconditional check at the top of App::_handler, run before every
+# request regardless of path (App.pm's old line 395-397). Alpha/unpublished -
+# never documented, never officially shipped, confirmed not used by any
+# production Dockside deployment - so unlike everything else ported this
+# session, there's no external contract requiring a verbatim adapter-backed
+# port. Given its own genuine, exclusive path prefix, it needs no more than any
+# other route: registered directly here, ahead of the catch-all, matched by
+# path like everything else. Not behind $authed - a devtainer process making
+# this call can't log in; App::Metadata::handle's own IP-based reservation
+# lookup is its authentication, not a cookie. $c passed straight through
+# (App::Metadata is $c-native, not adapter-backed) - the smallest available
+# slice of "stop routing responses through the adapter", not a pattern for the
+# routes still doing that (see the plan's "Two calling conventions").
+$routes->any( '/computeMetadata/v1/*rest' => { rest => '' } => sub ($c) {
+   App::Metadata::handle($c);
+} );
 
 # ── First natively-ported routes (see the plan's "End state" section) ───────
 # Mechanical ports of App.pm's own static-asset blocks (App.pm:380-402,
