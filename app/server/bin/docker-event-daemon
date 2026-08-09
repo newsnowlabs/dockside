@@ -510,23 +510,14 @@ sub _launch_dispatch_prep ($reservation, $cb) {
    }, $cb );
 }
 
-# Dispatches $name (lifecycle:launch/lifecycle:start) via docker_exec_async directly - not
-# Reservation::dispatch_hook_exec, which is blocking and stays reserved for run_hook_sync's
-# on-demand path (item K point 8). This does duplicate dispatch_hook_exec's own dispatch-and-
-# record shape (open a log, wire on_created/on_output, interpret the result, call
-# hook_status_completed) - a genuine, accepted consequence of the two paths needing genuinely
-# different underlying primitives (blocking docker_exec vs non-blocking docker_exec_async), not
-# an oversight; the parts that *can* be shared (env/Command building, via _hook_env/ide_command)
-# already are, unchanged. Then translates the outcome into a launch_resolve_stage() call -
-# deliberately not folded into hook_status_completed itself, since that's shared with genuinely
-# on-demand invocations (including manual re-runs of these same two names via `dockside hook
-# run`), which must never affect DAG state.
-# Thin wrapper around Reservation::dispatch_hook_exec_async (the one canonical async hook-
-# dispatch core - see its own comment) - was a full, deliberately-duplicated implementation
-# during F3 (the API server had no event loop to run a shared non-blocking version on at the
-# time); now just supplies this DAG stage's two callback points: on-claim-lost, defer to
+# Dispatches $name (lifecycle:launch/lifecycle:start) - a thin wrapper around
+# Reservation::dispatch_hook_exec_async (the one canonical async hook-dispatch core - see its
+# own comment) that supplies this DAG stage's two callback points: on-claim-lost, defer to
 # %launchRecovering (see its own comment above) rather than resolving a stage that isn't ours;
-# on-settled, translate the outcome into a launch_resolve_stage() call.
+# on-settled, translate the outcome into a launch_resolve_stage() call - deliberately not
+# folded into hook_status_completed itself, since that's shared with genuinely on-demand
+# invocations (including manual re-runs of these same two names via `dockside hook run`),
+# which must never affect DAG state.
 sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
    my $script = $reservation->hook_script($name);
 
