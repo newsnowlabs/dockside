@@ -1781,8 +1781,8 @@ sub run_hook_sync_async ($self, $args, $cb) {
       sub ( $outcome, $err ) {
          # Nothing further to do here - dispatch_hook_exec_async has already persisted the
          # outcome via hook_status_completed; a client discovers it by polling
-         # User::runContainerHookStatus (App.pm:624's /hook/status route, unchanged, still
-         # synchronous), exactly as it already does today for the fork-based version.
+         # User::runContainerHookStatus (the GET /containers/:id/hook/status route), a plain
+         # synchronous read.
       }
    );
 }

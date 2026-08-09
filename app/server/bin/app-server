@@ -47,34 +47,23 @@ my $workers = $CONFIG->{'appServer'}{'workers'};
 my $app = Mojolicious->new;
 $app->max_request_size( $CONFIG->{'appServer'}{'maxRequestSize'} );
 
-# ── Shared helpers for the five native async routes ─────────────────────────
+# ── Shared helpers, used across every route below ────────────────────────────
 
-# Authenticates the request and enforces the globalCookieRequired gate exactly as
-# App::_handler does today (App.pm:363-372) - a real, configured, instance-wide
-# access gate (config.json's globalCookie.name/.secret) that every other route
-# still enforces via _handler, so these five must too, not just the authenticate()
-# call the plan's own "Two calling conventions" section names explicitly. Returns
-# $User on success. On failure, renders the response directly - matching
-# _handler's own plain-text 401 shape exactly (not the JSON shape _render_error
-# below produces) - and returns undef; callers must check for that and stop
-# rather than proceed to dispatch.
+# Authenticates the request and enforces the globalCookieRequired gate - a real,
+# configured, instance-wide access gate (config.json's globalCookie.name/.secret) every
+# route needs. Returns $User on success. On failure, renders a plain-text 401 directly
+# (not the JSON shape _render_error below produces, since a request that fails this gate
+# has no route-specific response shape yet to match) and returns undef; callers must
+# check for that and stop rather than proceed to dispatch.
 #
-# Data::load() here mirrors the old App::handler's own first line - each of
-# Mojo::Server::Prefork's worker processes has its own independent memory (forked at
-# startup, not shared), so a reservation another worker just created/mutated (e.g. via
-# its own create_async, or docker-event-daemon's own writes) is otherwise invisible to
-# this one until something reloads it. Verified live: a create/stop pair against real
-# app-server workers - stop landed on a different worker than the one that created the
-# reservation, gave 401 "Container not found" (User::reservation's own not-found
-# shape, not an auth failure) - fixed by adding this line, confirmed live.
+# Data::load() here matters because each of Mojo::Server::Prefork's worker processes has
+# its own independent memory (forked at startup, not shared), so a reservation another
+# worker just created/mutated (e.g. via its own create_async, or docker-event-daemon's
+# own writes) is otherwise invisible to this one until something reloads it.
 #
-# HTTPS enforcement: the old App::_handler rejected any UI/API request over plain
-# HTTP outright (nginx's own port-80 server block still proxies 'www' traffic here
-# exactly like port 443 does - Proxy.pm's ui_uri() routing doesn't distinguish -
-# so this process must enforce it itself, nothing upstream does). A gap present
-# since this sub was first written (the five async routes never had this check
-# either, not something this task's own route-porting introduced) - fixed here,
-# the one place both they and every $authed-bridged route already funnel through.
+# HTTPS enforcement: nginx's own port-80 server block still proxies 'www' traffic here
+# exactly like port 443 does (Proxy.pm's ui_uri() routing doesn't distinguish), so this
+# process must reject plain HTTP itself - nothing upstream does it.
 sub _authenticate ($c) {
    Data::load();
 
@@ -320,29 +309,21 @@ sub _get_args ($c, $querystring) {
    return App::split_args($querystring);
 }
 
-# Every _api_handler-derived route needs the same "not logged in" handling
-# _handler's own gate already provides for free today (App.pm:417-430) -
-# _api_handler itself is never reached at all for a non-logged-in user, so
-# every route inside it implicitly assumes a genuinely logged-in $User. Ported
-# routes need this explicitly.
+# Every JSON API route needs the same "not logged in" handling explicitly - each is its
+# own route, not gated on login by anything upstream, so every one of them calls this
+# first.
 #
-# Deliberately *not* a verbatim port of _handler's own "always redirect to /"
-# behaviour: that made sense when every route rendered HTML for a browser, but
-# these are genuinely JSON API endpoints now, and a 302 is a poor response to
-# an AJAX/fetch caller (nothing about it is actionable - the browser doesn't
-# navigate on an XHR redirect, it just... returns the redirect response). A
-# clean 401 JSON is the more honest response for an API client, so pick
-# between the two via content negotiation: $c->accepts('json', 'html') reads
-# the client's own Accept header (Mojolicious::Types->detect, respecting
-# priority order) - json (or an ambiguous/absent Accept - accepts() defaults
-# to the first format listed, 'json' here) gets 401 JSON; html (a real
-# browser's own top-level navigation, whose default Accept always leads with
-# text/html) gets the redirect, matching today's behaviour exactly for that
-# case. Verified live against the three real clients this matters for: axios
-# (the Vue app's own HTTP client, unmodified) defaults to
+# A 302 redirect is a poor response to an AJAX/fetch caller (nothing about it is
+# actionable - the browser doesn't navigate on an XHR redirect, it just... returns the
+# redirect response). A clean 401 JSON is the more honest response for an API client, so
+# pick between the two via content negotiation: $c->accepts('json', 'html') reads the
+# client's own Accept header (Mojolicious::Types->detect, respecting priority order) -
+# json (or an ambiguous/absent Accept - accepts() defaults to the first format listed,
+# 'json' here) gets 401 JSON; html (a real browser's own top-level navigation, whose
+# default Accept always leads with text/html) gets the redirect. Matches all three real
+# clients that matter here: axios (the Vue app's own HTTP client, unmodified) defaults to
 # "application/json, text/plain, */*" -> json; the CLI sends "application/json"
-# explicitly -> json; a browser navigating sends "text/html,..." -> html. No
-# client-side change needed for any of them.
+# explicitly -> json; a browser navigating sends "text/html,..." -> html.
 sub _require_login ($c, $User) {
    return 1 if $User->username;
    if ( ( $c->accepts( 'json', 'html' ) // 'json' ) eq 'html' ) {
@@ -380,11 +361,9 @@ sub _post_only ($c) {
 
 my $routes = $app->routes;
 
-# ── Auth bridge for natively-ported routes ───────────────────────────────────
-# Mojolicious's own replacement for _handler's inline auth (App.pm:363-372),
-# repeated identically at the top of every route today: authenticate once, per
-# request, then enforce the globalCookieRequired gate - the same check
-# _authenticate above already factors out for the five async routes, reused here
+# ── Auth bridge, shared by every route not registered directly on $routes ────
+# Authenticate once, per request, then enforce the globalCookieRequired gate - the same
+# check _authenticate above already factors out for the five async routes, reused here
 # rather than duplicated a third time. A false return short-circuits dispatch
 # entirely for everything registered under this bridge (Mojolicious's own
 # mechanism for "gate before the group", no manual status-code bookkeeping
@@ -396,21 +375,14 @@ my $routes = $app->routes;
 # static assets are served regardless (main.css, favicon, ico/*), main.js
 # requires login, _require_login above content-negotiates a 401/redirect for
 # API routes, and the SPA-shell/login route below is the only place that
-# actually treats a not-logged-in POST as a login form submission - narrower
-# than _handler's own current behaviour (App.pm:432-437 treats *any*
-# not-logged-in POST, to any path, as a login attempt) but a real browser's
-# own login form only ever POSTs back to '/' or '/container/*' in practice
-# (the only two paths that ever render it) anyway, so nothing legitimate
-# relies on the wider version - simpler to scope the check to where it's
-# actually meaningful than to duplicate "is this secretly a login attempt?"
-# reasoning into every future route registered under this bridge.
+# actually treats a not-logged-in POST as a login form submission - scoped there
+# deliberately, not bridge-wide: a real browser's own login form only ever POSTs back to
+# '/' or '/container/*' in practice (the only two paths that ever render it), so nothing
+# legitimate needs any other route to double as a login-attempt handler too.
 #
-# Every _api_handler/_handler route ported to a native route (see
-# docs/plans/mojolicious-app-server-split-plan.md's "End state" section) is
-# registered under this bridge, not directly on $routes - the five async routes
-# above share its own inline _authenticate call rather than the bridge itself,
-# unchanged from when they were first built (already proven correct in
-# production); no reason to move them under it just to share more code.
+# Every route in this file is registered under this bridge, except the five async routes
+# above, which share their own inline _authenticate call rather than the bridge itself -
+# no reason to move them under it just to share more code.
 my $authed = $routes->under('/' => sub ($c) {
    my $User = _authenticate($c) or return undef;
    $c->stash( 'user' => $User );
@@ -452,11 +424,10 @@ for my $action (qw(stop start remove)) {
          try {
             my $User = _authenticate($c) or return;
 
-            # Outcome deliberately ignored, matching _api_handler's own existing
-            # behaviour (App.pm:591-596: "until there is better support in the
-            # Vue app to display errors, there is no point in returning") - the
-            # client reflects state from the fresh reservations list below
-            # regardless of whether the underlying action itself succeeded.
+            # Outcome deliberately ignored - until there is better support in the Vue app
+            # to display errors, there is no point in returning it; the client reflects
+            # state from the fresh reservations list below regardless of whether the
+            # underlying action itself succeeded.
             $User->controlContainer(
                $action, $id, {},
                sub ( $result, $err ) {
@@ -516,18 +487,10 @@ $routes->any( '/computeMetadata/v1/*rest' => { rest => '' } => sub ($c) {
    App::Metadata::handle($c);
 } );
 
-# ── First natively-ported routes (see the plan's "End state" section) ───────
-# Mechanical ports of App.pm's own static-asset blocks (App.pm:380-402,
-# 409-415, 452-458) - same paths, same files, same behaviour, registered under
-# the $authed bridge above instead of App::handler's if-chain. Content-Type
-# comes from Mojolicious's own extension-based detection (reply->file, via
-# Mojolicious::Types) rather than the original code's explicit
-# send_http_header(...) calls - verified to match for every extension used
-# here except .ico, where the original used a non-standard "image/icon"
-# (not an IANA-registered type) for both favicon.ico *and* apple-touch-icon.png
-# alike; Mojolicious's own detection gives the correct "image/x-icon"/
-# "image/png" for each respectively - a harmless, incidental correctness fix,
-# not a deliberate behaviour change in its own right.
+# ── Static assets ─────────────────────────────────────────────────────────
+# Content-Type comes from Mojolicious's own extension-based detection
+# (reply->file, via Mojolicious::Types), which gives "image/x-icon"/"image/png" for
+# favicon.ico/apple-touch-icon.png respectively - both correct IANA-registered types.
 for my $file (qw(favicon.ico apple-touch-icon.png)) {
    $authed->get("/$file" => sub ($c) { $c->reply->file("$CONFIG->{'assetsPath'}/ico/$file") } );
 }
@@ -564,12 +527,10 @@ $authed->get( '/assets/main.js' => sub ($c) {
    $c->reply->file("$CONFIG->{'clientDistPath'}/main.js");
 } );
 
-# The SPA shell ('/', '/container/*', '/admin/*', '/account/*' - App.pm:460,
-# via this file's own $c-native _render_spa_shell below) and the login page/
-# form it falls back to when not logged in (App.pm:417-438). No method
-# restriction, matching the
-# original block's own lack of one - a POST here while logged in (unusual, but
-# not prevented today) renders the same shell a GET would.
+# The SPA shell ('/', '/container/*', '/admin/*', '/account/*' - via this file's own
+# $c-native _render_spa_shell below) and the login page/form it falls back to when not
+# logged in. No method restriction - a POST here while logged in (unusual, but not
+# prevented) renders the same shell a GET would.
 #
 # This is the one place a not-logged-in POST is treated as a login form
 # submission - deliberately scoped here rather than handled bridge-wide (see
@@ -607,20 +568,14 @@ for my $prefix (qw(container admin account)) {
    $authed->any( "/$prefix/*rest" => { rest => '' } => $spa_shell_or_login );
 }
 
-# ── _api_handler's own container routes (App.pm:544-642), ported verbatim ───
-# Same bodies, same User.pm calls, same json()/text() rendering (still
-# adapter-based - see the SPA-shell/login routes' own comment on why) - only
-# the dispatch mechanism (native route vs if-chain), the explicit
-# _require_login call (previously implicit via _handler's own gate - see
-# _require_login's own comment), and per-route try/catch (previously one big
-# try wrapping all of _api_handler's blocks together - each block is its own
-# route now, so each needs its own; the catch body is _render_error, unchanged,
-# giving the identical Exception-aware status/sanitize/json-or-text handling
-# _api_handler's own single catch block already provides today) are new. The
-# five mutating container routes (create/stop/start/remove/hook) are already
-# native, above; update is POST-only exactly like those five, but stayed a
-# synchronous User.pm call (updateContainerReservation was never converted to
-# *_async) so it's ported here with the rest of _api_handler instead.
+# ── Container routes ──────────────────────────────────────────────────────
+# Each route: check login (_require_login), call the matching User.pm method, render via
+# _json/_text, with a per-route try/catch whose body is _render_error (giving every route
+# here the same Exception-aware status/sanitize/json-or-text handling). The five mutating
+# container routes (create/stop/start/remove/hook) are already native, above; update is
+# POST-only exactly like those five, but stayed a synchronous User.pm call
+# (updateContainerReservation was never converted to an _async sibling), so it's
+# registered here instead.
 $authed->post( '/containers/:id/update' => sub ($c) {
    my $User = $c->stash('user');
    _require_login( $c, $User ) or return;
@@ -707,15 +662,12 @@ $authed->get( '/resources' => sub ($c) {
    };
 } );
 
-# ── Admin/self CRUD routes (App.pm:656-808), ported verbatim ────────────────
-# Every one of these blocks (in App.pm today) has the identical outer shape:
-# compute some $data from a single User.pm call, then
-# _json($c, 200, {status=>'200', data=>$data}) - only the User.pm method and
-# its args differ. _admin_route factors that shape out once, so each route
-# below is just its own distinctive middle line, the same way the original
-# blocks read - not a new abstraction over the original design, a name for
-# the repetition it already had. Same login gate, same try/catch-via-
-# _render_error as the container routes above.
+# ── Admin/self CRUD routes ────────────────────────────────────────────────
+# Every one of these has the identical outer shape: compute some $data from a single
+# User.pm call, then _json($c, 200, {status=>'200', data=>$data}) - only the User.pm
+# method and its args differ. _admin_route factors that shape out once, so each route
+# below is just its own distinctive middle line. Same login gate, same
+# try/catch-via-_render_error as the container routes above.
 sub _admin_route ($body) {
    return sub ($c) {
       my $User = $c->stash('user');
