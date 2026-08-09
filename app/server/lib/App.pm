@@ -25,12 +25,10 @@ Data::load();
 # send_branded_page/send_login_page/handle_login_form/render_spa_shell,
 # parse_body_args/get_args, and the whole _handler/_api_handler/handler
 # dispatch chain App::NginxAdapter buffered them behind - is gone: every
-# route it served has been natively ported (see
-# docs/plans/mojolicious-app-server-split-plan.md's "End state" section),
-# App::NginxAdapter itself deleted, and nginx no longer perl_requires this
-# module at all (the Stage 7 cutover - see Proxy.pm), so the BEGIN block
-# that used to pre-seed nginx:: constants for that dispatch chain is gone
-# too; nothing here calls them any more.
+# route it served has been natively ported, App::NginxAdapter itself
+# deleted, and nginx no longer perl_requires this module at all (see
+# Proxy.pm), so the BEGIN block that used to pre-seed nginx:: constants
+# for that dispatch chain is gone too; nothing here calls them any more.
 #
 
 sub get_asset ($filename) {

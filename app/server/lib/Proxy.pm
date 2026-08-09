@@ -19,9 +19,8 @@ flog({ 'service' => 'dockside-proxy' });
 
 # Load at module-load time - previously App.pm's own perl_require (loaded first in nginx
 # config) guaranteed $CONFIG was populated before Proxy's own perl_set vars ever ran; that
-# module_require is gone now that App.pm's own content-handler role has moved to bin/app-server
-# (see docs/plans/mojolicious-app-server-split-plan.md's cutover), so Proxy must ensure this
-# itself rather than depend on load order elsewhere in the config.
+# module_require is gone now that App.pm's own content-handler role has moved to bin/app-server,
+# so Proxy must ensure this itself rather than depend on load order elsewhere in the config.
 Data::load();
 
 # Where a UI/API request gets proxied to, now that App.pm is no longer perl_require'd (and

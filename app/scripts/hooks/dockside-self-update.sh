@@ -7,7 +7,7 @@
 # Invoked by launch.sh's run_hook() (see app/scripts/container/launch.sh), as the
 # devtainer's own 'dockside' user, once launch-time git/ssh/gh setup has completed. Auto-fires
 # only once, on this devtainer's genuine first start (wired to 'lifecycle:launch', not
-# 'lifecycle:start' - see docs/plans/lifecycle-hooks-review-followup.md item E), and is
+# 'lifecycle:start' - see Reservation::exec's own comment for that distinction), and is
 # separately re-invokable any time later via `dockside hook run` (this profile's hooks entry
 # for it sets "manual": true). Consumes the same single 'ref' option as the 03-git-repo.json
 # example profile, but - because this repo is baked into the image rather than cloned via

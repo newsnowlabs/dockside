@@ -2,19 +2,15 @@
 
 # app-server
 #
-# Dockside's UI/API server, standalone and async (see
-# docs/plans/mojolicious-app-server-split-plan.md) - no longer embedded in nginx via
+# Dockside's UI/API server, standalone and async - no longer embedded in nginx via
 # ngx_http_perl_module. nginx proxy_passes UI/API traffic to this process on loopback
 # (Proxy::ui_uri); Proxy.pm itself stays embedded in nginx for access-controlled
 # devtainer routing, unaffected by this split.
 #
-# Fully native Mojolicious routing, $c throughout - no adapter. Earlier stages of
-# this split ran two calling conventions side by side (a handful of native async
-# routes for genuinely slow Docker/HTTP I/O, everything else still reached via a
-# catch-all wrapping the request in App::NginxAdapter and calling App::handler($r,
-# $proto) exactly as it ran under real nginx); every App.pm route has since been
-# ported natively and every remaining adapter callsite retired (see the plan's "End
-# state" section), so App::NginxAdapter itself is gone - nothing left to call it.
+# Fully native Mojolicious routing, $c throughout - no adapter. App::NginxAdapter, which
+# earlier stages of this split used as a compatibility shim for routes not yet converted
+# (wrapping the request and calling App::handler($r, $proto) exactly as it ran under real
+# nginx), is gone now that every route has been natively ported - nothing left to call it.
 
 use v5.36;
 

@@ -9,12 +9,9 @@ use Reservation;
 
 # $c-native (Mojolicious::Controller) - this module is unpublished/alpha (never
 # documented, never officially shipped, not used by any production Dockside
-# deployment - see docs/plans/mojolicious-app-server-split-plan.md), so unlike
-# every other App.pm surface ported this session, there's no external contract
-# obliging a verbatim-behind-the-adapter port here. Registered directly as its
-# own native route (bin/app-server) rather than reused through
-# App::NginxAdapter - the smallest available slice of "stop routing responses
-# through the adapter", not a pattern for the routes still doing that.
+# deployment), so unlike every other route App.pm used to serve, there was no
+# external contract obliging a verbatim-behind-App::NginxAdapter port when this
+# was migrated. Registered directly as its own native route (bin/app-server).
 
 sub success ($c, $body = '') {
    $c->res->headers->header( 'Cache-Control',   'no-store' );

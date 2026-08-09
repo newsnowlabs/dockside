@@ -432,11 +432,10 @@ my $CUSTOM_HOOK_NAME_RE = qr/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/;
 # 'launch:*' is a second reserved namespace, but unlike 'lifecycle:*' it is never
 # profile-declarable at all - these names (launch:prep/launch:git/launch:ide) are DED's own
 # internal launch-dispatch bookkeeping, written directly into data('hooks') by DED itself, with
-# no profile-supplied script involved (see docs/plans/lifecycle-hooks-review-followup.md item F,
-# "Couplings to resolve first" #4). The custom-name regex above already rejects any colon, so a
-# profile declaring 'hooks.launch:prep' would fail validation regardless - this exists purely to
-# give that specific, common-to-guess collision a clear, accurate error instead of the generic
-# "invalid hook name" message.
+# no profile-supplied script involved. The custom-name regex above already rejects any colon, so
+# a profile declaring 'hooks.launch:prep' would fail validation regardless - this exists purely
+# to give that specific, common-to-guess collision a clear, accurate error instead of the
+# generic "invalid hook name" message.
 my $RESERVED_LAUNCH_NAME_RE = qr/^launch:/;
 
 # Each hooks.<name> entry is an Object. 'script' is mandatory - the absolute in-image path to

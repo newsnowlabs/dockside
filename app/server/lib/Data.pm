@@ -95,9 +95,8 @@ $CONFIG_FILES = {
          $CONFIG->{'ssh'}{'v10port'} //= 2223; # in-container wstunnel v10 listen port
          $CONFIG->{'ssh'}{'default'} //= 1;
 
-         # Standalone async UI app-server (see docs/plans/mojolicious-app-server-split-plan.md) -
-         # loopback-only, nginx proxy_passes to it; 0 = unlimited, parity with nginx's own
-         # client_max_body_size 0.
+         # Standalone async UI app-server - loopback-only, nginx proxy_passes to it;
+         # 0 = unlimited, parity with nginx's own client_max_body_size 0.
          $CONFIG->{'appServer'}{'port'} //= 8100;
          $CONFIG->{'appServer'}{'workers'} //= 4;
          $CONFIG->{'appServer'}{'maxRequestSize'} //= 0;

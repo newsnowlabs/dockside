@@ -12,9 +12,8 @@
 # - http://nginx.org/en/docs/http/ngx_http_perl_module.html
 #
 # This caveat now applies to Proxy only - the App UI/API content itself no longer runs
-# embedded in nginx at all (see docs/plans/mojolicious-app-server-split-plan.md): it's a
-# standalone Mojolicious process (bin/app-server), reverse-proxied to like any other upstream,
-# not perl_require'd here.
+# embedded in nginx at all: it's a standalone Mojolicious process (bin/app-server),
+# reverse-proxied to like any other upstream, not perl_require'd here.
 
 perl_modules /home/dockside/dockside/app/server/lib;
 perl_require Proxy.pm;
