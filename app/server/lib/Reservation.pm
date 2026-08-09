@@ -324,8 +324,9 @@ sub new ($class, $data, $validated = 0) {
    bless $self, ( ref($class) || $class );
 
    # If a dummy Reservation object has been requested for sending to the client,
-   # return what we have now.
-   if( $data->{'id'} eq 'new' ) {
+   # return what we have now. $data->{'id'} is absent (undef) for a genuinely
+   # new reservation being created, not just for the 'new' dummy-object request.
+   if( ($data->{'id'} // '') eq 'new' ) {
       return $self;
    }
 
@@ -1127,7 +1128,10 @@ sub exec ($reservation, $command = undef) {
 
    my @envGit;
    if( $reservation->gitURL() ) {
-      my ($git_domain) = $reservation->gitURL() =~ m!^(?:https://|git@)([^:/]+)!;
+      # SCP-style URLs may use any username (see the gitURL validation regex
+      # above), not just literally 'git@' - match that here too, else
+      # $git_domain is left undef for e.g. 'deploy@host:path'.
+      my ($git_domain) = $reservation->gitURL() =~ m!^(?:https://|[a-zA-Z][\w-]*@)([^:/]+)!;
       @envGit = (
          "--env=GIT_URL=" . $reservation->gitURL(),
          "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"

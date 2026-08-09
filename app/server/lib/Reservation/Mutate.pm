@@ -78,7 +78,8 @@ sub update ($self, $e) {
          $by_id->{$id} //= {};
 
          # Remove BY_HOST index entry for old 'name' key on this id, in case 'name' key value has changed.
-         delete $by_name->{ $by_id->{$id}{'name'} };
+         # (A brand-new id has no prior 'name' yet - nothing to remove.)
+         delete $by_name->{ $by_id->{$id}{'name'} } if defined $by_id->{$id}{'name'};
 
          # Copy across all values that are different.
          cloneHash($e, $by_id->{$id});

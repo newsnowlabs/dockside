@@ -581,6 +581,12 @@ sub reservation ($self, $arg = undef) {
 # Returns truthy if user is authorised to set $property to $value
 # Returns falsey if not.
 sub set ($self, $reservation, $property, $value = '') {
+   # Signature defaults fire based on arg count, not definedness - createContainerReservation/
+   # updateContainerReservation always pass 4 args, even when the caller's $args->{$m} is
+   # absent, so the '' default above never fires here. Normalise undef to '' explicitly so
+   # every eq/ne branch below sees '' for "no value supplied".
+   $value //= '';
+
    if( $property eq 'profile') {
 
       # Not permitted
@@ -695,10 +701,6 @@ sub set ($self, $reservation, $property, $value = '') {
 
    elsif( $property eq 'IDE') {
 
-      # A create() request that omits --ide entirely reaches here with $value
-      # undef (the field is absent from the request, not merely blank) - treat
-      # that the same as ''  (no explicit choice).
-      $value //= '';
       my $current = $reservation->meta('IDE') // '';
 
       # Permitted, if no change in value is requested, or empty value requested
@@ -772,6 +774,14 @@ sub set ($self, $reservation, $property, $value = '') {
             return 0;
          };
       }
+
+      # $value ne '' above leaves $value as '' (not decoded) whenever no access was
+      # requested - previously that meant $value stayed undef, and Perl reads undef->{$name}
+      # below as an empty map without complaint; now that the top-of-sub $value //= '' means
+      # a real, defined '' reaches here instead, the same read would die ("Can't use string
+      # as a HASH ref") under strict refs. Normalise explicitly rather than depending on
+      # that undef-specific leniency.
+      $value = {} unless ref($value) eq 'HASH';
 
       my $oldAccess = $reservation->meta('access');
       my $newAccess = {};
