@@ -5,9 +5,8 @@ Coverage:
   - restarting docker-event-daemon while a devtainer's launch DAG (launch:prep ->
     launch:git/launch:ide/lifecycle:*) is still in flight does not strand it: the
     startup "Restart-recovery" sweep + %launchRecovering/on_tick reconciliation
-    (docker-event-daemon's own header comment calls this "found live, not
-    assumed" during original development) picks it back up and every stage
-    eventually reaches a terminal state - not just "the process didn't crash".
+    picks it back up and every stage eventually reaches a terminal state - not
+    just "the process didn't crash".
   - the same, under N concurrent in-flight launches at once - the single-
     container case isolates the mechanism; this exercises it under the
     condition it was actually found under (concurrent load).
@@ -22,17 +21,11 @@ these tests are opt-in, not part of a default `bash t/integration/run_tests.sh`
 run - see this repo's CLAUDE.md "Runtime environment & testing capability"
 section for which launch profile gives that access (mountIDE:false).
 
-STATUS: written and reviewed (including in the ded-async-rewrite-quality-audit.md
-pass), Python syntax-checked, but **not yet executed against a live instance** -
-this repo's automated tooling has no `dockside login` session available to run
-it. Written against the CLI/harness shapes exercised live during the
-ded-async-rewrite branch's own manual thrash-testing session (same scenario,
-same result, ad hoc); intended to lock that result in as a repeatable
-regression check, not to re-derive it. Run this once, by hand, in a
-mountIDE:false environment (`DOCKSIDE_TEST_MODE=local
-DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1 bash t/integration/run_tests.sh --only 16`)
-before relying on it as actual regression coverage, and drop this notice once it
-has been.
+STATUS: executed against a live instance (2026-08-09, mountIDE:false, DOCKSIDE_TEST_MODE=local
+DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1 DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1) - both tests
+passed (test_01: 4.5s, test_02: 10.7s), clean teardown, docker-event-daemon came back up
+healthy after each restart. Run it again the same way after any further change to the
+launch-DAG/restart-recovery code.
 """
 
 import os

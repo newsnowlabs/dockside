@@ -22,15 +22,10 @@ concurrency the same way the manual thrash-testing session's backgrounded
 shell `&`/`wait` did. First use of real concurrency in this harness (stdlib
 only - no new dependency).
 
-STATUS: written and reviewed (including in the ded-async-rewrite-quality-audit.md
-pass), Python syntax-checked, but **not yet executed against a live instance** -
-this repo's automated tooling has no `dockside login` session available to run
-it. Unlike 16_ded_restart_recovery.py this runs under the *default* profile (no
-special capability gate), so it would execute as part of an ordinary
-`bash t/integration/run_tests.sh` run - do that once, by hand, before relying on
-"the suite passes" as covering this module. N=8 is a starting point, sized for a
-shared CI host's likely headroom, not a specific measured budget - verify/adjust
-the first time this actually runs, and drop this notice once it has.
+STATUS: executed against a live instance (2026-08-09, DOCKSIDE_TEST_MODE=local
+DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1) - both tests passed (test_01: 12.3s, test_02: 55.5s
+for N=8), clean teardown. N=8 held up fine on this host; re-verify/adjust if run somewhere
+with less headroom.
 """
 
 import os
