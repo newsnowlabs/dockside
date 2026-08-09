@@ -350,7 +350,30 @@ sub _parse_docker_size ($str) {
 # what the profile declared. Extending this list for a new flag pattern is
 # straightforward if/when a profile actually needs one outside this set.
 sub cmdline_json ($self) {
-   my @securityOpt = map { my $s = $_; $s =~ s/^--security-opt=//; $s } $self->cmdline_security();
+   # Mirrors cmdline_security()'s own per-flag logic above, reading $security directly rather
+   # than parsing that function's own CLI-flag output back apart - see this function's own
+   # header comment on why. Docker's Create API HostConfig.SecurityOpt array wants the same
+   # bare "key=value"/"label=disable" strings the --security-opt flag's own value already is,
+   # just without the "--security-opt=" prefix a CLI arg needs and a JSON array element doesn't.
+   my $security = $self->profileObject->{'security'};
+   my @securityOpt;
+   foreach my $m ('apparmor', 'seccomp') {
+      my $profile = ($security->{$m} // $CONFIG->{'docker'}{'security'}{$m}) // 'unspecified';
+      push(@securityOpt, "$m=$profile") if $profile ne 'unspecified';
+   }
+   if($security->{'no-new-privileges'}) {
+      push(@securityOpt, 'no-new-privileges');
+   }
+   if($security->{'labels'}) {
+      if( ref($security->{'labels'}) eq 'SCALAR' && $security->{'labels'} eq 'disable' ) {
+         push(@securityOpt, 'label=disable');
+      }
+      elsif( ref($security->{'labels'}) eq 'HASH' ) {
+         foreach my $opt ('user', 'role', 'type', 'level') {
+            push(@securityOpt, "label=$opt:$security->{'labels'}{$opt}");
+         }
+      }
+   }
 
    my $hostConfig = {};
    $hostConfig->{'SecurityOpt'} = \@securityOpt if @securityOpt;
