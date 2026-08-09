@@ -326,8 +326,9 @@ sub new ($class, $data, $validated = 0) {
    bless $self, ( ref($class) || $class );
 
    # If a dummy Reservation object has been requested for sending to the client,
-   # return what we have now.
-   if( $data->{'id'} eq 'new' ) {
+   # return what we have now. $data->{'id'} is absent (undef) for a genuinely
+   # new reservation being created, not just for the 'new' dummy-object request.
+   if( ($data->{'id'} // '') eq 'new' ) {
       return $self;
    }
 
