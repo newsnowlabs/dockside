@@ -183,13 +183,9 @@ sub call_socket_api ($socket, $path, $opts = {}) {
          if( my $onRead = $opts->{'on_read'} ) {
             # Streamed consumption (e.g. `POST /exec/{id}/start` with Detach:false): the
             # response body is a live, held-open stream, frames arriving as the exec
-            # produces output - not a normal buffered response (verified empirically
-            # against this environment's own daemon; see
-            # docs/plans/lifecycle-hooks-review-followup.md item F's enabler section).
-            # Build the transaction explicitly so a 'read' subscriber on its response
-            # content sees each chunk as it arrives, still within this one blocking
-            # $ua->start() call - the caller (a forked child with nothing else to do
-            # concurrently; see item B) has no need for a full event loop just for this.
+            # produces output - not a normal buffered response. Build the transaction
+            # explicitly so a 'read' subscriber on its response content sees each chunk as it
+            # arrives, still within this one blocking $ua->start() call.
             my $tx = $ua->build_tx(POST => $uri => $headers => $body);
             $tx->res->content->unsubscribe('read')->on(read => sub ($content, $bytes) {
                $onRead->($bytes);
@@ -231,8 +227,7 @@ sub call_socket_api ($socket, $path, $opts = {}) {
 # before the connection had even finished being established.
 my %ASYNC_UA_IN_FLIGHT;
 
-# Non-blocking sibling of call_socket_api above - never blocks the caller's own event loop
-# (Mojo::IOLoop, driven by DED - see docs/plans/lifecycle-hooks-review-followup.md item F3).
+# Non-blocking sibling of call_socket_api above - never blocks the caller's own event loop.
 # Same $opts/conventions (method/json/on_read/inactivity_timeout/request_timeout/headers/
 # http+unix:// transport) - this replicates call_socket_api's own behavior for a non-blocking
 # caller, it does not redefine it. $cb->($result, $error) fires exactly once, whenever the call
@@ -240,18 +235,16 @@ my %ASYNC_UA_IN_FLIGHT;
 # exists - including a non-2xx HTTP response, e.g. a 404, exactly as call_socket_api's own
 # callers already handle by inspecting ->code/->is_success themselves, not by treating a non-2xx
 # as a failure - or undef with $error set to a message string for a genuine transport-level
-# failure (connection refused, or request_timeout: both verified empirically to behave the same
-# way here - see below).
+# failure (connection refused, or request_timeout).
 #
 # The result/error split below is not "if $tx->error then no result" - that would be wrong.
-# Verified empirically against this environment's own Docker daemon, all three cases: (1) success
-# - $tx->error undef, $tx->result usable; (2) an HTTP-level error status (e.g. 404) - $tx->error
-# IS set (with a real ->{'code'}), but $tx->result is ALSO still fully usable, same response
-# object either way; (3) a genuine transport failure (bad socket path, or request_timeout firing)
-# - $tx->error is set with ->{'code'} undef, and calling $tx->result in that case actually THROWS
-# (verified: not just "returns undef", an actual die) - exactly mirroring call_socket_api's own
-# documented blocking-mode behavior for the same two cases. So the only correct discriminator for
-# "was anything usable returned at all" is $tx->error's own ->{'code'} being defined or not, not
+# Three distinct cases: (1) success - $tx->error undef, $tx->result usable; (2) an HTTP-level
+# error status (e.g. 404) - $tx->error IS set (with a real ->{'code'}), but $tx->result is ALSO
+# still fully usable, same response object either way; (3) a genuine transport failure (bad
+# socket path, or request_timeout firing) - $tx->error is set with ->{'code'} undef, and calling
+# $tx->result in that case actually throws, exactly mirroring call_socket_api's own documented
+# blocking-mode behavior for the same two cases. So the only correct discriminator for "was
+# anything usable returned at all" is $tx->error's own ->{'code'} being defined or not, not
 # whether ->error is set at all.
 sub call_socket_api_async ($socket, $path, $opts, $cb) {
    my $ua = Mojo::UserAgent->new();
@@ -265,8 +258,8 @@ sub call_socket_api_async ($socket, $path, $opts, $cb) {
    flog("call_socket_api_async: $method $uri");
 
    # DELETE added for Reservation::action_async's 'remove' (DELETE /containers/{id}?v=true) -
-   # see docs/plans/mojolicious-app-server-split-plan.md. No body, same as GET/HEAD below -
-   # Docker's remove-container endpoint takes its options (v/force) as query params, not a body.
+   # no body, same as GET/HEAD below - Docker's remove-container endpoint takes its options
+   # (v/force) as query params, not a body.
    die Exception->new( 'dbg' => "call_socket_api_async: unsupported method '$method' for $path" )
       unless $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE';
 
@@ -520,7 +513,7 @@ sub run ($cmd, $unsafe = undef) {
    # correct to reset regardless). No fork sites remain in this codebase whose own
    # handler installation this needs to defend against either way (Reservation::launch's
    # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
-   # is gone; see docs/plans/mojolicious-app-server-split-plan.md).
+   # is gone.
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
@@ -555,7 +548,7 @@ sub run_system (@cmd) {
    # correct to reset regardless). No fork sites remain in this codebase whose own
    # handler installation this needs to defend against either way (Reservation::launch's
    # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
-   # is gone; see docs/plans/mojolicious-app-server-split-plan.md).
+   # is gone.
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
@@ -639,7 +632,7 @@ sub run_pty ($cmd, $logfile) {
    # correct to reset regardless). No fork sites remain in this codebase whose own
    # handler installation this needs to defend against either way (Reservation::launch's
    # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
-   # is gone; see docs/plans/mojolicious-app-server-split-plan.md).
+   # is gone.
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
@@ -763,8 +756,8 @@ sub cloneHash ($from, $to) {
          # a clean integer. A scalar that has been through this even once carries Perl's
          # string flag from then on, so JSON::XS later encodes it as a quoted JSON string
          # ("0") rather than a bare number (0) - a real, non-obvious bug found while building
-         # docs/plans/lifecycle-hooks-review-followup.md item B's status endpoint: any numeric
-         # field written via store()/update() (the only caller of this function) and later
+         # the hook-status endpoint: any numeric field written via store()/update() (the only
+         # caller of this function) and later
          # read by a type-sensitive JSON consumer (e.g. Python's `if x:`, where the *string*
          # "0" is truthy unlike the *number* 0) was exposed to this, not just hook fields.
          # Dropping the check is safe, not just a workaround: this function's only caller,
