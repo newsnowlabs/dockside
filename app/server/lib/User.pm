@@ -775,6 +775,14 @@ sub set ($self, $reservation, $property, $value = '') {
          };
       }
 
+      # $value ne '' above leaves $value as '' (not decoded) whenever no access was
+      # requested - previously that meant $value stayed undef, and Perl reads undef->{$name}
+      # below as an empty map without complaint; now that the top-of-sub $value //= '' means
+      # a real, defined '' reaches here instead, the same read would die ("Can't use string
+      # as a HASH ref") under strict refs. Normalise explicitly rather than depending on
+      # that undef-specific leniency.
+      $value = {} unless ref($value) eq 'HASH';
+
       my $oldAccess = $reservation->meta('access');
       my $newAccess = {};
 
