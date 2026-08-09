@@ -236,8 +236,7 @@ gh_authenticate() {
    # own shell that calls this function - defensive scoping for whatever else might
    # run later in that shell, even though nothing currently does (the lifecycle
    # hooks that used to run in this same shell/subshell are now their own
-   # independent execs, each with GH_TOKEN freshly injected via _hook_env - see
-   # docs/plans/lifecycle-hooks-review-followup.md item F).
+   # independent execs, each with GH_TOKEN freshly injected via _hook_env).
    ( unset GH_TOKEN; $IDE_PATH/bin/gh auth login --with-token < <(echo "$TOKEN") ) || log "WARN: gh auth login failed"
 }
 
@@ -398,23 +397,21 @@ checkout_git_ref() {
 # in-image, profile-author-trusted executable; $2 is resolved server-side per name - see
 # Reservation::hook_script/_hook_env). Every invocation - auto-fired or on demand - reaches
 # this the same way: its own independent `docker exec ... launch.sh run_hook <name> <script>`,
-# script path passed as a plain argument (see Reservation::dispatch_hook_exec). Auto-fire is
-# DED dispatching this exec itself, after launch:git (the git/ssh/gh setup phase) succeeds or
-# has nothing to do - 'lifecycle:launch' only when this devtainer's DOCKSIDE_START_COUNT is 1,
-# 'lifecycle:start' every launch including that one - see
-# docs/plans/lifecycle-hooks-review-followup.md item F's "Dispatch orchestration" section for
-# the full dispatch DAG. This is not a special case of this function at all: on-demand
-# invocation (Reservation::run_hook_sync) reaches it through the identical path, which is
-# exactly what keeps a hook's own status record consistent regardless of how it was fired -
-# there's only ever one recorder. Every invocation calls this same function, so it
-# self-serializes per
-# name via an mkdir-based lock: a concurrent second invocation of the *same* name does not
-# block or double-run, it just reports "busy" (exit 2) and leaves the first run to finish
-# undisturbed - a concurrent invocation of a *different* name is unaffected, since the lock
-# and sentinels are scoped by name. Names are embedded raw in filenames (no sanitization
-# needed): only '/' and NUL are unsafe in a Linux filename, and reserved lifecycle names'
-# literal ':' can never collide with a custom name, whose slug syntax forbids colons
-# entirely (see Profile.pm).
+# script path passed as a plain argument (see Reservation::dispatch_hook_exec_async). Auto-fire
+# is DED dispatching this exec itself, after launch:git (the git/ssh/gh setup phase) succeeds
+# or has nothing to do - 'lifecycle:launch' only when this devtainer's DOCKSIDE_START_COUNT is
+# 1, 'lifecycle:start' every launch including that one (see docker-event-daemon's own "Launch
+# dispatch orchestration" section for the full dispatch DAG). This is not a special case of
+# this function at all: on-demand invocation (Reservation::run_hook_sync_async) reaches it
+# through the identical path, which is exactly what keeps a hook's own status record
+# consistent regardless of how it was fired - there's only ever one recorder. Every invocation
+# calls this same function, so it self-serializes per name via an mkdir-based lock: a
+# concurrent second invocation of the *same* name does not block or double-run, it just reports
+# "busy" (exit 2) and leaves the first run to finish undisturbed - a concurrent invocation of a
+# *different* name is unaffected, since the lock and sentinels are scoped by name. Names are
+# embedded raw in filenames (no sanitization needed): only '/' and NUL are unsafe in a Linux
+# filename, and reserved lifecycle names' literal ':' can never collide with a custom name,
+# whose slug syntax forbids colons entirely (see Profile.pm).
 #
 # Returns 0 on success (or when no hook is configured for this profile), 1 if the
 # hook script itself failed, 2 if a run was already in progress.
@@ -527,8 +524,7 @@ ssh_auth_sock_is_live() {
 # spawn the agent and so has no SSH_AUTH_SOCK inherited from that process tree - every
 # `docker exec ... launch.sh run_hook` invocation (see run_hook below), on demand or
 # auto-fired by DED alike, since each is its own independent exec, never sharing
-# spawn_ssh_agent's process tree (see docs/plans/lifecycle-hooks-review-followup.md item F).
-# Also used directly by launch_git/launch_ide (item F's launch:git/launch:ide), for the same
+# spawn_ssh_agent's process tree. Also used directly by launch_git/launch_ide, for the same
 # reason - neither shares launch:prep's process tree either, despite launch:prep being where
 # spawn_ssh_agent actually runs.
 # Scans Dockside's own managed agent's default socket naming (/tmp/ssh-*/agent.* - OpenSSH's
@@ -536,9 +532,8 @@ ssh_auth_sock_is_live() {
 # trusting mtime alone. Deliberately does not scan /tmp/dropbear-*/auth-* - dropbear's own,
 # separate forwarded-agent sockets, which expose whichever developer happens to be
 # interactively connected right now's own local keys, not this reservation's own registered
-# credentials (see docs/plans/lifecycle-hooks-review-followup.md item A) - the wrong target for
-# this automated, unattended case. An inner tmpfs /tmp is harmless here: it just means no stale
-# sockets from a previous container run to sift through.
+# credentials - the wrong target for this automated, unattended case. An inner tmpfs /tmp is
+# harmless here: it just means no stale sockets from a previous container run to sift through.
 # Echoes the first responding socket path and returns 0; echoes nothing and returns 1 if none
 # responds (e.g. no agent has ever run for this user, or none of its sockets are still live).
 find_ssh_auth_sock() {
@@ -837,12 +832,12 @@ populate_vscode_settings() {
 # Drops from root to $IDE_USER and continues launch by running $1 (default: run_prep_nonroot)
 # there, via the same top-level dispatch mechanism ("launch.sh <function>") every entry point
 # uses - so the su'd child gets exactly the same init() setup (LOG_PATH, PATH, fd redirection)
-# a freshly-dispatched exec would. Generalized from a single hardcoded target (item F split
-# what used to be one function, run_nonroot, into launch_prep's own non-root tail plus the
-# separate launch_git entry point - both need this same su-transition machinery, only
-# launch_prep's since launch_git is dispatched directly as the non-root user by DED, needing
-# no su at all - see the root-vs-non-root guardrail in
-# docs/plans/lifecycle-hooks-review-followup.md item F).
+# a freshly-dispatched exec would. Generalized from a single hardcoded target: what used to be
+# one function, run_nonroot, was split into launch_prep's own non-root tail plus the separate
+# launch_git entry point - both need this same su-transition machinery, only launch_prep's
+# since launch_git is dispatched directly as the non-root user by DED, needing no su at all
+# (only steps that genuinely need root - create_user, launch_sshd's dropbear - run as root at
+# all; everything else drops to the non-root user as soon as it can).
 launch_nonroot() {
    local FUNCTION="${1:-run_prep_nonroot}"
    log "Continuing launch as non-root user '$IDE_USER' (running '$FUNCTION') ..."
@@ -963,14 +958,14 @@ install_launch_status_notice() {
    done
 }
 
-# The non-root tail of exec #1 (item F's launch:prep) - ssh-agent/credentials only. Reached
-# via launch_prep -> launch_nonroot's su-transition, never dispatched directly. Git repo setup
-# and the lifecycle hooks that used to run inline here (in a backgrounded subshell, concurrent
-# with the IDE loop below) are now launch_git and their own separately-dispatched execs
-# respectively - see docs/plans/lifecycle-hooks-review-followup.md item F. This function no
-# longer starts the IDE at all: that's launch:ide, dispatched independently by DED the moment
-# launch:prep (this whole chain) succeeds, not sequenced behind git/hooks - preserving exactly
-# the concurrency the old backgrounded-subshell-plus-inline-restart_ide shape gave for free.
+# The non-root tail of exec #1 (launch:prep) - ssh-agent/credentials only. Reached via
+# launch_prep -> launch_nonroot's su-transition, never dispatched directly. Git repo setup and
+# the lifecycle hooks that used to run inline here (in a backgrounded subshell, concurrent with
+# the IDE loop below) are now launch_git and their own separately-dispatched execs
+# respectively. This function no longer starts the IDE at all: that's launch:ide, dispatched
+# independently by DED the moment launch:prep (this whole chain) succeeds, not sequenced behind
+# git/hooks - preserving exactly the concurrency the old backgrounded-subshell-plus-inline-
+# restart_ide shape gave for free.
 run_prep_nonroot() {
    log "User account prep started ..."
    # Surface launch-time warnings to the user's interactive shells: clear any stale
@@ -1041,8 +1036,7 @@ launch_git() {
          # which case create_git_repo would report "already existed" (2) even on a true
          # first start, and a requested ref must still be honoured then. DOCKSIDE_OPTION_REF
          # is frozen at reservation-creation time and can never change, so there is no
-         # legitimate reason to run checkout_git_ref on any later start regardless - see
-         # docs/plans/lifecycle-hooks-review-followup.md item H.
+         # legitimate reason to run checkout_git_ref on any later start regardless.
          if [ "$DOCKSIDE_START_COUNT" = "1" ]; then
             # A requested ref checkout failure is a hard error: abort the rest of repo
             # setup, log it, and write .git-repo-failed instead of the success sentinel so a
@@ -1124,12 +1118,12 @@ launch_ide() {
    log "IDE launch finished."
 }
 
-# Exec #1 (item F) - core setup, nothing hook- or git-related: create_user, ssh authorized
+# Exec #1 (launch:prep) - core setup, nothing hook- or git-related: create_user, ssh authorized
 # keys, sshd, then drops to $IDE_USER for ssh-agent/credentials via launch_nonroot's default
 # target, run_prep_nonroot. Dispatched as root (the one stage that is - create_user and
-# launch_sshd's dropbear genuinely need it, see the root-vs-non-root guardrail in
-# docs/plans/lifecycle-hooks-review-followup.md item F). Deliberately does not add new
-# fatal-on-failure checks beyond what each of these steps already had (e.g.
+# launch_sshd's dropbear genuinely need it; everything else drops to the non-root user as soon
+# as it can). Deliberately does not add new fatal-on-failure checks beyond what each of these
+# steps already had (e.g.
 # populate_ssh_agent_keys inside run_prep_nonroot stays a non-fatal warning, exactly as
 # before) - hardening individual steps' failure semantics is a separate, later decision, not
 # part of this restructure; DED observes whatever real exit code this function naturally
