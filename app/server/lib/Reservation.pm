@@ -14,7 +14,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api call_socket_api_async docker_exec_async unique run_system get_uri get_uri_async sanitize_sensitive_text);
+use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api call_socket_api_async docker_exec_async unique run_system get_uri_async sanitize_sensitive_text);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
@@ -508,7 +508,7 @@ sub load_launch_logs ($self) {
 # load_launch_logs() above (last $maxLines lines via Tie::File, read fresh from disk on every
 # call, no in-process caching) - cheap for "poll a status field, fetch the tail" use, exactly
 # like load_launch_logs already is for r-<id>.log. Unlike load_launch_logs, there is no
-# synthetic '=== EXIT CODE ===' termination line to strip: docker_exec()'s on_output callback
+# synthetic '=== EXIT CODE ===' termination line to strip: docker_exec_async()'s on_output callback
 # writes only the hook's own raw stdout/stderr bytes.
 #
 # Returns [] (never undef) if $name has never been invoked (no status record yet, so no
@@ -862,30 +862,20 @@ sub referencing_reservations ($class, $identifier, $kind) {
 # RESERVATION CONTROL METHODS
 #
 
+# Only 'getLogs' is reachable here now - User::controlContainer routes 'start'/'stop'/
+# 'remove' through action_async below exclusively (every caller passes a $cb; the getLogs
+# route is the one exception - see action_async's own comment). 'getLogs' itself is a fast
+# local read, not worth an async sibling of its own.
 sub action ($self, $action, $args = {}) {
-   my @command;
-   if($action eq 'start') {
-      @command = ('start');
-   }
-   elsif($action eq 'stop') {
-      @command = ('stop');
-   }
-   elsif($action eq 'remove') {
-      @command = ('rm', '--volumes');
-   }
-   elsif($action eq 'getLogs') {
+   if($action eq 'getLogs') {
       return $self->load_container_logs({
          'stdout' => is_true($args->{'stdout'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
          'stderr' => is_true($args->{'stderr'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
          'merge' => is_true($args->{'merge'})
       });
    }
-   else {
-      die Exception->new( 'msg' => "Unknown docker container action '$action'" );
-   }
 
-   my $containerId = $self->containerId();
-   return run_system($CONFIG->{'docker'}{'bin'}, @command, $containerId);
+   die Exception->new( 'msg' => "Unknown docker container action '$action'" );
 }
 
 # Async sibling of action() above - stop/start/remove via the Docker Engine API directly
@@ -1011,43 +1001,11 @@ sub increment_start_count ($self) {
    return $newValue;
 }
 
-sub getGitDevContainer ($self) {
-   my $uri = $self->data('gitURL');
-   flog("getGitDevContainer: uri=$uri");
-
-   return undef unless $uri;
-
-   if( $uri =~ m!^(?:https://github.com/|git\@github\.com:)(.*)\.git$! ) {
-      my $path = $1;
-
-      foreach my $branch (qw( main master )) {
-         # git@github.com:dwavesystems/ocean-devcontainer.git =>
-         # https://github.com/dwavesystems/ocean-devcontainer.git =>
-         # https://raw.githubusercontent.com/dwavesystems/ocean-devcontainer/refs/heads/main/.devcontainer/devcontainer.json
-         my $devcontainerUri = "https://raw.githubusercontent.com/$path/refs/heads/$branch/.devcontainer/devcontainer.json";
-
-         my $result = get_uri($devcontainerUri);
-         flog("getGitDevContainer: uri=$devcontainerUri; result=$result; is_success=" . ($result && $result->is_success) . "; body='" . ($result ? $result->body : 'N/A') . "'");
-
-         if( $result && $result->is_success ) {
-            # Strip comments
-            my $body = $result->body;
-            $body =~ s!//.*$!!gm;
-            return eval { return decode_json($body); };
-         }
-      }
-   }
-
-   return undef;
-}
-
-# Async sibling of getGitDevContainer above (see docs/plans/mojolicious-app-server-split-plan.md's
-# "getGitDevContainer" section) - same two-attempt (main, then master) devcontainer.json fetch,
-# built on get_uri_async instead of get_uri so User::createContainerReservation's own async chain
-# never blocks the reactor while GitHub responds. Tries 'main' first, only falling back to
-# 'master' if 'main' fails or returns unparseable JSON - mirroring the sync version's own
-# foreach-with-early-return shape, just expressed as a recursive callback chain since there's no
-# early 'return' across an async boundary. $cb fires exactly once, with the decoded
+# Fetches the devcontainer.json for this reservation's gitURL, if it points at a GitHub repo:
+# tries 'main' first, only falling back to 'master' if 'main' fails or returns unparseable
+# JSON - built on get_uri_async so User::createContainerReservation's own async chain never
+# blocks the reactor while GitHub responds. Expressed as a recursive callback chain (there's
+# no early 'return' across an async boundary). $cb fires exactly once, with the decoded
 # devcontainer.json hashref, or undef if there is none (no gitURL, non-GitHub URL, or neither
 # branch has one).
 sub getGitDevContainer_async ($self, $cb) {
@@ -1569,8 +1527,8 @@ sub hook_is_running ($self, $name) {
    my $status = $self->_hook_status_all->{$name};
    return 0 unless $status && ($status->{'state'} // '') eq 'running';
 
-   # Newly-started, before the forked child has reached docker_exec()'s on_created callback
-   # yet (see hook_status_started/hook_status_set_running_details below) - neither liveness
+   # Newly-started, before docker_exec_async()'s own on_created callback has fired yet
+   # (see hook_status_started/hook_status_set_running_details below) - neither liveness
    # signal exists yet, so there is nothing to check; it is, definitionally, still running.
    return 1 unless defined($status->{'pid'}) || defined($status->{'execId'});
 
