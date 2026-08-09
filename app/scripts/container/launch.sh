@@ -853,7 +853,7 @@ init() {
    log "- IDE_PATH=$IDE_PATH"
    if [ -n "$DEBUG" ]; then
       log "- Environment:"
-      busybox env | busybox sed 's/^/=> /'}
+      busybox env | busybox sed 's/^/=> /'
    fi
 }
 
