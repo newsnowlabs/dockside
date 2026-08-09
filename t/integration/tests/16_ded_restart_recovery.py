@@ -22,10 +22,17 @@ these tests are opt-in, not part of a default `bash t/integration/run_tests.sh`
 run - see this repo's CLAUDE.md "Runtime environment & testing capability"
 section for which launch profile gives that access (mountIDE:false).
 
-DRAFT - not yet run against a live instance. Written against the CLI/harness
-shapes verified live during the ded-async-rewrite branch's own manual
-thrash-testing session (same scenario, same result, ad hoc); intended to lock
-that result in as a repeatable regression check, not to re-derive it.
+STATUS: written and reviewed (including in the ded-async-rewrite-quality-audit.md
+pass), Python syntax-checked, but **not yet executed against a live instance** -
+this repo's automated tooling has no `dockside login` session available to run
+it. Written against the CLI/harness shapes exercised live during the
+ded-async-rewrite branch's own manual thrash-testing session (same scenario,
+same result, ad hoc); intended to lock that result in as a repeatable
+regression check, not to re-derive it. Run this once, by hand, in a
+mountIDE:false environment (`DOCKSIDE_TEST_MODE=local
+DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1 bash t/integration/run_tests.sh --only 16`)
+before relying on it as actual regression coverage, and drop this notice once it
+has been.
 """
 
 import os
