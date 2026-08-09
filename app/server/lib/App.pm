@@ -20,15 +20,10 @@ Data::load();
 ####################################################################################################
 #
 # Asset/HTML-fragment helpers, reused by bin/app-server's own $c-native
-# response helpers (_send_branded_page/_render_spa_shell). Everything that
-# used to live below these - the nginx-$r-shaped json/redirect/html/text/
-# send_branded_page/send_login_page/handle_login_form/render_spa_shell,
-# parse_body_args/get_args, and the whole _handler/_api_handler/handler
-# dispatch chain App::NginxAdapter buffered them behind - is gone: every
-# route it served has been natively ported, App::NginxAdapter itself
-# deleted, and nginx no longer perl_requires this module at all (see
-# Proxy.pm), so the BEGIN block that used to pre-seed nginx:: constants
-# for that dispatch chain is gone too; nothing here calls them any more.
+# response helpers (_send_branded_page/_render_spa_shell). Every route is
+# natively Mojolicious now (bin/app-server), and nginx no longer perl_requires
+# this module at all (see Proxy.pm) - only these pure asset/string helpers
+# remain here.
 #
 
 sub get_asset ($filename) {
@@ -79,10 +74,8 @@ sub log_status ($sub, $json) {
 
 sub split_args ($queryString) {
    # Defensive: every current caller (bin/app-server's own _get_args/_query) already
-   # guards against an empty querystring before calling this, but $queryString was
-   # historically undef whenever the request URL had no query string at all (e.g. the
-   # old App::NginxAdapter's $r->args on a plain GET) - keep tolerating that here too,
-   # cheaply, rather than depending on every future caller to guard it upstream.
+   # guards against an empty querystring before calling this, but keep tolerating undef
+   # here too, cheaply, rather than depending on every future caller to guard it upstream.
    $queryString //= '';
 
    # Split querystring-style arguments, and unescape them

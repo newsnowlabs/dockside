@@ -9,9 +9,8 @@ use Reservation;
 
 # $c-native (Mojolicious::Controller) - this module is unpublished/alpha (never
 # documented, never officially shipped, not used by any production Dockside
-# deployment), so unlike every other route App.pm used to serve, there was no
-# external contract obliging a verbatim-behind-App::NginxAdapter port when this
-# was migrated. Registered directly as its own native route (bin/app-server).
+# deployment), so it carries no external compatibility contract. Registered
+# directly as its own native route (bin/app-server).
 
 sub success ($c, $body = '') {
    $c->res->headers->header( 'Cache-Control',   'no-store' );
@@ -48,10 +47,9 @@ sub failure ($c, $code = 404) {
 # /computeMetadata/v1/instance/network-interfaces/0/ip
 
 # nginx appends its own hop (proxy_add_x_forwarded_for) on its way to app-server;
-# strip exactly that one back off to recover what the client itself sent - same
-# logic as App::NginxAdapter::header_in's X-Forwarded-For case, kept as an
-# independent local copy since this module deliberately no longer goes through
-# the adapter at all.
+# strip exactly that one back off to recover what the client itself sent. An
+# independent local copy, not shared with anything else in this file - this
+# module has no other request-handling code to share it with.
 sub _forwarded_for ($c) {
    my $xff = $c->req->headers->header('X-Forwarded-For');
    return undef unless defined $xff && length $xff;

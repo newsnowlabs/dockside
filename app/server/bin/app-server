@@ -7,10 +7,8 @@
 # (Proxy::ui_uri); Proxy.pm itself stays embedded in nginx for access-controlled
 # devtainer routing, unaffected by this split.
 #
-# Fully native Mojolicious routing, $c throughout - no adapter. App::NginxAdapter, which
-# earlier stages of this split used as a compatibility shim for routes not yet converted
-# (wrapping the request and calling App::handler($r, $proto) exactly as it ran under real
-# nginx), is gone now that every route has been natively ported - nothing left to call it.
+# Fully native Mojolicious routing, $c throughout - every route is natively ported, no
+# compatibility shim of any kind sits in front of any of them.
 
 use v5.36;
 
@@ -102,15 +100,8 @@ sub _render_error ($c, $err) {
 }
 
 # ── $c-native response helpers ───────────────────────────────────────────────
-# App.pm's own json/redirect/text/send_branded_page/send_login_page/
-# handle_login_form/render_spa_shell were, at the point these were first
-# written, still relied on $r-shaped by _handler/_api_handler (App.pm) - since
-# deleted, along with App::NginxAdapter itself, once every route (including
-# the five async ones above) stopped needing either the response or the
-# request side of it. These remain as this file's own $c-native versions
-# rather than App.pm's originals changed in place, since that's what every
-# route here was already written to call by the time the adapter's last
-# caller was retired.
+# This file's own json/redirect/text/send_branded_page/send_login_page/
+# handle_login_form/render_spa_shell, $c-native throughout.
 sub _json ($c, $code, $data) {
    # canonical: sort object keys so every API response has a deterministic
    # key order (Perl hash order is otherwise randomised per process) - same
@@ -128,10 +119,9 @@ sub _redirect ($c, $code, $location, $headers = []) {
    foreach my $h (@$headers) {
       # Must be ->add, not ->header: login sets two Set-Cookie headers, and a
       # second ->header call would silently replace the first rather than add
-      # a second one - same pitfall App::NginxAdapter::header_out's own
-      # comment already documents; a real regression here first time round,
-      # caught by the integration suite (fresh test-user logins failing with
-      # "Not logged in" - one of the two cookies never reached the client).
+      # a second one. A real regression here first time round, caught by the
+      # integration suite (fresh test-user logins failing with "Not logged
+      # in" - one of the two cookies never reached the client).
       $c->res->headers->add(@$h);
    }
    $c->res->headers->content_type('text/plain');
@@ -228,19 +218,12 @@ sub _render_spa_shell ($c, $User, $parentFQDN) {
 }
 
 # ── $c-native request helpers ────────────────────────────────────────────────
-# App::NginxAdapter's own read-side methods (header_in/args/request_body), and
-# App.pm's parse_body_args/get_args, which only ever read via those - the other
-# half of "stop calling the adapter", finishing what the response helpers above
-# started. Unlike those, App.pm's own parse_body_args/get_args have no other
-# caller left to preserve compatibility with (nothing still calls them $r-shaped
-# once _handler/_api_handler are gone - see the deletions in App.pm), so these
-# are straight in-place equivalents, not new siblings kept apart from an old
-# version.
+# This file's own request-side helpers (header/args/body reads), $c-native
+# throughout - App.pm carries no equivalents of these at all any more.
 sub _host ($c) {
-   # Same fallback order as App::NginxAdapter::header_in's own 'Host' special
-   # case - Proxy::forwarded_host only sets X-Forwarded-Host for UI-classified
-   # requests (always carrying :port); plain Host covers direct/foreground
-   # testing before any real proxy sits in front.
+   # Proxy::forwarded_host only sets X-Forwarded-Host for UI-classified requests
+   # (always carrying :port); plain Host covers direct/foreground testing before
+   # any real proxy sits in front.
    return $c->req->headers->header('X-Forwarded-Host') // $c->req->headers->header('Host');
 }
 
