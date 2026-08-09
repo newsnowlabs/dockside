@@ -1135,8 +1135,8 @@ sub create_async ($self, $cb) {
                   next unless length($line);
                   my $event = eval { decode_json($line) };
                   next unless $event;
-                  # Two distinct error shapes share this same stream, verified live against a
-                  # real daemon: a per-layer failure mid-pull uses 'error'/'errorDetail'
+                  # Two distinct error shapes share this same stream: a per-layer failure
+                  # mid-pull uses 'error'/'errorDetail'
                   # (Docker's documented pull-progress event shape); a pull that fails outright
                   # before any layer progress starts (e.g. 404 'manifest unknown' for a bad tag)
                   # delivers a single line shaped {"message":...} instead - Docker's generic
@@ -1178,9 +1178,9 @@ sub create_async ($self, $cb) {
                # otherwise-real pull - $failed, above). $result->body is *always* empty here
                # regardless of which - on_read replaces Mojo's own default body-accumulation
                # (see call_socket_api_async's own comment) - so $buf/$failed are the only place
-               # the actual error text survives. Verified live: an unknown-tag pull returns 404
-               # with exactly this un-newline-terminated {"message":...} shape, caught here
-               # before this fallback existed (it silently reported an empty error string).
+               # the actual error text survives. An unknown-tag pull returns 404 with exactly
+               # this un-newline-terminated {"message":...} shape - without this fallback it
+               # would silently report an empty error string instead.
                my $bodyErr = length($buf) ? ( eval { decode_json($buf)->{'message'} } // $buf ) : undef;
                $reject->( $err // $failed // $bodyErr // ( $result ? 'HTTP ' . $result->code : 'no response' ) );
                return;
@@ -1209,17 +1209,15 @@ sub create_async ($self, $cb) {
       } );
    } )->then( sub ($containerId) {
       # Store the 12-char short id, matching Reservation::containerId's own established
-      # convention (launch()'s own regex above only ever captured 12 hex chars from the CLI's
-      # --cidfile output) - docker-event-daemon's containers.json keys are the same 12-char
-      # short id (_update_merge: 'substr($c->{'Id'}, 0, 12)'), and both $BY_CONTAINERID (this
-      # file's own update_container_info) and load_clean_map match against those keys directly.
-      # The Create API's response 'Id' here is the full 64-char id - storing it unturncated
-      # would silently never match either lookup: update_container_info would leave this
-      # reservation's status stuck at -3 ('destroyed') forever, onContainerStart would log "we
-      # don't manage" this containerId and never fire the launch DAG, and load_clean_map would
-      # conclude the container is gone and delete the reservation entirely after 30s - all while
-      # the container itself is alive and running. Verified live: this exact failure mode, caught
-      # and fixed before this function shipped, not a theoretical concern.
+      # convention - docker-event-daemon's containers.json keys are the same 12-char short id
+      # (_update_merge: 'substr($c->{'Id'}, 0, 12)'), and both $BY_CONTAINERID (this file's own
+      # update_container_info) and load_clean_map match against those keys directly. The Create
+      # API's response 'Id' here is the full 64-char id - storing it untruncated would silently
+      # never match either lookup: update_container_info would leave this reservation's status
+      # stuck at -3 ('destroyed') forever, onContainerStart would log "we don't manage" this
+      # containerId and never fire the launch DAG, and load_clean_map would conclude the
+      # container is gone and delete the reservation entirely after 30s - all while the
+      # container itself is alive and running.
       my $shortId = substr( $containerId, 0, 12 );
       $self->containerId($shortId);
       $self->update( { 'containerId' => $shortId } );

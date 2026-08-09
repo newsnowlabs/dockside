@@ -202,9 +202,9 @@ sub call_socket_api ($socket, $path, $opts = {}) {
       }
    }
    catch {
-      # Surprising, verified empirically: a request_timeout abort on a blocking $ua->start()
-      # does NOT leave $tx->result simply undef here - it actually throws (caught right here),
-      # unlike the same call made outside any try/catch at all. Capture the exception text via
+      # Surprising: a request_timeout abort on a blocking $ua->start() does NOT leave
+      # $tx->result simply undef here - it actually throws (caught right here), unlike the
+      # same call made outside any try/catch at all. Capture the exception text via
       # error_ref, for a caller that wants to distinguish "timed out" from "some other
       # failure" - the generic `return undef` below already matches every other caller's
       # existing contract, this only adds detail for one that asks for it.
@@ -220,11 +220,11 @@ sub call_socket_api ($socket, $path, $opts = {}) {
 # Perl closures only capture a variable actually *referenced by name* in the closure body: the
 # completion callback below takes its own ($ua, $tx) parameters (Mojo's own convention), which
 # *shadow* the ones this function creates - so nothing keeps this function's own $ua alive once
-# it returns, unless something else holds a reference. Verified empirically this bites for real,
-# not just in theory: an earlier version of this without %ASYNC_UA_IN_FLIGHT failed intermittently
-# with "Premature connection close" - the request's own Mojo::UserAgent (which owns the
-# connection) was garbage-collected mid-flight the instant the enclosing scope exited, sometimes
-# before the connection had even finished being established.
+# it returns, unless something else holds a reference. This bites for real, not just in theory:
+# an earlier version of this without %ASYNC_UA_IN_FLIGHT failed intermittently with "Premature
+# connection close" - the request's own Mojo::UserAgent (which owns the connection) was
+# garbage-collected mid-flight the instant the enclosing scope exited, sometimes before the
+# connection had even finished being established.
 my %ASYNC_UA_IN_FLIGHT;
 
 # Non-blocking sibling of call_socket_api above - never blocks the caller's own event loop.

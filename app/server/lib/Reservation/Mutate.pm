@@ -279,10 +279,10 @@ sub _hook_entry_liveness ($existing) {
 # dispatching run_hook_sync_async, or an app-server worker racing docker-event-daemon's own
 # launch-DAG auto-dispatch of lifecycle:launch/lifecycle:start) can never both see "not
 # running" and both proceed, the way Reservation::hook_is_running + hook_status_started could
-# when called as two separate, unlocked steps (found live: 2 of 4 genuinely concurrent
-# `dockside hook run` calls against the same devtainer both actually executed the hook
-# script, confirmed against the container's own execution log, not just against the API's
-# response).
+# when called as two separate, unlocked steps: a real, reproducible race, not just a
+# theoretical one - 2 of 4 genuinely concurrent `dockside hook run` calls against the same
+# devtainer both actually executed the hook script under that unlocked design, confirmed
+# against the container's own execution log, not just the API's response.
 #
 # Deliberately not built on top of hook_is_running/hook_status_started - those remain as they
 # are (a fast, unlocked, best-effort pre-check and a plain recording write respectively), still

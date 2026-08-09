@@ -11,12 +11,11 @@
 #   - not a spawned `docker events` subprocess. Maps directly onto `docker events --format
 #   "{{ json . }}"`'s own output: newline-delimited JSON, one event object per line - no
 #   demuxing needed here, unlike exec output.
-# - Runs a 0.5s recurring timer (Mojo::IOLoop->recurring) alongside the event stream, on the same
-#   reactor - verified live that a long-held-open stream and a recurring timer coexist correctly
-#   without blocking each other.
+# - Runs a 0.5s recurring timer (Mojo::IOLoop->recurring) alongside the event stream, on the
+#   same reactor - a long-held-open stream and a recurring timer coexist correctly on one
+#   reactor without blocking each other.
 # - The /events call's own inactivity_timeout is disabled (0) deliberately: this stream is meant
-#   to run forever, and Docker's own quiet periods routinely exceed Mojo's 20s default (verified
-#   live: idle for 22s with inactivity_timeout=>0 stayed open, no spurious error). No
+#   to run forever, and Docker's own quiet periods routinely exceed Mojo's 20s default. No
 #   request_timeout either, for the same reason - that bounds the whole call regardless of
 #   activity, which is wrong for a perpetual stream.
 #
@@ -60,9 +59,9 @@
 # - Runs in an outer while(1) loop: if eventHandler crashes or the /events stream closes (Docker
 #   restart, connection error, etc.), it restarts automatically after 1 second.
 # - Handles SIGTERM/SIGINT/SIGQUIT cleanly: sets a flag and stops the Mojo::IOLoop reactor -
-#   verified live that Mojo::IOLoop->stop cleanly interrupts an in-flight streamed request with
-#   no hang and no completion callback firing, so there is no subprocess-style two-stage
-#   SIGTERM-then-SIGKILL shutdown to do here any more; the process just exits.
+#   Mojo::IOLoop->stop cleanly interrupts an in-flight streamed request with no hang and no
+#   completion callback firing, so there is no subprocess-style two-stage SIGTERM-then-SIGKILL
+#   shutdown to do here any more; the process just exits.
 
 use v5.36;
 
@@ -95,8 +94,8 @@ my %pendingLaunch;  # containerId => { deadline => epoch, nextTime => epoch, lau
 # moment this DED process started - never added during ordinary operation otherwise, where every
 # live dispatch's own completion callback is the sole, sufficient resolver (see this file's own
 # "Launch dispatch orchestration" section header comment on why per-tick polling is otherwise
-# unnecessary). Found live, not assumed: restart-recovery's own hook_is_running self-heal check
-# correctly does nothing when a stage's exec really is still running (it must not falsely
+# unnecessary). Not just a theoretical case: restart-recovery's own hook_is_running self-heal
+# check correctly does nothing when a stage's exec really is still running (it must not falsely
 # resolve a genuinely live exec) - but the process that owned that exec's completion callback is
 # gone, permanently, and no Docker event exists that this daemon treats as "an exec finished, go
 # check on it" (docker events' own exec_die carries no reservation/stage context). Left
@@ -119,7 +118,7 @@ my $STOP_EVENT_LOOP = sub { };
 
 $SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = sub {
    # This will stop the Mojo::IOLoop reactor - see eventHandler's own comment on why that's a
-   # clean, sufficient shutdown now (verified live), with no subprocess to separately terminate.
+   # clean, sufficient shutdown now, with no subprocess to separately terminate.
    flog("eventHandler: Received SIGTERM; preparing to exit.");
    $SIGNAL_RECEIVED = 1;
    $STOP_EVENT_LOOP->();
@@ -762,8 +761,8 @@ sub onEvent ($event, $eventCount) {
 # necessary because Mojo::IOLoop is a singleton reused across every eventHandler() call (unlike
 # the old per-call `IO::Async::Loop->new`), so a restart that didn't clean up first would
 # accumulate a second, overlapping recurring timer alongside the first, each independently
-# calling update_async() and servicing %pendingLaunch - the same class of bug as the rogue
-# duplicate-daemon issue found elsewhere this session, just from a different cause.
+# calling update_async() and servicing %pendingLaunch - two timers racing to service the same
+# state, the same class of bug a duplicate daemon process running at once would cause.
 sub eventHandler {
    flog("eventHandler: Starting...");
 
@@ -895,11 +894,10 @@ sub eventHandler {
    } );
 
    # Persistent, non-blocking streamed GET /events - see this file's own header comment for the
-   # full reasoning (framing verified live, inactivity_timeout=>0 verified live, no
-   # request_timeout deliberately). Plain newline-delimited JSON, one event object per line - a
-   # running buffer is kept across on_read calls since a call may deliver a partial line or
-   # several at once, the same discipline Util::docker_exec's own frame demuxer uses for exec
-   # output.
+   # full reasoning (inactivity_timeout=>0, no request_timeout, both deliberate). Plain
+   # newline-delimited JSON, one event object per line - a running buffer is kept across on_read
+   # calls since a call may deliver a partial line or several at once, the same discipline
+   # Util::docker_exec_async's own frame demuxer uses for exec output.
    my $buf = '';
    call_socket_api_async(
       $CONFIG->{'docker'}{'socket'},
@@ -933,7 +931,7 @@ sub eventHandler {
       },
       sub ($result, $err) {
          # Fires exactly once, whenever the stream ends for any reason - graceful EOF,
-         # connection error, or (verified live) NOT our own shutdown: Mojo::IOLoop->stop
+         # connection error, or - notably NOT - our own shutdown: Mojo::IOLoop->stop
          # interrupts the stream without ever calling this back. So reaching here always means
          # "the stream ended on its own" - stop the reactor so eventHandler returns and the
          # outer while(1) loop below reconnects, exactly as it already did for the old
@@ -1003,9 +1001,9 @@ Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
 #
 # Not necessarily settled by this one pass: hook_is_running correctly does nothing when a
 # stage's exec is still genuinely running - it must not falsely resolve a live exec - but that
-# leaves it exactly as orphaned as before (no callback anywhere will ever notice it finish).
-# Found live, not assumed: restarting DED mid-dispatch, then confirming a stage stayed 'running'
-# indefinitely, well after its real exec had actually completed. %launchRecovering (see its own
+# leaves it exactly as orphaned as before (no callback anywhere will ever notice it finish, so
+# restarting DED mid-dispatch alone would otherwise leave a stage stuck 'running' indefinitely,
+# well after its real exec had actually completed). %launchRecovering (see its own
 # comment) is what covers this: seeded here for anything still in-flight after this first pass,
 # then on_tick re-checks it until settled. Deliberately placed only here, not inside eventHandler
 # (which restarts on stream-close/crash - see the file's own banner) - this must run once per

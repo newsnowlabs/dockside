@@ -331,21 +331,15 @@ sub _require_login ($c, $User) {
    return 0;
 }
 
-# Every state-changing route below is POST-only; a GET (or any other method)
-# to the same path must get a clean 405, not silently fall through to the
-# final catch-all's redirect-to-'/' (indistinguishable there from the path
-# simply not existing). Mirrors _api_handler's own former explicit method
-# guards exactly (App.pm, deleted alongside the rest of the old routing chain
-# - one for admin/self mutation paths, one for container mutation paths) -
-# unlike some frameworks, Mojolicious's router has no automatic "path
-# matched, wrong method" behaviour of its own, so each mutation path needs
-# its own fallback registered (see each route's own use of this sub, always
-# right after its real POST handler at the same path): a request that
-# matches the path AND is a POST already matched the earlier, more specific
-# route and never reaches this one; anything else does. Found live: the
-# integration suite's own AdminApiTests.test_05_get_on_mutation_is_405 caught
-# the regression immediately (302 instead of 405) once _api_handler's guards
-# were deleted with nothing yet in their place.
+# Every state-changing route below is POST-only; a GET (or any other method) to the same path
+# must get a clean 405, not silently fall through to the final catch-all's redirect-to-'/'
+# (indistinguishable there from the path simply not existing). Unlike some frameworks,
+# Mojolicious's router has no automatic "path matched, wrong method" behaviour of its own, so
+# each mutation path needs its own fallback registered (see each route's own use of this sub,
+# always right after its real POST handler at the same path): a request that matches the path
+# AND is a POST already matched the earlier, more specific route and never reaches this one;
+# anything else does. AdminApiTests.test_05_get_on_mutation_is_405 in the integration suite
+# covers this.
 sub _post_only ($c) {
    return _json( $c, 405, { 'status' => '405', 'msg' => 'Method Not Allowed: use POST' } );
 }
@@ -684,14 +678,12 @@ sub _admin_route ($body) {
 # 'create' - a bare Mojolicious placeholder matches ANY single path segment,
 # including the literal word 'create', so GET /roles/create would otherwise
 # silently dispatch to getRole('create') (a role that doesn't exist) instead
-# of correctly finding no matching route at all and falling through to
-# _api_handler's own existing POST-only guard for a clean 405 - exactly the
-# same fallthrough task #29's own /containers/:id/update already relies on
-# for its 405, which works there only because nothing else registered under
-# $authed happens to collide with that specific path shape. Found live: the
-# integration suite's own AdminApiTests.test_05_get_on_mutation_is_405 caught
-# it immediately (401 instead of 405), verified as a real routing collision,
-# not a stale/flaky result, before this fix.
+# of correctly finding no matching route at all and falling through to the
+# POST-only guard (_post_only above) for a clean 405 - exactly the same
+# fallthrough /containers/:id/update already relies on for its 405, which
+# works there only because nothing else registered under $authed happens to
+# collide with that specific path shape. AdminApiTests.test_05_get_on_mutation_is_405
+# in the integration suite covers this routing collision.
 # Account (self-service) - any authenticated user
 $authed->get( '/me' => _admin_route( sub ( $c, $User ) {
    return $User->getSelf();
@@ -828,11 +820,8 @@ sub _serve_static ($c) {
    # once something calls render()/rendered() on it; skipping that call here (as an
    # earlier version of this did, only calling it in the 404 branch below) left every
    # successful static response - a 200 with the file's own bytes already attached to
-   # $c->res, ready to send - never actually sent: the worker just sat there forever.
-   # Verified live: reproduced in isolation (a scratch Mojolicious::Lite script hitting
-   # exactly this), Mojolicious's own trace log names it precisely - "Nothing has been
-   # rendered, expecting delayed response" - then nothing, ever, confirming this is what
-   # was silently hanging every /docs/ request before this fix.
+   # $c->res, ready to send - never actually sent: the worker just sat there forever,
+   # silently hanging every /docs/ request. Must call rendered() unconditionally here.
    $c->app->static->serve( $c, $path );
    return $c->rendered( $c->res->code || 404 );
 }
