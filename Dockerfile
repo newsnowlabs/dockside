@@ -589,6 +589,7 @@ RUN apt-get update && \
         libfile-find-rule-perl libperl-languageserver-perl \
         git tig perltidy \
         shellcheck \
+        python3 python3-yaml \
         procps vim less curl locales && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
