@@ -32,6 +32,7 @@ use Mojo::Server::Prefork;
 
 use Try::Tiny;
 
+use URI::Escape;
 use Util qw(flog wlog sanitize_sensitive_text YYYYMMDDHHMMSS);
 use Exception;
 use Data qw($CONFIG $HOSTNAME $HOSTINFO);
@@ -477,6 +478,147 @@ $authed->get( '/resources' => sub ($c) {
             'authModes' => [ 'user', 'developer', 'public', 'viewer', 'owner' ],
          }
       } );
+      $r->finalize($c);
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+# ── Admin/self CRUD routes (App.pm:656-808), ported verbatim ────────────────
+# Every one of these blocks (in App.pm today) has the identical outer shape:
+# compute some $data from a single User.pm call, then
+# json($r, 200, {status=>'200', data=>$data}) - only the User.pm method and
+# its args differ. _admin_route factors that shape out once, so each route
+# below is just its own distinctive middle line, the same way the original
+# blocks read - not a new abstraction over the original design, a name for
+# the repetition it already had. Same login gate, same try/catch-via-
+# _render_error as the container routes above.
+sub _admin_route ($body) {
+   return sub ($c) {
+      my $r    = App::NginxAdapter->new($c);
+      my $User = $c->stash('user');
+      _require_login( $c, $r, $User ) or return;
+      try {
+         my $data = $body->( $c, $r, $User );
+         App::json( $r, 200, { 'status' => '200', 'data' => $data } );
+         $r->finalize($c);
+      }
+      catch {
+         _render_error( $c, $_ );
+      };
+   };
+}
+
+# Every :name/:username placeholder route below that has a 'create' sibling
+# (/users/:username vs /users/create, /roles/:name vs /roles/create,
+# /profiles/:name vs /profiles/create) constrains the placeholder to exclude
+# 'create' - a bare Mojolicious placeholder matches ANY single path segment,
+# including the literal word 'create', so GET /roles/create would otherwise
+# silently dispatch to getRole('create') (a role that doesn't exist) instead
+# of correctly finding no matching route at all and falling through to
+# _api_handler's own existing POST-only guard for a clean 405 - exactly the
+# same fallthrough task #29's own /containers/:id/update already relies on
+# for its 405, which works there only because nothing else registered under
+# $authed happens to collide with that specific path shape. Found live: the
+# integration suite's own AdminApiTests.test_05_get_on_mutation_is_405 caught
+# it immediately (401 instead of 405), verified as a real routing collision,
+# not a stale/flaky result, before this fix.
+# Account (self-service) - any authenticated user
+$authed->get( '/me' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->getSelf();
+} ) );
+$authed->post( '/me/update' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->updateSelf( App::get_args( $r, $r->args ) );
+} ) );
+$authed->get( '/me/profiles' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->profiles();
+} ) );
+
+# User management
+$authed->get( '/users' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->listUsers( App::split_args( $r->args ) );
+} ) );
+$authed->post( '/users/create' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->createUser( App::get_args( $r, $r->args ) );
+} ) );
+$authed->get( '/users/:username' => [ username => qr/(?!create\z)[^\/]+/ ] => _admin_route( sub ( $c, $r, $User ) {
+   return $User->getUser( $c->stash('username'), App::split_args( $r->args ) );
+} ) );
+$authed->post( '/users/:username/update' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->updateUser( $c->stash('username'), App::get_args( $r, $r->args ) );
+} ) );
+$authed->post( '/users/:username/remove' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->removeUser( $c->stash('username'), App::split_args( $r->args ) );
+} ) );
+
+# Role management
+$authed->get( '/roles' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->listRoles();
+} ) );
+$authed->post( '/roles/create' => _admin_route( sub ( $c, $r, $User ) {
+   my $args = App::get_args( $r, $r->args );
+   my $name = $args->{'name'} or die Exception->new( 'msg' => "name is required" );
+   return $User->createRole( $name, $args );
+} ) );
+$authed->get( '/roles/:name' => [ name => qr/(?!create\z)[^\/]+/ ] => _admin_route( sub ( $c, $r, $User ) {
+   return $User->getRole( $c->stash('name') );
+} ) );
+$authed->post( '/roles/:name/update' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->updateRole( $c->stash('name'), App::get_args( $r, $r->args ) );
+} ) );
+$authed->post( '/roles/:name/remove' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->removeRole( $c->stash('name') );
+} ) );
+
+# Profile management
+$authed->get( '/profiles' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->listProfiles( App::split_args( $r->args ) );
+} ) );
+$authed->post( '/profiles/create' => _admin_route( sub ( $c, $r, $User ) {
+   my $args = App::get_args( $r, $r->args );
+   my $id   = $args->{'id'} or die Exception->new( 'msg' => "id is required" );
+   return $User->createProfile( $id, $args );
+} ) );
+$authed->get( '/profiles/:name' => [ name => qr/(?!create\z)[^\/]+/ ] => _admin_route( sub ( $c, $r, $User ) {
+   return $User->getProfile( $c->stash('name'), App::split_args( $r->args ) );
+} ) );
+$authed->post( '/profiles/:name/update' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->updateProfile( $c->stash('name'), App::get_args( $r, $r->args ) );
+} ) );
+$authed->post( '/profiles/:name/remove' => _admin_route( sub ( $c, $r, $User ) {
+   return $User->removeProfile( $c->stash('name') );
+} ) );
+$authed->post( '/profiles/:name/rename' => _admin_route( sub ( $c, $r, $User ) {
+   my $args     = App::get_args( $r, $r->args );
+   my $new_name = $args->{'new_name'} or die Exception->new( 'msg' => "new_name is required" );
+   return $User->renameProfile( $c->stash('name'), $new_name, $args );
+} ) );
+
+# getAuthCookies - the one route here that doesn't fit _admin_route's uniform
+# {status,data} shape (it builds a raw Cookie-header string, appending the
+# configured globalCookie if set), but keeps the same login gate and
+# try/catch-via-_render_error as everything else on this bridge.
+$authed->get( '/getAuthCookies' => sub ($c) {
+   my $r    = App::NginxAdapter->new($c);
+   my $User = $c->stash('user');
+   _require_login( $c, $r, $User ) or return;
+   try {
+      my $parentFQDN = $r->header_in('Host');
+      $parentFQDN =~ s!^[^\-\.]+!!;
+      $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+
+      my @cookies = $User->generate_auth_cookies($parentFQDN);
+      my ($cookie) = map { s/;.*$//; $_ } grep { /Secure;$/ } @cookies;
+
+      if ( $CONFIG->{'globalCookie'} && $CONFIG->{'globalCookie'}{'name'} && $CONFIG->{'globalCookie'}{'secret'} ) {
+         $cookie .= sprintf( "; %s=%s",
+            $CONFIG->{'globalCookie'}{'name'},
+            uri_escape( $CONFIG->{'globalCookie'}{'secret'} )
+         );
+      }
+
+      App::json( $r, 200, { 'status' => '200', 'data' => $cookie } );
       $r->finalize($c);
    }
    catch {
