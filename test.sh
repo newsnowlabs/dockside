@@ -86,7 +86,6 @@ check_perl() {
   local modules=(
     app/server/lib/App.pm
     app/server/lib/App/Metadata.pm
-    app/server/lib/App/NginxAdapter.pm
     app/server/lib/Containers.pm
     app/server/lib/Data.pm
     app/server/lib/Exception.pm

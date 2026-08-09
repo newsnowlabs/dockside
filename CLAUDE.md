@@ -8,7 +8,7 @@
   `app/server/lib` at startup — a file edit alone changes nothing until the process(es) that
   loaded it are restarted (Perl modules compile once at process start, no hot-reload). Restart
   by what you touched:
-  - `app/server/lib/{App,App/NginxAdapter,User,Reservation,Reservation/*,Data,Util,Exception,
+  - `app/server/lib/{App,App/Metadata,User,Reservation,Reservation/*,Data,Util,Exception,
     Profile,Containers,Request}.pm`, `app/server/bin/app-server` → **all three**:
     `sudo s6-svc -t /etc/service/nginx /etc/service/docker-event-daemon /etc/service/app-server`
     — these are shared libs `docker-event-daemon` and `app-server` both load directly, and
