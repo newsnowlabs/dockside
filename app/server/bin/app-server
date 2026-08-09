@@ -116,6 +116,44 @@ sub _render_error ($c, $err) {
 
 my $routes = $app->routes;
 
+# ── Auth bridge for natively-ported routes ───────────────────────────────────
+# Mojolicious's own replacement for _handler's inline auth (App.pm:363-372),
+# repeated identically at the top of every route today: authenticate once, per
+# request, then enforce the globalCookieRequired gate - the same check
+# _authenticate above already factors out for the five async routes, reused here
+# rather than duplicated a third time. A false return short-circuits dispatch
+# entirely for everything registered under this bridge (Mojolicious's own
+# mechanism for "gate before the group", no manual status-code bookkeeping
+# needed) - _authenticate has already rendered the 401 itself in that case.
+#
+# Deliberately does NOT reject an unauthenticated (not-logged-in) request at
+# all, GET or POST - only missing/invalid globalCookie does that
+# unconditionally. Everything else about login state is route-specific:
+# static assets are served regardless (main.css, favicon, ico/*), main.js
+# requires login, _require_login above content-negotiates a 401/redirect for
+# API routes, and the SPA-shell/login route below is the only place that
+# actually treats a not-logged-in POST as a login form submission - narrower
+# than _handler's own current behaviour (App.pm:432-437 treats *any*
+# not-logged-in POST, to any path, as a login attempt) but a real browser's
+# own login form only ever POSTs back to '/' or '/container/*' in practice
+# (the only two paths that ever render it) anyway, so nothing legitimate
+# relies on the wider version - simpler to scope the check to where it's
+# actually meaningful than to duplicate "is this secretly a login attempt?"
+# reasoning into every future route registered under this bridge.
+#
+# Every _api_handler/_handler route ported to a native route (see
+# docs/plans/mojolicious-app-server-split-plan.md's "End state" section) is
+# registered under this bridge, not directly on $routes - the five async routes
+# above are deliberately left as they are (their own inline _authenticate call),
+# already proven correct in production; no reason to touch them just to share
+# this bridge too.
+my $authed = $routes->under('/' => sub ($c) {
+   my $r = App::NginxAdapter->new($c);
+   my $User = _authenticate( $r, $c ) or return undef;
+   $c->stash( 'user' => $User );
+   return 1;
+} );
+
 $routes->post('/containers/create')->to(
    cb => sub ($c) {
       $c->render_later;
@@ -199,6 +237,107 @@ $routes->post('/containers/:id/hook')->to(
       };
    }
 );
+
+# ── First natively-ported routes (see the plan's "End state" section) ───────
+# Mechanical ports of App.pm's own static-asset blocks (App.pm:380-402,
+# 409-415, 452-458) - same paths, same files, same behaviour, registered under
+# the $authed bridge above instead of App::handler's if-chain. Content-Type
+# comes from Mojolicious's own extension-based detection (reply->file, via
+# Mojolicious::Types) rather than the original code's explicit
+# send_http_header(...) calls - verified to match for every extension used
+# here except .ico, where the original used a non-standard "image/icon"
+# (not an IANA-registered type) for both favicon.ico *and* apple-touch-icon.png
+# alike; Mojolicious's own detection gives the correct "image/x-icon"/
+# "image/png" for each respectively - a harmless, incidental correctness fix,
+# not a deliberate behaviour change in its own right.
+for my $file (qw(favicon.ico apple-touch-icon.png)) {
+   $authed->get("/$file" => sub ($c) { $c->reply->file("$CONFIG->{'assetsPath'}/ico/$file") } );
+}
+$authed->get( '/ico/:file' => [ file => qr/[a-z0-9\-_]+\.png/ ] => sub ($c) {
+   $c->reply->file("$CONFIG->{'assetsPath'}/ico/" . $c->stash('file'));
+} );
+$authed->get( '/ico/:file' => [ file => qr/[a-z0-9\-_]+\.svg/ ] => sub ($c) {
+   $c->reply->file("$CONFIG->{'assetsPath'}/ico/" . $c->stash('file'));
+} );
+
+# Served pre-auth too (reachable regardless of login state, like the routes
+# above - only the $authed bridge's own globalCookieRequired gate applies) so
+# the also-pre-auth login page can link to it same-origin instead of an
+# external CDN. main.js has no pre-auth reader, so it stays gated below with
+# the rest of the authenticated app's assets.
+$authed->get( '/assets/main.css' => sub ($c) {
+   $c->res->headers->cache_control('public, max-age=31536000, immutable');
+   $c->reply->file("$CONFIG->{'clientDistPath'}/main.css");
+} );
+
+# Gated on login (unlike main.css above) - matches the original's own
+# placement, after the "not logged in" branch's own redirect-to-'/' handling.
+# A not-logged-in request here hits that same fate: redirected to '/', not a
+# 401 - stale cached references (e.g. after logout) should land on the login
+# page like any other pre-auth page view, not error.
+$authed->get( '/assets/main.js' => sub ($c) {
+   my $User = $c->stash('user');
+   unless ( $User->username ) {
+      $c->res->headers->add( 'Cache-Control', 'no-store' );
+      $c->res->headers->location('/');
+      return $c->render( text => "Redirecting to / ...\n", status => 302 );
+   }
+   $c->res->headers->cache_control('public, max-age=31536000, immutable');
+   $c->reply->file("$CONFIG->{'clientDistPath'}/main.js");
+} );
+
+# The SPA shell ('/', '/container/*', '/admin/*', '/account/*' - App.pm:460, via
+# the now-shared App::render_spa_shell) and the login page/form it falls back to
+# when not logged in (App.pm:417-438). No method restriction, matching the
+# original block's own lack of one - a POST here while logged in (unusual, but
+# not prevented today) renders the same shell a GET would.
+#
+# This is the one place a not-logged-in POST is treated as a login form
+# submission - deliberately scoped here rather than handled bridge-wide (see
+# $authed's own comment on why): these are the only paths that ever render
+# the login form in the first place, so they're the only ones a browser's own
+# login form ever POSTs back to.
+#
+# Still adapter-based (App::send_login_page/redirect/handle_login_form/
+# render_spa_shell, reused verbatim, unchanged) rather than rewritten to
+# render via $c directly - a verbatim port of dispatch first, matching the
+# plan's own recommended approach; fully retiring the adapter from these call
+# sites is its own later, focused pass once every route is ported and the
+# shared response helpers can be updated once for all of them together, not
+# piecemeal per route.
+my $spa_shell_or_login = sub ($c) {
+   my $User = $c->stash('user');
+   my $r    = App::NginxAdapter->new($c);
+   my $path = $c->req->url->path->to_string;
+
+   unless ( $User->username ) {
+      if ( $c->req->method eq 'POST' ) {
+         my $parentFQDN = $r->header_in('Host');
+         $parentFQDN =~ s!^[^\-\.]+!!;
+         $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+         App::handle_login_form( $r, $parentFQDN ) || App::send_login_page($r);
+      }
+      elsif ( $path eq '/' || $path =~ m!^/container/! ) {
+         App::send_login_page($r);
+      }
+      else {
+         App::redirect( $r, 302, '/' );
+      }
+      return $r->finalize($c);
+   }
+
+   my $parentFQDN = $r->header_in('Host');
+   $parentFQDN =~ s!^[^\-\.]+!!;
+   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+   App::render_spa_shell( $r, $User, $parentFQDN );
+   return $r->finalize($c);
+};
+
+$authed->any( '/' => $spa_shell_or_login );
+for my $prefix (qw(container admin account)) {
+   $authed->any( "/$prefix" => $spa_shell_or_login );
+   $authed->any( "/$prefix/*rest" => { rest => '' } => $spa_shell_or_login );
+}
 
 # ── Static /docs (the sole nginx::DECLINED source - App.pm:375, verified) ───
 # nginx's own `root` directive (sites-available/default) served this directly;

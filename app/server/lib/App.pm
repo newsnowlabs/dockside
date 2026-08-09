@@ -293,6 +293,65 @@ sub handle_login_form ($r, $parentFQDN) { # nginx request object # copy of $pare
    # Fallthrough: try return code will be returned here.
 }
 
+# Renders the SPA shell - the same HTML for '/', '/container/*', '/admin/*', and
+# '/account/*' alike, embedding a signed-in user's own permissions/reservations/
+# profiles as window.dockside; Vue Router (client-side) then renders the actual
+# page from the URL, the server itself doesn't need to know which of these paths
+# was requested. Extracted from _handler's own former inline block (both call
+# sites - _handler here, and bin/app-server's native route registered for these
+# same paths - need the identical body, not two copies of it) - purely
+# mechanical, no behaviour change.
+sub render_spa_shell ($r, $User, $parentFQDN) {
+   $r->send_http_header("text/html");
+   $r->print( get_header() );
+   # main.css served as a separate cacheable, gzip-compressible asset (see the
+   # /assets/main.(js|css) route above), not inlined. Render-blocking in <head> like the
+   # inline <style> it replaces, so styles still apply before first paint.
+   my $css_v = _asset_version('main.css');
+   $r->print( qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n} );
+
+   # Output permissions for signed-in user
+   try {
+
+      $r->print(
+         sprintf( "<script>window.dockside = %s\n</script>",
+                  JSON::XS->new->utf8->convert_blessed->encode(
+                     {
+                        # FIXME: set 'user' => $User, after simply either (a) changing User object definition to make 'permissions' the derivedPermissions; or (b) the Vue app to check user.derivedPermissions.
+                        'user'    => {
+                           %{ $User->details() }, # username, name, email, id
+                           'role' => $User->role, # User's role
+                           'role_as_meta' => $User->role_as_meta, # User's role in metadata format
+                           'permissions' => { 'actions' => $User->permissions() } # User's permissions
+                        },
+                        'profiles' => $User->profiles(),
+                        'containers' => $User->reservations({'client' => 1}),
+                        'viewers' => User->viewers(),
+                        'dummyReservation' => $User->createClientReservation(),
+                        'host' => $parentFQDN,
+                        'version' => $VERSION // 'v-unknown'
+                     }
+                  )
+         )
+      );
+   }
+   catch {
+      # FIXME: The caught exception can itself be an exception: find a way to rethrow it, preserving the msg/dbg history for debug purposes.
+      die Exception->new( 'msg' => 'Failed to initialise client-side data structures', 'dbg' => "Caught exception: $_" );
+   };
+
+   $r->print('</head>');
+   $r->print( '<body data-spy="scroll" data-target=".sidebar">' . "\n" );
+   $r->print( "<div id='app'><router-view></router-view></div>\n" );
+   # main.js served as a separate cacheable, gzip-compressible asset (see the
+   # /assets/main.(js|css) route above) instead of inlining ~3.8 MiB into every page.
+   my $js_v = _asset_version('main.js');
+   $r->print( qq{<script src="/assets/main.js?v=$js_v"></script>\n} );
+   $r->print("</body></html>\n");
+
+   return nginx::OK;
+}
+
 # ---------------------------------------------------------------------------
 # Named body-handler callbacks for has_request_body().
 #
@@ -458,57 +517,7 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    }
 
    if( $route eq '/' || $route =~ m!^/(container|admin|account)(/|$)! ) {
-      ###############################
-      # Display main page HTML
-      #
-      $r->send_http_header("text/html");
-      $r->print( get_header() );
-      # main.css served as a separate cacheable, gzip-compressible asset (see the
-      # /assets/main.(js|css) route above), not inlined. Render-blocking in <head> like the
-      # inline <style> it replaces, so styles still apply before first paint.
-      my $css_v = _asset_version('main.css');
-      $r->print( qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n} );
-
-      # Output permissions for signed-in user
-      try {
-
-         $r->print(
-            sprintf( "<script>window.dockside = %s\n</script>",
-                     JSON::XS->new->utf8->convert_blessed->encode(
-                        {
-                           # FIXME: set 'user' => $User, after simply either (a) changing User object definition to make 'permissions' the derivedPermissions; or (b) the Vue app to check user.derivedPermissions.
-                           'user'    => {
-                              %{ $User->details() }, # username, name, email, id
-                              'role' => $User->role, # User's role
-                              'role_as_meta' => $User->role_as_meta, # User's role in metadata format
-                              'permissions' => { 'actions' => $User->permissions() } # User's permissions
-                           },
-                           'profiles' => $User->profiles(),
-                           'containers' => $User->reservations({'client' => 1}),
-                           'viewers' => User->viewers(),
-                           'dummyReservation' => $User->createClientReservation(),
-                           'host' => $parentFQDN,
-                           'version' => $VERSION // 'v-unknown'
-                        }
-                     )
-            )
-         );
-      }
-      catch {
-         # FIXME: The caught exception can itself be an exception: find a way to rethrow it, preserving the msg/dbg history for debug purposes.
-         die Exception->new( 'msg' => 'Failed to initialise client-side data structures', 'dbg' => "Caught exception: $_" );
-      };
-
-      $r->print('</head>');
-      $r->print( '<body data-spy="scroll" data-target=".sidebar">' . "\n" );
-      $r->print( "<div id='app'><router-view></router-view></div>\n" );
-      # main.js served as a separate cacheable, gzip-compressible asset (see the
-      # /assets/main.(js|css) route above) instead of inlining ~3.8 MiB into every page.
-      my $js_v = _asset_version('main.js');
-      $r->print( qq{<script src="/assets/main.js?v=$js_v"></script>\n} );
-      $r->print("</body></html>\n");
-
-      return nginx::OK;
+      return render_spa_shell($r, $User, $parentFQDN);
    }
 
    ###############################
