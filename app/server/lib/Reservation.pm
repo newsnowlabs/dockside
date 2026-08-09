@@ -1523,40 +1523,32 @@ sub hook_is_running ($self, $name) {
    return 0 unless $status && ($status->{'state'} // '') eq 'running';
 
    # Newly-started, before docker_exec_async()'s own on_created callback has fired yet
-   # (see hook_status_started/hook_status_set_running_details below) - neither liveness
-   # signal exists yet, so there is nothing to check; it is, definitionally, still running.
-   return 1 unless defined($status->{'pid'}) || defined($status->{'execId'});
+   # (see hook_status_started/hook_status_set_running_details below) - the execId doesn't
+   # exist yet, so there is nothing to check; it is, definitionally, still running.
+   return 1 unless defined($status->{'execId'});
 
    # Stale-running detection, mirroring run_hook()'s own kill -0 reclaim for its in-container
    # lock: an app-server/docker-event-daemon process that died before this dispatch's own
    # completion callback ever ran (OOM, crash, restart) would otherwise wedge this name as
-   # "running" forever. Two signals, cheapest first: a pid-based check (same PID namespace as
-   # this process), then, if that's inconclusive, the exec API's own Running state. The
-   # pid-based branch is currently unreachable - see hook_status_set_running_details' own
-   # comment, no caller sets a real pid today - kept as a cheap first check the design allows
-   # for, not something anything currently relies on.
-   if( defined $status->{'pid'} ) {
-      return 1 if kill(0, $status->{'pid'});
-   }
-   if( defined $status->{'execId'} ) {
-      my $res = call_socket_api($CONFIG->{'docker'}{'socket'}, "/exec/$status->{'execId'}/json", {});
-      if( $res && $res->is_success ) {
-         my $info = decode_json($res->body);
-         return 1 if $info->{'Running'};
+   # "running" forever. The exec API's own Running state is the only signal available - nothing
+   # forks for this any more, so there is no local pid to check first.
+   my $res = call_socket_api($CONFIG->{'docker'}{'socket'}, "/exec/$status->{'execId'}/json", {});
+   if( $res && $res->is_success ) {
+      my $info = decode_json($res->body);
+      return 1 if $info->{'Running'};
 
-         # Not running, and we have a real answer from the daemon about how it ended - use it,
-         # rather than defaulting to 'aborted' below regardless of what actually happened.
-         if( defined $info->{'ExitCode'} ) {
-            $self->hook_status_completed( $name, {
-               'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
-               'exitCode' => $info->{'ExitCode'},
-            } );
-            return 0;
-         }
+      # Not running, and we have a real answer from the daemon about how it ended - use it,
+      # rather than defaulting to 'aborted' below regardless of what actually happened.
+      if( defined $info->{'ExitCode'} ) {
+         $self->hook_status_completed( $name, {
+            'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
+            'exitCode' => $info->{'ExitCode'},
+         } );
+         return 0;
       }
    }
 
-   # Neither signal gave a conclusive answer - self-heal the record (so a future check, and any
+   # No conclusive answer from the daemon - self-heal the record (so a future check, and any
    # status-read caller, sees 'aborted' rather than a misleadingly eternal 'running') and
    # report not-running.
    $self->hook_status_completed($name, { 'state' => 'aborted' });
@@ -1565,7 +1557,7 @@ sub hook_is_running ($self, $name) {
 
 # Returns $name's master-record entry (undef if it has never been invoked on this
 # reservation), for a status/log read endpoint to serve. Normalizes the numeric-ish fields
-# (exitCode/timedOut/busy/pid) back to real numbers before returning.
+# (exitCode/timedOut/busy) back to real numbers before returning.
 #
 # The root cause this works around is fixed now (Util::cloneHash no longer stringifies
 # every value it copies as a side effect of comparing it via `ne` - see cloneHash's own
@@ -1581,7 +1573,7 @@ sub hook_status ($self, $name) {
    return undef unless $status;
 
    my $clean = { %$status };
-   for my $f (qw(exitCode timedOut busy pid)) {
+   for my $f (qw(exitCode timedOut busy)) {
       $clean->{$f} = 0 + $clean->{$f} if defined $clean->{$f};
    }
    return $clean;
@@ -1590,15 +1582,13 @@ sub hook_status ($self, $name) {
 # Called synchronously before dispatch begins (docker-event-daemon's own launch:-DAG stages
 # only - dispatch_hook_exec_async's own claim/dispatch, below, uses hook_claim_if_not_running
 # instead), to record that $name has started, so a poller sees 'running' immediately rather
-# than a gap where the record doesn't exist yet. pid/execId are both deliberately undef at
-# this point - no fork is involved, and the exec id only exists once docker_exec_async's own
-# on_created callback fires - see hook_status_set_running_details, called from that callback
-# once it's known.
+# than a gap where the record doesn't exist yet. execId is deliberately undef at this point -
+# it only exists once docker_exec_async's own on_created callback fires - see
+# hook_status_set_running_details, called from that callback once it's known.
 sub hook_status_started ($self, $name, $logPath) {
    $self->_hook_status_store_one( $name, {
       'name'      => $name,
       'state'     => 'running',
-      'pid'       => undef,
       'execId'    => undef,
       'logPath'   => $logPath,
       'startTime' => YYYYMMDDHHMMSS(time),
@@ -1606,13 +1596,10 @@ sub hook_status_started ($self, $name, $logPath) {
 }
 
 # Called from docker_exec_async's own on_created callback once the exec id is known - see
-# hook_status_started above for why it can't be known any earlier. $pid is always undef in
-# every current caller (no fork is involved - see hook_status_started's own comment); kept as
-# a parameter since hook_is_running's own liveness check still accepts a pid-based signal
-# alongside the execId-based one, not because anything populates it today.
-sub hook_status_set_running_details ($self, $name, $pid, $execId) {
+# hook_status_started above for why it can't be known any earlier.
+sub hook_status_set_running_details ($self, $name, $execId) {
    my $existing = $self->_hook_status_all->{$name} or return;
-   $self->_hook_status_store_one( $name, { %$existing, 'pid' => $pid, 'execId' => $execId } );
+   $self->_hook_status_store_one( $name, { %$existing, 'execId' => $execId } );
 }
 
 # Called once the hook has finished, timed out, or been confirmed aborted, recording the
@@ -1690,7 +1677,7 @@ sub dispatch_hook_exec_async ($self, $name, $script, $args, $on_claimed, $on_set
    }, {
       'inactivity_timeout' => $timeout + 30,
       'request_timeout'    => $timeout,
-      'on_created' => sub ($execId) { $self->hook_status_set_running_details( $name, undef, $execId ); },
+      'on_created' => sub ($execId) { $self->hook_status_set_running_details( $name, $execId ); },
       'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
    }, sub ( $result, $err ) {
       try {

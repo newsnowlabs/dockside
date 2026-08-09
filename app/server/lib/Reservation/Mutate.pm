@@ -236,11 +236,11 @@ sub increment_data_field ($id, $key) {
 # Shared by hook_claim_if_not_running and launch_reset_stages_if_idle below - both need the
 # identical "is this status entry genuinely still running" decision, now performed inside
 # mutate()'s lock rather than hook_is_running's unlocked, single-process form. Mirrors
-# hook_is_running's own liveness/self-heal reasoning exactly (same two signals - pid, then
-# execId - same order, same fallback to 'aborted' if neither is conclusive). The execId probe
-# is a real HTTP round-trip to dockerd, so a caller with an existing 'running' entry does hold
-# the reservations-db file lock for its duration - only on that path, never on the common
-# "nothing recorded" path, which this returns from after a single hash lookup.
+# hook_is_running's own liveness/self-heal reasoning exactly (execId is the only signal, same
+# fallback to 'aborted' if it's inconclusive). The execId probe is a real HTTP round-trip to
+# dockerd, so a caller with an existing 'running' entry does hold the reservations-db file lock
+# for its duration - only on that path, never on the common "nothing recorded" path, which this
+# returns from after a single hash lookup.
 #
 # Returns ($isLive, $healedEntry): $isLive true means genuinely still running - the caller must
 # not touch this slot. $healedEntry is a resolved entry (done/failed/aborted), for the caller to
@@ -249,27 +249,23 @@ sub increment_data_field ($id, $key) {
 sub _hook_entry_liveness ($existing) {
    return ( 0, undef ) unless $existing && ( $existing->{'state'} // '' ) eq 'running';
 
-   if ( !defined( $existing->{'pid'} ) && !defined( $existing->{'execId'} ) ) {
-      return ( 1, undef );   # newly-started elsewhere, neither signal exists yet - genuinely live
+   if ( !defined( $existing->{'execId'} ) ) {
+      return ( 1, undef );   # newly-started elsewhere, the signal doesn't exist yet - genuinely live
    }
-   if ( defined( $existing->{'pid'} ) && kill( 0, $existing->{'pid'} ) ) {
-      return ( 1, undef );   # genuinely still running
-   }
-   if ( defined( $existing->{'execId'} ) ) {
-      my $res = call_socket_api( $CONFIG->{'docker'}{'socket'}, "/exec/$existing->{'execId'}/json", {} );
-      if ( $res && $res->is_success ) {
-         my $info = decode_json( $res->body );
-         return ( 1, undef ) if $info->{'Running'};   # genuinely still running
 
-         if ( defined $info->{'ExitCode'} ) {
-            return ( 0, { %$existing,
-               'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
-               'exitCode' => $info->{'ExitCode'},
-            } );
-         }
+   my $res = call_socket_api( $CONFIG->{'docker'}{'socket'}, "/exec/$existing->{'execId'}/json", {} );
+   if ( $res && $res->is_success ) {
+      my $info = decode_json( $res->body );
+      return ( 1, undef ) if $info->{'Running'};   # genuinely still running
+
+      if ( defined $info->{'ExitCode'} ) {
+         return ( 0, { %$existing,
+            'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
+            'exitCode' => $info->{'ExitCode'},
+         } );
       }
    }
-   return ( 0, { %$existing, 'state' => 'aborted' } );   # neither signal conclusive - self-heal
+   return ( 0, { %$existing, 'state' => 'aborted' } );   # signal not conclusive - self-heal
 }
 
 # Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely
@@ -306,7 +302,7 @@ sub _hook_entry_liveness ($existing) {
 # separately-loaded copy of the reservation, never the caller's own in-memory object (see
 # Reservation::Mutate::update's own comment) - a winning caller MUST sync this returned entry
 # onto its own in-memory Reservation, exactly mirroring _hook_status_store_one's existing
-# discipline, or its own subsequent hook_status_set_running_details call would merge pid/execId
+# discipline, or its own subsequent hook_status_set_running_details call would merge execId
 # onto stale (pre-claim) in-memory state instead of this fresh entry.
 sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
    my $claimedEntry;
@@ -328,7 +324,6 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
          $status->{$name} = $claimedEntry = {
             'name'      => $name,
             'state'     => 'running',
-            'pid'       => undef,
             'execId'    => undef,
             'logPath'   => $logPath,
             'startTime' => YYYYMMDDHHMMSS(time),

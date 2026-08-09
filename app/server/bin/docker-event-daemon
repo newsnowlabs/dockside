@@ -413,11 +413,7 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
       ( $opts->{'detach'}
          ? ( 'Detach' => 1 )
          : ( 'inactivity_timeout' => $timeout + 30, 'request_timeout' => $timeout ) ),
-      # No real pid to pass (DED never forks for this any more) - hook_status_set_running_details
-      # accepts undef here exactly as designed; only the restart-recovery sweep's own
-      # hook_is_running check ever reads it, and that falls through to the execId-based check
-      # gracefully when pid is undef (see hook_is_running's own comment).
-      'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($stage, undef, $execId); },
+      'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($stage, $execId); },
    }, sub ($result, $err) {
       try {
          if ( !$result ) {
