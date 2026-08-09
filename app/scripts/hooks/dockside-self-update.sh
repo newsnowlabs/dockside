@@ -109,5 +109,6 @@ npm run build
 echo "dockside-self-update: restarting services ..."
 sudo s6-svc -t /etc/service/nginx
 sudo s6-svc -t /etc/service/docker-event-daemon
+sudo s6-svc -t /etc/service/app-server
 
 echo "dockside-self-update: done"
