@@ -35,7 +35,7 @@ use Try::Tiny;
 use URI::Escape;
 use Util qw(flog wlog sanitize_sensitive_text YYYYMMDDHHMMSS);
 use Exception;
-use Data qw($CONFIG $HOSTNAME $HOSTINFO);
+use Data qw($CONFIG $HOSTNAME $HOSTINFO $VERSION);
 use Containers;
 use Request;
 use User;
@@ -112,6 +112,144 @@ sub _render_error ($c, $err) {
    );
 }
 
+# ── $c-native response helpers ───────────────────────────────────────────────
+# App.pm's own json/redirect/text/send_branded_page/send_login_page/
+# handle_login_form/render_spa_shell, reused verbatim by every route until
+# now (see e.g. the SPA-shell/login route's own comment on why), are all
+# built on App::NginxAdapter's buffered nginx-$r-shaped response contract
+# (status/header_out/send_http_header/print). _handler/_api_handler still
+# call those exact subs today (App.pm, unchanged - due to be deleted
+# alongside NginxAdapter.pm once nothing natively-routed needs the adapter
+# any more), so their signatures can't just change in place - a route
+# reached only via the catch-all would break. These are $c-native siblings
+# with matching behaviour instead, for every route already ported here to
+# use; App.pm's own versions become dead code once nothing calls them,
+# ready to delete together with the rest of the adapter.
+#
+# Request-side adapter usage ($r->header_in/request_body/args, and
+# App::split_args/parse_body_args/get_args, which only ever read via those)
+# is deliberately untouched here - $r stays constructed in every route below
+# for that alone. Retiring it too is bundled with deleting NginxAdapter.pm
+# itself, not done piecemeal ahead of that.
+sub _json ($c, $code, $data) {
+   # canonical: sort object keys so every API response has a deterministic
+   # key order (Perl hash order is otherwise randomised per process) - same
+   # rationale, same JSON::XS::canonical mechanism as App::json's own
+   # comment; Mojolicious's own json renderer does not sort keys, so
+   # $c->render(json => ...) alone would silently regress this.
+   $c->res->headers->cache_control('no-store');
+   $c->res->headers->content_type('application/json');
+   return $c->render( data => JSON::XS->new->utf8->convert_blessed->canonical->encode($data), status => $code );
+}
+
+sub _redirect ($c, $code, $location, $headers = []) {
+   $c->res->headers->cache_control('no-store');
+   $c->res->headers->location($location);
+   foreach my $h (@$headers) {
+      # Must be ->add, not ->header: login sets two Set-Cookie headers, and a
+      # second ->header call would silently replace the first rather than add
+      # a second one - same pitfall App::NginxAdapter::header_out's own
+      # comment already documents; a real regression here first time round,
+      # caught by the integration suite (fresh test-user logins failing with
+      # "Not logged in" - one of the two cookies never reached the client).
+      $c->res->headers->add(@$h);
+   }
+   $c->res->headers->content_type('text/plain');
+   return $c->render( data => "Redirecting to $location ...\n", status => $code );
+}
+
+sub _text ($c, $code, $data) {
+   $c->res->headers->cache_control('no-store');
+   $c->res->headers->content_type('text/plain');
+   return $c->render( data => $data, status => $code );
+}
+
+sub _send_branded_page ($c, $code, $class, $body_html) {
+   my $css_v = App::_asset_version('main.css');
+   my $page  = App::get_header()
+             . "<style>\n" . App::get_asset('signin.css') . "\n</style>\n"
+             . "</head><body>\n"
+             . qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n}
+             . '<div class="container"><div class="branded ' . $class . '"><div class="dockside"></div>' . $body_html . "</div></div>\n</body></html>\n";
+   $c->res->headers->content_type('text/html');
+   return $c->render( data => $page, status => $code );
+}
+
+sub _send_login_page ($c) {
+   return _send_branded_page( $c, 200, 'signin', <<'_EOE_'
+   <form method="POST" accept-charset="UTF-8">
+      <label for="inputUser" class="sr-only">Username</label>
+      <input name="username" type="username" id="inputUser" class="form-control" placeholder="Username" autocomplete="username" required autofocus>
+      <label for="inputPassword" class="sr-only">Password</label>
+      <input name="password" type="password" id="inputPassword" class="form-control" placeholder="Password" autocomplete="current-password" required>
+      <input class="btn btn-lg btn-primary btn-block" type="submit" value="Sign in">
+   </form>
+_EOE_
+   );
+}
+
+# $r kept for its one remaining read (request_body, for the posted
+# credentials) - see this section's own header comment on why request-side
+# adapter usage stays for now.
+sub _handle_login_form ($c, $r, $parentFQDN) {
+   my %credentials = map { uri_unescape($_) } split( /[&=]/, $r->request_body );
+   try {
+      my $User = Request->authenticate_by_credentials( $credentials{'username'}, $credentials{'password'} );
+      if ( ref($User) ) {
+         my @cookies = $User->generate_auth_cookies($parentFQDN);
+         _redirect( $c, 302, $c->req->url->path->to_string, [ map { [ 'Set-Cookie', $_ ] } @cookies ] );
+         return 1;
+      }
+      elsif ( $User eq 'INVALID' ) {
+         flog("auth_cookie: credentials not valid for user '$credentials{'username'}'");
+         return 0;
+      }
+      elsif ( $User eq 'NOTFOUND' ) {
+         flog("auth_cookie: user '$credentials{'username'}' not found in users.json: check file for errors");
+         return 0;
+      }
+      else {
+         flog("auth_cookie: unknown error authenticating: check users.json for errors");
+         return 0;
+      }
+   }
+   catch {
+      flog("auth_cookie: caught exception: '$_'");
+      return 0;
+   };
+}
+
+sub _render_spa_shell ($c, $User, $parentFQDN) {
+   my $css_v = App::_asset_version('main.css');
+   my $page  = App::get_header() . qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n};
+   try {
+      $page .= sprintf( "<script>window.dockside = %s\n</script>",
+         JSON::XS->new->utf8->convert_blessed->encode( {
+            'user' => {
+               %{ $User->details() },
+               'role'         => $User->role,
+               'role_as_meta' => $User->role_as_meta,
+               'permissions'  => { 'actions' => $User->permissions() }
+            },
+            'profiles'         => $User->profiles(),
+            'containers'       => $User->reservations( { 'client' => 1 } ),
+            'viewers'          => User->viewers(),
+            'dummyReservation' => $User->createClientReservation(),
+            'host'             => $parentFQDN,
+            'version'          => $VERSION // 'v-unknown'
+         } )
+      );
+   }
+   catch {
+      die Exception->new( 'msg' => 'Failed to initialise client-side data structures', 'dbg' => "Caught exception: $_" );
+   };
+   $page .= '</head>' . '<body data-spy="scroll" data-target=".sidebar">' . "\n" . "<div id='app'><router-view></router-view></div>\n";
+   my $js_v = App::_asset_version('main.js');
+   $page .= qq{<script src="/assets/main.js?v=$js_v"></script>\n} . "</body></html>\n";
+   $c->res->headers->content_type('text/html');
+   return $c->render( data => $page, status => 200 );
+}
+
 # Every _api_handler-derived route needs the same "not logged in" handling
 # _handler's own gate already provides for free today (App.pm:417-430) -
 # _api_handler itself is never reached at all for a non-logged-in user, so
@@ -135,15 +273,14 @@ sub _render_error ($c, $err) {
 # "application/json, text/plain, */*" -> json; the CLI sends "application/json"
 # explicitly -> json; a browser navigating sends "text/html,..." -> html. No
 # client-side change needed for any of them.
-sub _require_login ($c, $r, $User) {
+sub _require_login ($c, $User) {
    return 1 if $User->username;
    if ( ( $c->accepts( 'json', 'html' ) // 'json' ) eq 'html' ) {
-      App::redirect( $r, 302, '/' );
+      _redirect( $c, 302, '/' );
    }
    else {
-      App::json( $r, 401, { 'status' => '401', 'msg' => 'Not logged in' } );
+      _json( $c, 401, { 'status' => '401', 'msg' => 'Not logged in' } );
    }
-   $r->finalize($c);
    return 0;
 }
 
@@ -342,9 +479,10 @@ $authed->get( '/assets/main.js' => sub ($c) {
    $c->reply->file("$CONFIG->{'clientDistPath'}/main.js");
 } );
 
-# The SPA shell ('/', '/container/*', '/admin/*', '/account/*' - App.pm:460, via
-# the now-shared App::render_spa_shell) and the login page/form it falls back to
-# when not logged in (App.pm:417-438). No method restriction, matching the
+# The SPA shell ('/', '/container/*', '/admin/*', '/account/*' - App.pm:460,
+# via this file's own $c-native _render_spa_shell below) and the login page/
+# form it falls back to when not logged in (App.pm:417-438). No method
+# restriction, matching the
 # original block's own lack of one - a POST here while logged in (unusual, but
 # not prevented today) renders the same shell a GET would.
 #
@@ -354,13 +492,13 @@ $authed->get( '/assets/main.js' => sub ($c) {
 # the login form in the first place, so they're the only ones a browser's own
 # login form ever POSTs back to.
 #
-# Still adapter-based (App::send_login_page/redirect/handle_login_form/
-# render_spa_shell, reused verbatim, unchanged) rather than rewritten to
-# render via $c directly - a verbatim port of dispatch first, matching the
-# plan's own recommended approach; fully retiring the adapter from these call
-# sites is its own later, focused pass once every route is ported and the
-# shared response helpers can be updated once for all of them together, not
-# piecemeal per route.
+# $c-native (_send_login_page/_redirect/_handle_login_form/_render_spa_shell,
+# this file's own siblings of App.pm's originals - see their section's own
+# header comment on why they're separate subs, not the same ones changed in
+# place) rather than adapter-based - the first of the "first natively-ported
+# routes" batch to drop the adapter for its response side entirely. $r stays
+# for its one remaining read (Host, for parentFQDN) - request-side adapter
+# usage is untouched here, see the same header comment.
 my $spa_shell_or_login = sub ($c) {
    my $User = $c->stash('user');
    my $r    = App::NginxAdapter->new($c);
@@ -371,22 +509,20 @@ my $spa_shell_or_login = sub ($c) {
          my $parentFQDN = $r->header_in('Host');
          $parentFQDN =~ s!^[^\-\.]+!!;
          $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
-         App::handle_login_form( $r, $parentFQDN ) || App::send_login_page($r);
+         return _handle_login_form( $c, $r, $parentFQDN ) || _send_login_page($c);
       }
       elsif ( $path eq '/' || $path =~ m!^/container/! ) {
-         App::send_login_page($r);
+         return _send_login_page($c);
       }
       else {
-         App::redirect( $r, 302, '/' );
+         return _redirect( $c, 302, '/' );
       }
-      return $r->finalize($c);
    }
 
    my $parentFQDN = $r->header_in('Host');
    $parentFQDN =~ s!^[^\-\.]+!!;
    $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
-   App::render_spa_shell( $r, $User, $parentFQDN );
-   return $r->finalize($c);
+   return _render_spa_shell( $c, $User, $parentFQDN );
 };
 
 $authed->any( '/' => $spa_shell_or_login );
@@ -412,15 +548,14 @@ for my $prefix (qw(container admin account)) {
 $authed->post( '/containers/:id/update' => sub ($c) {
    my $r    = App::NginxAdapter->new($c);
    my $User = $c->stash('user');
-   _require_login( $c, $r, $User ) or return;
+   _require_login( $c, $User ) or return;
    try {
       my $id   = $c->stash('id');
       my $args = { %{ App::split_args( $r->request_body // '' ) }, %{ App::split_args( $r->args ) } };
       $args->{'id'} = $id if $id;
 
       my $reservation = $User->updateContainerReservation($args);
-      App::json( $r, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation } );
-      $r->finalize($c);
+      _json( $c, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation } );
    }
    catch {
       _render_error( $c, $_ );
@@ -430,13 +565,12 @@ $authed->post( '/containers/:id/update' => sub ($c) {
 $authed->get( '/containers/:id/hook/status' => sub ($c) {
    my $r    = App::NginxAdapter->new($c);
    my $User = $c->stash('user');
-   _require_login( $c, $r, $User ) or return;
+   _require_login( $c, $User ) or return;
    try {
       my $id     = $c->stash('id');
       my $args   = App::split_args( $r->args );
       my $result = $User->runContainerHookStatus( $id, $args );
-      App::json( $r, 200, { 'status' => '200', 'data' => $result } );
-      $r->finalize($c);
+      _json( $c, 200, { 'status' => '200', 'data' => $result } );
    }
    catch {
       _render_error( $c, $_ );
@@ -446,18 +580,17 @@ $authed->get( '/containers/:id/hook/status' => sub ($c) {
 $authed->get( '/containers/:id/logs' => sub ($c) {
    my $r    = App::NginxAdapter->new($c);
    my $User = $c->stash('user');
-   _require_login( $c, $r, $User ) or return;
+   _require_login( $c, $User ) or return;
    try {
       my $id   = $c->stash('id');
       my $args = App::split_args( $r->args );
       my $logs = $User->controlContainer( 'getLogs', $id, $args );
       if ( ( $args->{'format'} // '' ) eq 'text' ) {
-         App::text( $r, 200, join( '', @$logs ) );
+         _text( $c, 200, join( '', @$logs ) );
       }
       else {
-         App::json( $r, 200, { 'status' => '200', 'data' => $logs } );
+         _json( $c, 200, { 'status' => '200', 'data' => $logs } );
       }
-      $r->finalize($c);
    }
    catch {
       _render_error( $c, $_ );
@@ -467,11 +600,10 @@ $authed->get( '/containers/:id/logs' => sub ($c) {
 $authed->get( '/containers' => sub ($c) {
    my $r    = App::NginxAdapter->new($c);
    my $User = $c->stash('user');
-   _require_login( $c, $r, $User ) or return;
+   _require_login( $c, $User ) or return;
    try {
       my $containers = $User->reservations( { 'client' => 1 } );
-      App::json( $r, 200, { 'status' => '200', 'data' => $containers } );
-      $r->finalize($c);
+      _json( $c, 200, { 'status' => '200', 'data' => $containers } );
    }
    catch {
       _render_error( $c, $_ );
@@ -481,14 +613,14 @@ $authed->get( '/containers' => sub ($c) {
 $authed->get( '/resources' => sub ($c) {
    my $r    = App::NginxAdapter->new($c);
    my $User = $c->stash('user');
-   _require_login( $c, $r, $User ) or return;
+   _require_login( $c, $User ) or return;
    try {
       die Exception->new( 'msg' => "You need the 'manageUsers' or 'manageProfiles' permission" )
          unless $User->has_permission('manageUsers') || $User->has_permission('manageProfiles');
       my @networks = sort { $a cmp $b } keys %{ ( Containers->containers // {} )->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} };
       my @runtimes = sort { $a cmp $b } keys %{ ( $HOSTINFO->{'docker'} // {} )->{'Runtimes'} // {} };
       my @IDEs     = @{ $HOSTINFO->{'IDEs'} // [] };
-      App::json( $r, 200, {
+      _json( $c, 200, {
          'status' => '200',
          'data'   => {
             'runtimes'  => \@runtimes,
@@ -497,7 +629,6 @@ $authed->get( '/resources' => sub ($c) {
             'authModes' => [ 'user', 'developer', 'public', 'viewer', 'owner' ],
          }
       } );
-      $r->finalize($c);
    }
    catch {
       _render_error( $c, $_ );
@@ -507,7 +638,7 @@ $authed->get( '/resources' => sub ($c) {
 # ── Admin/self CRUD routes (App.pm:656-808), ported verbatim ────────────────
 # Every one of these blocks (in App.pm today) has the identical outer shape:
 # compute some $data from a single User.pm call, then
-# json($r, 200, {status=>'200', data=>$data}) - only the User.pm method and
+# _json($c, 200, {status=>'200', data=>$data}) - only the User.pm method and
 # its args differ. _admin_route factors that shape out once, so each route
 # below is just its own distinctive middle line, the same way the original
 # blocks read - not a new abstraction over the original design, a name for
@@ -517,11 +648,10 @@ sub _admin_route ($body) {
    return sub ($c) {
       my $r    = App::NginxAdapter->new($c);
       my $User = $c->stash('user');
-      _require_login( $c, $r, $User ) or return;
+      _require_login( $c, $User ) or return;
       try {
          my $data = $body->( $c, $r, $User );
-         App::json( $r, 200, { 'status' => '200', 'data' => $data } );
-         $r->finalize($c);
+         _json( $c, 200, { 'status' => '200', 'data' => $data } );
       }
       catch {
          _render_error( $c, $_ );
@@ -621,7 +751,7 @@ $authed->post( '/profiles/:name/rename' => _admin_route( sub ( $c, $r, $User ) {
 $authed->get( '/getAuthCookies' => sub ($c) {
    my $r    = App::NginxAdapter->new($c);
    my $User = $c->stash('user');
-   _require_login( $c, $r, $User ) or return;
+   _require_login( $c, $User ) or return;
    try {
       my $parentFQDN = $r->header_in('Host');
       $parentFQDN =~ s!^[^\-\.]+!!;
@@ -637,8 +767,7 @@ $authed->get( '/getAuthCookies' => sub ($c) {
          );
       }
 
-      App::json( $r, 200, { 'status' => '200', 'data' => $cookie } );
-      $r->finalize($c);
+      _json( $c, 200, { 'status' => '200', 'data' => $cookie } );
    }
    catch {
       _render_error( $c, $_ );
