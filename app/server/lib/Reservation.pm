@@ -977,8 +977,9 @@ sub store ($self) {
 # *entire* in-memory 'data'/'meta' - so any field this process loaded a while ago and never
 # refreshed, but is NOT trying to change right now, still rides along and can clobber a fresher
 # value some *other* concurrent writer already persisted. That's not a rare edge case for a
-# forked child that did several seconds of blocking work before finally writing: its own
-# snapshot of every unrelated field is exactly that many seconds stale by the time it stores.
+# writer whose own dispatch took several seconds before finally writing (a slow docker_exec_async
+# call, say): its own in-memory snapshot of every unrelated field is exactly that many seconds
+# stale by the time it stores.
 # store_fields avoids this at the source - a key genuinely absent from $fields is never sent at
 # all, so cloneHash never touches it.
 #
@@ -1079,7 +1080,12 @@ sub _create_status_set ($self, $value, $extra = {}) {
 # Mojolicious worker processes one request at a time.
 #
 # Composed with Mojo::Promise, not nested callbacks - the one genuinely multi-step async chain
-# in this file (image check -> optional pull -> create -> start).
+# in this file (image check -> optional pull -> create -> start). This is a deliberate, scoped
+# exception to this file otherwise having no Mojolicious-framework dependency at all (no $c, no
+# ->render, no routes) - chosen here specifically because this is the one multi-step chain in
+# the whole file; the alternative (nested callbacks) would be a four-deep pyramid. Not precedent
+# for reaching for Mojo::Promise/Mojo::IOLoop elsewhere in this file - every other _async sub
+# here stays on the plain ($self, ..., $cb) single-callback convention.
 sub create_async ($self, $cb) {
    my $id = $self->id();
 
@@ -1462,8 +1468,8 @@ sub _hook_env ($self, $user) {
 # hooks.status is the master record, a hash keyed by hook name - one entry per name, holding
 # its current/last invocation's state. This is what a pre-exec "is this already running?"
 # check (hook_is_running) and a "what happened last time?" query (hook_status) both read.
-# Concurrent forked children invoking *different* names on the same reservation must never
-# clobber each other's entries - see Reservation::store_fields' own comment for exactly what
+# Concurrent dispatches of *different* names on the same reservation must never clobber each
+# other's entries - see Reservation::store_fields' own comment for exactly what
 # that requires (not just "it's a nested hash", which alone isn't sufficient - a writer whose
 # own in-memory copy carries a *stale* copy of a name it isn't even trying to change can still
 # clobber it via an ordinary whole-record store()). _hook_status_store_one below is what
@@ -1517,11 +1523,13 @@ sub hook_is_running ($self, $name) {
    return 1 unless defined($status->{'pid'}) || defined($status->{'execId'});
 
    # Stale-running detection, mirroring run_hook()'s own kill -0 reclaim for its in-container
-   # lock: a forked child that died without writing back (an nginx worker recycled from under
-   # it, OOM, etc.) would otherwise wedge this name as "running" forever. Two signals, cheapest
-   # first: the fork's own pid (same PID namespace as this process - a reused-pid false
-   # positive is the same accepted limitation run_hook()'s own check already has), then, if
-   # that's inconclusive, the exec API's own Running state.
+   # lock: an app-server/docker-event-daemon process that died before this dispatch's own
+   # completion callback ever ran (OOM, crash, restart) would otherwise wedge this name as
+   # "running" forever. Two signals, cheapest first: a pid-based check (same PID namespace as
+   # this process), then, if that's inconclusive, the exec API's own Running state. The
+   # pid-based branch is currently unreachable - see hook_status_set_running_details' own
+   # comment, no caller sets a real pid today - kept as a cheap first check the design allows
+   # for, not something anything currently relies on.
    if( defined $status->{'pid'} ) {
       return 1 if kill(0, $status->{'pid'});
    }
@@ -1592,17 +1600,19 @@ sub hook_status_started ($self, $name, $logPath) {
    } );
 }
 
-# Called by the forked child once it knows both its own pid ($$) and the exec id
-# (docker_exec's on_created callback) - see hook_status_started above for why these can't be
-# known any earlier.
+# Called from docker_exec_async's own on_created callback once the exec id is known - see
+# hook_status_started above for why it can't be known any earlier. $pid is always undef in
+# every current caller (no fork is involved - see hook_status_started's own comment); kept as
+# a parameter since hook_is_running's own liveness check still accepts a pid-based signal
+# alongside the execId-based one, not because anything populates it today.
 sub hook_status_set_running_details ($self, $name, $pid, $execId) {
    my $existing = $self->_hook_status_all->{$name} or return;
    $self->_hook_status_store_one( $name, { %$existing, 'pid' => $pid, 'execId' => $execId } );
 }
 
-# Called by the forked child once the hook has finished, timed out, or been confirmed aborted,
-# recording the outcome on both the master record and the bounded history array. $fields must
-# include 'state' explicitly ('done' or 'aborted') - never defaulted, so a caller can never
+# Called once the hook has finished, timed out, or been confirmed aborted, recording the
+# outcome on both the master record and the bounded history array. $fields must include
+# 'state' explicitly ('done' or 'aborted') - never defaulted, so a caller can never
 # accidentally leave a completed entry reading 'running' by omission.
 sub hook_status_completed ($self, $name, $fields) {
    my $entry = { %{ $self->_hook_status_all->{$name} // { 'name' => $name } }, %$fields };

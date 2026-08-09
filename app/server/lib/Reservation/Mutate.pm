@@ -166,7 +166,7 @@ sub load_clean_map ($class, @containerIds) {
 #
 # Deliberately its own atomic mutator, bypassing Reservation::store()'s usual whole-record
 # update() - update()'s cloneHash-based merge (Util.pm) recurses safely into nested *hashes*
-# (data.hooks.status, keyed by hook name, merges key-by-key across concurrent forked children
+# (data.hooks.status, keyed by hook name, merges key-by-key across concurrent dispatches
 # updating different names, each blind to the other's simultaneous write), but an *array*
 # value is only ever compared by reference and replaced wholesale - two concurrent appends
 # via that path would race, and the loser's row would simply be lost. This function instead
