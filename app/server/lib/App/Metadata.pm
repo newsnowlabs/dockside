@@ -5,6 +5,7 @@ use v5.36;
 use Try::Tiny;
 use JSON;
 use Util qw(flog);
+use Reservation;
 
 # $c-native (Mojolicious::Controller) - this module is unpublished/alpha (never
 # documented, never officially shipped, not used by any production Dockside
