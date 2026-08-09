@@ -81,10 +81,8 @@ sub _authenticate ($c) {
    return $User;
 }
 
-# Mirrors _api_handler's own catch block (App.pm) exactly - same Exception shape,
-# same sanitize_sensitive_text treatment, same 401 default - so a client sees an
-# identical error response whether a request landed on the adapter path or one of
-# these five native routes.
+# The sole error-response path for this whole server - same Exception shape, same
+# sanitize_sensitive_text treatment, same 401 default, for every route registered above.
 sub _render_error ($c, $err) {
    my ( $msg, $dbg, $time, $status );
    if ( ref($err) eq 'Exception' ) {
@@ -460,13 +458,11 @@ $routes->post('/containers/:id/hook')->to(
 $routes->any('/containers/:id/hook' => \&_post_only);
 
 # ── Metadata-server emulation (App::Metadata) ────────────────────────────────
-# Formerly an unconditional check at the top of App::_handler, run before every
-# request regardless of path (App.pm's old line 395-397). Alpha/unpublished -
-# never documented, never officially shipped, confirmed not used by any
-# production Dockside deployment - so unlike everything else ported this
-# session, there's no external contract requiring a verbatim adapter-backed
-# port. Given its own genuine, exclusive path prefix, it needs no more than any
-# other route: registered directly here, ahead of the catch-all, matched by
+# Alpha/unpublished - never documented, never officially shipped, confirmed not used by
+# any production Dockside deployment - so unlike every other route this server serves,
+# there's no external contract requiring a verbatim adapter-backed port. Given its own
+# genuine, exclusive path prefix, it needs no more than any other route: registered
+# directly here, ahead of the catch-all, matched by
 # path like everything else. Not behind $authed - a devtainer process making
 # this call can't log in; App::Metadata::handle's own IP-based reservation
 # lookup is its authentication, not a cookie. $c passed straight through
@@ -830,11 +826,9 @@ $routes->any( '/docs' => \&_serve_static );
 $routes->any( '/docs/*rest' => { rest => '' } => \&_serve_static );
 
 # ── Catch-all: genuinely unmatched paths only ────────────────────────────────
-# Every real route App.pm ever served is natively registered above; this is
-# reached only for a path that matches none of them. Mirrors _api_handler's
-# own trailing default exactly (App.pm, deleted alongside the rest of the old
-# routing chain this task removes) - an unconditional redirect to '/'
-# regardless of method or login state, not a 404: a typo'd URL or a stale
+# Every real route is natively registered above; this is reached only for a path that
+# matches none of them - an unconditional redirect to '/' regardless of method or login
+# state, not a 404: a typo'd URL or a stale
 # bookmark lands on the SPA shell (or the login page, if not logged in) like
 # any other unrecognised in-app navigation, and lets Vue Router take it from
 # there client-side, rather than a bare error page.

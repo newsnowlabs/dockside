@@ -473,9 +473,14 @@ sub load ($class, $opts = undef) {
 # OBJECT METHODS
 # --------------
 
-# Updates the dockerLaunchLogs property of the Reservation,
-# to container the tail of the launch log file written by Reservation::launch.
-#
+# Updates the dockerLaunchLogs property of the Reservation with the tail of its
+# r-<id>.log file. Nothing currently writes that file: it was written by the old,
+# forking, PTY-based Reservation::launch (deleted - create_async replaced it, reporting
+# progress via createStatus instead - see its own comment). Reads here now always find
+# either nothing or a stale file from before this branch. Kept reading rather than
+# deleted outright since removing it is a product/UI call (the Vue client's
+# dockerLaunchLogs display would need a replacement, or removing), not a code-cleanup
+# one - see docs/plans/ded-async-rewrite-quality-audit.md's own note on this.
 sub load_launch_logs ($self) {
    my $id = $self->id();
 

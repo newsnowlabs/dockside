@@ -2528,10 +2528,10 @@ def cmd_hook_run(args):
     status = result.get('status') or {}
     output = '\n'.join(result.get('output') or []).strip()
 
-    # The forked child died without ever recording a normal completion (see
-    # hook_status_completed's catch block, and hook_is_running's own
-    # self-healing check) - there is no exit code to report, unlike every
-    # other case below.
+    # The process dispatching the hook (app-server or docker-event-daemon) died or was
+    # restarted before it ever recorded a normal completion (see hook_status_completed's
+    # catch block, and hook_is_running's own self-healing check) - there is no exit code
+    # to report, unlike every other case below.
     if status.get('state') == 'aborted':
         print(f'Hook {hook_name!r} on {devtainer_name!r} aborted unexpectedly '
               f'(no exit code recorded).', file=sys.stderr)
