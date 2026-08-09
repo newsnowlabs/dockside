@@ -80,6 +80,13 @@ sub log_status ($sub, $json) {
 ####################################################################################################
 
 sub split_args ($queryString) {
+   # Defensive: every current caller (bin/app-server's own _get_args/_query) already
+   # guards against an empty querystring before calling this, but $queryString was
+   # historically undef whenever the request URL had no query string at all (e.g. the
+   # old App::NginxAdapter's $r->args on a plain GET) - keep tolerating that here too,
+   # cheaply, rather than depending on every future caller to guard it upstream.
+   $queryString //= '';
+
    # Split querystring-style arguments, and unescape them
    my %hash = map { uri_unescape($_) } split( /[=&]/, $queryString );
 
