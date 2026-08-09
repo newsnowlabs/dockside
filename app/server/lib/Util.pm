@@ -12,7 +12,7 @@ our @EXPORT_OK = ( qw(
    run run_system clean_pty run_pty
    sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
-   cache cacheReadWrite cloneHash lockFile
+   cacheReadWrite cloneHash lockFile
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    unique
    apply_args_to_record
@@ -746,22 +746,6 @@ sub lockFile ($lockfile) {
    flock( $LK, LOCK_EX )
       || do { close $LK; die Exception->new( 'dbg' => "Cannot lock '$lockfile' ($!)" ); };
    return $LK;
-}
-
-sub cacheEvery ($file, $cacheTime, $sub = undef, @args) {
-   my $FILEPATH = $file;
-
-   my $lastModified = (stat($FILEPATH))[9];
-
-   flog(sprintf("Util::cache: file=$FILEPATH; cacheTime=$cacheTime; sub=%s; lm=%s, age=%d",
-      $sub ? 'Yes' : 'No',
-      $lastModified, time - $lastModified));
-
-   if($sub && (!defined($lastModified) || (defined($lastModified) && (time - $lastModified) >= $cacheTime))) {
-      return cacheReadWrite($FILEPATH, $sub, @args);
-   }
-
-   return cacheReadWrite($FILEPATH);
 }
 
 # Recursively copy across differing values from source hashref to destination hashref
