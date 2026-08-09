@@ -23,14 +23,8 @@
 - Before running tests that exercise **server** changes, restart the relevant services above —
   the running server is **not** auto-reloaded. Rebuild the Vue bundle
   (`cd app/client && npm run build`) for **client** changes.
-- Integration suite invocation (local mode). **Check for an existing session before
-  assuming there isn't one or that you need credentials**: run `python3 cli/dockside
-  server list` (or `dockside server list` if it's on PATH). Recommended usage is for the
-  developer to already be logged in as admin locally and hand that session to you, so one
-  usually exists — never ask the user for credentials to log in yourself; if no session
-  is found, say so and ask them to log in rather than trying to obtain/derive credentials.
-  Only if you've confirmed none exists and the user hasn't offered to log in, authenticate
-  yourself — the hostname depends on your environment:
+- Integration suite invocation (local mode). Authenticate the CLI once first if not
+  already done — the hostname depends on your environment:
   - **Personal laptop/server running Dockside:** `www-<name>.local.dockside.dev`
   - **Inner Dockside dev container inside an outer production Dockside:** your inner
     container's public hostname (e.g. `www-<name>.staging.dockside.example.com`)
