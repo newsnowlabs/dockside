@@ -208,6 +208,7 @@ check_shellcheck() {
     app/server/bin/password-wrapper
     app/scripts/container/launch.sh
     app/scripts/hooks/dockside-self-update.sh
+    app/server/example/images/multi-repo-demo/multi-repo-switch-and-serve.sh
     build/development/claude-code/statusline.sh
     t/integration/run_tests.sh
     t/integration/harness.sh
