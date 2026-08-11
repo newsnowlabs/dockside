@@ -1,7 +1,7 @@
 {
    "version": 4,
-   "name": "Entrypoint Branch/PR Switch (static credentials)",
-   "description": "Demonstrates pattern B from docs/extensions/lifecycle-hooks.md: {option.ref} wired directly into the entrypoint's own command line, resolved at container-create time - so branch/PR switching works from container start, with no dependency on launch.sh's timing. Accepts a bare branch name, a bare (optionally '#'-prefixed) PR number, or a full GitHub branch/PR URL copied from the browser. See mounts.bind below for how to add a statically-provisioned deploy key for a private repo.",
+   "name": "Git Clone + Entrypoint Branch/PR Switch",
+   "description": "Demonstrates docs/extensions/lifecycle-hooks.md's 'ad-hoc clone-at-start' repo provenance: a generic image with no repo baked in, whose own entrypoint clones one at container-create time and switches to {option.ref} before starting the long-running process - so branch/PR switching works from container start, with no dependency on launch.sh's timing. Accepts a bare branch name, a bare (optionally '#'-prefixed) PR number, or a full GitHub branch/PR URL copied from the browser. Contrast with 00-dockside.json/01-dockside-own-ide.json, whose repo is already baked into the image and which use a hook (not an entrypoint) to switch it. Uses a static/no credential here (public HTTPS clone); see mounts.bind below for how to add a statically-provisioned deploy key for a private repo - not a Dockside-managed one, which an entrypoint cannot rely on (see the doc's credential-source section).",
    "active": true,
    "routers": [
       {
