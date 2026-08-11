@@ -9,8 +9,15 @@
   loaded it are restarted (Perl modules compile once at process start, no hot-reload). Restart
   by what you touched:
   - `app/server/lib/{App,App/Metadata,User,Reservation,Reservation/*,Data,Util,Exception,
-    Profile,Containers,Request}.pm`, `app/server/bin/app-server` → **all three**:
-    `sudo s6-svc -t /etc/service/nginx /etc/service/docker-event-daemon /etc/service/app-server`
+    Profile,Containers,Request}.pm`, `app/server/bin/app-server` → **all three, as three
+    separate invocations** — `s6-svc` (and `s6-svstat`) take exactly one `servicedir` argument
+    each; passing all three paths to a single call silently restarts (or checks) only the
+    first and drops the rest with a warning, no error:
+    ```
+    sudo s6-svc -t /etc/service/nginx
+    sudo s6-svc -t /etc/service/docker-event-daemon
+    sudo s6-svc -t /etc/service/app-server
+    ```
     — these are shared libs `docker-event-daemon` and `app-server` both load directly, and
     `Proxy.pm` (embedded in nginx) also loads `Reservation.pm`/`Data.pm`/`Request.pm`.
   - `app/server/lib/Proxy.pm`, `app/server/nginx/conf/**` → `sudo s6-svc -t /etc/service/nginx`
