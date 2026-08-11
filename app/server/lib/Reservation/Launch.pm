@@ -395,7 +395,16 @@ sub cmdline_json ($self) {
       $hostConfig->{'PortBindings'} = $portBindings if %$portBindings;
    }
 
-   my @env;
+   # Seeded with DOCKSIDE_OPTION_<NAME> (see Reservation::_option_env_pairs) so a profile's own
+   # command/entrypoint (PID-1) can read a plain env var - $DOCKSIDE_OPTION_REF, same convention
+   # a hook script already gets - instead of needing {option.<name>} argv substitution just to
+   # reach it. {option.<name>} remains the right tool when a value needs to land directly in a
+   # non-shell binary's own argv (a CLI flag, say); this doesn't replace that, it just means a
+   # shell entrypoint no longer needs the argv detour purely to read a value into a variable.
+   # Placed first so an explicit dockerArgs '--env=' entry below can still override on a name
+   # collision - profile-author intent expressed directly in dockerArgs wins over the derived
+   # options-projection.
+   my @env = $self->_option_env_pairs();
    if ( ref( $self->profileObject->{'dockerArgs'} ) eq 'ARRAY' ) {
       for my $raw ( @{ $self->profileObject->{'dockerArgs'} } ) {
          my $arg = $self->_placeholders($raw);

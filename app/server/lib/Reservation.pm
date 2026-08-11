@@ -1440,6 +1440,23 @@ sub exec ($reservation, $command = undef) {
 # the hook process at all. Fixed at dispatch_hook_exec_async's own call site (strips the
 # prefix there) rather than changing this function's output format, since exec() still needs
 # the CLI-flag form.
+# Plain "KEY=VALUE" strings for every DOCKSIDE_OPTION_<NAME> this reservation's profile
+# options resolve to - the one place that mapping is computed, so every consumer (currently
+# _hook_env's docker-exec env below, and Reservation::Launch::cmdline_json's docker-create Env)
+# reads the same values off the same $self->data('options') and can never drift apart on what a
+# devtainer's options actually are. Safe to expose at container-create time as well as via
+# docker exec: these are profile-author-declared option *values* (already visible in
+# {option.<name>}-substituted argv via `docker inspect`, and already handed to every hook
+# invocation), not a credential - unlike GIT_URL/GH_TOKEN below, deliberately left docker-exec-
+# only (see docs/extensions/lifecycle-hooks.md's credential-source section for why: a live
+# secret sitting in every process's environment from container boot is a materially different
+# exposure than one only reaching a hook that explicitly asked for it).
+sub _option_env_pairs ($self) {
+   return map {
+      'DOCKSIDE_OPTION_' . uc($_) . '=' . ($self->data('options') // {})->{$_}
+   } keys %{ $self->data('options') // {} };
+}
+
 sub _hook_env ($self, $user) {
    my @envGit;
    if( $self->gitURL() ) {
@@ -1453,9 +1470,7 @@ sub _hook_env ($self, $user) {
       );
    }
 
-   my @envOptions = map {
-      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($self->data('options') // {})->{$_}
-   } keys %{ $self->data('options') // {} };
+   my @envOptions = map { "--env=$_" } $self->_option_env_pairs();
 
    my @envGhToken;
    if( my $token = $user->gh_token() ) {
