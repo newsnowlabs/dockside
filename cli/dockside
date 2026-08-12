@@ -997,10 +997,10 @@ def api_logs(opener, server, res_id):
 def create_status_error(c):
     """Human-readable launch-failure message from a reservation's createStatus field, or
     None if there wasn't one. Two shapes on the wire, both handled: the current
-    Reservation::create_async {stage, failed, layers, error} hash - truthy at *every*
+    Reservation::create {stage, failed, layers, error} hash - truthy at *every*
     stage, including 'done', so only .failed means a real failure, and .error already
     carries a clean message - or the legacy plain-scalar Docker CLI exit code from before
-    create_async existed, which (unlike the hash) was only ever recorded on failure, so
+    create existed, which (unlike the hash) was only ever recorded on failure, so
     any truthy value there does mean one."""
     cs = c.get('createStatus')
     if isinstance(cs, dict):

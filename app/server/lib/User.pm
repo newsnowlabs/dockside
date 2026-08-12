@@ -1007,17 +1007,17 @@ sub controlContainer ($self, $cmd, $id, $args = {}, $cb = undef) {
    }
 
    # $cb present (bin/app-server's native stop/start/remove routes) => async, via
-   # action_async, no fork, no docker CLI subprocess. $cb absent => the getLogs route, the
-   # one caller that stays on the synchronous action() path deliberately - see action()'s
+   # action, no fork, no docker CLI subprocess. $cb absent => the getLogs route, the
+   # one caller that stays on the synchronous getLogs() path deliberately - see getLogs()'s
    # own comment for why.
-   return $container->action_async($cmd, $args, $cb) if $cb;
-   return $container->action($cmd, $args);
+   return $container->action($cmd, $args, $cb) if $cb;
+   return $container->getLogs($args);
 }
 
 # Runs a container's profile-declared hook (named by $args->{'name'}) on demand (e.g. a user has
 # changed the 'branch'/'pr' options and wants their devtainer to switch now, without a full
 # relaunch). Named/shaped like controlContainer above. $args is forwarded opaquely to
-# run_hook_sync_async, which requires and validates 'name' itself - nothing here needs to know
+# run_hook_manual, which requires and validates 'name' itself - nothing here needs to know
 # its shape.
 #
 # $cb is required: bin/app-server's native hook route is this method's only caller now - the
@@ -1038,7 +1038,7 @@ sub runContainerHook ($self, $id, $args, $cb) {
       die Exception->new( 'msg' => "You need the 'develop' permission to run a hook on this devtainer" );
    }
 
-   return $container->run_hook_sync_async($args, $cb);
+   return $container->run_hook_manual($args, $cb);
 }
 
 # Reads a container's hook invocation status/log (named by $args->{'name'}), for a client to
@@ -1077,7 +1077,7 @@ sub runContainerHookStatus ($self, $id, $args = {}) {
 # Named in camelCase for consistency with current REST API call.
 #
 # $cb is required: bin/app-server's native create route is this method's only caller now -
-# async throughout (getGitDevContainer_async, then store(), then create_async - no fork, no
+# async throughout (getGitDevContainer, then store(), then create - no fork, no
 # blocking GitHub fetch, no docker CLI subprocess). The old synchronous fallback, and the
 # App.pm route that was its only caller, are both gone (audited first - no other caller
 # existed).
@@ -1112,7 +1112,7 @@ sub createContainerReservation ($self, $args, $cb) {
    # Test if we can construct the command line; on failure, we'll throw an error.
    $reservation->cmdline();
 
-   $reservation->getGitDevContainer_async( sub ($dc) {
+   $reservation->getGitDevContainer( sub ($dc) {
       if ($dc) {
          if($dc->{'image'}) {
             $reservation->data('image', $dc->{'image'});
@@ -1137,9 +1137,9 @@ sub createContainerReservation ($self, $args, $cb) {
       # the caller's own try/catch frame (it fires later, off the event loop, once the GitHub
       # fetch above resolves) - an uncaught die here would be an uncaught exception inside a Mojo
       # completion callback, not something bin/app-server's own surrounding try/catch could ever
-      # see (see docker_exec_async's own comment on this same hazard, Util.pm).
+      # see (see docker_exec's own comment on this same hazard, Util.pm).
       try {
-         $reservation->store()->create_async( sub ($createdReservation, $err) {
+         $reservation->store()->create( sub ($createdReservation, $err) {
             return $cb->( undef, $err ) if $err;
             return $cb->( $self->createClientReservation($createdReservation), undef );
          } );

@@ -328,7 +328,7 @@ sub _parse_docker_size ($str) {
 }
 
 # Sibling to cmdline() above, emitting a hash for the Docker Engine API's
-# POST /containers/create body (see Reservation::create_async) instead of a CLI
+# POST /containers/create body (see Reservation::create) instead of a CLI
 # argv list - same specification (the cmdline_* builders' own underlying data),
 # a second rendering. Built by reading the *same* structured profile/reservation
 # data each cmdline_* builder above reads, not by parsing those builders' own CLI-
@@ -337,7 +337,7 @@ sub _parse_docker_size ($str) {
 #
 # --name is deliberately not in this hash: on the CLI it's a flag, but on the
 # Create API it's the ?name= query parameter, not part of the body - the caller
-# (create_async) already has $self->name directly and supplies it there.
+# (create) already has $self->name directly and supplies it there.
 #
 # dockerArgs (profile-declared, free-form CLI flags - cmdline_docker_args() above)
 # has no generic CLI-flag-to-JSON translation available - unlike every other

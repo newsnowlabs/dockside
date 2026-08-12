@@ -14,7 +14,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api call_socket_api_async docker_exec_async unique run_system get_uri_async sanitize_sensitive_text);
+use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api_sync call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
@@ -417,11 +417,11 @@ sub update_container_info ($class) {
          }
       }
       # We have no containerId: either launch is in-flight (-2) or docker create failed (-4).
-      # createStatus is a structured {stage, failed, layers} hash written by create_async -
+      # createStatus is a structured {stage, failed, layers} hash written by create -
       # shape-tolerant here because a reservation created before this branch's own launch()
       # (deleted) may still have the old plain truthy/falsy exit-code value on disk. A bare
       # truthy-hashref check would be wrong for the new shape: {} is truthy in Perl regardless
-      # of whether 'failed' is set, so create_async's very first (in-flight, not-yet-failed)
+      # of whether 'failed' is set, so create's very first (in-flight, not-yet-failed)
       # write would otherwise show -4 immediately.
       else {
          my $cs = $r->{'createStatus'};
@@ -475,7 +475,7 @@ sub load ($class, $opts = undef) {
 
 # Updates the dockerLaunchLogs property of the Reservation with the tail of its
 # r-<id>.log file. Nothing currently writes that file: it was written by the old,
-# forking, PTY-based Reservation::launch (deleted - create_async replaced it, reporting
+# forking, PTY-based Reservation::launch (deleted - create replaced it, reporting
 # progress via createStatus instead - see its own comment). Reads here now always find
 # either nothing or a stale file from before this branch. Kept reading rather than
 # deleted outright since removing it is a product/UI call (the Vue client's
@@ -505,14 +505,14 @@ sub load_launch_logs ($self) {
    return $data;
 }
 
-# Tails a hook invocation's outer log file (dispatch_hook_exec_async's own on_output callback,
+# Tails a hook invocation's outer log file (dispatch_hook_exec's own on_output callback,
 # below, writes the hook's stdout+stderr frames here as they arrive) for a status/log read
 # endpoint to serve - see User::runContainerHookStatus and bin/app-server's GET
 # /containers/<id>/hook/status route. Mirrors
 # load_launch_logs() above (last $maxLines lines via Tie::File, read fresh from disk on every
 # call, no in-process caching) - cheap for "poll a status field, fetch the tail" use, exactly
 # like load_launch_logs already is for r-<id>.log. Unlike load_launch_logs, there is no
-# synthetic '=== EXIT CODE ===' termination line to strip: docker_exec_async()'s on_output callback
+# synthetic '=== EXIT CODE ===' termination line to strip: docker_exec()'s on_output callback
 # writes only the hook's own raw stdout/stderr bytes.
 #
 # Returns [] (never undef) if $name has never been invoked (no status record yet, so no
@@ -556,7 +556,7 @@ sub load_container_logs ($self, $opts) {
       $opts->{'stdout'} ? 'true' : 'false'
    );
 
-   my $result = call_socket_api(
+   my $result = call_socket_api_sync(
       $CONFIG->{'docker'}{'socket'},
       $path
    );
@@ -866,28 +866,22 @@ sub referencing_reservations ($class, $identifier, $kind) {
 # RESERVATION CONTROL METHODS
 #
 
-# Only 'getLogs' is reachable here now - User::controlContainer routes 'start'/'stop'/
-# 'remove' through action_async below exclusively (every caller passes a $cb; the getLogs
-# route is the one exception - see action_async's own comment). 'getLogs' itself is a fast
-# local read, not worth an async sibling of its own.
-sub action ($self, $action, $args = {}) {
-   if($action eq 'getLogs') {
-      return $self->load_container_logs({
-         'stdout' => is_true($args->{'stdout'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
-         'stderr' => is_true($args->{'stderr'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
-         'merge' => is_true($args->{'merge'})
-      });
-   }
-
-   die Exception->new( 'msg' => "Unknown docker container action '$action'" );
+# The one survivor of the old action()/action_async() split that stays synchronous - a fast
+# local read, never worth an async version. Stop/start/remove (see action() below) are the
+# genuinely slow ones; getLogs isn't, so it isn't routed through action() at all.
+sub getLogs ($self, $args = {}) {
+   return $self->load_container_logs({
+      'stdout' => is_true($args->{'stdout'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
+      'stderr' => is_true($args->{'stderr'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
+      'merge' => is_true($args->{'merge'})
+   });
 }
 
-# Async sibling of action() above - stop/start/remove via the Docker Engine API directly
-# (call_socket_api_async), no docker CLI subprocess, no fork at all. Idempotent at Docker's own
-# level for all three (repeat calls return 304/304/404 respectively) - no guard needed, unlike
-# create_async below. getLogs stays on action() only, a fast local read never routed through
-# this async sibling.
-sub action_async ($self, $action, $args, $cb) {
+# stop/start/remove via the Docker Engine API directly (call_socket_api), no docker CLI
+# subprocess, no fork at all. Idempotent at Docker's own level for all three (repeat calls return
+# 304/304/404 respectively) - no guard needed, unlike create above. getLogs (above) is the one
+# container command that stays synchronous, never routed through here.
+sub action ($self, $action, $args, $cb) {
    my $containerId = $self->containerId();
    my ( $method, $path );
 
@@ -905,10 +899,10 @@ sub action_async ($self, $action, $args, $cb) {
       die Exception->new( 'msg' => "Unknown docker container action '$action'" );
    }
 
-   call_socket_api_async(
+   call_socket_api(
       $CONFIG->{'docker'}{'socket'}, $path, { 'method' => $method },
       sub ( $result, $err ) {
-         flog( "Reservation::action_async: '$action' on '$containerId' "
+         flog( "Reservation::action: '$action' on '$containerId' "
             . ( $err ? "failed: $err" : 'returned ' . ( $result ? $result->code : '(no result)' ) ) );
          $cb->( $result, $err );
       }
@@ -982,7 +976,7 @@ sub store ($self) {
 # *entire* in-memory 'data'/'meta' - so any field this process loaded a while ago and never
 # refreshed, but is NOT trying to change right now, still rides along and can clobber a fresher
 # value some *other* concurrent writer already persisted. That's not a rare edge case for a
-# writer whose own dispatch took several seconds before finally writing (a slow docker_exec_async
+# writer whose own dispatch took several seconds before finally writing (a slow docker_exec
 # call, say): its own in-memory snapshot of every unrelated field is exactly that many seconds
 # stale by the time it stores.
 # store_fields avoids this at the source - a key genuinely absent from $fields is never sent at
@@ -1008,14 +1002,14 @@ sub increment_start_count ($self) {
 
 # Fetches the devcontainer.json for this reservation's gitURL, if it points at a GitHub repo:
 # tries 'main' first, only falling back to 'master' if 'main' fails or returns unparseable
-# JSON - built on get_uri_async so User::createContainerReservation's own async chain never
+# JSON - built on get_uri so User::createContainerReservation's own async chain never
 # blocks the reactor while GitHub responds. Expressed as a recursive callback chain (there's
 # no early 'return' across an async boundary). $cb fires exactly once, with the decoded
 # devcontainer.json hashref, or undef if there is none (no gitURL, non-GitHub URL, or neither
 # branch has one).
-sub getGitDevContainer_async ($self, $cb) {
+sub getGitDevContainer ($self, $cb) {
    my $uri = $self->data('gitURL');
-   flog("getGitDevContainer_async: uri=" . ($uri // ''));
+   flog("getGitDevContainer: uri=" . ($uri // ''));
 
    return $cb->(undef) unless $uri;
 
@@ -1033,8 +1027,8 @@ sub getGitDevContainer_async ($self, $cb) {
       my ( $branch, @rest ) = @branches;
       my $devcontainerUri = "https://raw.githubusercontent.com/$path/refs/heads/$branch/.devcontainer/devcontainer.json";
 
-      get_uri_async( $devcontainerUri, sub ($result) {
-         flog( "getGitDevContainer_async: uri=$devcontainerUri; result=" . ( $result // '(none)' )
+      get_uri( $devcontainerUri, sub ($result) {
+         flog( "getGitDevContainer: uri=$devcontainerUri; result=" . ( $result // '(none)' )
             . "; is_success=" . ( ( $result && $result->is_success ) ? 1 : 0 ) );
 
          if ( $result && $result->is_success ) {
@@ -1069,7 +1063,7 @@ sub _create_status_set ($self, $value, $extra = {}) {
 # Creates and starts this reservation's container - no fork, no PTY, no docker CLI subprocess:
 # builds the Docker Create API body from cmdline_json() (Reservation/Launch.pm), pulls the
 # image first if it isn't already present (with real per-layer progress, not a PTY log-tail),
-# then POST /containers/create and POST /containers/{id}/start, all via call_socket_api_async.
+# then POST /containers/create and POST /containers/{id}/start, all via call_socket_api.
 # docker-event-daemon's own onContainerStart (/events-driven, unconditional on who issued the
 # docker start) fires the launch DAG exactly as it does today - no signal to DED needed at all.
 #
@@ -1091,7 +1085,7 @@ sub _create_status_set ($self, $value, $extra = {}) {
 # the whole file; the alternative (nested callbacks) would be a four-deep pyramid. Not precedent
 # for reaching for Mojo::Promise/Mojo::IOLoop elsewhere in this file - every other _async sub
 # here stays on the plain ($self, ..., $cb) single-callback convention.
-sub create_async ($self, $cb) {
+sub create ($self, $cb) {
    my $id = $self->id();
 
    if ( $self->{'createStatus'} ) {
@@ -1105,7 +1099,7 @@ sub create_async ($self, $cb) {
    }
    catch {
       my $msg = (ref($_) eq 'Exception') ? $_->msg : $_;
-      flog("Reservation::create_async: cmdline_json() threw error: $_");
+      flog("Reservation::create: cmdline_json() threw error: $_");
       $self->_create_status_set(
          { 'stage' => 'failed', 'failed' => 1, 'error' => $msg },
          { 'expiryTime' => YYYYMMDDHHMMSS(time) }
@@ -1121,7 +1115,7 @@ sub create_async ($self, $cb) {
    my $image  = $self->data('image');
 
    my $checkImage = Mojo::Promise->new( sub ($resolve, $reject) {
-      call_socket_api_async( $socket, '/images/' . uri_escape($image) . '/json', {}, sub ($result, $err) {
+      call_socket_api( $socket, '/images/' . uri_escape($image) . '/json', {}, sub ($result, $err) {
          return $reject->($err) if $err;
          $resolve->( $result && $result->code == 200 );
       } );
@@ -1136,7 +1130,7 @@ sub create_async ($self, $cb) {
       return Mojo::Promise->new( sub ($resolve, $reject) {
          my $buf = '';
          my $failed;
-         call_socket_api_async( $socket, '/images/create?fromImage=' . uri_escape($repo) . '&tag=' . uri_escape($tag), {
+         call_socket_api( $socket, '/images/create?fromImage=' . uri_escape($repo) . '&tag=' . uri_escape($tag), {
             'method'  => 'POST',
             'on_read' => sub ($bytes) {
                $buf .= $bytes;
@@ -1188,7 +1182,7 @@ sub create_async ($self, $cb) {
                # embedded mid-stream after a 200 already started (a bad layer partway through an
                # otherwise-real pull - $failed, above). $result->body is *always* empty here
                # regardless of which - on_read replaces Mojo's own default body-accumulation
-               # (see call_socket_api_async's own comment) - so $buf/$failed are the only place
+               # (see call_socket_api's own comment) - so $buf/$failed are the only place
                # the actual error text survives. An unknown-tag pull returns 404 with exactly
                # this un-newline-terminated {"message":...} shape - without this fallback it
                # would silently report an empty error string instead.
@@ -1207,7 +1201,7 @@ sub create_async ($self, $cb) {
       $self->_create_status_set( { 'stage' => 'creating', 'failed' => 0, 'layers' => {} } );
 
       return Mojo::Promise->new( sub ($resolve, $reject) {
-         call_socket_api_async( $socket, '/containers/create?name=' . uri_escape( $self->name ), {
+         call_socket_api( $socket, '/containers/create?name=' . uri_escape( $self->name ), {
             'method' => 'POST',
             'json'   => $body,
          }, sub ($result, $err) {
@@ -1235,7 +1229,7 @@ sub create_async ($self, $cb) {
       $self->_create_status_set( { 'stage' => 'starting', 'failed' => 0, 'layers' => {} } );
 
       return Mojo::Promise->new( sub ($resolve, $reject) {
-         call_socket_api_async( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
+         call_socket_api( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
             if ( $err || !$result || !$result->is_success ) {
                $reject->( $err // ( $result ? $result->body : 'no response' ) );
                return;
@@ -1244,10 +1238,10 @@ sub create_async ($self, $cb) {
          } );
       } );
    } )->then( sub (@) {
-      flog("Reservation::create_async: reservation '$id' created and started successfully");
+      flog("Reservation::create: reservation '$id' created and started successfully");
       $self->_create_status_set( { 'stage' => 'done', 'failed' => 0, 'layers' => {} } );
    } )->catch( sub ($err) {
-      flog("Reservation::create_async: reservation '$id' failed: $err");
+      flog("Reservation::create: reservation '$id' failed: $err");
       $self->_create_status_set(
          { 'stage' => 'failed', 'failed' => 1, 'error' => "$err" },
          { 'expiryTime' => YYYYMMDDHHMMSS(time) }
@@ -1424,20 +1418,20 @@ sub exec ($reservation, $command = undef) {
 # launch.sh itself, or a later `docker exec ... launch.sh run_hook` built here) needs
 # regardless of which specific hook is running: the same GIT_URL/SSH_KNOWN_HOSTS_DOMAINS,
 # DOCKSIDE_OPTION_* and GH_TOKEN env this reservation's IDE launch already gets - shared here
-# to avoid duplicating/drifting that logic between exec() and dispatch_hook_exec_async().
+# to avoid duplicating/drifting that logic between exec() and dispatch_hook_exec().
 # Deliberately does NOT resolve a hook script path itself - exec() may need up to two script
 # paths at once ('lifecycle:launch' and 'lifecycle:start', see above) and
-# dispatch_hook_exec_async passes its one script path directly as a launch.sh CLI argument
+# dispatch_hook_exec passes its one script path directly as a launch.sh CLI argument
 # instead (see below), so each caller resolves whichever script(s) it needs itself.
 #
 # Returns `docker` CLI flag strings ("--env=KEY=VALUE"), not plain "KEY=VALUE" - matching
 # exec()'s own @envHook/@envIDE/etc. below, since exec() still shells out to the `docker` CLI
-# directly (run_system(...'exec','-d',...,@envCommonHook,...)). dispatch_hook_exec_async
+# directly (run_system(...'exec','-d',...,@envCommonHook,...)). dispatch_hook_exec
 # dispatches via the Docker Engine API's exec/create instead, whose `Env` field wants plain
 # "KEY=VALUE" strings, not "--env=KEY=VALUE" - passing the CLI-flag form straight into that
 # JSON field doesn't error, it just silently creates a nonsense env var literally named
 # "--env" whose value is "KEY=VALUE", so DOCKSIDE_OPTION_* (and GIT_URL/GH_TOKEN) never reach
-# the hook process at all. Fixed at dispatch_hook_exec_async's own call site (strips the
+# the hook process at all. Fixed at dispatch_hook_exec's own call site (strips the
 # prefix there) rather than changing this function's output format, since exec() still needs
 # the CLI-flag form.
 # Plain "KEY=VALUE" strings for every DOCKSIDE_OPTION_<NAME> this reservation's profile
@@ -1537,7 +1531,7 @@ sub hook_is_running ($self, $name) {
    my $status = $self->_hook_status_all->{$name};
    return 0 unless $status && ($status->{'state'} // '') eq 'running';
 
-   # Newly-started, before docker_exec_async()'s own on_created callback has fired yet
+   # Newly-started, before docker_exec()'s own on_created callback has fired yet
    # (see hook_status_started/hook_status_set_running_details below) - the execId doesn't
    # exist yet, so there is nothing to check; it is, definitionally, still running.
    return 1 unless defined($status->{'execId'});
@@ -1547,7 +1541,7 @@ sub hook_is_running ($self, $name) {
    # completion callback ever ran (OOM, crash, restart) would otherwise wedge this name as
    # "running" forever. The exec API's own Running state is the only signal available - nothing
    # forks for this any more, so there is no local pid to check first.
-   my $res = call_socket_api($CONFIG->{'docker'}{'socket'}, "/exec/$status->{'execId'}/json", {});
+   my $res = call_socket_api_sync($CONFIG->{'docker'}{'socket'}, "/exec/$status->{'execId'}/json", {});
    if( $res && $res->is_success ) {
       my $info = decode_json($res->body);
       return 1 if $info->{'Running'};
@@ -1595,10 +1589,10 @@ sub hook_status ($self, $name) {
 }
 
 # Called synchronously before dispatch begins (docker-event-daemon's own launch:-DAG stages
-# only - dispatch_hook_exec_async's own claim/dispatch, below, uses hook_claim_if_not_running
+# only - dispatch_hook_exec's own claim/dispatch, below, uses hook_claim_if_not_running
 # instead), to record that $name has started, so a poller sees 'running' immediately rather
 # than a gap where the record doesn't exist yet. execId is deliberately undef at this point -
-# it only exists once docker_exec_async's own on_created callback fires - see
+# it only exists once docker_exec's own on_created callback fires - see
 # hook_status_set_running_details, called from that callback once it's known.
 sub hook_status_started ($self, $name, $logPath) {
    $self->_hook_status_store_one( $name, {
@@ -1610,7 +1604,7 @@ sub hook_status_started ($self, $name, $logPath) {
    } );
 }
 
-# Called from docker_exec_async's own on_created callback once the exec id is known - see
+# Called from docker_exec's own on_created callback once the exec id is known - see
 # hook_status_started above for why it can't be known any earlier.
 sub hook_status_set_running_details ($self, $name, $execId) {
    my $existing = $self->_hook_status_all->{$name} or return;
@@ -1631,7 +1625,7 @@ sub hook_status_completed ($self, $name, $fields) {
 # The one canonical async hook-dispatch core - claims, dispatches via the exec API, and
 # records the outcome start to finish (hook_claim_if_not_running -> hook_status_set_running_
 # details -> hook_status_completed). Both remaining dispatch paths - this on-demand entry
-# point's own run_hook_sync_async below, and docker-event-daemon's launch DAG (via
+# point's own run_hook_manual below, and docker-event-daemon's launch DAG (via
 # _launch_dispatch_hook_stage, which just wraps this) - go through it, so there is exactly one
 # place that knows how to dispatch a hook and record its outcome.
 #
@@ -1640,7 +1634,7 @@ sub hook_status_completed ($self, $name, $fields) {
 #      atomic claim (hook_claim_if_not_running) resolves. undef means another invocation already
 #      owns $name (busy) - the caller must not treat this as an error, and dispatch stops here.
 #      A caller that needs to return "started"/"busy" immediately without waiting for the hook to
-#      actually finish (run_hook_sync_async - matching the fork model's own fire-and-forget shape
+#      actually finish (run_hook_manual - matching the fork model's own fire-and-forget shape
 #      exactly, just without the fork) hooks in here only.
 #   $on_settled->($outcome, $err) - fires once dispatch has fully finished: $outcome is one of
 #      hook_status's own state values ('done'/'failed'/'aborted') once the exec resolves, or
@@ -1648,12 +1642,12 @@ sub hook_status_completed ($self, $name, $fields) {
 #      needs to know the final result (docker-event-daemon's launch DAG, to call
 #      launch_resolve_stage) hooks in here.
 #
-# Deliberately does NOT repeat run_hook_sync_async's own on-demand-specific validation gates
+# Deliberately does NOT repeat run_hook_manual's own on-demand-specific validation gates
 # (declared? implemented? manual?) - a different caller may have entirely different gating;
 # those stay in each caller. $args:
 #   user    - exec user (default: $self->unixuser())
 #   timeout - seconds; defaults to $CONFIG->{'hooks'}{'defaultTimeoutSeconds'}
-sub dispatch_hook_exec_async ($self, $name, $script, $args, $on_claimed, $on_settled) {
+sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) {
    my $invocationId = sprintf( "%08x", int( rand(0xffffffff) ) );
    my $logPath = "$CONFIG->{'tmpPath'}/r-" . $self->id() . "-hook-$invocationId.log";
 
@@ -1668,7 +1662,7 @@ sub dispatch_hook_exec_async ($self, $name, $script, $args, $on_claimed, $on_set
    $on_claimed->($claimedEntry);
 
    my @Command = $self->ide_command();
-   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::dispatch_hook_exec_async: ide_command() returned empty' ) unless @Command;
+   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::dispatch_hook_exec: ide_command() returned empty' ) unless @Command;
    $Command[-1] = 'run_hook';
    push( @Command, $name, $script );
 
@@ -1681,13 +1675,13 @@ sub dispatch_hook_exec_async ($self, $name, $script, $args, $on_claimed, $on_set
    my $timeout     = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    my $containerId = $self->containerId();
 
-   flog( "Reservation::dispatch_hook_exec_async: DISPATCHING (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
+   flog( "Reservation::dispatch_hook_exec: DISPATCHING (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
    open( my $log, '>>', $logPath )
-      or die Exception->new( 'dbg' => "Reservation::dispatch_hook_exec_async: cannot open log '$logPath': $!" );
+      or die Exception->new( 'dbg' => "Reservation::dispatch_hook_exec: cannot open log '$logPath': $!" );
    $log->autoflush(1);
 
-   docker_exec_async( $CONFIG->{'docker'}{'socket'}, $containerId, {
+   docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
       'Cmd' => \@Command, 'User' => $args->{'user'} // $self->unixuser(), 'Env' => \@env,
    }, {
       'inactivity_timeout' => $timeout + 30,
@@ -1699,7 +1693,7 @@ sub dispatch_hook_exec_async ($self, $name, $script, $args, $on_claimed, $on_set
          close($log);
 
          if ( !$result ) {
-            flog("Reservation::dispatch_hook_exec_async: '$name' failed to dispatch: $err");
+            flog("Reservation::dispatch_hook_exec: '$name' failed to dispatch: $err");
             $self->hook_status_completed( $name, { 'state' => 'aborted' } );
             $on_settled->( 'aborted', $err );
             return;
@@ -1718,7 +1712,7 @@ sub dispatch_hook_exec_async ($self, $name, $script, $args, $on_claimed, $on_set
          $on_settled->( _hook_outcome_state( $self->hook_status($name) ), undef );
       }
       catch {
-         flog("Reservation::dispatch_hook_exec_async: caught exception resolving '$name': " . ( ref($_) ? $_->dbg : $_ ));
+         flog("Reservation::dispatch_hook_exec: caught exception resolving '$name': " . ( ref($_) ? $_->dbg : $_ ));
          $on_settled->( undef, $_ );
       };
    } );
@@ -1727,7 +1721,7 @@ sub dispatch_hook_exec_async ($self, $name, $script, $args, $on_claimed, $on_set
 # Maps a raw hook_status() record to done/failed/timedOut - the same vocabulary
 # docker-event-daemon's own launch_resolve_stage expects (was
 # _launch_state_from_hook_status, docker-event-daemon-local; now shared since
-# dispatch_hook_exec_async's $on_settled needs the identical mapping for its own
+# dispatch_hook_exec's $on_settled needs the identical mapping for its own
 # generic 'done'/'failed'/'aborted' outcome, not just the DAG's use of it).
 sub _hook_outcome_state ($status) {
    return 'failed'   unless $status;
@@ -1737,11 +1731,11 @@ sub _hook_outcome_state ($status) {
 }
 
 # The on-demand entry point for running a hook now (User::runContainerHook, ultimately
-# `dockside hook run`): validates the request, then dispatches via dispatch_hook_exec_async.
+# `dockside hook run`): validates the request, then dispatches via dispatch_hook_exec.
 # $cb fires immediately once the claim resolves - not once the hook itself finishes; the
 # actual dispatch continues in the background, pollable via hook_status/
 # User::runContainerHookStatus.
-sub run_hook_sync_async ($self, $args, $cb) {
+sub run_hook_manual ($self, $args, $cb) {
    my $name = $args->{'name'};
    die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length( $name // '' );
 
@@ -1769,14 +1763,14 @@ sub run_hook_sync_async ($self, $args, $cb) {
    die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
       unless $timeout =~ /^[1-9][0-9]*$/;
 
-   $self->dispatch_hook_exec_async(
+   $self->dispatch_hook_exec(
       $name, $script, { 'timeout' => $timeout },
       sub ($claimedEntry) {
          return $cb->( { 'busy' => 1 }, undef ) unless $claimedEntry;
          return $cb->( { 'started' => 1, 'name' => $name }, undef );
       },
       sub ( $outcome, $err ) {
-         # Nothing further to do here - dispatch_hook_exec_async has already persisted the
+         # Nothing further to do here - dispatch_hook_exec has already persisted the
          # outcome via hook_status_completed; a client discovers it by polling
          # User::runContainerHookStatus (the GET /containers/:id/hook/status route), a plain
          # synchronous read.

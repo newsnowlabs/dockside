@@ -52,7 +52,7 @@ $app->max_request_size( $CONFIG->{'appServer'}{'maxRequestSize'} );
 #
 # Data::load() here matters because each of Mojo::Server::Prefork's worker processes has
 # its own independent memory (forked at startup, not shared), so a reservation another
-# worker just created/mutated (e.g. via its own create_async, or docker-event-daemon's
+# worker just created/mutated (e.g. via its own create, or docker-event-daemon's
 # own writes) is otherwise invisible to this one until something reloads it.
 #
 # HTTPS enforcement: nginx's own port-80 server block still proxies 'www' traffic here

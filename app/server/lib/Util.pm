@@ -7,8 +7,8 @@ our @EXPORT_OK = ( qw(
    flog wlog
    get_config
    trim is_true
-   call_socket_api call_socket_api_async call_socket_json_api docker_container_path_exists docker_exec_async
-   get_uri_async
+   call_socket_api_sync call_socket_api call_socket_json_api docker_container_path_exists docker_exec
+   get_uri
    run run_system clean_pty run_pty
    sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
@@ -125,7 +125,7 @@ sub is_true ($value) {
 
 sub call_socket_json_api ($socket, $path) {
 
-   my $result = call_socket_api($socket, $path);
+   my $result = call_socket_api_sync($socket, $path);
 
    unless($result) {
       die Exception->new( 'dbg' => "Unable to execute Docker API call $path" );
@@ -146,7 +146,7 @@ sub call_socket_json_api ($socket, $path) {
    return $object;
 }
 
-sub call_socket_api ($socket, $path, $opts = {}) {
+sub call_socket_api_sync ($socket, $path, $opts = {}) {
    my $ua = Mojo::UserAgent->new();
 
    # Default (20s) is far too short for a held-open exec/start stream that can legitimately
@@ -159,13 +159,13 @@ sub call_socket_api ($socket, $path, $opts = {}) {
    # rather than throwing - callers must check for that, not wrap this in a try/catch expecting
    # an exception. This is purely client-side abandonment - the in-container process is *not*
    # killed by it (there is no Docker API endpoint to kill a running exec at all), matching
-   # `timeout`'s own caveat in Reservation::dispatch_hook_exec_async.
+   # `timeout`'s own caveat in Reservation::dispatch_hook_exec.
    $ua->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
 
    my $method = uc($opts->{'method'} // 'GET');
    my $uri = 'http+unix://' . uri_escape($socket) . $path;
 
-   flog("call_socket_api: $method $uri");
+   flog("call_socket_api_sync: $method $uri");
 
    my $result;
    try {
@@ -215,7 +215,7 @@ sub call_socket_api ($socket, $path, $opts = {}) {
    return $result;
 }
 
-# Every in-flight call_socket_api_async's own Mojo::UserAgent, keyed by its transaction's refaddr
+# Every in-flight call_socket_api's own Mojo::UserAgent, keyed by its transaction's refaddr
 # - removed the instant that call's own completion callback fires. Necessary, not optional:
 # Perl closures only capture a variable actually *referenced by name* in the closure body: the
 # completion callback below takes its own ($ua, $tx) parameters (Mojo's own convention), which
@@ -227,12 +227,12 @@ sub call_socket_api ($socket, $path, $opts = {}) {
 # connection had even finished being established.
 my %ASYNC_UA_IN_FLIGHT;
 
-# Non-blocking sibling of call_socket_api above - never blocks the caller's own event loop.
+# Non-blocking sibling of call_socket_api_sync above - never blocks the caller's own event loop.
 # Same $opts/conventions (method/json/on_read/inactivity_timeout/request_timeout/headers/
-# http+unix:// transport) - this replicates call_socket_api's own behavior for a non-blocking
+# http+unix:// transport) - this replicates call_socket_api_sync's own behavior for a non-blocking
 # caller, it does not redefine it. $cb->($result, $error) fires exactly once, whenever the call
-# settles: $result is the response object (call_socket_api's own return value) whenever one
-# exists - including a non-2xx HTTP response, e.g. a 404, exactly as call_socket_api's own
+# settles: $result is the response object (call_socket_api_sync's own return value) whenever one
+# exists - including a non-2xx HTTP response, e.g. a 404, exactly as call_socket_api_sync's own
 # callers already handle by inspecting ->code/->is_success themselves, not by treating a non-2xx
 # as a failure - or undef with $error set to a message string for a genuine transport-level
 # failure (connection refused, or request_timeout).
@@ -242,11 +242,11 @@ my %ASYNC_UA_IN_FLIGHT;
 # error status (e.g. 404) - $tx->error IS set (with a real ->{'code'}), but $tx->result is ALSO
 # still fully usable, same response object either way; (3) a genuine transport failure (bad
 # socket path, or request_timeout firing) - $tx->error is set with ->{'code'} undef, and calling
-# $tx->result in that case actually throws, exactly mirroring call_socket_api's own documented
+# $tx->result in that case actually throws, exactly mirroring call_socket_api_sync's own documented
 # blocking-mode behavior for the same two cases. So the only correct discriminator for "was
 # anything usable returned at all" is $tx->error's own ->{'code'} being defined or not, not
 # whether ->error is set at all.
-sub call_socket_api_async ($socket, $path, $opts, $cb) {
+sub call_socket_api ($socket, $path, $opts, $cb) {
    my $ua = Mojo::UserAgent->new();
    $ua->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
    $ua->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
@@ -255,12 +255,12 @@ sub call_socket_api_async ($socket, $path, $opts, $cb) {
    my $uri = 'http+unix://' . uri_escape($socket) . $path;
    my $headers = {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'};
 
-   flog("call_socket_api_async: $method $uri");
+   flog("call_socket_api: $method $uri");
 
-   # DELETE added for Reservation::action_async's 'remove' (DELETE /containers/{id}?v=true) -
+   # DELETE added for Reservation::action's 'remove' (DELETE /containers/{id}?v=true) -
    # no body, same as GET/HEAD below - Docker's remove-container endpoint takes its options
    # (v/force) as query params, not a body.
-   die Exception->new( 'dbg' => "call_socket_api_async: unsupported method '$method' for $path" )
+   die Exception->new( 'dbg' => "call_socket_api: unsupported method '$method' for $path" )
       unless $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE';
 
    my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
@@ -302,7 +302,7 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
       uri_escape($containerPath)
    );
 
-   my $result = call_socket_api($socket, $path, { 'method' => 'HEAD' });
+   my $result = call_socket_api_sync($socket, $path, { 'method' => 'HEAD' });
 
    unless($result) {
       die Exception->new( 'dbg' => "Unable to execute Docker API path check: $path", 'msg' => "Unable to check container path" );
@@ -371,11 +371,11 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 #   on_output          => sub ($stream, $bytes) { ... }  optional, called for each frame of
 #      output as it arrives (not buffered/batched) - $stream is 'stdout' or 'stderr'. Omit to
 #      discard output entirely (the caller only wants the final exit code).
-#   inactivity_timeout => seconds   optional, forwarded to call_socket_api_async - the exec can
+#   inactivity_timeout => seconds   optional, forwarded to call_socket_api - the exec can
 #      legitimately go quiet between output lines for longer than Mojo's 20s default.
-#   request_timeout    => seconds   optional, forwarded to call_socket_api_async - bounds the
+#   request_timeout    => seconds   optional, forwarded to call_socket_api - bounds the
 #      whole start-and-stream call regardless of activity. This is purely client-side
-#      abandonment: it does not kill the in-container process (see call_socket_api's own
+#      abandonment: it does not kill the in-container process (see call_socket_api_sync's own
 #      comment) - the hook may still be running/finishing in the background after $cb fires.
 # $cb->($result, $error) fires exactly once, always, for every path including Detach: $result
 # is { execId, exitCode, timedOut } on success (exitCode undef if the start call itself timed
@@ -385,8 +385,8 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 # request_timeout. Every failure path reports via $cb rather than dying: an async caller has no
 # surrounding try/catch frame by the time any of this runs, so dying here would be an uncaught
 # exception inside a Mojo completion callback, not something any caller could catch.
-sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
-   call_socket_api_async( $socket, "/containers/$containerId/exec", {
+sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
+   call_socket_api( $socket, "/containers/$containerId/exec", {
       'method' => 'POST',
       'json'   => {
          'AttachStdout' => JSON::true,
@@ -398,11 +398,11 @@ sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
       },
    }, sub ($createRes, $createErr) {
       unless( $createRes ) {
-         $cb->( undef, "docker_exec_async: unable to create exec for containerId=$containerId: $createErr" );
+         $cb->( undef, "docker_exec: unable to create exec for containerId=$containerId: $createErr" );
          return;
       }
       unless( $createRes->code == 201 ) {
-         $cb->( undef, sprintf( "docker_exec_async: create failed for containerId=%s: %d %s", $containerId, $createRes->code, $createRes->body ) );
+         $cb->( undef, sprintf( "docker_exec: create failed for containerId=%s: %d %s", $containerId, $createRes->code, $createRes->body ) );
          return;
       }
 
@@ -410,12 +410,12 @@ sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
       $opts->{'on_created'}->($execId) if $opts->{'on_created'};
 
       if( $opts->{'Detach'} ) {
-         call_socket_api_async( $socket, "/exec/$execId/start", {
+         call_socket_api( $socket, "/exec/$execId/start", {
             'method' => 'POST',
             'json'   => { 'Detach' => JSON::true, 'Tty' => JSON::false },
          }, sub ($startRes, $startErr) {
             unless( $startRes && $startRes->code == 200 ) {
-               $cb->( undef, "docker_exec_async: unable to start (detached) execId=$execId" . ( $startErr ? ": $startErr" : '' ) );
+               $cb->( undef, "docker_exec: unable to start (detached) execId=$execId" . ( $startErr ? ": $startErr" : '' ) );
                return;
             }
             $cb->( { 'execId' => $execId, 'exitCode' => undef, 'timedOut' => 0 }, undef );
@@ -442,7 +442,7 @@ sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
          }
       };
 
-      call_socket_api_async( $socket, "/exec/$execId/start", {
+      call_socket_api( $socket, "/exec/$execId/start", {
          'method'             => 'POST',
          'json'               => { 'Detach' => JSON::false, 'Tty' => JSON::false },
          'inactivity_timeout' => $opts->{'inactivity_timeout'},
@@ -451,21 +451,21 @@ sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
       }, sub ($startRes, $startErr) {
          unless( $startRes ) {
             if( ($startErr // '') =~ /timeout/i ) {
-               flog("docker_exec_async: execId=$execId timed out waiting for it to finish (client-side only - the in-container process is not killed by this)");
+               flog("docker_exec: execId=$execId timed out waiting for it to finish (client-side only - the in-container process is not killed by this)");
                $cb->( { 'execId' => $execId, 'exitCode' => undef, 'timedOut' => 1 }, undef );
                return;
             }
-            $cb->( undef, "docker_exec_async: unable to start execId=$execId" . ( $startErr ? ": $startErr" : '' ) );
+            $cb->( undef, "docker_exec: unable to start execId=$execId" . ( $startErr ? ": $startErr" : '' ) );
             return;
          }
 
-         call_socket_api_async( $socket, "/exec/$execId/json", {}, sub ($inspectRes, $inspectErr) {
+         call_socket_api( $socket, "/exec/$execId/json", {}, sub ($inspectRes, $inspectErr) {
             my $exitCode;
             if( $inspectRes && $inspectRes->is_success ) {
                $exitCode = decode_json($inspectRes->body)->{'ExitCode'};
             }
             else {
-               flog("docker_exec_async: post-run inspect of execId=$execId failed; exitCode unavailable");
+               flog("docker_exec: post-run inspect of execId=$execId failed; exitCode unavailable");
             }
             $cb->( { 'execId' => $execId, 'exitCode' => $exitCode, 'timedOut' => 0 }, undef );
          } );
@@ -474,16 +474,16 @@ sub docker_exec_async ($socket, $containerId, $args, $opts, $cb) {
 }
 
 # Just GET a URI, non-blocking - $cb->($result) fires with the response object, or undef on
-# any failure (connection error, timeout, ...). Used by Reservation::getGitDevContainer_async;
+# any failure (connection error, timeout, ...). Used by Reservation::getGitDevContainer;
 # kept as its own function here, not inlined, in case another caller needs the same non-blocking
 # fetch later. Manual build_tx/start (not the ->get($uri => $cb) shorthand) and
-# %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api_async above - the same
+# %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api above - the same
 # "Premature connection close" GC hazard applies here (this function's own $ua is otherwise
 # unreferenced the instant it returns), same fix.
-sub get_uri_async ($uri, $cb) {
+sub get_uri ($uri, $cb) {
    my $ua = Mojo::UserAgent->new();
 
-   flog("get_uri_async: $uri");
+   flog("get_uri: $uri");
 
    my $tx = $ua->build_tx( GET => $uri );
    $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;

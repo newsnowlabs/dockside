@@ -7,7 +7,7 @@
 # always has an up-to-date view of running containers.
 #
 # Event loop (eventHandler):
-# - A persistent, non-blocking streamed GET /events (Mojo::IOLoop, via Util::call_socket_api_async)
+# - A persistent, non-blocking streamed GET /events (Mojo::IOLoop, via Util::call_socket_api)
 #   - not a spawned `docker events` subprocess. Maps directly onto `docker events --format
 #   "{{ json . }}"`'s own output: newline-delimited JSON, one event object per line - no
 #   demuxing needed here, unlike exec output.
@@ -33,13 +33,13 @@
 #                                     (launch:prep -> {launch:git, launch:ide, lifecycle:*} -
 #                                     see this file's own "Launch dispatch orchestration"
 #                                     section) via launch_advance. Every dispatch is a
-#                                     non-blocking docker_exec_async call, never a fork; each
+#                                     non-blocking docker_exec call, never a fork; each
 #                                     stage's own completion callback re-scans for newly-eligible
 #                                     dependents, so a single launch_advance call drives the
 #                                     whole DAG to completion on its own.
 #
-# Container state update (_update_merge / update_async):
-# - Calls the Docker API (/containers/json) via a Unix socket, non-blocking (call_socket_api_async).
+# Container state update (_update_merge / update):
+# - Calls the Docker API (/containers/json) via a Unix socket, non-blocking (call_socket_api).
 #   size=true (only when 'updateSizes' is requested and $CONFIG->{'docker'}{'sizes'} allows it)
 #   is genuinely, not just theoretically, slow - measured at ~30x the no-sizes call's own latency
 #   against a real daemon with a modest container count, scaling with fleet size - so this one
@@ -73,7 +73,7 @@ use Time::HiRes qw(time);
 
 use Mojo::IOLoop;
 
-use Util qw(cacheReadWrite flog call_socket_api call_socket_api_async docker_container_path_exists docker_exec_async sanitize_sensitive_text unique);
+use Util qw(cacheReadWrite flog call_socket_api docker_container_path_exists docker_exec sanitize_sensitive_text unique);
 use Exception;
 use Data qw($CONFIG);
 use Reservation;
@@ -105,7 +105,7 @@ my %pendingLaunch;  # containerId => { deadline => epoch, nextTime => epoch, lau
 #
 # Second, ordinary-operation seeding source: _launch_dispatch_hook_stage below, when its own
 # hook_claim_if_not_running loses the claim on lifecycle:launch/lifecycle:start to a concurrent
-# on-demand run_hook_sync_async invocation of the same name (the only two DAG stage names externally
+# on-demand run_hook_manual invocation of the same name (the only two DAG stage names externally
 # reachable that way). DED isn't the owner of that dispatch's completion in this case, so it
 # can't rely on its own completion callback the way every other stage can - the same "who
 # resolves this" gap the restart case has, just triggered by losing a race instead of by a
@@ -196,7 +196,7 @@ sub launch_or_queue_until_launcher_ready ($reservation, $context, $since) {
 # ide_command_env) and pure state-recording methods (hook_status_*/increment_start_count/
 # store_fields) are called directly from here - reused as-is, not reimplemented.
 #
-# TRANSPORT: every dispatch below is non-blocking (Util::docker_exec_async), never a fork. This
+# TRANSPORT: every dispatch below is non-blocking (Util::docker_exec), never a fork. This
 # is what collapses the entire self-heal-vs-on_success race class that a forked, fork-per-tick
 # design was vulnerable to (see item F2's own history in this doc for the bug that motivated
 # this rewrite): there is only ever one process, so "which of two paths resolves this stage
@@ -217,7 +217,7 @@ my $NONROOT_USER = sub ($reservation) { $reservation->unixuser() };
 # launch:ide are bare launch.sh entry-point functions (no hook name/script involved - see
 # _launch_dispatch_exec below), while lifecycle:launch/lifecycle:start are real, profile-
 # declared hooks, dispatched via _launch_dispatch_hook_stage's own thin wrapper around
-# Reservation::dispatch_hook_exec_async - see its own comment.
+# Reservation::dispatch_hook_exec - see its own comment.
 my %LAUNCH_STAGES = (
    'launch:prep' => {
       depends_on => [],
@@ -275,7 +275,7 @@ sub _launch_deps_cleared ($reservation, $stage) {
 # Marks every launch:-DAG stage 'pending' for a fresh launch cycle - except any name that's
 # genuinely still running right now, left untouched (see
 # Reservation::Mutate::launch_reset_stages_if_idle's own comment for why: lifecycle:launch/
-# lifecycle:start are also reachable via a concurrent on-demand run_hook_sync_async invocation, unlike
+# lifecycle:start are also reachable via a concurrent on-demand run_hook_manual invocation, unlike
 # the other three DAG stages, which are docker-event-daemon-exclusive). Called exactly once per
 # genuine container 'start' Docker event (onContainerStart, before its first launch_advance
 # call for that event) - never from the pendingLaunch retry loop, which is for waiting out the
@@ -364,7 +364,7 @@ sub launch_maybe_dispatch ($reservation, $stage) {
 }
 
 # Dispatches a bare launch.sh entry-point function (launch:prep/launch:git/launch:ide - no hook
-# name/script involved, unlike _launch_dispatch_hook_stage) via docker_exec_async, and records
+# name/script involved, unlike _launch_dispatch_hook_stage) via docker_exec, and records
 # its outcome. Base env is _hook_env() (GIT_URL/SSH_KNOWN_HOSTS_DOMAINS/DOCKSIDE_OPTION_*/
 # GH_TOKEN) plus ide_command_env() (the reservation's own IDE-record env) - both were already
 # part of every launch before this split, for every stage that came from it. $opts:
@@ -407,7 +407,7 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
 
    flog( "docker-event-daemon::_launch_dispatch_exec: DISPATCHING '$stage' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
-   docker_exec_async( $CONFIG->{'docker'}{'socket'}, $containerId, {
+   docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
       'Cmd' => \@Command, 'User' => $user, 'Env' => \@env,
    }, {
       ( $opts->{'detach'}
@@ -501,7 +501,7 @@ sub _launch_dispatch_prep ($reservation, $cb) {
 }
 
 # Dispatches $name (lifecycle:launch/lifecycle:start) - a thin wrapper around
-# Reservation::dispatch_hook_exec_async (the one canonical async hook-dispatch core - see its
+# Reservation::dispatch_hook_exec (the one canonical async hook-dispatch core - see its
 # own comment) that supplies this DAG stage's two callback points: on-claim-lost, defer to
 # %launchRecovering (see its own comment above) rather than resolving a stage that isn't ours;
 # on-settled, translate the outcome into a launch_resolve_stage() call - deliberately not
@@ -511,10 +511,10 @@ sub _launch_dispatch_prep ($reservation, $cb) {
 sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
    my $script = $reservation->hook_script($name);
 
-   $reservation->dispatch_hook_exec_async(
+   $reservation->dispatch_hook_exec(
       $name, $script, {},
       sub ($claimedEntry) {
-         return if $claimedEntry;   # claimed - dispatch_hook_exec_async continues on its own
+         return if $claimedEntry;   # claimed - dispatch_hook_exec continues on its own
          flog( "docker-event-daemon::_launch_dispatch_hook_stage: '$name' already claimed by a "
              . "concurrent on-demand invocation - deferring to launchRecovering" );
          $launchRecovering{ $reservation->containerId } = 1;
@@ -530,10 +530,10 @@ sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
 # Pure, synchronous merge of an already-fetched Docker /containers/json response with the
 # existing containers.json content - no I/O of its own. Split out from what used to be _update's
 # single function (fetch + merge in one, called from inside cacheReadWrite's own held lock) so
-# the (potentially slow - see update_async's own comment) fetch can happen *before* the lock is
+# the (potentially slow - see update's own comment) fetch can happen *before* the lock is
 # ever taken, leaving only this fast, pure step to run under it. $newContainersFromAPI is the
 # decoded body of the API response; $oldJSON is cacheReadWrite's own existing-file content
-# (read fresh, right before this runs - see update_async's own comment on why that's a genuine,
+# (read fresh, right before this runs - see update's own comment on why that's a genuine,
 # if incidental, improvement over the old single-function shape, not just a refactor).
 sub _update_merge ($newContainersFromAPI, $oldJSON) {
    my $oldContainers;
@@ -611,13 +611,13 @@ sub _update_merge ($newContainersFromAPI, $oldJSON) {
 # itself needs no changes at all: only the fast, pure merge (_update_merge, called from here)
 # ever runs under its lock now, exactly its existing synchronous contract, same as its other
 # callers throughout the codebase (Profile/User/Role management) still get.
-sub update_async ($opts, $cb) {
+sub update ($opts, $cb) {
    # $CONFIG->{'docker'}{'sizes'} can disable size tracking entirely, not just defer it.
    my $path = '/containers/json?all=true' . (($CONFIG->{'docker'}{'sizes'} && $opts->{'updateSizes'}) ? '&size=true' : '');
 
    flog("update: requesting container list" . ($opts->{'updateSizes'} ? ' with sizes' : ' without sizes'));
 
-   call_socket_api_async( $CONFIG->{'docker'}{'socket'}, $path, {}, sub ($result, $err) {
+   call_socket_api( $CONFIG->{'docker'}{'socket'}, $path, {}, sub ($result, $err) {
       try {
          unless ($result) {
             die Exception->new( 'dbg' => "Unable to execute Docker API call: $path #1", 'msg' => "Unable to retrieve container list: $err" );
@@ -653,12 +653,12 @@ sub update_async ($opts, $cb) {
 # Called when a container start event is received. Updates container state, reloads all
 # data files (config, users, reservations, containers), then launches the IDE process
 # inside the container if it belongs to a Dockside-managed reservation. Non-blocking throughout
-# (update_async) - returns immediately, continuing via callback once the container-state update
+# (update) - returns immediately, continuing via callback once the container-state update
 # settles; onEvent (its only caller) never used this function's own return value, so nothing
 # needed adjusting there.
 sub onContainerStart ($id, $eventCount) {
 
-   # Record the time the start event was received, before the slower update_async()/Data::load()
+   # Record the time the start event was received, before the slower update()/Data::load()
    # work below; used to detect stale launcher symlinks left over in the IDE volume from a
    # previous container run. Capturing this later would let a launcher written by a fast
    # entrypoint (before that work completes) look older than it really is.
@@ -666,7 +666,7 @@ sub onContainerStart ($id, $eventCount) {
 
    # This container's details might not yet have been loaded. Do this now.
    flog("onContainerStart #$eventCount: Updating docker containers without sizes before reloading reservations");
-   update_async( {}, sub {
+   update( {}, sub {
       # Reload config, reservations and containers, to access Reservation->load and %CONFIG.
       # Reload users and roles too, in case we can update owner's name and email [at later date].
       Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');
@@ -757,7 +757,7 @@ sub onEvent ($event, $eventCount) {
 # necessary because Mojo::IOLoop is a singleton reused across every eventHandler() call (unlike
 # the old per-call `IO::Async::Loop->new`), so a restart that didn't clean up first would
 # accumulate a second, overlapping recurring timer alongside the first, each independently
-# calling update_async() and servicing %pendingLaunch - two timers racing to service the same
+# calling update() and servicing %pendingLaunch - two timers racing to service the same
 # state, the same class of bug a duplicate daemon process running at once would cause.
 sub eventHandler {
    flog("eventHandler: Starting...");
@@ -778,20 +778,20 @@ sub eventHandler {
          if(time - $lastEventTime >= 5 && time - $lastSizesUpdateTime >= 55) {
             $lastSizesUpdateTime = time;   # set at dispatch, not completion - prevents a second
                                             # overlapping sizes fetch being kicked off before this
-                                            # one (genuinely slow - see update_async's own
+                                            # one (genuinely slow - see update's own
                                             # comment) has had a chance to land
             flog("eventHandler:tick: updating docker containers with sizes");
-            update_async( { 'updateSizes' => 1 }, undef );
+            update( { 'updateSizes' => 1 }, undef );
          }
          elsif($relevantEvents && time - $lastEventTime >= $debounceRelevantEventsPeriod) {
             flog("eventHandler:tick: updating docker containers without sizes after ${debounceRelevantEventsPeriod}s after relevant events");
             $relevantEvents = 0;
-            update_async( {}, undef );
+            update( {}, undef );
          }
          elsif(time - $lastUpdateTime >= $debounceQuietPeriod) {
             $lastUpdateTime = time;
             flog("eventHandler:tick: updating docker containers without sizes after ${debounceQuietPeriod}s");
-            update_async( {}, undef );
+            update( {}, undef );
          }
       }
       catch {
@@ -893,9 +893,9 @@ sub eventHandler {
    # full reasoning (inactivity_timeout=>0, no request_timeout, both deliberate). Plain
    # newline-delimited JSON, one event object per line - a running buffer is kept across on_read
    # calls since a call may deliver a partial line or several at once, the same discipline
-   # Util::docker_exec_async's own frame demuxer uses for exec output.
+   # Util::docker_exec's own frame demuxer uses for exec output.
    my $buf = '';
-   call_socket_api_async(
+   call_socket_api(
       $CONFIG->{'docker'}{'socket'},
       '/events',
       {
@@ -975,7 +975,7 @@ if( ! -d $CONFIG->{'tmpPath'} ) {
 # This ensures the Perl API server (nginx) always finds a current containers.json
 # on its first request, avoiding the startup race where profiles are loaded with
 # an empty network list because containers.json has not yet been written.
-# update_async only ever queues its request; nothing is driving Mojo::IOLoop's reactor yet at
+# update only ever queues its request; nothing is driving Mojo::IOLoop's reactor yet at
 # this point in the script, so run it just long enough to let this one call settle - the same
 # "run until done, then stop" pattern any of this file's own dispatch closures use implicitly
 # once eventHandler's own Mojo::IOLoop->start is running, just applied once, standalone, here.
@@ -983,7 +983,7 @@ if( ! -d $CONFIG->{'tmpPath'} ) {
 # call anyway (no /events stream, no launch dispatch - both start only once eventHandler runs),
 # so there's no concurrency to lose by waiting for it inline.
 flog("Writing initial container state synchronously...");
-update_async( {}, sub { Mojo::IOLoop->stop; } );
+update( {}, sub { Mojo::IOLoop->stop; } );
 Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
 
 # Restart-recovery: a launch stage left 'running' in hooks.status belonged to a dispatch of the

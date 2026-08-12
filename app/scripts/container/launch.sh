@@ -397,12 +397,12 @@ checkout_git_ref() {
 # in-image, profile-author-trusted executable; $2 is resolved server-side per name - see
 # Reservation::hook_script/_hook_env). Every invocation - auto-fired or on demand - reaches
 # this the same way: its own independent `docker exec ... launch.sh run_hook <name> <script>`,
-# script path passed as a plain argument (see Reservation::dispatch_hook_exec_async). Auto-fire
+# script path passed as a plain argument (see Reservation::dispatch_hook_exec). Auto-fire
 # is DED dispatching this exec itself, after launch:git (the git/ssh/gh setup phase) succeeds
 # or has nothing to do - 'lifecycle:launch' only when this devtainer's DOCKSIDE_START_COUNT is
 # 1, 'lifecycle:start' every launch including that one (see docker-event-daemon's own "Launch
 # dispatch orchestration" section for the full dispatch DAG). This is not a special case of
-# this function at all: on-demand invocation (Reservation::run_hook_sync_async) reaches it
+# this function at all: on-demand invocation (Reservation::run_hook_manual) reaches it
 # through the identical path, which is exactly what keeps a hook's own status record
 # consistent regardless of how it was fired - there's only ever one recorder. Every invocation
 # calls this same function, so it self-serializes per name via an mkdir-based lock: a
@@ -420,7 +420,7 @@ run_hook() {
    local SCRIPT="$2"
    [ -n "$SCRIPT" ] || { log "run_hook: no hook configured"; return 0; }
 
-   # Every invocation of this function - on demand (Reservation::run_hook_sync_async) or
+   # Every invocation of this function - on demand (Reservation::run_hook_manual) or
    # auto-fired by DED (see this function's own header comment) - is its own independent
    # `docker exec`, never sharing spawn_ssh_agent's process tree, so SSH_AUTH_SOCK is never
    # inherited either way: discover Dockside's own managed agent instead (see
@@ -465,7 +465,7 @@ run_hook() {
    log "run_hook: running '$NAME' ($SCRIPT) ..."
    # Send the hook script's own stdout/stderr to fds 3/4 (the pre-log-redirect
    # original stdout/stderr preserved by init()), not into $LOG, so a synchronous
-   # caller (Reservation::run_hook_sync_async) sees the hook's real output; log() calls
+   # caller (Reservation::run_hook_manual) sees the hook's real output; log() calls
    # made by this function itself still go to $LOG as usual.
    if "$SCRIPT" 1>&3 2>&4; then
       log "run_hook: '$NAME' ($SCRIPT) succeeded"
@@ -491,7 +491,7 @@ spawn_ssh_agent() {
       # down every process inside it, ssh-agent included, so pgrep above correctly
       # finds nothing and a fresh agent with a fresh socket spawns every time; there
       # is no "later independent invocation" that needs to guess this one's path in
-      # advance. A separate `docker exec ... launch.sh run_hook` (run_hook_sync_async) is
+      # advance. A separate `docker exec ... launch.sh run_hook` (run_hook_manual) is
       # exactly such an independent invocation, but it discovers the socket instead
       # of relying on a fixed path - see find_ssh_auth_sock() below - which also
       # avoids the security hazard a well-known, world-writable path had: any other
@@ -1176,7 +1176,7 @@ init() {
    # Preserve the original stdout/stderr as fds 3/4 before redirecting 1/2 into the
    # log file below. Every function's log() output is unaffected by this (still only
    # goes to $LOG via fd 1/2); it exists solely so that run_hook, when dispatched via
-   # a synchronous `docker exec ... launch.sh run_hook` (see Reservation::run_hook_sync_async),
+   # a synchronous `docker exec ... launch.sh run_hook` (see Reservation::run_hook_manual),
    # can let its caller capture real-time output/exit status via fd 3/4, instead of
    # having it silently swallowed into the container's internal log file.
    exec 3>&1 4>&2
