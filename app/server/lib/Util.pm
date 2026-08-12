@@ -180,22 +180,10 @@ sub call_socket_api_sync ($socket, $path, $opts = {}) {
       elsif($method eq 'POST') {
          my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
 
-         if( my $onRead = $opts->{'on_read'} ) {
-            # Streamed consumption (e.g. `POST /exec/{id}/start` with Detach:false): the
-            # response body is a live, held-open stream, frames arriving as the exec
-            # produces output - not a normal buffered response. Build the transaction
-            # explicitly so a 'read' subscriber on its response content sees each chunk as it
-            # arrives, still within this one blocking $ua->start() call.
-            my $tx = $ua->build_tx(POST => $uri => $headers => $body);
-            $tx->res->content->unsubscribe('read')->on(read => sub ($content, $bytes) {
-               $onRead->($bytes);
-            });
-            $ua->start($tx);
-            $result = $tx->result;
-         }
-         else {
-            $result = $ua->post($uri => $headers => $body)->result;
-         }
+         # No 'on_read' streamed-consumption option here (unlike call_socket_api) -
+         # the only caller that ever needed it on the blocking path was the now-deleted sync
+         # docker_exec; every real streamed caller today goes through call_socket_api.
+         $result = $ua->post($uri => $headers => $body)->result;
       }
       else {
          die Exception->new( 'dbg' => "Unsupported Docker API method '$method' for $path" );
@@ -228,9 +216,12 @@ sub call_socket_api_sync ($socket, $path, $opts = {}) {
 my %ASYNC_UA_IN_FLIGHT;
 
 # Non-blocking sibling of call_socket_api_sync above - never blocks the caller's own event loop.
-# Same $opts/conventions (method/json/on_read/inactivity_timeout/request_timeout/headers/
-# http+unix:// transport) - this replicates call_socket_api_sync's own behavior for a non-blocking
-# caller, it does not redefine it. $cb->($result, $error) fires exactly once, whenever the call
+# Same $opts/conventions (method/json/inactivity_timeout/request_timeout/headers/http+unix://
+# transport) - this replicates call_socket_api_sync's own behavior for a non-blocking caller, it does
+# not redefine it. 'on_read' (streamed consumption) is one exception: only this async form
+# supports it - every real streamed-response caller already goes through here, and the blocking
+# form's own 'on_read' branch was dead code, removed above. $cb->($result, $error) fires exactly
+# once, whenever the call
 # settles: $result is the response object (call_socket_api_sync's own return value) whenever one
 # exists - including a non-2xx HTTP response, e.g. a 404, exactly as call_socket_api_sync's own
 # callers already handle by inspecting ->code/->is_success themselves, not by treating a non-2xx
