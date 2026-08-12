@@ -193,9 +193,28 @@
                            <th>Container ID</th>
                            <td>{{ container.docker.ID }}</td>
                         </tr>
-                        <tr v-if="container.permissions.auth.developer && container.dockerLaunchLogs && isSelected">
-                           <th>Launch logs</th>
-                           <td><pre class="logs">{{ container.dockerLaunchLogs.join("\n") }}</pre></td>
+                        <tr v-if="container.permissions.auth.developer && showLaunchProgress && isSelected">
+                           <th>Launch progress</th>
+                           <td>
+                              <div class="stage-line">
+                                 <b-badge :variant="launchStageVariant">{{ launchStageLabel }}</b-badge>
+                                 <span v-if="launchStage === 'pulling' && launchLayers.length" class="ml-2 text-muted">
+                                    {{ completedLayerCount }}/{{ launchLayers.length }} layers
+                                 </span>
+                              </div>
+                              <div v-if="launchStage === 'failed'" class="text-danger launch-error">
+                                 {{ container.createStatus.error }}
+                              </div>
+                              <div v-if="(launchStage === 'pulling' || launchStage === 'failed') && launchLayers.length" class="layer-list">
+                                 <div v-for="layer in launchLayers" v-bind:key="layer.id" class="layer-row">
+                                    <span class="layer-id">{{ layer.shortId }}</span>
+                                    <b-progress :max="100" height="0.6rem" class="flex-grow-1 mx-2">
+                                       <b-progress-bar :value="layer.percent" :variant="layer.variant" />
+                                    </b-progress>
+                                    <span class="layer-status text-muted">{{ layer.status }}</span>
+                                 </div>
+                              </div>
+                           </td>
                         </tr>
                         <tr>
                            <th></th>
@@ -328,6 +347,71 @@
             const owner = this.container.meta.owner;
             const entry = this.$store.state.account.viewers.find(v => v.username === owner);
             return (entry && entry.name) || owner;
+         },
+         // container.status already encodes "launch in flight" (-2) / "create failed" (-4) -
+         // see Reservation.pm's own comment deriving status from createStatus. createStatus
+         // itself persists on the reservation forever once set (stage stays 'done'/'failed'),
+         // so gating on status rather than "createStatus is truthy" is what keeps this row
+         // from showing on every already-running container.
+         showLaunchProgress() {
+            return (this.container.status === -2 || this.container.status === -4) &&
+               !!this.container.createStatus;
+         },
+         launchStage() {
+            return this.container.createStatus && this.container.createStatus.stage;
+         },
+         launchStageLabel() {
+            return {
+               pulling: 'Pulling image',
+               creating: 'Creating container',
+               starting: 'Starting container',
+               done: 'Done',
+               failed: 'Failed'
+            }[this.launchStage] || this.launchStage;
+         },
+         launchStageVariant() {
+            return {
+               pulling: 'info',
+               creating: 'info',
+               starting: 'info',
+               done: 'success',
+               failed: 'danger'
+            }[this.launchStage] || 'secondary';
+         },
+         // Docker's pull-progress stream reports layer status/current/total per digest id;
+         // most statuses (Waiting, Already exists, Pull complete, ...) don't carry a
+         // meaningful progressDetail, so they get a fixed percent instead of one derived
+         // from current/total. On failure, create_async now preserves the last layers seen
+         // before the pull died (rather than discarding them), so this same computed also
+         // drives the frozen-in-place list shown alongside the error message.
+         launchLayers() {
+            const layers = (this.container.createStatus && this.container.createStatus.layers) || {};
+            const STATUS_META = {
+               'Pulling fs layer':   { variant: 'secondary', percent: 0 },
+               'Waiting':            { variant: 'secondary', percent: 0 },
+               'Downloading':        { variant: 'info' },
+               'Verifying Checksum': { variant: 'info', percent: 100 },
+               'Download complete':  { variant: 'info', percent: 100 },
+               'Extracting':         { variant: 'primary' },
+               'Pull complete':      { variant: 'success', percent: 100 },
+               'Already exists':     { variant: 'success', percent: 100 }
+            };
+            return Object.keys(layers).map(id => {
+               const layer = layers[id];
+               const meta = STATUS_META[layer.status] || {};
+               const percent = meta.percent !== undefined ? meta.percent :
+                  (layer.total ? Math.round((layer.current / layer.total) * 100) : 0);
+               return {
+                  id,
+                  shortId: id.substring(0, 12),
+                  status: layer.status,
+                  percent,
+                  variant: meta.variant || 'secondary'
+               };
+            });
+         },
+         completedLayerCount() {
+            return this.launchLayers.filter(l => l.percent >= 100).length;
          },
          profileNames() {
             // Guard against launchProfiles being null/undefined.  This can happen
@@ -657,9 +741,39 @@
       color: red;
    }
 
-   pre.logs {
-      white-space: pre-wrap;
-      margin: 0;
+   .stage-line {
+      display: flex;
+      align-items: center;
+      margin-bottom: 0.35rem;
+   }
+
+   .launch-error {
+      font-size: 0.85rem;
+      margin-bottom: 0.35rem;
+   }
+
+   .layer-list {
+      max-height: 10rem;
+      overflow-y: auto;
+   }
+
+   .layer-row {
+      display: flex;
+      align-items: center;
+      font-size: 0.8rem;
+      margin-bottom: 2px;
+   }
+
+   .layer-id {
+      font-family: monospace;
+      width: 6em;
+      flex-shrink: 0;
+   }
+
+   .layer-status {
+      width: 9em;
+      flex-shrink: 0;
+      text-align: right;
    }
 </style>
 

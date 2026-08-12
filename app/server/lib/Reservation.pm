@@ -428,8 +428,6 @@ sub update_container_info ($class) {
          my $failed = ref($cs) eq 'HASH' ? $cs->{'failed'} : $cs;
          $r->{'status'} = $failed ? -4 : -2;
       }
-
-      $r->load_launch_logs();      
    }
 
    return $class;
@@ -473,47 +471,13 @@ sub load ($class, $opts = undef) {
 # OBJECT METHODS
 # --------------
 
-# Updates the dockerLaunchLogs property of the Reservation with the tail of its
-# r-<id>.log file. Nothing currently writes that file: it was written by the old,
-# forking, PTY-based Reservation::launch (deleted - create replaced it, reporting
-# progress via createStatus instead - see its own comment). Reads here now always find
-# either nothing or a stale file from before this branch. Kept reading rather than
-# deleted outright since removing it is a product/UI call (the Vue client's
-# dockerLaunchLogs display would need a replacement, or removing), not a code-cleanup
-# one - see docs/plans/ded-async-rewrite-quality-audit.md's own note on this.
-sub load_launch_logs ($self) {
-   my $id = $self->id();
-
-   # LAST N LINES WITH Tie::File
-   my @lines;
-   tie @lines, 'Tie::File', "$CONFIG->{'tmpPath'}/r-$id.log"
-   || do {
-      flog("Cannot open reservation log file '$id': $!");
-      return [];
-   };
-
-   my $TerminationRE = qr/^=== EXIT CODE \d+ ===$/;
-
-   my $data = [];
-   for( my $i = (@lines) - 10; $i < (@lines); $i++ ) {
-      push(@$data, $lines[$i]) if $i >= 0 && $lines[$i] !~ /$TerminationRE/;
-   }
-   untie @lines;
-
-   $self->{'dockerLaunchLogs'} = $data;
-
-   return $data;
-}
-
 # Tails a hook invocation's outer log file (dispatch_hook_exec's own on_output callback,
 # below, writes the hook's stdout+stderr frames here as they arrive) for a status/log read
 # endpoint to serve - see User::runContainerHookStatus and bin/app-server's GET
-# /containers/<id>/hook/status route. Mirrors
-# load_launch_logs() above (last $maxLines lines via Tie::File, read fresh from disk on every
-# call, no in-process caching) - cheap for "poll a status field, fetch the tail" use, exactly
-# like load_launch_logs already is for r-<id>.log. Unlike load_launch_logs, there is no
-# synthetic '=== EXIT CODE ===' termination line to strip: docker_exec()'s on_output callback
-# writes only the hook's own raw stdout/stderr bytes.
+# /containers/<id>/hook/status route. Last $maxLines lines via Tie::File, read fresh from
+# disk on every call, no in-process caching - cheap for "poll a status field, fetch the
+# tail" use. No synthetic termination line to strip: docker_exec()'s on_output
+# callback writes only the hook's own raw stdout/stderr bytes.
 #
 # Returns [] (never undef) if $name has never been invoked (no status record yet, so no
 # logPath to read) or its log file cannot be opened (e.g. already cleaned up - see item I, not
@@ -627,8 +591,7 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description IDE ) ],
             'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
-            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options startCount hooks ) ],
-            'dockerLaunchLogs' => 1
+            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options startCount hooks ) ]
          },
          [ qw(id name owner profile status containerId createStatus) ]
       );
@@ -1242,8 +1205,15 @@ sub create ($self, $cb) {
       $self->_create_status_set( { 'stage' => 'done', 'failed' => 0, 'layers' => {} } );
    } )->catch( sub ($err) {
       flog("Reservation::create: reservation '$id' failed: $err");
+      # Preserve whatever per-layer pull progress had already been recorded, rather than
+      # replacing the whole createStatus hash wholesale - lets the client show where the
+      # pull actually died (last known status/current/total per layer) instead of the
+      # per-layer detail vanishing the instant 'stage' flips to 'failed'. A failure before
+      # any layer progress exists (e.g. cmdline_json() throwing, or the image-check call
+      # itself erroring) simply has no layers to preserve - {} either way.
+      my $layers = ( ref($self->{'createStatus'}) eq 'HASH' ? $self->{'createStatus'}{'layers'} : undef ) // {};
       $self->_create_status_set(
-         { 'stage' => 'failed', 'failed' => 1, 'error' => "$err" },
+         { 'stage' => 'failed', 'failed' => 1, 'error' => "$err", 'layers' => $layers },
          { 'expiryTime' => YYYYMMDDHHMMSS(time) }
       );
    } );
