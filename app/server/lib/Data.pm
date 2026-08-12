@@ -22,10 +22,14 @@ our $PASSWD_FILE  = "$CONFIG_PATH/passwd";
 our $PROFILES_DIR = "$CONFIG_PATH/profiles";
 
 # Load in the container ID of this Dockside container and the inner-dockerd flag.
-# See entrypoint.sh for details
-our $HOSTNAME = get_config('/etc/service/nginx/data/ctr-id');
-our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
-our $VERSION = get_config('/etc/service/nginx/data/version');
+# See entrypoint.sh for details. Read from app-server's own service data dir, not nginx's -
+# ctr-id/inner-dockerd are identical copies in every service's data dir (entrypoint.sh writes
+# them per-service), but 'version' is only ever computed and written by one runscript, and
+# since the mojolicious-app-server split that's app-server/run (it's the process that actually
+# renders it into the UI), not nginx/run any more.
+our $HOSTNAME = get_config('/etc/service/app-server/data/ctr-id');
+our $INNER_DOCKERD = get_config('/etc/service/app-server/data/inner-dockerd');
+our $VERSION = get_config('/etc/service/app-server/data/version');
 our $HOSTINFO = { 'docker' => undef, 'IDEs' => undef }; # Host info cache: populated later
 
 sub parse_json ($json) {

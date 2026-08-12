@@ -4,4 +4,14 @@
 
 HOME=$APP_HOME
 
+# Extract tag and short commit ID and save for rendering in the UI (moved here from
+# nginx/run by the mojolicious-app-server split - app-server is the process that actually
+# renders it now, and Data.pm reads every service's version file from its own service dir).
+# The production image has no `git` package/PATH entry (see development stage in
+# Dockerfile); use the bundled system binary instead, matching entrypoint.sh's own
+# ide_cmd() convention for reaching tools under $IDE_PATH/bin.
+GIT_TAG=$(/usr/bin/s6-setuidgid $USER $IDE_PATH/bin/git -C $APP_DIR describe --tags)
+GIT_COMMIT_ID=$(/usr/bin/s6-setuidgid $USER $IDE_PATH/bin/git -C $APP_DIR rev-parse --short HEAD)
+echo "$GIT_TAG ($GIT_COMMIT_ID)" >./data/version
+
 LOGNAME=$USER USER=$USER PERLLIB=$APP_DIR/app/server/lib:$PERLLIB exec /usr/bin/s6-setuidgid $USER $APP_DIR/app/server/bin/app-server
