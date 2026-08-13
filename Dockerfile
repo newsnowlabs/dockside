@@ -7,6 +7,7 @@ ARG SYSTEM_ALPINE_VERSION=3.22
 ARG DOCKSIDE_NODE_VERSION=22
 ARG DOCKSIDE_DEBIAN_VERSION=bookworm-slim
 ARG WSTUNNEL_VERSION=10.6.1
+ARG DROPBEAR_VERSION=2025.88
 
 ################################################################################
 # SET UP 'BASE' BUILD ENVIRONMENT
@@ -264,18 +265,41 @@ FROM base AS system
 
 ARG OPT_PATH
 ARG DOCKSIDE_VERSION
+ARG DROPBEAR_VERSION
 ENV DS_PATH=$OPT_PATH/system/$DOCKSIDE_VERSION
 
 # The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
 ENV BASH_ENV=/tmp/dockside/bash-env
 SHELL ["/bin/bash", "-c"]
 
-RUN apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq git openssh-client-default github-cli
+RUN apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash zlib-dev openssh-sftp-server jq git openssh-client-default github-cli
+
+# Build dropbear from source rather than installing Alpine's prebuilt package. dropbear has
+# no runtime flag or PATH lookup for SFTP/SCP support: it execs a single hardcoded,
+# compile-time absolute path (Alpine's package bakes in /usr/lib/ssh/sftp-server, matching
+# the separate openssh-sftp-server package it doesn't bundle itself). Everything in this
+# bundle has to run from its own fixed location under $DS_PATH, completely independent of
+# whatever the launched container's filesystem looks like - so instead of that Alpine
+# default, bake in the path this build will actually place the bundled sftp-server binary
+# at once BundELF has copied it (below): $DS_PATH/bin/sftp-server. That keeps dropbear
+# looking only inside its own bundle, never touching the target container's system paths.
+RUN curl -sL https://matt.ucc.asn.au/dropbear/releases/dropbear-$DROPBEAR_VERSION.tar.bz2 | tar xj -C /tmp && \
+    cd /tmp/dropbear-$DROPBEAR_VERSION && \
+    sed -i "s|^#define SFTPSERVER_PATH .*|#define SFTPSERVER_PATH \"$DS_PATH/bin/sftp-server\"|" src/default_options.h && \
+    grep -n SFTPSERVER_PATH src/default_options.h && \
+    ./configure && \
+    make PROGRAMS="dropbear dropbearkey" -j$(nproc) && \
+    install -m755 dropbear dropbearkey /usr/local/bin/ && \
+    cd / && rm -rf /tmp/dropbear-$DROPBEAR_VERSION
 
 ADD build/development/make-bundelf-bundle.sh /tmp
 
+# openssh-sftp-server's binary itself has no baked-in path assumptions of its own (it just
+# speaks the SFTP protocol over stdin/stdout) - it only needs to end up at the location
+# dropbear was just told to exec, $DS_PATH/bin/sftp-server, which BUNDELF_MERGE_BINDIRS
+# guarantees for every entry named here.
 RUN export \
-        BUNDELF_BINARIES="bash busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan gh" \
+        BUNDELF_BINARIES="bash busybox s6-svscan curl dropbear dropbearkey /usr/lib/ssh/sftp-server jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan gh" \
         BUNDELF_CODE_PATH="$DS_PATH" \
         BUNDELF_LIBPATH_TYPE="relative" \
         BUNDELF_MERGE_BINDIRS="1" && \
