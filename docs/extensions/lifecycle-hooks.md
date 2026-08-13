@@ -195,12 +195,12 @@ fi
 
 cd "$REPO/app/client" && npm install --no-audit --no-fund && npm run build
 
-sudo s6-svc -t /etc/service/nginx
-sudo s6-svc -t /etc/service/docker-event-daemon
-sudo s6-svc -t /etc/service/app-server
+sudo s6-svc -r /etc/service/nginx
+sudo s6-svc -r /etc/service/docker-event-daemon
+sudo s6-svc -r /etc/service/app-server
 ```
 
-(Elided above: `resolve_tree_branch()`'s body, IDE-bundled `git`/`gh` binary paths, and log lines — see the real script for the full version.) This reuses the restart sequence documented for manual use in this repo's own `CLAUDE.md` (all three services that load `app/server/lib`, since a repo update can change server Perl as well as the client build — **and note each of those three `s6-svc -t` calls needs its own invocation**: `s6-svc`/`s6-svstat` accept exactly one `servicedir` argument each, and silently restart/check only the first if given several on one command line), and consumes the same single `ref` option as `03-git-repo.json` — via a hook instead of `launch.sh`'s built-in checkout, since a bare checkout alone would leave the previous branch's build still running.
+(Elided above: `resolve_tree_branch()`'s body, IDE-bundled `git`/`gh` binary paths, and log lines — see the real script for the full version.) This reuses the restart sequence documented for manual use in this repo's own `CLAUDE.md` (all three services that load `app/server/lib`, since a repo update can change server Perl as well as the client build — **and note each of those three `s6-svc` calls needs its own invocation**: `s6-svc`/`s6-svstat` accept exactly one `servicedir` argument each, and silently restart/check only the first if given several on one command line; app-server's own `down-signal` file makes its `-r` deliver `SIGQUIT` for a graceful drain, unlike the other two — see CLAUDE.md's own restart matrix for why), and consumes the same single `ref` option as `03-git-repo.json` — via a hook instead of `launch.sh`'s built-in checkout, since a bare checkout alone would leave the previous branch's build still running.
 
 **Why `--force`/`reset --hard` for the branch/PR switch, but plain `git pull --ff-only` for the no-`ref` fallback?** Because this hook only ever *auto*-fires once, on this devtainer's true first start (`lifecycle:launch`, not `lifecycle:start` — see above): switching to a *different* requested ref has no prior local work of the user's own to protect on that ref, so unconditionally converging a pre-existing local branch of that name (e.g. one baked into the image) onto the just-fetched remote tip is safe and intended. Pulling the *current* branch is a different case even here — it's the branch this devtainer has actually been running, which may carry real local commits (from image build time, or from an earlier manual `dockside hook run`) worth protecting, so it stays fail-loud-not-destructive. The same reasoning applies to any hook you wire to `lifecycle:launch` yourself: prefer `reset --hard`/`--force` when switching to a ref this devtainer couldn't have done real work on yet; prefer `--ff-only` for anything that touches a branch it may already have been running — and always `--ff-only` for a hook wired to `lifecycle:start`, since by definition it can run again on a devtainer with genuine history since the last invocation.
 

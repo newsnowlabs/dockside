@@ -762,10 +762,10 @@ def restart_docker_event_daemon(timeout=15):
         )
     before_pid = _svstat_pid(probe.stdout)
 
-    r = subprocess.run(['sudo', '-n', 's6-svc', '-t', svc], capture_output=True, text=True, timeout=10)
+    r = subprocess.run(['sudo', '-n', 's6-svc', '-r', svc], capture_output=True, text=True, timeout=10)
     if r.returncode != 0:
         raise CapabilityUnavailable(
-            f'sudo s6-svc -t {svc} failed (rc={r.returncode}, stderr={r.stderr.strip()!r})'
+            f'sudo s6-svc -r {svc} failed (rc={r.returncode}, stderr={r.stderr.strip()!r})'
         )
 
     deadline = time.time() + timeout

@@ -107,8 +107,12 @@ npm install --no-audit --no-fund
 npm run build
 
 echo "dockside-self-update: restarting services ..."
-sudo s6-svc -t /etc/service/nginx
-sudo s6-svc -t /etc/service/docker-event-daemon
-sudo s6-svc -t /etc/service/app-server
+sudo s6-svc -r /etc/service/nginx
+sudo s6-svc -r /etc/service/docker-event-daemon
+# -r restarts via whichever signal the service's own down-signal file names. app-server ships
+# one containing QUIT, so this is a graceful SIGQUIT there (it's the one service that can have
+# a create() chain genuinely in flight) - see CLAUDE.md's restart matrix /
+# docs/plans/create-restart-recovery-plan.md.
+sudo s6-svc -r /etc/service/app-server
 
 echo "dockside-self-update: done"

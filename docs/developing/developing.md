@@ -53,14 +53,22 @@ cd /home/dockside/dockside/app/client && npm run start
 To restart the Dockside server, run:
 
 ```sh
-sudo s6-svc -t /etc/service/app-server
+sudo s6-svc -r /etc/service/app-server
 ```
+
+`-r` (restart) kills the service and lets s6-supervise start it again, using whichever signal
+the service's own `./down-signal` file names - app-server ships one containing `QUIT`, so this
+delivers `SIGQUIT` (graceful), not a bare `SIGTERM` (immediate `SIGKILL` of every
+`Mojo::Server::Prefork` worker with no drain) - app-server is the one service that can have a
+`create()` chain genuinely in flight, detached from the request that started it; `SIGQUIT`
+engages the graceful exit handler that waits for those before letting a worker exit (see
+`docs/plans/create-restart-recovery-plan.md`).
 
 To restart the Request Proxy (`app/server/lib/Proxy.pm`, or the NGINX config itself) - a
 separate process, embedded in NGINX - run:
 
 ```sh
-sudo s6-svc -t /etc/service/nginx
+sudo s6-svc -r /etc/service/nginx
 ```
 
 Both the Dockside server and the event daemon below load shared library code
@@ -76,7 +84,7 @@ restart all three.
 To restart the Dockside event daemon, run:
 
 ```sh
-sudo s6-svc -t /etc/service/docker-event-daemon
+sudo s6-svc -r /etc/service/docker-event-daemon
 ```
 
 ## IDE layer (Theia and OpenVSCode)

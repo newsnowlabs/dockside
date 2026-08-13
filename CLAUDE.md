@@ -14,15 +14,20 @@
     each; passing all three paths to a single call silently restarts (or checks) only the
     first and drops the rest with a warning, no error:
     ```
-    sudo s6-svc -t /etc/service/nginx
-    sudo s6-svc -t /etc/service/docker-event-daemon
-    sudo s6-svc -t /etc/service/app-server
+    sudo s6-svc -r /etc/service/nginx
+    sudo s6-svc -r /etc/service/docker-event-daemon
+    sudo s6-svc -r /etc/service/app-server
     ```
     — these are shared libs `docker-event-daemon` and `app-server` both load directly, and
     `Proxy.pm` (embedded in nginx) also loads `Reservation.pm`/`Data.pm`/`Request.pm`.
-  - `app/server/lib/Proxy.pm`, `app/server/nginx/conf/**` → `sudo s6-svc -t /etc/service/nginx`
+    `-r` restarts via whichever signal the service's own `./down-signal` file names, or
+    `SIGTERM` if it has none. `app-server` ships a `down-signal` of `QUIT`, so its `-r` is a
+    graceful `SIGQUIT` — it's the one process that can have a `create()` chain genuinely in
+    flight. `nginx`/`docker-event-daemon` have no `down-signal` file, so their `-r` is a
+    plain `SIGTERM`, same as before.
+  - `app/server/lib/Proxy.pm`, `app/server/nginx/conf/**` → `sudo s6-svc -r /etc/service/nginx`
     only.
-  - `app/server/bin/docker-event-daemon` only → `sudo s6-svc -t /etc/service/docker-event-daemon`
+  - `app/server/bin/docker-event-daemon` only → `sudo s6-svc -r /etc/service/docker-event-daemon`
     only.
   - When in doubt, or after any multi-file change, just restart all three — cheap, and the
     single most common self-inflicted "why is my fix not taking effect" bug is one of these
