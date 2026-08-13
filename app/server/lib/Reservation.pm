@@ -1023,68 +1023,37 @@ sub _create_status_set ($self, $value, $extra = {}) {
    return $self;
 }
 
-# Creates and starts this reservation's container - no fork, no PTY, no docker CLI subprocess:
-# builds the Docker Create API body from cmdline_json() (Reservation/Launch.pm), pulls the
-# image first if it isn't already present (with real per-layer progress, not a PTY log-tail),
-# then POST /containers/create and POST /containers/{id}/start, all via call_socket_api.
-# docker-event-daemon's own onContainerStart (/events-driven, unconditional on who issued the
-# docker start) fires the launch DAG exactly as it does today - no signal to DED needed at all.
-#
-# $cb fires exactly once, synchronously, right after the idempotency guard below is written -
-# not once the container is actually created/started. The rest of this sub's own work (image
-# check/pull, create, start) continues independently afterwards, on this same process's event
-# loop, visible only via polling createStatus (see status()'s own comment on its shape) - this
-# preserves a fast-ack-then-poll client UX, which only holds if the initial API call keeps
-# returning quickly rather than waiting for the whole chain.
-#
-# Idempotency guard: writes an initial createStatus synchronously, before any Docker call
-# begins, then checks-then-sets with no yield point in between - race-free because a single
-# Mojolicious worker processes one request at a time.
-#
-# Composed with Mojo::Promise, not nested callbacks - the one genuinely multi-step async chain
-# in this file (image check -> optional pull -> create -> start). This is a deliberate, scoped
-# exception to this file otherwise having no Mojolicious-framework dependency at all (no $c, no
-# ->render, no routes) - chosen here specifically because this is the one multi-step chain in
-# the whole file; the alternative (nested callbacks) would be a four-deep pyramid. Not precedent
-# for reaching for Mojo::Promise/Mojo::IOLoop elsewhere in this file - every other _async sub
-# here stays on the plain ($self, ..., $cb) single-callback convention.
-sub create ($self, $cb) {
-   my $id = $self->id();
+# reservation id => 1, while create()/reconcile_create()'s own promise chain is actively
+# running in *this* process - queried by bin/app-server's periodic reconciler (skip a
+# reservation this worker already owns, without even attempting a claim) and its exit handler
+# (wait for these to drain before letting the worker actually exit). See
+# docs/plans/create-restart-recovery-plan.md. Lives here, not as a bin/app-server-side hash as
+# that doc's own first draft called for - Reservation.pm is the only code that actually
+# observes a chain's start/settle moments; a bin/app-server-side hash would need a second
+# callback threaded all the way through User::createContainerReservation's own unrelated
+# signature just to signal in/out, for no benefit over owning it where the lifecycle already
+# lives. create_in_flight/create_in_flight_count below are its only public surface.
+my %CREATE_IN_FLIGHT;
 
-   if ( $self->{'createStatus'} ) {
-      $cb->( undef, Exception->new( 'msg' => "Reservation '$id' already has a createStatus set; refusing a duplicate create" ) );
-      return;
-   }
+sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
+sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 
-   my $body;
-   try {
-      $body = $self->cmdline_json();
-   }
-   catch {
-      my $msg = (ref($_) eq 'Exception') ? $_->msg : $_;
-      flog("Reservation::create: cmdline_json() threw error: $_");
-      $self->_create_status_set(
-         { 'stage' => 'failed', 'failed' => 1, 'error' => $msg },
-         { 'expiryTime' => YYYYMMDDHHMMSS(time) }
-      );
-      $cb->( undef, Exception->new( 'msg' => "Failed to compile 'docker create' request body, with error: $msg" ) );
-   };
-   return unless $body;   # cmdline_json() threw - already reported via $cb above
+# Ground-truth stage builders, shared by create() (always starts at 'pulling') and
+# reconcile_create() (resumes at whatever stage createStatus was stuck at) - see
+# docs/plans/create-restart-recovery-plan.md's own "Ground truth per stage" table for the
+# reasoning behind each one. Each returns a Mojo::Promise and is unconditionally safe to
+# (re)enter - there is no "first time" vs "recovery" branch inside any of them, so there is
+# exactly one code path per stage, not two.
 
-   $self->_create_status_set( { 'stage' => 'pulling', 'failed' => 0, 'layers' => {} } );
-   $cb->( $self, undef );
-
+sub _create_stage_pulling ($self, $image) {
    my $socket = $CONFIG->{'docker'}{'socket'};
-   my $image  = $self->data('image');
 
-   my $checkImage = Mojo::Promise->new( sub ($resolve, $reject) {
+   return Mojo::Promise->new( sub ($resolve, $reject) {
       call_socket_api( $socket, '/images/' . uri_escape($image) . '/json', {}, sub ($result, $err) {
          return $reject->($err) if $err;
          $resolve->( $result && $result->code == 200 );
       } );
-   } );
-
-   $checkImage->then( sub ($present) {
+   } )->then( sub ($present) {
       return 1 if $present;
 
       my ( $repo, $tag ) = $image =~ m{^(.+):([^/:]+)$} ? ( $1, $2 ) : ( $image, 'latest' );
@@ -1160,8 +1129,26 @@ sub create ($self, $cb) {
             $resolve->(1);
          } );
       } );
-   } )->then( sub (@) {
-      $self->_create_status_set( { 'stage' => 'creating', 'failed' => 0, 'layers' => {} } );
+   } );
+}
+
+sub _create_stage_creating ($self, $body) {
+   my $socket = $CONFIG->{'docker'}{'socket'};
+
+   # Ground-truth check, unconditional (not just for reconciliation) - does a container with
+   # this reservation's own name already exist? Makes this stage safely re-enterable by
+   # construction: a blind retry here would 409 on the name collision (create-restart-
+   # recovery-plan.md's own "Ground truth per stage" table) - checking first costs one extra
+   # GET on the ordinary, non-recovery path too, where it will (almost) always come back
+   # absent, but that's a cheap, uniform cost for not needing a second, recovery-only code
+   # path here at all.
+   return Mojo::Promise->new( sub ($resolve, $reject) {
+      call_socket_api( $socket, '/containers/' . uri_escape( $self->name ) . '/json', {}, sub ($result, $err) {
+         return $reject->($err) if $err;
+         $resolve->( $result && $result->code == 200 ? decode_json( $result->body )->{'Id'} : undef );
+      } );
+   } )->then( sub ($existingId) {
+      return $existingId if $existingId;
 
       return Mojo::Promise->new( sub ($resolve, $reject) {
          call_socket_api( $socket, '/containers/create?name=' . uri_escape( $self->name ), {
@@ -1179,45 +1166,191 @@ sub create ($self, $cb) {
       # Store the 12-char short id, matching Reservation::containerId's own established
       # convention - docker-event-daemon's containers.json keys are the same 12-char short id
       # (_update_merge: 'substr($c->{'Id'}, 0, 12)'), and both $BY_CONTAINERID (this file's own
-      # update_container_info) and load_clean_map match against those keys directly. The Create
-      # API's response 'Id' here is the full 64-char id - storing it untruncated would silently
-      # never match either lookup: update_container_info would leave this reservation's status
-      # stuck at -3 ('destroyed') forever, onContainerStart would log "we don't manage" this
-      # containerId and never fire the launch DAG, and load_clean_map would conclude the
-      # container is gone and delete the reservation entirely after 30s - all while the
-      # container itself is alive and running.
+      # update_container_info) and load_clean_map match against those keys directly. The
+      # Create API's response 'Id' (and the ground-truth GET above) is the full 64-char id -
+      # storing it untruncated would silently never match either lookup: update_container_info
+      # would leave this reservation's status stuck at -3 ('destroyed') forever,
+      # onContainerStart would log "we don't manage" this containerId and never fire the
+      # launch DAG, and load_clean_map would conclude the container is gone and delete the
+      # reservation entirely after 30s - all while the container itself is alive and running.
       my $shortId = substr( $containerId, 0, 12 );
       $self->containerId($shortId);
       $self->update( { 'containerId' => $shortId } );
-      $self->_create_status_set( { 'stage' => 'starting', 'failed' => 0, 'layers' => {} } );
+   } );
+}
 
-      return Mojo::Promise->new( sub ($resolve, $reject) {
-         call_socket_api( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
-            if ( $err || !$result || !$result->is_success ) {
-               $reject->( $err // ( $result ? $result->body : 'no response' ) );
-               return;
-            }
-            $resolve->(1);
-         } );
+sub _create_stage_starting ($self, $containerId) {
+   my $socket = $CONFIG->{'docker'}{'socket'};
+
+   return Mojo::Promise->new( sub ($resolve, $reject) {
+      call_socket_api( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
+         if ( $err || !$result || !$result->is_success ) {
+            $reject->( $err // ( $result ? $result->body : 'no response' ) );
+            return;
+         }
+         $resolve->(1);
       } );
-   } )->then( sub (@) {
-      flog("Reservation::create: reservation '$id' created and started successfully");
+   } );
+}
+
+# The three-stage tail shared by create() and reconcile_create() below - each _create_run_from_*
+# does its own stage's work then hands off to the next, so create() (which always starts at
+# 'pulling') and a reconciliation resuming from any of the three stages both end up running
+# exactly the same code for every stage they actually need, never a separate recovery-only copy.
+sub _create_run_from_starting ($self) {
+   $self->_create_status_set( { 'stage' => 'starting', 'failed' => 0, 'layers' => {} } );
+   return _create_stage_starting( $self, $self->containerId() )->then( sub (@) {
+      flog("Reservation::create: reservation '" . $self->id() . "' created and started successfully");
       $self->_create_status_set( { 'stage' => 'done', 'failed' => 0, 'layers' => {} } );
+   } );
+}
+
+sub _create_run_from_creating ($self, $body) {
+   $self->_create_status_set( { 'stage' => 'creating', 'failed' => 0, 'layers' => {} } );
+   return _create_stage_creating( $self, $body )->then( sub (@) {
+      return $self->_create_run_from_starting();
+   } );
+}
+
+sub _create_run_from_pulling ($self, $body) {
+   return _create_stage_pulling( $self, $self->data('image') )->then( sub (@) {
+      return $self->_create_run_from_creating($body);
+   } );
+}
+
+# Shared failure handling for create()/reconcile_create() - flogs, then records createStatus
+# 'failed' with a real error message, preserving whatever per-layer pull progress had already
+# been recorded rather than replacing the whole createStatus hash wholesale (lets the client
+# show where the pull actually died instead of the per-layer detail vanishing the instant
+# 'stage' flips to 'failed' - a failure before any layer progress exists, e.g. cmdline_json()
+# throwing, simply has no layers to preserve, {} either way). Returns the extracted message,
+# for a caller that also needs it for its own $cb.
+sub _create_fail ($self, $err) {
+   my $msg = ( ref($err) eq 'Exception' ) ? $err->msg : "$err";
+   flog("Reservation::create: reservation '" . $self->id() . "' failed: $msg");
+   my $layers = ( ref($self->{'createStatus'}) eq 'HASH' ? $self->{'createStatus'}{'layers'} : undef ) // {};
+   $self->_create_status_set(
+      { 'stage' => 'failed', 'failed' => 1, 'error' => $msg, 'layers' => $layers },
+      { 'expiryTime' => YYYYMMDDHHMMSS(time) }
+   );
+   return $msg;
+}
+
+# Registers this reservation in %CREATE_IN_FLIGHT for $promise's own duration (a
+# create()/reconcile_create() chain already running), clearing it once settled regardless of
+# outcome. $onSettled (default: no one's listening - create()'s own contract has no external
+# consumer for its tail) fires after cleanup, with the terminal ($self,undef)/(undef,$exception)
+# result - reconcile_create() below is the one real consumer, since unlike create()'s
+# fire-fast-then-continue $cb, its own $cb fires exactly once, on settle, with nothing else to
+# ack early.
+sub _create_track ($self, $promise, $onSettled = sub {}) {
+   my $id = $self->id();
+   $CREATE_IN_FLIGHT{$id} = 1;
+
+   $promise->then( sub (@) {
+      $onSettled->( $self, undef );
    } )->catch( sub ($err) {
-      flog("Reservation::create: reservation '$id' failed: $err");
-      # Preserve whatever per-layer pull progress had already been recorded, rather than
-      # replacing the whole createStatus hash wholesale - lets the client show where the
-      # pull actually died (last known status/current/total per layer) instead of the
-      # per-layer detail vanishing the instant 'stage' flips to 'failed'. A failure before
-      # any layer progress exists (e.g. cmdline_json() throwing, or the image-check call
-      # itself erroring) simply has no layers to preserve - {} either way.
-      my $layers = ( ref($self->{'createStatus'}) eq 'HASH' ? $self->{'createStatus'}{'layers'} : undef ) // {};
-      $self->_create_status_set(
-         { 'stage' => 'failed', 'failed' => 1, 'error' => "$err", 'layers' => $layers },
-         { 'expiryTime' => YYYYMMDDHHMMSS(time) }
-      );
+      my $msg = $self->_create_fail($err);
+      $onSettled->( undef, Exception->new( 'msg' => $msg ) );
+   } )->finally( sub (@) {
+      delete $CREATE_IN_FLIGHT{$id};
    } );
 
+   return;
+}
+
+# Creates and starts this reservation's container - no fork, no PTY, no docker CLI subprocess:
+# builds the Docker Create API body from cmdline_json() (Reservation/Launch.pm), pulls the
+# image first if it isn't already present (with real per-layer progress, not a PTY log-tail),
+# then POST /containers/create and POST /containers/{id}/start, all via call_socket_api.
+# docker-event-daemon's own onContainerStart (/events-driven, unconditional on who issued the
+# docker start) fires the launch DAG exactly as it does today - no signal to DED needed at all.
+#
+# $cb fires exactly once, synchronously, right after the idempotency guard below is written -
+# not once the container is actually created/started. The rest of this sub's own work (image
+# check/pull, create, start) continues independently afterwards, on this same process's event
+# loop, visible only via polling createStatus (see status()'s own comment on its shape) - this
+# preserves a fast-ack-then-poll client UX, which only holds if the initial API call keeps
+# returning quickly rather than waiting for the whole chain. If the process (or, under
+# Mojo::Server::Prefork, just the one worker) driving that background chain dies before it
+# reaches a terminal stage, nothing above this sub notices on its own - see reconcile_create()
+# below and docs/plans/create-restart-recovery-plan.md for what does.
+#
+# Idempotency guard: writes an initial createStatus synchronously, before any Docker call
+# begins, then checks-then-sets with no yield point in between - race-free because a single
+# Mojolicious worker processes one request at a time.
+#
+# Composed with Mojo::Promise, not nested callbacks - the one genuinely multi-step async chain
+# in this file (image check -> optional pull -> create -> start). This is a deliberate, scoped
+# exception to this file otherwise having no Mojolicious-framework dependency at all (no $c, no
+# ->render, no routes) - chosen here specifically because this is the one multi-step chain in
+# the whole file; the alternative (nested callbacks) would be a four-deep pyramid. Not precedent
+# for reaching for Mojo::Promise/Mojo::IOLoop elsewhere in this file - every other _async sub
+# here stays on the plain ($self, ..., $cb) single-callback convention.
+sub create ($self, $cb) {
+   my $id = $self->id();
+
+   if ( $self->{'createStatus'} ) {
+      $cb->( undef, Exception->new( 'msg' => "Reservation '$id' already has a createStatus set; refusing a duplicate create" ) );
+      return;
+   }
+
+   my $body;
+   try {
+      $body = $self->cmdline_json();
+   }
+   catch {
+      my $msg = $self->_create_fail($_);
+      $cb->( undef, Exception->new( 'msg' => "Failed to compile 'docker create' request body, with error: $msg" ) );
+   };
+   return unless $body;   # cmdline_json() threw - already reported via $cb above
+
+   $self->_create_status_set( { 'stage' => 'pulling', 'failed' => 0, 'layers' => {} } );
+   $cb->( $self, undef );
+
+   $self->_create_track( $self->_create_run_from_pulling($body) );
+   return;
+}
+
+# Resumes a create() chain interrupted by the process (or, under Mojo::Server::Prefork, just
+# the one worker) that was driving it dying mid-flight - reads createStatus.stage to decide
+# where to resume, per docs/plans/create-restart-recovery-plan.md's own "Ground truth per
+# stage" table. No claim/locking of its own - callers (bin/app-server's startup sweep and
+# periodic reconciler) are responsible for ensuring only one caller ever reconciles a given
+# reservation at a time; the periodic reconciler does this via a single process-wide sweep
+# lock (not a per-reservation claim - see that doc's own "Revision 3" for why a per-reservation
+# claim, tried first, was more machinery than the actual concern needed).
+#
+# $cb fires exactly once, when reconciliation fully settles (success or failure) - unlike
+# create()'s own fire-fast-then-continue contract, nothing is waiting synchronously on this
+# (it's driven by a sweep/timer, not an HTTP request), so there is no early ack to give.
+sub reconcile_create ($self, $cb) {
+   my $stage = ( $self->{'createStatus'} // {} )->{'stage'} // '';
+
+   my $body;
+   try {
+      $body = $self->cmdline_json();
+   }
+   catch {
+      my $msg = $self->_create_fail($_);
+      $cb->( undef, Exception->new( 'msg' => $msg ) );
+   };
+   return unless $body;
+
+   my $chain =
+        $stage eq 'pulling'  ? $self->_create_run_from_pulling($body)
+      : $stage eq 'creating' ? $self->_create_run_from_creating($body)
+      : $stage eq 'starting' ? $self->_create_run_from_starting()
+      : undef;
+
+   unless ($chain) {
+      my $msg = "reservation '" . $self->id() . "' has unreconcilable createStatus.stage '$stage'";
+      flog("Reservation::reconcile_create: $msg");
+      $cb->( undef, Exception->new( 'msg' => $msg ) );
+      return;
+   }
+
+   $self->_create_track( $chain, $cb );
    return;
 }
 

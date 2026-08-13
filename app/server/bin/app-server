@@ -14,18 +14,24 @@ use v5.36;
 
 use Mojolicious;
 use Mojo::Server::Prefork;
+use Mojo::IOLoop;
+use Mojo::Util qw(steady_time);
 
 use Try::Tiny;
 
 use URI::Escape;
 use JSON::XS;   # ->new->... below, and the decode_json/encode_json functions
                  # it exports by default (used by _parse_body_args)
+use Fcntl qw(:flock);   # _with_reconcile_lock's own LOCK_EX/LOCK_NB/LOCK_UN below
+use File::Path;         # mkpath - _with_reconcile_lock's own tmpPath existence guard
 use Util qw(flog wlog sanitize_sensitive_text YYYYMMDDHHMMSS);
 use Exception;
 use Data qw($CONFIG $HOSTNAME $HOSTINFO $VERSION);
 use Containers;
 use Request;
 use User;
+use Reservation;   # ->load/->create_in_flight_count below - restart-recovery/exit-handler use
+                    # only (every route still reaches Reservation exclusively through User.pm)
 use App;   # split_args, and the asset/header helpers _send_branded_page/
            # _render_spa_shell below reuse
 use App::Metadata;   # $c-native, not adapter-backed - see its own route below
@@ -35,6 +41,86 @@ flog("Starting...");
 
 Data::load();
 
+# Finds every reservation whose createStatus.stage is non-terminal and asks it to reconcile
+# itself (Reservation::reconcile_create) - the mechanism shared by the startup sweep just
+# below and the per-worker periodic reconciler registered further down, covering the two
+# restart granularities docs/plans/create-restart-recovery-plan.md's own "Two distinct failure
+# granularities" section lays out. $onDone (optional) fires once every reconciliation kicked
+# off by this call has settled - the startup sweep needs this to know when it's safe to stop
+# pumping the reactor; the periodic reconciler doesn't (it's already running inside a live
+# event loop, so there's nothing to wait for from the outside).
+#
+# Callers must ensure only one of them is ever calling this at a time - it does no claiming or
+# locking of its own. The startup sweep (below) is inherently safe (runs solo, before any
+# worker forks); the periodic reconciler (further down) wraps its own call in
+# _with_reconcile_lock, since it fires independently in every worker (confirmed live - see that
+# doc's Open Questions #4) and two workers finding the same stuck reservation on the same tick
+# would otherwise both try to reconcile it.
+sub _reconcile_stuck_reservations ($onDone = sub {}) {
+   try {
+      my @stuck = grep {
+         my $stage = ( $_->{'createStatus'} // {} )->{'stage'} // '';
+         $stage =~ /^(?:pulling|creating|starting)$/;
+      } @{ Reservation->load() };
+
+      flog(sprintf("app-server: reconcile sweep: %d reservation(s) have a create still in progress", scalar @stuck))
+         if @stuck;
+
+      my $outstanding = scalar @stuck;
+      return $onDone->() unless $outstanding;
+
+      for my $reservation (@stuck) {
+         $reservation->reconcile_create( sub ( $reconciled, $err ) {
+            flog("app-server: reconcile of reservation '" . $reservation->id() . "' failed: " . $err->msg) if $err;
+            $onDone->() unless --$outstanding;
+         } );
+      }
+   }
+   catch {
+      flog("app-server: reconcile sweep failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
+      $onDone->();
+   };
+   return;
+}
+
+# Ensures at most one of this app-server's own N workers runs a reconciliation sweep at a
+# time (see _reconcile_stuck_reservations's own comment on why) - a single process-wide lock,
+# not a per-reservation claim. Tried a per-reservation atomic claim first (mutate()-based, with
+# its own staleness timestamp to survive a claim-holder dying mid-reconciliation); replaced
+# with this once it became clear the actual concern - N workers racing the *same* stuck
+# reservation - doesn't need per-reservation granularity to fix, only "one sweep at a time"
+# does, and a real OS-level flock gets crash-safety for free (released automatically the
+# instant the holding process's fd closes, for any reason, no manual staleness bookkeeping
+# needed) where a plain data-field claim did not. `LOCK_EX | LOCK_NB`: a worker that can't
+# acquire it immediately just skips this tick - not an error, the next tick (this worker's own,
+# 5 minutes later by default) tries again regardless of who won this one.
+sub _with_reconcile_lock ($cb) {
+   mkpath( [ $CONFIG->{'tmpPath'} ], 0, 0755 ) unless -d $CONFIG->{'tmpPath'};
+   open( my $fh, '>>', "$CONFIG->{'tmpPath'}/create-reconcile.lock" ) or do {
+      flog("app-server: could not open reconcile sweep lock: $!");
+      return;
+   };
+   unless ( flock( $fh, LOCK_EX | LOCK_NB ) ) {
+      close($fh);
+      return;   # another worker is already sweeping - skip this tick, try again next time
+   }
+   $cb->();
+   flock( $fh, LOCK_UN );
+   close($fh);
+   return;
+}
+
+# Restart-recovery: create()'s own chain may have been abandoned mid-flight by a previous
+# process - see docs/plans/create-restart-recovery-plan.md. Runs once, here, in the manager,
+# before any worker forks (a replacement worker forked later, mid-lifetime, does NOT re-run
+# this - see the per-worker periodic reconciler registered further down for that case). Pumps
+# the reactor just long enough for this sweep's own async work to settle, the same "run the
+# IOLoop just long enough" idiom docker-event-daemon's own initial containers.json write
+# already uses (docker-event-daemon:985-987) - nothing else is happening on this process yet
+# to lose concurrency with by waiting.
+_reconcile_stuck_reservations( sub { Mojo::IOLoop->stop } );
+Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
+
 my $port    = $CONFIG->{'appServer'}{'port'};
 my $workers = $CONFIG->{'appServer'}{'workers'};
 
@@ -42,6 +128,16 @@ my $app = Mojolicious->new;
 $app->max_request_size( $CONFIG->{'appServer'}{'maxRequestSize'} );
 
 # ── Shared helpers, used across every route below ────────────────────────────
+
+# Set by the graceful exit handler (registered further down, near Mojo::Server::Prefork->new)
+# once this worker's own shutdown begins - declared here, ahead of every route below, since a
+# route's closure can only capture a lexical already in scope when it's compiled, not one
+# declared later in the file even if registered "before" this worker ever runs. Checked by the
+# /containers/create route only - every other route either doesn't start new detached work
+# (nothing else in this file does) or is naturally covered by Mojo::Server::Prefork's own
+# stop-accepting-new-connections behaviour once shutdown begins (see
+# docs/plans/create-restart-recovery-plan.md's own "Refusing new creates" section).
+my $shuttingDown = 0;
 
 # Authenticates the request and enforces the globalCookieRequired gate - a real,
 # configured, instance-wide access gate (config.json's globalCookie.name/.secret) every
@@ -364,6 +460,15 @@ $routes->post('/containers/create')->to(
    cb => sub ($c) {
       $c->render_later;
       try {
+         # Belt-and-braces: Mojo::Server::Prefork already stops routing new connections to a
+         # worker mid-graceful-shutdown (covering every route uniformly, not just this one) -
+         # this catches the narrow remaining window where a connection was already accepted,
+         # in flight, right as shutdown began, closing it with a clean, fast rejection rather
+         # than starting a chain that's about to be abandoned. See
+         # docs/plans/create-restart-recovery-plan.md's own "Refusing new creates" section.
+         return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
+            if $shuttingDown;
+
          my $User = _authenticate($c) or return;
 
          my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
@@ -831,9 +936,45 @@ $routes->any( '/*whatever' => { whatever => '' } => sub ($c) {
    return _redirect( $c, 302, '/' );
 } );
 
+# Per-worker periodic reconciler - covers a single worker dying mid-create while its siblings
+# and the manager stay up (the startup sweep above only catches a whole-process restart - see
+# docs/plans/create-restart-recovery-plan.md's own "Two distinct failure granularities").
+# Registered once, pre-fork, on the shared Mojo::IOLoop->singleton - fires independently inside
+# every forked worker, confirmed live (that doc's own Open Questions #4). Re-loads
+# reservations.json first - sibling workers/processes may have mutated it since this worker's
+# own last refresh (_authenticate's own per-request Data::load() doesn't fire on a timer tick).
+Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => sub (@) {
+   Data::load('reservations.json');
+   _with_reconcile_lock( \&_reconcile_stuck_reservations );
+} );
+
+# Graceful exit handler - refuses new creates (the /containers/create route's own
+# $shuttingDown check above) and gives an in-flight one a bounded chance to reach a stable
+# state before this worker actually exits, rather than relying solely on the startup
+# sweep/periodic reconciler above to clean up afterwards. Mojo::Server::Prefork's own graceful
+# shutdown (SIGQUIT, not the SIGTERM this repo's restart matrix sends today - see that doc's
+# own "What Mojo::Server::Prefork already gives you" section) only waits for the HTTP
+# connection to close, not for create()'s own detached chain, which by design outlives it -
+# this closes that gap. Registered once, pre-fork, on the shared singleton - confirmed live
+# (Open Questions #4) that this fires exactly once per worker, not once total.
+Mojo::IOLoop->singleton->on( finish => sub (@) {
+   $shuttingDown = 1;
+   my $deadline = steady_time() + $CONFIG->{'appServer'}{'shutdownGracePeriod'};
+   my $wait;
+   $wait = Mojo::IOLoop->recurring( 1 => sub (@) {
+      return if Reservation->create_in_flight_count() && steady_time() < $deadline;
+      Mojo::IOLoop->remove($wait);
+      Mojo::IOLoop->stop;
+   } );
+} );
+
 flog("Listening on 127.0.0.1:$port with $workers worker(s)...");
 
 Mojo::Server::Prefork->new(
-   listen  => ["http://127.0.0.1:$port"],
-   workers => $workers,
+   listen           => ["http://127.0.0.1:$port"],
+   workers          => $workers,
+   # 150s, not the 120s default - comfortably above appServer.shutdownGracePeriod (90s
+   # default) so the exit handler's own bounded wait never races this hard force-kill ceiling.
+   # See docs/plans/create-restart-recovery-plan.md's own Open Questions #6.
+   graceful_timeout => 150,
 )->app($app)->run;

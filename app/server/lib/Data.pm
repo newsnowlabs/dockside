@@ -109,6 +109,16 @@ $CONFIG_FILES = {
          # (sites-available/default) - not a new convention, the existing one, now needing an
          # explicit config point since nginx itself no longer serves it.
          $CONFIG->{'appServer'}{'docsPath'} //= '/home/dockside/dockside/app/server/nginx/html';
+         # create's own restart-recovery/graceful-exit design - see
+         # docs/plans/create-restart-recovery-plan.md. reconcileIntervalSeconds is both the
+         # per-worker periodic reconciler's own recheck cadence *and* the staleness threshold a
+         # stuck reconciliation claim is retried after (Reservation::Mutate::
+         # create_reconcile_claim) - one number, not two independently-drifting ones.
+         # shutdownGracePeriod must stay comfortably under Mojo::Server::Prefork's own
+         # graceful_timeout (bin/app-server raises that to 150s to match) - deliberately
+         # coordinated, not left to whatever the two defaults happened to leave.
+         $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 300;
+         $CONFIG->{'appServer'}{'shutdownGracePeriod'} //= 90;
       },
       'parse' => \&parse_json
    },

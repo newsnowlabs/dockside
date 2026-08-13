@@ -300,6 +300,22 @@ _EOE_
   # Create symlink for runscript
   ln -sf $APP_DIR/app/scripts/runscripts/$s/run /etc/service/$s/run
 
+  # Symlink down-signal, if this service declares one - s6-supervise reads it at startup and
+  # uses it (instead of the SIGTERM default) as the signal `s6-svc -d` sends, *and* as the
+  # signal s6-svscan itself cascades to this service on a whole-scandir shutdown (verified
+  # live: SIGTERM to s6-svscan's own pid delivers each service's own down-signal, not a bare
+  # SIGTERM, to that service) - i.e. this is what makes a real `docker stop`/host reboot
+  # deliver app-server's own graceful-shutdown signal, not just the manually-run `s6-svc -q`
+  # documented in CLAUDE.md's restart matrix (down-signal has no effect on `-t`/`-q`
+  # specifically - those always send the literal signal named by their own flag, confirmed
+  # live - so this is a separate, complementary protection, not a replacement for that
+  # doc). Generic here (any service can opt in by adding its own down-signal file), not
+  # app-server-specific - currently only app-server has one, for create()'s own detached-chain
+  # reasons (docs/plans/create-restart-recovery-plan.md).
+  if [ -f "$APP_DIR/app/scripts/runscripts/$s/down-signal" ]; then
+    ln -sf $APP_DIR/app/scripts/runscripts/$s/down-signal /etc/service/$s/down-signal
+  fi
+
   # Copy each immediate child of $APP_DIR/app/scripts/runscripts/$s/data
   # N.B. We can't symlink $APP_DIR/app/scripts/runscripts/logrotate/data because
   #.     for logrotate to run, these files must be root-owned.

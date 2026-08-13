@@ -707,7 +707,7 @@ def resolve_allow_network_modify(test_mode, override=None):
 
 def resolve_allow_service_restart(test_mode, override=None):
     """Whether this run may restart Dockside's own s6-supervised services
-    (currently just docker-event-daemon, for restart-recovery testing).
+    (docker-event-daemon and app-server, for restart-recovery testing).
 
     Unlike resolve_allow_network_modify, this has no default-True mode at all -
     not even 'harness'. Restarting a live service needs host sudo/s6 access
@@ -776,6 +776,47 @@ def restart_docker_event_daemon(timeout=15):
         if pid and pid != before_pid:
             return
     raise AssertionError(f'docker-event-daemon did not come back up with a new pid within {timeout}s of restart')
+
+
+def restart_app_server(timeout=15):
+    """Restart app-server via s6 and wait for it to report a new pid.
+
+    Same shape and same reasoning as restart_docker_event_daemon above - see its own
+    docstring, with one deliberate difference: this uses `-t`, not `-r`. `-r` is the
+    documented day-to-day restart command (CLAUDE.md), but app-server's own `down-signal`
+    file makes `-r` deliver a graceful `SIGQUIT` there - it would only exercise the exit
+    handler's drain, not the recovery path this test targets. `-t` always sends a bare
+    SIGTERM regardless of `down-signal` (confirmed live -
+    docs/plans/create-restart-recovery-plan.md), which Mojo::Server::Prefork's manager
+    treats as *non-graceful* (immediate SIGKILL of every worker, no drain) - standing in
+    here for any hard-kill scenario a graceful path can't intercept (OOM kill, `docker kill`,
+    host power loss), so this test proves the startup-sweep recovery itself, independent of
+    whether a graceful shutdown got a chance to run at all.
+    """
+    svc = '/etc/service/app-server'
+    probe = subprocess.run(['sudo', '-n', 's6-svstat', svc], capture_output=True, text=True, timeout=10)
+    if probe.returncode != 0:
+        raise CapabilityUnavailable(
+            f'app-server not reachable via sudo s6-svstat (rc={probe.returncode}, '
+            f'stderr={probe.stderr.strip()!r}) - needs a mountIDE:false environment with our '
+            f'own writable /opt/dockside, see CLAUDE.md\'s testing-capability matrix'
+        )
+    before_pid = _svstat_pid(probe.stdout)
+
+    r = subprocess.run(['sudo', '-n', 's6-svc', '-t', svc], capture_output=True, text=True, timeout=10)
+    if r.returncode != 0:
+        raise CapabilityUnavailable(
+            f'sudo s6-svc -t {svc} failed (rc={r.returncode}, stderr={r.stderr.strip()!r})'
+        )
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        probe = subprocess.run(['sudo', '-n', 's6-svstat', svc], capture_output=True, text=True, timeout=10)
+        pid = _svstat_pid(probe.stdout) if probe.returncode == 0 else None
+        if pid and pid != before_pid:
+            return
+    raise AssertionError(f'app-server did not come back up with a new pid within {timeout}s of restart')
 
 
 def create_and_attach_test_network(admin_client, ctr, probe_profile, probe_name,
