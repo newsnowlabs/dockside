@@ -23,9 +23,10 @@
       {
          "name": "branch",
          "label": "Branch",
-         "type": "text",
+         "type": "combo",
          "default": "",
-         "placeholder": "e.g. main, feature/my-feature (leave blank for default)"
+         "values": ["main"],
+         "placeholder": "main, or type another branch name (leave blank for default)"
       },
       {
          "name": "pr",
