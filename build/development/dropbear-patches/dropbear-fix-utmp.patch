@@ -1,0 +1,159 @@
+# Vendored from Alpine's aports, main/dropbear/dropbear-fix-utmp.patch, as pinned at aports
+# commit fc064e12dcef4e7c3567c0fd8fda666fdfcf047c (3.22-stable, dropbear 2025.88-r1) - adds
+# utmp/wtmp login-record support (who/w/last seeing SSH sessions), which vanilla upstream
+# dropbear doesn't wire up on musl. See dropbear-options_ssh_config.patch alongside this file
+# for the version-pinning rationale.
+#
+# TRIMMED: Alpine's original patch has a third hunk, against src/svr-chansession.c, adding
+# `li->pid = getpid();` after `li = chansess_login_alloc(chansess);` in ptycommand(). That
+# hunk no longer applies against upstream dropbear releases from 2026.x on - not because of
+# an unrelated context shift, but because upstream's own chansess_login_alloc() now passes
+# chansess->pid straight into login_alloc_entry(pid, ...) itself, so li->pid is already
+# correct by the time this hunk would have run. Confirmed by building both with and without
+# it and diffing behaviour - the hunk is fully superseded upstream, not a functional gap.
+# Dropped here rather than carried as a `|| true`-tolerated failure in the Dockerfile, so a
+# real future patch failure (e.g. upstream reworking loginrec.c itself) still fails the build
+# loudly instead of being masked by this already-expected one.
+diff --git a/loginrec.c b/loginrec.c
+index af10d95..9e5c3aa 100644
+--- a/src/loginrec.c
++++ b/src/loginrec.c
+@@ -239,6 +239,13 @@ logininfo *login_alloc_entry(int pid, co
+
+ 	newli = (struct logininfo *) m_malloc (sizeof(*newli));
+ 	(void)login_init_entry(newli, pid, username, hostname, line);
++#ifdef HAVE_STRUCT_SOCKADDR_IN6
++	if (inet_pton(AF_INET6, hostname, newli->hostaddr.sa_in6.sin6_addr.s6_addr) > 0)
++		newli->hostaddr.sa_in6.sin6_family = AF_INET6;
++	else
++#endif
++	if (inet_pton(AF_INET, hostname, &newli->hostaddr.sa_in.sin_addr.s_addr) > 0)
++		newli->hostaddr.sa_in.sin_family = AF_INET;
+ 	return newli;
+ }
+
+@@ -474,9 +481,6 @@ void
+ construct_utmp(struct logininfo *li,
+ 		    struct utmp *ut)
+ {
+-# ifdef HAVE_ADDR_V6_IN_UTMP
+-	struct sockaddr_in6 *sa6;
+-#  endif
+ 	memset(ut, '\0', sizeof(*ut));
+
+ 	/* First fill out fields used for both logins and logouts */
+@@ -529,12 +533,11 @@ construct_utmp(struct logininfo *li,
+ 	if (li->hostaddr.sa.sa_family == AF_INET)
+ 		ut->ut_addr = li->hostaddr.sa_in.sin_addr.s_addr;
+ # endif
+-# ifdef HAVE_ADDR_V6_IN_UTMP
++# if defined(HAVE_STRUCT_UTMP_UT_ADDR_V6) && defined(HAVE_STRUCT_SOCKADDR_IN6)
+ 	/* this is just a 128-bit IPv6 address */
+ 	if (li->hostaddr.sa.sa_family == AF_INET6) {
+-		sa6 = ((struct sockaddr_in6 *)&li->hostaddr.sa);
+-		memcpy(ut->ut_addr_v6, sa6->sin6_addr.s6_addr, 16);
+-		if (IN6_IS_ADDR_V4MAPPED(&sa6->sin6_addr)) {
++		memcpy(ut->ut_addr_v6, li->hostaddr.sa_in6.sin6_addr.s6_addr, 16);
++		if (IN6_IS_ADDR_V4MAPPED(&li->hostaddr.sa_in6.sin6_addr)) {
+ 			ut->ut_addr_v6[0] = ut->ut_addr_v6[3];
+ 			ut->ut_addr_v6[1] = 0;
+ 			ut->ut_addr_v6[2] = 0;
+@@ -570,9 +573,6 @@ set_utmpx_time(struct logininfo *li, str
+ void
+ construct_utmpx(struct logininfo *li, struct utmpx *utx)
+ {
+-# ifdef HAVE_ADDR_V6_IN_UTMP
+-	struct sockaddr_in6 *sa6;
+-#  endif
+ 	memset(utx, '\0', sizeof(*utx));
+ # ifdef HAVE_STRUCT_UTMPX_UT_ID
+ 	line_abbrevname(utx->ut_id, li->line, sizeof(utx->ut_id));
+@@ -590,8 +590,6 @@ construct_utmpx(struct logininfo *li, st
+ 	line_stripname(utx->ut_line, li->line, sizeof(utx->ut_line));
+ 	set_utmpx_time(li, utx);
+ 	utx->ut_pid = li->pid;
+-	/* strncpy(): Don't necessarily want null termination */
+-	strncpy(utx->ut_name, li->username, MIN_SIZEOF(utx->ut_name, li->username));
+
+ 	if (li->type == LTYPE_LOGOUT)
+ 		return;
+@@ -601,6 +599,9 @@ construct_utmpx(struct logininfo *li, st
+ 	 * for logouts.
+ 	 */
+
++	/* strncpy(): Don't necessarily want null termination */
++	strncpy(utx->ut_name, li->username, MIN_SIZEOF(utx->ut_name, li->username));
++
+ # ifdef HAVE_STRUCT_UTMPX_UT_HOST
+ 	strncpy(utx->ut_host, li->hostname, MIN_SIZEOF(utx->ut_host, li->hostname));
+ # endif
+@@ -609,16 +610,15 @@ construct_utmpx(struct logininfo *li, st
+ 	if (li->hostaddr.sa.sa_family == AF_INET)
+ 		utx->ut_addr = li->hostaddr.sa_in.sin_addr.s_addr;
+ # endif
+-# ifdef HAVE_ADDR_V6_IN_UTMP
++# if defined(HAVE_STRUCT_UTMPX_UT_ADDR_V6) && defined(HAVE_STRUCT_SOCKADDR_IN6)
+ 	/* this is just a 128-bit IPv6 address */
+ 	if (li->hostaddr.sa.sa_family == AF_INET6) {
+-		sa6 = ((struct sockaddr_in6 *)&li->hostaddr.sa);
+-		memcpy(ut->ut_addr_v6, sa6->sin6_addr.s6_addr, 16);
+-		if (IN6_IS_ADDR_V4MAPPED(&sa6->sin6_addr)) {
+-			ut->ut_addr_v6[0] = ut->ut_addr_v6[3];
+-			ut->ut_addr_v6[1] = 0;
+-			ut->ut_addr_v6[2] = 0;
+-			ut->ut_addr_v6[3] = 0;
++		memcpy(utx->ut_addr_v6, li->hostaddr.sa_in6.sin6_addr.s6_addr, 16);
++		if (IN6_IS_ADDR_V4MAPPED(&li->hostaddr.sa_in6.sin6_addr)) {
++			utx->ut_addr_v6[0] = utx->ut_addr_v6[3];
++			utx->ut_addr_v6[1] = 0;
++			utx->ut_addr_v6[2] = 0;
++			utx->ut_addr_v6[3] = 0;
+ 		}
+ 	}
+ # endif
+@@ -1048,30 +1048,12 @@ wtmp_get_entry(struct logininfo *li)
+  **/
+
+ #ifdef USE_WTMPX
+-/* write a wtmpx entry direct to the end of the file */
+-/* This is a slight modification of code in OpenBSD's logwtmp.c */
++/* write a wtmpx entry via updwtmpx() */
+ static int
+ wtmpx_write(struct logininfo *li, struct utmpx *utx)
+ {
+-	struct stat buf;
+-	int fd, ret = 1;
+-
+-	if ((fd = open(WTMPX_FILE, O_WRONLY|O_APPEND, 0)) < 0) {
+-		dropbear_log(LOG_WARNING, "wtmpx_write: problem opening %s: %s",
+-		    WTMPX_FILE, strerror(errno));
+-		return 0;
+-	}
+-
+-	if (fstat(fd, &buf) == 0)
+-		if (atomicio(vwrite, fd, utx, sizeof(*utx)) != sizeof(*utx)) {
+-			ftruncate(fd, buf.st_size);
+-			dropbear_log(LOG_WARNING, "wtmpx_write: problem writing %s: %s",
+-			    WTMPX_FILE, strerror(errno));
+-			ret = 0;
+-		}
+-	(void)close(fd);
+-
+-	return ret;
++	updwtmpx(WTMPX_FILE, utx);
++	return 1;
+ }
+
+
+--- a/src/loginrec.h
++++ b/src/loginrec.h
+@@ -105,6 +105,9 @@
+ union login_netinfo {
+ 	struct sockaddr sa;
+ 	struct sockaddr_in sa_in;
++#ifdef HAVE_STRUCT_SOCKADDR_IN6
++	struct sockaddr_in6 sa_in6;
++#endif
+ #ifdef HAVE_STRUCT_SOCKADDR_STORAGE
+ 	struct sockaddr_storage sa_storage;
+ #endif

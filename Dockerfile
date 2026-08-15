@@ -7,6 +7,8 @@ ARG SYSTEM_ALPINE_VERSION=3.22
 ARG DOCKSIDE_NODE_VERSION=22
 ARG DOCKSIDE_DEBIAN_VERSION=bookworm-slim
 ARG WSTUNNEL_VERSION=10.6.1
+ARG DROPBEAR_VERSION=2026.94
+ARG DROPBEAR_SHA256=e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81
 
 ################################################################################
 # SET UP 'BASE' BUILD ENVIRONMENT
@@ -264,18 +266,65 @@ FROM base AS system
 
 ARG OPT_PATH
 ARG DOCKSIDE_VERSION
+ARG DROPBEAR_VERSION
+ARG DROPBEAR_SHA256
 ENV DS_PATH=$OPT_PATH/system/$DOCKSIDE_VERSION
 
 # The BASH_ENV script will be executed prior to running all other RUN commands from here-on.
 ENV BASH_ENV=/tmp/dockside/bash-env
 SHELL ["/bin/bash", "-c"]
 
-RUN apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash dropbear jq git openssh-client-default github-cli
+RUN apk add --no-cache make gcc g++ python3 libsecret-dev s6 curl file patchelf bash patch zlib-dev openssh-sftp-server jq git openssh-client-default github-cli
+
+# Built from upstream source, not Alpine's package/abuild, so we can track dropbear releases
+# independently of Alpine's own pinned version. Alpine's utmp patch is still vendored (see
+# build/development/dropbear-patches for provenance) and its hardening CFLAGS/LDFLAGS applied
+# by hand below.
+#
+# dropbear has no runtime SFTP-subsystem lookup - the path is compiled in - so it must be
+# pointed at $DS_PATH/bin/sftp-server, where BundELF places openssh-sftp-server (below).
+ADD build/development/dropbear-patches /tmp/dropbear-patches
+# dropbear.nl is upstream's own second mirror (same tarball/checksum as matt.ucc.asn.au), used
+# as a fallback. Avoid && chaining below: && and || share precedence, so an early failure would
+# silently trip the final assertion's fallback instead of reporting the real error.
+RUN set -e; \
+    for url in \
+        "https://matt.ucc.asn.au/dropbear/releases/dropbear-$DROPBEAR_VERSION.tar.bz2" \
+        "https://dropbear.nl/mirror/releases/dropbear-$DROPBEAR_VERSION.tar.bz2"; do \
+        rm -f /tmp/dropbear.tar.bz2; \
+        echo "Fetching $url" >&2; \
+        if curl -fsSL --retry 3 --retry-connrefused --retry-delay 5 -o /tmp/dropbear.tar.bz2 "$url"; then \
+            break; \
+        fi; \
+        echo "WARNING: fetch from $url failed, trying next mirror" >&2; \
+    done; \
+    [ -s /tmp/dropbear.tar.bz2 ] || \
+        { echo "ERROR: failed to download dropbear-$DROPBEAR_VERSION.tar.bz2 from all mirrors" >&2; exit 1; }; \
+    echo "$DROPBEAR_SHA256  /tmp/dropbear.tar.bz2" | sha256sum -c -; \
+    tar xj -C /tmp -f /tmp/dropbear.tar.bz2; \
+    cd /tmp/dropbear-$DROPBEAR_VERSION; \
+    patch -p1 < /tmp/dropbear-patches/dropbear-fix-utmp.patch; \
+    sed -i "s|^#define SFTPSERVER_PATH .*|#define SFTPSERVER_PATH \"$DS_PATH/bin/sftp-server\"|" src/default_options.h; \
+    grep -n SFTPSERVER_PATH src/default_options.h; \
+    export CFLAGS="-Os -fstack-clash-protection -Wformat -Werror=format-security -fno-plt" \
+        LDFLAGS="-Wl,--as-needed,-O1,--sort-common -Wl,-z,pack-relative-relocs"; \
+    ./configure; \
+    make PROGRAMS="dropbear dropbearkey" -j$(nproc); \
+    if ! strings dropbear | grep -qF "$DS_PATH/bin/sftp-server"; then \
+        echo "ERROR: built dropbear binary is missing the expected SFTPSERVER_PATH" >&2; \
+        exit 1; \
+    fi; \
+    install -m755 dropbear dropbearkey /usr/local/bin/; \
+    cd /; rm -rf /tmp/dropbear.tar.bz2 /tmp/dropbear-$DROPBEAR_VERSION /tmp/dropbear-patches
 
 ADD build/development/make-bundelf-bundle.sh /tmp
 
+# openssh-sftp-server's binary itself has no baked-in path assumptions of its own (it just
+# speaks the SFTP protocol over stdin/stdout) - it only needs to end up at the location
+# dropbear was just told to exec, $DS_PATH/bin/sftp-server, which BUNDELF_MERGE_BINDIRS
+# guarantees for every entry named here.
 RUN export \
-        BUNDELF_BINARIES="bash busybox s6-svscan curl dropbear dropbearkey jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan gh" \
+        BUNDELF_BINARIES="bash busybox s6-svscan curl dropbear dropbearkey /usr/lib/ssh/sftp-server jq /usr/libexec/git-core/git /usr/libexec/git-core/git-remote-http ssh ssh-add ssh-agent ssh-keyscan gh" \
         BUNDELF_CODE_PATH="$DS_PATH" \
         BUNDELF_LIBPATH_TYPE="relative" \
         BUNDELF_MERGE_BINDIRS="1" && \
