@@ -74,7 +74,8 @@ class CreateRestartRecoveryTests(TestCase):
         self._profile = self._create_pull_profile()
 
     def tearDown(self):
-        self._remove_profile(self._profile)
+        if hasattr(self, '_profile'):
+            self._remove_profile(self._profile)
         super().tearDown()
 
     # The shared fixture profiles' own images lists are all narrow (e.g. the alpine
