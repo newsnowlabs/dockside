@@ -1174,11 +1174,15 @@ init() {
    [ -d $LOG ] || busybox touch $LOG && busybox chmod 644 $LOG
 
    # Preserve the original stdout/stderr as fds 3/4 before redirecting 1/2 into the
-   # log file below. Every function's log() output is unaffected by this (still only
-   # goes to $LOG via fd 1/2); it exists solely so that run_hook, when dispatched via
-   # a synchronous `docker exec ... launch.sh run_hook` (see Reservation::run_hook_manual),
-   # can let its caller capture real-time output/exit status via fd 3/4, instead of
-   # having it silently swallowed into the container's internal log file.
+   # log file below. run_hook, when dispatched via a synchronous `docker exec ...
+   # launch.sh run_hook` (see Reservation::run_hook_manual), uses this to let its
+   # caller capture the hook script's own real-time output/exit status via fd 3/4
+   # (see its own `1>&3 2>&4` on the script invocation), instead of having it
+   # silently swallowed into the container's internal log file. launch_prep/launch_git
+   # (see the bottom of this file) are routed through fds 3/4 the same way, for the
+   # same reason - see docker-event-daemon's own _launch_dispatch_exec, which now
+   # captures that same output host-side as this reservation's launch:prep/launch:git
+   # hook log. Every other function's log() output still only goes to $LOG via fd 1/2.
    exec 3>&1 4>&2
 
    exec 1>>$LOG
@@ -1195,5 +1199,16 @@ init() {
 }
 
 [ "$1" = "nop" ] && shift || init "$@"
-eval "$@"
+
+# launch_prep/launch_git are bare entry-point functions (unlike run_hook, which routes a
+# *hook script's* own output through fd 3/4 itself, per-invocation - see init's own comment
+# above) dispatched directly by docker-event-daemon's _launch_dispatch_exec, which now
+# captures fd 3/4 as this reservation's launch:prep/launch:git hook log the same way it
+# already does for run_hook. Route only these two through fd 3/4 - everything else (including
+# launch_ide, which is detached and has no caller listening on fd 3/4 at all) keeps going to
+# $LOG only, as before.
+case "$1" in
+   launch_prep|launch_git) eval "$@" 1>&3 2>&4 ;;
+   *)                      eval "$@" ;;
+esac
 

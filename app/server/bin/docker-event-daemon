@@ -399,11 +399,24 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
    my $timeout = $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    my $containerId = $reservation->containerId();
 
-   # No logPath - launch:prep/launch:git still log in-container to $LOG as today. launch:ide
-   # never had one to begin with (perpetual, Detach:true). Synchronous, before any async I/O
-   # begins - see launch_maybe_dispatch's own comment on why that alone is what makes a
-   # re-entrant launch_advance call safe.
-   $reservation->hook_status_started($stage, undef);
+   # logPath: same convention as Reservation::dispatch_hook_exec (a host-side file under
+   # tmpPath, named by reservation id + a random invocation id), so this stage's own output
+   # becomes readable via the exact same load_hook_log($stage)/hook/status route that manually-
+   # run hooks already use - no separate read path needed. Detach (launch:ide) is the one
+   # exception: it's a perpetual, fire-and-forget process (see this sub's own header comment),
+   # so there is no bounded "this invocation's output" to capture - undef here, as before.
+   my ($log, $logPath);
+   unless ( $opts->{'detach'} ) {
+      my $invocationId = sprintf( "%08x", int( rand(0xffffffff) ) );
+      $logPath = "$CONFIG->{'tmpPath'}/r-" . $reservation->id() . "-hook-$invocationId.log";
+      open( $log, '>>', $logPath )
+         or die Exception->new( 'dbg' => "docker-event-daemon::_launch_dispatch_exec: cannot open log '$logPath': $!" );
+      $log->autoflush(1);
+   }
+
+   # Synchronous, before any async I/O begins - see launch_maybe_dispatch's own comment on why
+   # that alone is what makes a re-entrant launch_advance call safe.
+   $reservation->hook_status_started($stage, $logPath);
 
    flog( "docker-event-daemon::_launch_dispatch_exec: DISPATCHING '$stage' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
@@ -414,8 +427,11 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
          ? ( 'Detach' => 1 )
          : ( 'inactivity_timeout' => $timeout + 30, 'request_timeout' => $timeout ) ),
       'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($stage, $execId); },
+      ( $log ? ( 'on_output' => sub ($stream, $bytes) { print $log $bytes; } ) : () ),
    }, sub ($result, $err) {
       try {
+         close($log) if $log;
+
          if ( !$result ) {
             flog("docker-event-daemon::_launch_dispatch_exec: '$stage' failed to dispatch: $err");
             launch_resolve_stage($reservation, $stage, 'failed');
