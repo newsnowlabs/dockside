@@ -71,7 +71,11 @@
       "apparmor": "unconfined"
    },
 
-   "dockerArgs": ["--memory=2G", "--pids-limit=4000"],
+   // 6G, not the leaner limit a plain `dockside` production container gets away
+   // with: this profile's devtainer also runs rebuilds, an IDE, and the
+   // dropbear/wstunnel daemons alongside the inner Dockside server itself, and
+   // that combination needs meaningfully more headroom than serving alone does.
+   "dockerArgs": ["--memory=6G", "--pids-limit=4000"],
    "runDockerInit": false,
    "command": ["--ssl-selfsigned", "--ssl-zone", "{container.hostname}", "--passwd-stdout"]
 }
