@@ -112,7 +112,7 @@ sudo s6-svc -r /etc/service/docker-event-daemon
 # -r restarts via whichever signal the service's own down-signal file names. app-server ships
 # one containing QUIT, so this is a graceful SIGQUIT there (it's the one service that can have
 # a create() chain genuinely in flight) - see CLAUDE.md's restart matrix /
-# docs/plans/create-restart-recovery-plan.md.
+# docs/adr/0007-create-restart-recovery.md.
 sudo s6-svc -r /etc/service/app-server
 
 echo "dockside-self-update: done"

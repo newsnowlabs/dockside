@@ -787,7 +787,7 @@ def restart_app_server(timeout=15):
     file makes `-r` deliver a graceful `SIGQUIT` there - it would only exercise the exit
     handler's drain, not the recovery path this test targets. `-t` always sends a bare
     SIGTERM regardless of `down-signal` (confirmed live -
-    docs/plans/create-restart-recovery-plan.md), which Mojo::Server::Prefork's manager
+    docs/adr/0007-create-restart-recovery.md), which Mojo::Server::Prefork's manager
     treats as *non-graceful* (immediate SIGKILL of every worker, no drain) - standing in
     here for any hard-kill scenario a graceful path can't intercept (OOM kill, `docker kill`,
     host power loss), so this test proves the startup-sweep recovery itself, independent of

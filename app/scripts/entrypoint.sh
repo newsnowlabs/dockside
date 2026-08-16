@@ -311,7 +311,7 @@ _EOE_
   # live - so this is a separate, complementary protection, not a replacement for that
   # doc). Generic here (any service can opt in by adding its own down-signal file), not
   # app-server-specific - currently only app-server has one, for create()'s own detached-chain
-  # reasons (docs/plans/create-restart-recovery-plan.md).
+  # reasons (docs/adr/0007-create-restart-recovery.md).
   if [ -f "$APP_DIR/app/scripts/runscripts/$s/down-signal" ]; then
     ln -sf $APP_DIR/app/scripts/runscripts/$s/down-signal /etc/service/$s/down-signal
   fi

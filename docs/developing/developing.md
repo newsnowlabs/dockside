@@ -62,7 +62,7 @@ delivers `SIGQUIT` (graceful), not a bare `SIGTERM` (immediate `SIGKILL` of ever
 `Mojo::Server::Prefork` worker with no drain) - app-server is the one service that can have a
 `create()` chain genuinely in flight, detached from the request that started it; `SIGQUIT`
 engages the graceful exit handler that waits for those before letting a worker exit (see
-`docs/plans/create-restart-recovery-plan.md`).
+`docs/adr/0007-create-restart-recovery.md`).
 
 To restart the Request Proxy (`app/server/lib/Proxy.pm`, or the NGINX config itself) - a
 separate process, embedded in NGINX - run:

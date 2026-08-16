@@ -1027,8 +1027,8 @@ sub _create_status_set ($self, $value, $extra = {}) {
 # running in *this* process - queried by bin/app-server's periodic reconciler (skip a
 # reservation this worker already owns, without even attempting a claim) and its exit handler
 # (wait for these to drain before letting the worker actually exit). See
-# docs/plans/create-restart-recovery-plan.md. Lives here, not as a bin/app-server-side hash as
-# that doc's own first draft called for - Reservation.pm is the only code that actually
+# docs/adr/0007-create-restart-recovery.md. Lives here, not as a bin/app-server-side hash as
+# that decision's first draft called for - Reservation.pm is the only code that actually
 # observes a chain's start/settle moments; a bin/app-server-side hash would need a second
 # callback threaded all the way through User::createContainerReservation's own unrelated
 # signature just to signal in/out, for no benefit over owning it where the lifecycle already
@@ -1040,7 +1040,7 @@ sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 
 # Ground-truth stage builders, shared by create() (always starts at 'pulling') and
 # reconcile_create() (resumes at whatever stage createStatus was stuck at) - see
-# docs/plans/create-restart-recovery-plan.md's own "Ground truth per stage" table for the
+# docs/adr/0007-create-restart-recovery.md's own "Ground truth per stage" table for the
 # reasoning behind each one. Each returns a Mojo::Promise and is unconditionally safe to
 # (re)enter - there is no "first time" vs "recovery" branch inside any of them, so there is
 # exactly one code path per stage, not two.
@@ -1274,7 +1274,7 @@ sub _create_track ($self, $promise, $onSettled = sub {}) {
 # returning quickly rather than waiting for the whole chain. If the process (or, under
 # Mojo::Server::Prefork, just the one worker) driving that background chain dies before it
 # reaches a terminal stage, nothing above this sub notices on its own - see reconcile_create()
-# below and docs/plans/create-restart-recovery-plan.md for what does.
+# below and docs/adr/0007-create-restart-recovery.md for what does.
 #
 # Idempotency guard: writes an initial createStatus synchronously, before any Docker call
 # begins, then checks-then-sets with no yield point in between - race-free because a single
@@ -1314,7 +1314,7 @@ sub create ($self, $cb) {
 
 # Resumes a create() chain interrupted by the process (or, under Mojo::Server::Prefork, just
 # the one worker) that was driving it dying mid-flight - reads createStatus.stage to decide
-# where to resume, per docs/plans/create-restart-recovery-plan.md's own "Ground truth per
+# where to resume, per docs/adr/0007-create-restart-recovery.md's own "Ground truth per
 # stage" table. No claim/locking of its own - callers (bin/app-server's startup sweep and
 # periodic reconciler) are responsible for ensuring only one caller ever reconciles a given
 # reservation at a time; the periodic reconciler does this via a single process-wide sweep

@@ -44,8 +44,8 @@ Data::load();
 # Finds every reservation whose createStatus.stage is non-terminal and asks it to reconcile
 # itself (Reservation::reconcile_create) - the mechanism shared by the startup sweep just
 # below and the per-worker periodic reconciler registered further down, covering the two
-# restart granularities docs/plans/create-restart-recovery-plan.md's own "Two distinct failure
-# granularities" section lays out. $onDone (optional) fires once every reconciliation kicked
+# restart granularities docs/adr/0007-create-restart-recovery.md's own "Context" section
+# lays out. $onDone (optional) fires once every reconciliation kicked
 # off by this call has settled - the startup sweep needs this to know when it's safe to stop
 # pumping the reactor; the periodic reconciler doesn't (it's already running inside a live
 # event loop, so there's nothing to wait for from the outside).
@@ -111,7 +111,7 @@ sub _with_reconcile_lock ($cb) {
 }
 
 # Restart-recovery: create()'s own chain may have been abandoned mid-flight by a previous
-# process - see docs/plans/create-restart-recovery-plan.md. Runs once, here, in the manager,
+# process - see docs/adr/0007-create-restart-recovery.md. Runs once, here, in the manager,
 # before any worker forks (a replacement worker forked later, mid-lifetime, does NOT re-run
 # this - see the per-worker periodic reconciler registered further down for that case). Pumps
 # the reactor just long enough for this sweep's own async work to settle, the same "run the
@@ -136,7 +136,7 @@ $app->max_request_size( $CONFIG->{'appServer'}{'maxRequestSize'} );
 # /containers/create route only - every other route either doesn't start new detached work
 # (nothing else in this file does) or is naturally covered by Mojo::Server::Prefork's own
 # stop-accepting-new-connections behaviour once shutdown begins (see
-# docs/plans/create-restart-recovery-plan.md's own "Refusing new creates" section).
+# docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section).
 my $shuttingDown = 0;
 
 # Authenticates the request and enforces the globalCookieRequired gate - a real,
@@ -465,7 +465,7 @@ $routes->post('/containers/create')->to(
          # this catches the narrow remaining window where a connection was already accepted,
          # in flight, right as shutdown began, closing it with a clean, fast rejection rather
          # than starting a chain that's about to be abandoned. See
-         # docs/plans/create-restart-recovery-plan.md's own "Refusing new creates" section.
+         # docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
          return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
             if $shuttingDown;
 
@@ -938,9 +938,8 @@ $routes->any( '/*whatever' => { whatever => '' } => sub ($c) {
 
 # Per-worker periodic reconciler - covers a single worker dying mid-create while its siblings
 # and the manager stay up (the startup sweep above only catches a whole-process restart - see
-# docs/plans/create-restart-recovery-plan.md's own "Two distinct failure granularities").
-# Registered once, pre-fork, on the shared Mojo::IOLoop->singleton - fires independently inside
-# every forked worker, confirmed live (that doc's own Open Questions #4). Re-loads
+# docs/adr/0007-create-restart-recovery.md's own "Context" section). Registered once, pre-fork,
+# on the shared Mojo::IOLoop->singleton - fires independently inside every forked worker. Re-loads
 # reservations.json first - sibling workers/processes may have mutated it since this worker's
 # own last refresh (_authenticate's own per-request Data::load() doesn't fire on a timer tick).
 Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => sub (@) {
@@ -975,6 +974,6 @@ Mojo::Server::Prefork->new(
    workers          => $workers,
    # 150s, not the 120s default - comfortably above appServer.shutdownGracePeriod (90s
    # default) so the exit handler's own bounded wait never races this hard force-kill ceiling.
-   # See docs/plans/create-restart-recovery-plan.md's own Open Questions #6.
+   # See docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
    graceful_timeout => 150,
 )->app($app)->run;

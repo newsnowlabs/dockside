@@ -2,19 +2,19 @@
 18_create_restart_recovery.py — app-server restart recovery mid-create().
 
 Coverage:
-  - restarting app-server (`sudo s6-svc -t`, the exact non-graceful command this repo's
-    own restart matrix uses for every service, including app-server - see
-    docs/plans/create-restart-recovery-plan.md's own "Confirmed live" finding on what that
-    signal actually does to Mojo::Server::Prefork) while a devtainer's create() chain is
-    still genuinely in flight (createStatus.stage non-terminal, with real progress recorded
-    - not "started a moment ago") does not strand it forever: the startup reconcile sweep
-    and per-worker periodic reconciler (Reservation::reconcile_if_claimed) pick it back up
-    and it eventually reaches a terminal createStatus.stage ('done'), with the container
-    actually running - not just "the process didn't crash".
-  - the same under N concurrent in-flight creates at once, exercising the atomic
-    per-reservation reconciliation claim (Reservation::Mutate::create_reconcile_claim) under
-    real concurrent load - the condition a naive (unlocked) version of this mechanism would
-    have raced under, per that doc's own "Revision 2" note.
+  - restarting app-server (`sudo s6-svc -t`, a genuinely non-graceful signal - standing in for
+    a real crash/OOM kill; see docs/adr/0007-create-restart-recovery.md's own "Confirmed live"
+    finding on what that signal actually does to Mojo::Server::Prefork, and on why the
+    documented day-to-day `-r` command is deliberately not used here) while a devtainer's
+    create() chain is still genuinely in flight (createStatus.stage non-terminal, with real
+    progress recorded - not "started a moment ago") does not strand it forever: the startup
+    reconcile sweep and per-worker periodic reconciler (Reservation::reconcile_create, both
+    under a single process-wide flock - see that ADR's "Per-worker periodic reconciler"
+    section) pick it back up and it eventually reaches a terminal createStatus.stage ('done'),
+    with the container actually running - not just "the process didn't crash".
+  - the same under N concurrent in-flight creates at once, exercising the reconcile-sweep lock
+    under real concurrent load - the condition a naive (unlocked) version of this mechanism
+    would have raced under, per that ADR's own "Decision" section.
 
 Requires can_restart_services() == True (DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1) - skipped
 entirely otherwise, mirroring 16_ded_restart_recovery.py's own reasoning exactly (see its
@@ -27,9 +27,13 @@ to force a real, multi-second pull window every run - without this, a second/sub
 would find the image already cached and race an effectively-instant create, making the restart
 timing unreliable rather than deterministic.
 
-STATUS: not yet run - see the session's own before/after verification notes for how this was
-proven to actually catch the regression it targets, ahead of the first real run against a live
-instance.
+STATUS: executed against a live instance (2026-08-12, mountIDE:false, DOCKSIDE_TEST_MODE=local
+DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1 DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1) - both tests
+passed (single: 35.7s, concurrent: 43.3s). Confirmed as a real regression test, not one that
+would have passed regardless: run against the working tree with just the recovery-mechanism
+files stashed out, both tests failed at their own timeout (125.3s/123.8s) with createStatus
+never leaving 'pulling'. Run it again the same way after any further change to create()'s
+restart-recovery/graceful-exit code.
 """
 
 import os
