@@ -80,6 +80,41 @@ longer executes any UI/API application logic itself.
   genuinely in flight, detached from the request that started it (see
   ADR-0007). `nginx`/`docker-event-daemon` have no `down-signal` file, so
   their restart stays a plain `SIGTERM`, unchanged.
+- **UI/API traffic now shares nginx's `location /` block with devtainer-proxied
+  traffic**, so three request-class-aware header behaviors were needed to keep
+  devtainer traffic byte-for-byte unchanged while still giving `app-server`
+  what it needs:
+  - **The Dockside session cookie must reach `app-server` but never a
+    devtainer.** Previously this needed no explicit decision: a UI/API request
+    was served in-process by nginx's embedded `App.pm`, so `Proxy::upstream_cookie`
+    — which strips the configured `uidCookie` from the forwarded `Cookie`
+    header — was structurally only ever reached on the devtainer-proxying
+    path. Now that both request classes flow through the same
+    `proxy_set_header Cookie $upstream_cookie;`, `upstream_cookie` must
+    itself distinguish them: `is_ui_request($r)` returns the cookie intact
+    for a UI/API request (`app-server`'s own `Request::authenticate` needs
+    it) and strips it exactly as before for everything else. **This
+    distinction must keep agreeing with `_get_server_port`'s own routing
+    decision, or the failure mode is a real credential leak** (`is_ui_request`
+    wrongly returning true for a request that actually routes to a devtainer
+    would forward the live session cookie to that devtainer), not merely a
+    broken login — the two currently re-derive the same condition
+    independently rather than one calling the other, so a future change to
+    either one's UI-classification logic must be mirrored in the other.
+  - **`X-Forwarded-Host` must carry a port for `app-server` but never for a
+    devtainer.** `app-server`'s Mojolicious stack expects the header to
+    reflect `Host` exactly (port included); devtainer-side code depends on it
+    never carrying one. `forwarded_host` applies the same `is_ui_request`
+    split to choose between `$r->header_in('Host')` and nginx's own
+    port-stripped `$host` variable.
+  - **`App::Metadata`'s "no `X-Forwarded-For` means a direct request" gate**
+    (pre-existing, unrelated to this migration) still has to see the
+    client's real inbound headers, not ones nginx has already added to for
+    the proxied request — unaffected by this change since `$r->header_in`
+    reads the original inbound request, evaluated before `proxy_pass`'s own
+    `X-Forwarded-For` construction, but worth stating since it's the kind of
+    ordering assumption an unrelated future change could break without
+    realizing it depends on this.
 - **Bugs found and fixed during the migration, before landing** — each
   caught by the integration suite or live verification, not shipped:
   - A bare Mojolicious placeholder (`/roles/:name`) matched *any* single path
