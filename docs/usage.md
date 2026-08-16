@@ -18,7 +18,7 @@ Click `Launch` to prepare to launch a devtainer. Choose a Profile to indicate th
 - a list of users, and/or roles of users, allowed to develop the devtainer i.e. access the Dockside IDE (which implies rights to view the devtainer too)
 - a checkbox for keeping the devtainer private from other admin users (only available to admin users)
 
-When ready, click the green `Launch` button. If errors are encountered launching the devtainer, these will be displayed onscreen.
+When ready, click the green `Launch` button. Launch progress (image pull, per layer) is shown while the devtainer starts; if a post-start step — such as a profile's [lifecycle hook](extensions/lifecycle-hooks.md) — fails, a "Launch hooks" panel appears with its captured output, independent of whether the container itself is otherwise running. If errors are encountered launching the devtainer, these will be displayed onscreen.
 
 To edit the developer and users lists, change the connected network, change the auth/access levels for the devtainer's services, or change its privacy setting, click `Edit`, make changes, then `Save`.
 
