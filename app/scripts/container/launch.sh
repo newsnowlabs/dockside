@@ -20,7 +20,14 @@ DOCKSIDE_ROOT="/opt/dockside"
 log() {
    local PID="$$"
    local S=$(printf "%s|%15s|%5d|" "$(date +%Y-%m-%d.%H:%M:%S)" "launch" "$PID")
+   # fd 2 is always whatever this invocation's real stderr is - the docker-exec stream a
+   # caller (docker-event-daemon, or a synchronous `dockside hook run`) is capturing, or
+   # simply discarded for a Detach:true dispatch (launch_ide) with nobody reading it. fd 5
+   # is the dedicated, always-open handle onto this devtainer's own $LOG (see init()'s own
+   # comment) - so every log() line reaches both the caller-visible stream and the
+   # in-container trace, with no per-entry-point plumbing needed on either side.
    echo "$S$1" >&2
+   echo "$S$1" >&5
 }
 
 # Use the IDE-bundled git binary. Its CA cert store (http.sslcainfo) and exec-path
@@ -463,11 +470,13 @@ run_hook() {
    rm -f "$LOG_PATH/.hook-ready.$NAME" "$LOG_PATH/.hook-failed.$NAME"
 
    log "run_hook: running '$NAME' ($SCRIPT) ..."
-   # Send the hook script's own stdout/stderr to fds 3/4 (the pre-log-redirect
-   # original stdout/stderr preserved by init()), not into $LOG, so a synchronous
-   # caller (Reservation::run_hook_manual) sees the hook's real output; log() calls
-   # made by this function itself still go to $LOG as usual.
-   if "$SCRIPT" 1>&3 2>&4; then
+   # The hook script's own stdout/stderr need no explicit routing any more: fd 1/2 already
+   # ARE the real caller-visible stream (see init()'s own comment), so a synchronous caller
+   # (Reservation::run_hook_manual) or DED's dispatch_hook_exec sees it directly, and log()
+   # calls made by this function itself now reach that same stream too (not just $LOG) - so
+   # a pre-flight failure below (script missing, hook already running) is visible to whoever
+   # dispatched this invocation, not just discoverable via $LOG inside the container.
+   if "$SCRIPT"; then
       log "run_hook: '$NAME' ($SCRIPT) succeeded"
       touch "$LOG_PATH/.hook-ready.$NAME"
       rm -rf "$LOCK"
@@ -831,8 +840,10 @@ populate_vscode_settings() {
 
 # Drops from root to $IDE_USER and continues launch by running $1 (default: run_prep_nonroot)
 # there, via the same top-level dispatch mechanism ("launch.sh <function>") every entry point
-# uses - so the su'd child gets exactly the same init() setup (LOG_PATH, PATH, fd redirection)
-# a freshly-dispatched exec would. Generalized from a single hardcoded target: what used to be
+# uses - so the su'd child gets exactly the same init() setup (LOG_PATH, PATH, its own fd 5/
+# $LOG handle) a freshly-dispatched exec would, and its own log() output reaches the same
+# caller-visible stream (fd 1/2, inherited straight through su/env) as the parent's, with no
+# extra plumbing needed. Generalized from a single hardcoded target: what used to be
 # one function, run_nonroot, was split into launch_prep's own non-root tail plus the separate
 # launch_git entry point - both need this same su-transition machinery, only launch_prep's
 # since launch_git is dispatched directly as the non-root user by DED, needing no su at all
@@ -1173,20 +1184,17 @@ init() {
    [ -d $LOG_PATH ] || busybox mkdir -p $LOG_PATH && busybox chmod a+rwx,+t $LOG_PATH 2>/dev/null
    [ -d $LOG ] || busybox touch $LOG && busybox chmod 644 $LOG
 
-   # Preserve the original stdout/stderr as fds 3/4 before redirecting 1/2 into the
-   # log file below. run_hook, when dispatched via a synchronous `docker exec ...
-   # launch.sh run_hook` (see Reservation::run_hook_manual), uses this to let its
-   # caller capture the hook script's own real-time output/exit status via fd 3/4
-   # (see its own `1>&3 2>&4` on the script invocation), instead of having it
-   # silently swallowed into the container's internal log file. launch_prep/launch_git
-   # (see the bottom of this file) are routed through fds 3/4 the same way, for the
-   # same reason - see docker-event-daemon's own _launch_dispatch_exec, which now
-   # captures that same output host-side as this reservation's launch:prep/launch:git
-   # hook log. Every other function's log() output still only goes to $LOG via fd 1/2.
-   exec 3>&1 4>&2
-
-   exec 1>>$LOG
-   exec 2>>$LOG
+   # Dedicated, always-open fd for this devtainer's own $LOG - see log()'s own comment for
+   # why this, and not redirecting fd 1/2, is the mechanism: fd 1/2 are deliberately left
+   # exactly as docker_exec attached them for this invocation (whatever a caller is - or
+   # isn't, for a Detach:true dispatch like launch_ide - reading), so raw (non-log()) output
+   # from any command runs straight through to that caller by default, for every entry point
+   # alike, with no per-function classification to keep in sync as new hook stages/dispatch
+   # shapes are added elsewhere (docker-event-daemon's launch DAG, profile-declared hooks).
+   # $LOG is the opt-in side instead: log()'s own lines reach it via fd 5 unconditionally;
+   # a command whose own raw output is worth keeping in-container too (rare - most of what's
+   # worth keeping is already narrated via log()) can redirect to it explicitly with `>&5`.
+   exec 5>>$LOG
 
    log "Executing '$*' with:"
    log "- PATH=$PATH"
@@ -1194,21 +1202,20 @@ init() {
    log "- IDE_PATH=$IDE_PATH"
    if [ -n "$DEBUG" ]; then
       log "- Environment:"
-      busybox env | busybox sed 's/^/=> /'
+      # Deliberately $LOG-only (fd 5), never the caller-visible stream: this dumps the
+      # entire environment verbatim, which includes real secrets Dockside itself injects
+      # into every hook/launch-stage exec (e.g. GH_TOKEN - see Reservation::_hook_env) -
+      # not something to default to caller-visible just because DEBUG is on.
+      busybox env | busybox sed 's/^/=> /' >&5
    fi
 }
 
 [ "$1" = "nop" ] && shift || init "$@"
 
-# launch_prep/launch_git are bare entry-point functions (unlike run_hook, which routes a
-# *hook script's* own output through fd 3/4 itself, per-invocation - see init's own comment
-# above) dispatched directly by docker-event-daemon's _launch_dispatch_exec, which now
-# captures fd 3/4 as this reservation's launch:prep/launch:git hook log the same way it
-# already does for run_hook. Route only these two through fd 3/4 - everything else (including
-# launch_ide, which is detached and has no caller listening on fd 3/4 at all) keeps going to
-# $LOG only, as before.
-case "$1" in
-   launch_prep|launch_git) eval "$@" 1>&3 2>&4 ;;
-   *)                      eval "$@" ;;
-esac
+# No per-function dispatch distinction needed: fd 1/2 already ARE whatever this invocation's
+# real caller-visible stream is (see init()'s and log()'s own comments), for every entry
+# point alike - docker-event-daemon's _launch_dispatch_exec/dispatch_hook_exec capture it
+# host-side for anything non-detached, and it's simply unread for launch_ide's Detach:true
+# dispatch.
+eval "$@"
 
