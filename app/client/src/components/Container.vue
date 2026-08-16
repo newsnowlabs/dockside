@@ -216,6 +216,25 @@
                               </div>
                            </td>
                         </tr>
+                        <tr v-if="container.permissions.auth.developer && launchHookIssues.length && isSelected">
+                           <th>Launch hooks</th>
+                           <td>
+                              <div v-for="issue in launchHookIssues" v-bind:key="issue.name" class="hook-issue-row">
+                                 <div class="stage-line">
+                                    <b-badge variant="danger">{{ issue.name }}: {{ issue.state }}</b-badge>
+                                    <b-button
+                                       v-if="issue.logPath"
+                                       size="sm" variant="link" class="ml-2 p-0"
+                                       v-on:click="toggleHookLog(issue.name)"
+                                       >{{ hookLogs[issue.name] !== undefined ? 'Hide log' : 'Show log' }}</b-button>
+                                 </div>
+                                 <pre v-if="hookLogs[issue.name] === 'loading'" class="hook-log text-muted">Loading…</pre>
+                                 <pre v-else-if="Array.isArray(hookLogs[issue.name])" class="hook-log">{{
+                                    hookLogs[issue.name].length ? hookLogs[issue.name].join('\n') : '(no output captured)'
+                                 }}</pre>
+                              </div>
+                           </td>
+                        </tr>
                         <tr>
                            <th></th>
                            <td>
@@ -299,7 +318,7 @@
    import copyToClipboard from '@/utilities/copy-to-clipboard';
    import UserTagsInput from '@/components/UserTagsInput';
    import ConfirmModal from '@/components/shared/ConfirmModal';
-   import { putContainer, controlContainer, getReservationLogsUri } from '@/services/container';
+   import { putContainer, controlContainer, getReservationLogsUri, getHookStatus } from '@/services/container';
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';
 
@@ -316,7 +335,10 @@
       data() {
          return {
             form: {
-            }
+            },
+            // name => tail lines ([] once fetched with nothing to show, undefined until first
+            // fetch, 'loading' while a fetch is in flight) - see toggleHookLog/launchHookIssues.
+            hookLogs: {}
          };
       },
       created() {
@@ -412,6 +434,21 @@
          },
          completedLayerCount() {
             return this.launchLayers.filter(l => l.percent >= 100).length;
+         },
+         // The 5 launch:-/lifecycle:-DAG stage names docker-event-daemon dispatches after
+         // container create/start succeeds (mirrors the CLI's own LAUNCH_DAG_STAGES). Unlike
+         // showLaunchProgress above (createStatus, gated on container.status === -2/-4 - the
+         // earlier docker create/pull/start phase only), this reads data.hooks.status directly
+         // and isn't gated on container.status at all: a container can be Docker-'running'
+         // (createStatus already 'done') while a post-start hook stage has genuinely failed -
+         // that gap (a launch failure with zero visibility once the container starts) is
+         // exactly what this closes. Returns [] unless something is actually wrong.
+         launchHookIssues() {
+            const status = ((this.container.data || {}).hooks || {}).status || {};
+            const STAGES = ['launch:prep', 'launch:git', 'launch:ide', 'lifecycle:launch', 'lifecycle:start'];
+            return STAGES
+               .map(name => ({ name, ...(status[name] || {}) }))
+               .filter(s => ['failed', 'timedOut', 'aborted'].includes(s.state));
          },
          profileNames() {
             // Guard against launchProfiles being null/undefined.  This can happen
@@ -574,6 +611,22 @@
          },
          showLogs() {
             window.open(getReservationLogsUri({id: this.container.id}) , `docksideLogs_${this.container.id}`);
+         },
+         // Toggles a failed launch-DAG stage's captured log tail open/closed (see
+         // launchHookIssues), fetching it on first expand only - collapsing just hides the
+         // already-fetched lines rather than discarding them, so re-expanding is instant.
+         toggleHookLog(name) {
+            if (this.hookLogs[name] !== undefined) {
+               this.$delete(this.hookLogs, name);
+               return;
+            }
+            this.$set(this.hookLogs, name, 'loading');
+            getHookStatus(this.container.id, name)
+               .then(result => { this.$set(this.hookLogs, name, (result && result.output) || []); })
+               .catch(error => {
+                  console.error(error);
+                  this.$set(this.hookLogs, name, []);
+               });
          },
          makeLaunchCommand() {
             // The launch routes are POST-only now (C8: no state-changing route over
@@ -774,6 +827,25 @@
       width: 9em;
       flex-shrink: 0;
       text-align: right;
+   }
+
+   .hook-issue-row {
+      margin-bottom: 0.5rem;
+
+      &:last-child {
+         margin-bottom: 0;
+      }
+   }
+
+   .hook-log {
+      max-height: 16rem;
+      overflow-y: auto;
+      font-size: 0.75rem;
+      background-color: rgba(0, 0, 0, 0.05);
+      padding: 0.5rem;
+      margin: 0.35rem 0 0;
+      white-space: pre-wrap;
+      word-break: break-all;
    }
 </style>
 
