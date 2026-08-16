@@ -268,6 +268,12 @@
                                  >Logs</b-button>
 
                               <b-button size="sm" variant="outline-success"
+                                 v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
+                                 v-on:click="copy(makeLaunchCommand())"
+                                 :data-id="container.id"
+                                 >Copy Launch Command</b-button>
+
+                              <b-button size="sm" variant="outline-success"
                                  v-show="container.permissions.auth.developer && isPrelaunchMode"
                                  v-on:click="saveOrLaunch"
                                  :data-id="container.id"
@@ -628,13 +634,41 @@
                   this.$set(this.hookLogs, name, []);
                });
          },
+         // Fields makeLaunchCommand() needs, normalised to the same shape whether
+         // they come from the in-progress launch form (prelaunch) or an
+         // already-launched devtainer's own container data (view/edit). This is
+         // what lets "Copy Launch Command" be offered generally, not just while
+         // filling out the launch form.
+         launchCommandFields() {
+            if (this.isPrelaunchMode) return this.form;
+
+            const c = this.container;
+            return {
+               // Deliberately omit `name`: devtainer names must be unique, so a
+               // command copied from an existing devtainer should let the server
+               // assign a fresh name for the duplicate rather than collide with
+               // the one it was copied from.
+               profile: c.profile,
+               gitURL: c.data ? c.data.gitURL : '',
+               image: c.data ? c.data.image : '',
+               runtime: c.data ? c.data.runtime : '',
+               network: c.docker ? c.docker.Networks : '',
+               private: c.meta.private == 1,
+               access: c.meta.access,
+               viewers: c.meta.viewers,
+               developers: c.meta.developers,
+               description: c.meta.description,
+               IDE: c.meta.IDE,
+               options: (c.data && c.data.options) || {}
+            };
+         },
          makeLaunchCommand() {
             // The launch routes are POST-only now (C8: no state-changing route over
             // GET), so a copy-paste GET URL is no longer valid. Emit the equivalent
             // `dockside` CLI command instead — it launches via POST and maps the launch
             // form faithfully (dockside create supports every field here). Values are
             // POSIX single-quoted so the command is safe to paste into a shell.
-            const f = this.form;
+            const f = this.launchCommandFields();
             const q = v => `'` + String(v).replace(/'/g, `'\\''`) + `'`;
             const parts = [`dockside create --server ${q(window.location.origin)}`];
             const add = (flag, v) => { if (v !== undefined && v !== null && v !== '') parts.push(`--${flag} ${q(v)}`); };

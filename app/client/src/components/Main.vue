@@ -4,7 +4,7 @@
       <Welcome v-if="!isSelected"/>
 
       <div>
-         <Container v-for="container in filteredContainers" v-bind:key="container.id" v-bind:container="container"></Container>
+         <Container v-for="container in filteredContainers" v-bind:key="container.id" v-bind:container="container" class="list-item"></Container>
       </div>
    </b-col>
    <b-col v-else md="9" lg="10" offset-md="3" offset-lg="2" class="main">
