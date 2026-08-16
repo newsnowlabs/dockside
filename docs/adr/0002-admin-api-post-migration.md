@@ -69,3 +69,17 @@ their CLI/Vue callers switched to POST. Container **reads** (`/containers`,
   state-changing"; new mutation routes must be added to it.
 - After C7, GET can no longer trigger any state change — the security/caching posture is
   consistent across the whole API.
+
+## Addendum (2026-08-16): enforcement mechanism relocated, decision unchanged
+
+The single centralized guard described above (`_api_handler`'s method check) no longer
+exists as such: [ADR-0006](0006-standalone-app-server.md) deletes `_api_handler` entirely
+as part of moving the UI/API server off nginx onto a standalone process. Enforcement is now
+a `_post_only` fallback route registered in `bin/app-server` immediately after each mutation
+path's real POST handler — one per route rather than one shared regex, since native
+Mojolicious routing has no equivalent of a single dispatch-wide guard to hook into. The
+*decision* this ADR records (mutations are POST-only; GET gets a clean 405; responses are
+canonical JSON) is unchanged and still enforced identically from a client's point of view —
+only the enforcement site moved. This gap was itself found and closed, pre-landing, by the
+same integration-suite check (`AdminApiTests.test_05_get_on_mutation_is_405`) this ADR's own
+guard was originally built to satisfy.
