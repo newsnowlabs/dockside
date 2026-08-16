@@ -699,6 +699,18 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN grep -qF 'export PATH="$HOME/.local/bin:$PATH"' $HOME/.bashrc 2>/dev/null || \
     echo 'export PATH="$HOME/.local/bin:$PATH"' >> $HOME/.bashrc
 
+# depot's installer doesn't touch shell rc files either (same as claude's above) - it
+# just prints a manual-setup suggestion if `depot` isn't on PATH afterwards. Apply that
+# directly, following the same convention as $HOME/.local/bin above. Each append is
+# parenthesized so it short-circuits independently of the others; without the parens,
+# `&&`/`||` share one precedence level left-to-right, so a later `|| echo` would mask a
+# failed install instead of the RUN failing outright.
+RUN curl -L https://depot.dev/install-cli.sh | sh && \
+    (grep -qF 'export DEPOT_INSTALL_DIR="$HOME/.depot/bin"' $HOME/.bashrc 2>/dev/null || \
+     echo 'export DEPOT_INSTALL_DIR="$HOME/.depot/bin"' >> $HOME/.bashrc) && \
+    (grep -qF 'export PATH="$DEPOT_INSTALL_DIR:$PATH"' $HOME/.bashrc 2>/dev/null || \
+     echo 'export PATH="$DEPOT_INSTALL_DIR:$PATH"' >> $HOME/.bashrc)
+
 # Restore root as the effective runtime user, matching the base dockside stage:
 # entrypoint.sh requires root (sets up /etc/service, fixes ownership under /data, etc.)
 USER root

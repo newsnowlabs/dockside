@@ -67,7 +67,7 @@
                networks: ['*', ...(hr.networks  || [])],
                auth:     ['*', ...(hr.authModes || DEFAULT_AUTH_MODES)],
                images:   ['*'],
-               IDEs:     ['*', ...(hr.IDEs      || [])],
+               IDEs:     ['*', 'none', ...(hr.IDEs || [])],
             };
          },
       },

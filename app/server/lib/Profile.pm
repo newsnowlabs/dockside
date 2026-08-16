@@ -106,9 +106,32 @@ sub applyDefaultsAndFilters ($self) {
    $self->{'networks'} = ["*"] unless defined($self->{'networks'});
    $self->{'networks'} = $applyFilters->('network', \@hostNetworks);
 
-   # IDE
+   # IDE (global on/off switch)
+   # If unspecified in profile, set to value of config.json ide.default, or true.
+   $self->{'ide'} //= $CONFIG->{'ide'}{'default'} // 1;
+
+   # IDE (choice of IDE, or 'none' for no IDE / SSH-only)
    $self->{'IDEs'} = ["*"] unless defined($self->{'IDEs'});
-   $self->{'IDEs'} = $applyFilters->('IDE', $HOSTINFO->{'IDEs'}, 'tag/version');
+
+   # Exact-match only: '*' (or any wildcard pattern) never implies 'none' - a profile
+   # author must opt in to offering 'none' explicitly, since it is never a real,
+   # host-installed IDE for the wildcard filter below to match it against.
+   my $noneOffered = scalar( grep { $_ eq 'none' } @{$self->{'IDEs'}} );
+
+   if( ! $self->{'ide'} ) {
+      # IDE subsystem switched off entirely for this profile (config.json ide.default,
+      # or a profile-level "ide": false override): 'none' is the only possible value,
+      # regardless of whatever real IDE patterns the profile's own IDEs list names.
+      $self->{'IDEs'} = ['none'];
+   }
+   else {
+      $self->{'IDEs'} = $applyFilters->('IDE', $HOSTINFO->{'IDEs'}, 'tag/version');
+
+      # Append 'none' *after* the sort, so it is unconditionally last - this guarantees
+      # default_IDE() and the Vue client's naive IDEs[0] selection never pick 'none'
+      # unless it is the only element.
+      push(@{$self->{'IDEs'}}, 'none') if $noneOffered;
+   }
 
    # Runtimes
    $self->{'runtimes'} = ["*"] unless defined($self->{'runtimes'});
@@ -188,8 +211,17 @@ sub new ($class, $data, $validated = 0) {
    # TODO: Should defaults and filters be separated?
    $self->applyDefaultsAndFilters();
 
-   # Add the IDE router, if none specified
-   if( ! grep { $_->{'type'} eq 'ide' } @{$self->{'routers'}} ) {
+   # Add the IDE router, if none specified - unless the profile's resolved IDEs is
+   # non-empty and consists entirely of 'none' (i.e. no real IDE is ever offered, so
+   # there is nothing to proxy to). Otherwise, a profile offering a genuine choice
+   # between 'none' and a real IDE still gets the router: routers cannot be added to
+   # an existing reservation post-launch (see Reservation::profile()/Profile->load()),
+   # so it must exist now in case a user picks 'none' today but a real IDE later.
+   # (A profile whose resolved IDEs is empty - no host IDE installed, no 'none'
+   # declared - still gets a router too, unchanged from prior behaviour.)
+   my @resolvedIDEs = @{ $self->{'IDEs'} // [] };
+   my $isNoneOnly = @resolvedIDEs && ! grep { $_ ne 'none' } @resolvedIDEs;
+   if( ! $isNoneOnly && ! grep { $_->{'type'} eq 'ide' } @{$self->{'routers'}} ) {
       push(@{$self->{'routers'}}, {
          "name" => 'ide',
          "type" => 'ide',
@@ -258,6 +290,7 @@ sub validate ($self) {
          metadata
          lxcfs=b
          ssh=b
+         ide=b
          security=%
          gitURLs=@
          IDEs=@
@@ -539,6 +572,12 @@ sub options ($self) {
 
 sub ssh ($self) {
    return $self->{'ssh'};
+}
+
+# N.B. distinct from Reservation's own '{ide}' key (the launch-command config copied
+# from $CONFIG->{'ide'} - path/command/env), which lives on a different blessed object.
+sub ide ($self) {
+   return $self->{'ide'};
 }
 
 # Test if Profile property $type contains (or encompasses) value $value.
