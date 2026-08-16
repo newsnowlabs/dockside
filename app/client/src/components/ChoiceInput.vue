@@ -16,7 +16,7 @@
          @submit="submit"
          @blur="submit"
          :disabled="values.length <= 1 && !allowFreeEntry"
-         :default-value="values[0]"
+         :default-value="value"
          :readonly="!allowFreeEntry"
       ></autocomplete>
    </div>
