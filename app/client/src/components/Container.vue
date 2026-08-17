@@ -115,28 +115,15 @@
                            <tr v-for="opt in options" :key="'option-' + opt.name">
                               <th>{{ opt.label }}</th>
                               <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
-                              <td v-else-if="opt.type === 'select'">
+                              <td v-else>
                                  <ChoiceInput
-                                    :values="opt.values"
-                                    :value="form.options[opt.name]"
-                                    @input="form.options[opt.name] = $event"
-                                    :aria-label="opt.label"
-                                 />
-                              </td>
-                              <td v-else-if="opt.type === 'combo'">
-                                 <ChoiceInput
-                                    :values="opt.values"
-                                    :allow-free-entry="true"
+                                    :values="opt.values || []"
+                                    :allow-free-entry="opt.type !== 'select'"
                                     :value="form.options[opt.name]"
                                     @input="form.options[opt.name] = $event"
                                     :placeholder="opt.placeholder || ''"
                                     :aria-label="opt.label"
                                  />
-                              </td>
-                              <td v-else>
-                                 <input type="text" class="form-control"
-                                        v-model="form.options[opt.name]"
-                                        :placeholder="opt.placeholder || ''">
                               </td>
                            </tr>
                         </template>

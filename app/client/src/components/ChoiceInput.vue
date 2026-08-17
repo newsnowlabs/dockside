@@ -8,6 +8,14 @@
               @change="$emit('input', $event.target.value)">
          <option v-for="v in values" v-bind:key="optionValue(v)" v-bind:value="optionValue(v)">{{ optionLabel(v) }}</option>
       </select>
+      <input v-else-if="values.length === 0"
+             type="text"
+             class="form-control"
+             :value="value"
+             :placeholder="placeholder"
+             :aria-label="ariaLabel"
+             :disabled="disabled"
+             @input="$emit('input', $event.target.value)">
       <autocomplete v-else
          class="autocomplete-class"
          :placeholder="placeholder"
@@ -42,6 +50,15 @@
    // whose displayed text differs from the underlying value; the autocomplete/combo
    // branch is unaffected and still expects plain strings, since only string-valued
    // fields (image, gitURL, combo options) ever set allowFreeEntry.
+   //
+   // A free-entry field with no suggestions to offer (a 'text'-type option, or a
+   // profile whose images/gitURLs are nothing but a bare '*') is a plain text field,
+   // not a combobox with an empty dropdown - render a native <input> for it instead
+   // of the autocomplete widget. This also preserves live per-keystroke binding
+   // (@input, like v-model) for that case, rather than the autocomplete widget's
+   // commit-on-submit/blur behaviour, matching what a plain 'text' option had before
+   // it went through ChoiceInput.
+
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';
 
