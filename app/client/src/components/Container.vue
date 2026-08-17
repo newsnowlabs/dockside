@@ -47,27 +47,39 @@
                            <th>Runtime</th>
                            <td v-if="!isPrelaunchMode">{{ container.data ? container.data.runtime : '' }}</td>
                            <td v-else>
-                              <select class="form-control" v-model="form.runtime" :disabled="runtimes.length <= 1">
-                                 <option v-for="runtime in runtimes" v-bind:key="runtime">{{ runtime }}</option>
-                              </select>
+                              <ChoiceInput
+                                 :values="runtimes"
+                                 :value="form.runtime"
+                                 @input="form.runtime = $event"
+                                 :disabled="runtimes.length <= 1"
+                                 aria-label="Choose a runtime"
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>Network</th>
                            <td v-if="!isEditMode && !isPrelaunchMode">{{ container.docker ? container.docker.Networks : '' }}</td>
                            <td v-else>
-                              <select class="form-control" v-model="form.network" :disabled="networks.length <= 1">
-                                 <option v-for="network in networks" v-bind:key="network">{{ network }}</option>
-                              </select>
+                              <ChoiceInput
+                                 :values="networks"
+                                 :value="form.network"
+                                 @input="form.network = $event"
+                                 :disabled="networks.length <= 1"
+                                 aria-label="Choose a network"
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>IDE</th>
                            <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.IDE }}</td>
                            <td v-else>
-                              <select class="form-control" v-model="form.IDE" :disabled="IDEs.length <= 1">
-                                 <option v-for="IDE in IDEs" v-bind:key="IDE">{{ IDE }}</option>
-                              </select>
+                              <ChoiceInput
+                                 :values="IDEs"
+                                 :value="form.IDE"
+                                 @input="form.IDE = $event"
+                                 :disabled="IDEs.length <= 1"
+                                 aria-label="Choose an IDE"
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
@@ -104,9 +116,12 @@
                               <th>{{ opt.label }}</th>
                               <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
                               <td v-else-if="opt.type === 'select'">
-                                 <select class="form-control" v-model="form.options[opt.name]">
-                                    <option v-for="v in opt.values" :key="v">{{ v }}</option>
-                                 </select>
+                                 <ChoiceInput
+                                    :values="opt.values"
+                                    :value="form.options[opt.name]"
+                                    @input="form.options[opt.name] = $event"
+                                    :aria-label="opt.label"
+                                 />
                               </td>
                               <td v-else-if="opt.type === 'combo'">
                                  <ChoiceInput
@@ -134,15 +149,13 @@
                               ({{ container.meta.access[router.name] }} access)
                            </td>
                            <td v-else>
-                              <!-- FIXME: Replace with a for loop, and disable if 1 option -->
-                              <select class="form-control" v-model="form.access[router.name]">
-                                 <option value="owner" v-if="router.auth.filter(a => a === 'owner').length">Devtainer owner only</option>
-                                 <option value="developer" v-if="router.auth.filter(a => a === 'developer').length">Devtainer developers only</option>
-                                 <option value="viewer" v-if="router.auth.filter(a => a === 'viewer').length">Devtainer developers and viewers only</option>
-                                 <option value="user" v-if="router.auth.filter(a => a === 'user').length">Dockside users</option>
-                                 <!-- <option value="containerCookie" v-if="router.auth.filter(a => a === 'containerCookie').length">Devtainer cookie</option> -->
-                                 <option value="public" v-if="router.auth.filter(a => a === 'public').length">Public</option>
-                              </select>
+                              <ChoiceInput
+                                 :values="accessOptions(router)"
+                                 :value="form.access[router.name]"
+                                 @input="form.access[router.name] = $event"
+                                 :disabled="accessOptions(router).length <= 1"
+                                 :aria-label="'Access for ' + router.name"
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.actions.setContainerPrivacy === 1 && isSelected">
@@ -417,6 +430,22 @@
          },
          copy(value) {
             copyToClipboard(value);
+         },
+         accessOptions(router) {
+            // Fixed display order + friendly labels for the access levels a router
+            // may permit; only levels the router actually lists in 'auth' are offered.
+            // (Mirrors the router.auth membership checks this replaced; 'containerCookie'
+            // was never wired up to a label and stays omitted here too.)
+            const levels = [
+               ['owner', 'Devtainer owner only'],
+               ['developer', 'Devtainer developers only'],
+               ['viewer', 'Devtainer developers and viewers only'],
+               ['user', 'Dockside users'],
+               ['public', 'Public']
+            ];
+            return levels
+               .filter(([value]) => router.auth.includes(value))
+               .map(([value, label]) => ({ value, label }));
          },
          confirmRemove() {
             this.$bvModal.show(`confirm-modal-${this.removeConfirmId}`);

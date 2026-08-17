@@ -1,10 +1,12 @@
 <template>
    <div>
-      <select v-if="values.length > 1 && !allowFreeEntry"
+      <select v-if="!allowFreeEntry"
               class="form-control"
               :value="value"
+              :disabled="disabled"
+              :aria-label="ariaLabel"
               @change="$emit('input', $event.target.value)">
-         <option v-for="v in values" v-bind:key="v">{{ v }}</option>
+         <option v-for="v in values" v-bind:key="optionValue(v)" v-bind:value="optionValue(v)">{{ optionLabel(v) }}</option>
       </select>
       <autocomplete v-else
          class="autocomplete-class"
@@ -30,6 +32,16 @@
    // of type 'combo' can reuse it too. See Container.vue for the two callers that
    // derive allowFreeEntry from a '*' entry in the raw profile values (image/gitURL's
    // existing wildcard convention) versus an explicit option type (combo).
+   //
+   // Also reused (with allowFreeEntry: false) for every other closed-list launch-form
+   // field (runtime/network/IDE/access/select-options): the <select> branch renders
+   // whenever free entry isn't allowed, regardless of how many values there are, so a
+   // single-option field still renders as a real (optionally disabled) <select> rather
+   // than falling through to the autocomplete widget. 'values' entries may be plain
+   // strings (value === label) or {value, label} objects for fields like 'access'
+   // whose displayed text differs from the underlying value; the autocomplete/combo
+   // branch is unaffected and still expects plain strings, since only string-valued
+   // fields (image, gitURL, combo options) ever set allowFreeEntry.
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';
 
@@ -44,7 +56,8 @@
          value: { type: String, default: '' },
          placeholder: { type: String, default: '' },
          ariaLabel: { type: String, default: '' },
-         autoSelect: { type: Boolean, default: false }
+         autoSelect: { type: Boolean, default: false },
+         disabled: { type: Boolean, default: false }
       },
       watch: {
          value(v) {
@@ -57,6 +70,14 @@
          }
       },
       methods: {
+         // Select-branch helpers: 'values' entries may be a plain string (value ===
+         // label) or a {value, label} object (e.g. access's friendly auth-type text).
+         optionValue(v) {
+            return (v && typeof v === 'object') ? v.value : v;
+         },
+         optionLabel(v) {
+            return (v && typeof v === 'object') ? v.label : v;
+         },
          submit() {
             this.$emit('input', this.$refs.autocompleteInput.value);
          },
