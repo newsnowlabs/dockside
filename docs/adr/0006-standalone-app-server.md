@@ -98,9 +98,18 @@ longer executes any UI/API application logic itself.
     decision, or the failure mode is a real credential leak** (`is_ui_request`
     wrongly returning true for a request that actually routes to a devtainer
     would forward the live session cookie to that devtainer), not merely a
-    broken login — the two currently re-derive the same condition
-    independently rather than one calling the other, so a future change to
-    either one's UI-classification logic must be mirrored in the other.
+    broken login. `is_ui_request` is actually two independent conditions —
+    a direct metadata-flavored request, or a plain `www` hostname with no
+    devtainer prefix — and only the first is a shared implementation:
+    `is_metadata_request`, called both by `is_ui_request` here and directly
+    by `_get_server_port`'s own routing check, so that half can't drift. The
+    two conditions are unrelated tests (one is about how a request
+    arrived, the other about what hostname it's addressed to) that happen to
+    both route to `ui_uri()` today, not one condition that was arbitrarily
+    split in two. The `www`-hostname half is still re-derived independently
+    in both `_get_server_port` and `is_ui_request` — a future change to
+    either one's copy of *that* check must be mirrored in the other, same
+    risk as before, now scoped to one condition instead of two.
   - **`X-Forwarded-Host` must carry a port for `app-server` but never for a
     devtainer.** `app-server`'s Mojolicious stack expects the header to
     reflect `Host` exactly (port included); devtainer-side code depends on it

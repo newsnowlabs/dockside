@@ -87,6 +87,30 @@ sub domain_to_host ($r) {
    return undef;
 }
 
+# True for a direct (not Dockside-proxied) request claiming to be a GCE metadata lookup - no
+# X-Forwarded-For, Metadata-Flavor: Google. Independent of the www-hostname check below: this is
+# about *how* the request arrived, not *what hostname* it's addressed to - App::Metadata's own
+# gate (unaffected by this factoring - it reads $r->header_in directly, same as always) and
+# _get_server_port's reason to route it to ui_uri() happen to be the same test today, but that's
+# incidental, not a reason to treat them as one condition.
+sub is_metadata_request ($r) {
+   return ( !$r->header_in('X-Forwarded-For') && ( $r->header_in('Metadata-Flavor') // '' ) eq 'Google' ) ? 1 : 0;
+}
+
+# True for a UI/API request - a direct metadata request (is_metadata_request above) or a plain
+# 'www' host with no devtainer prefix - false for everything devtainer-bound. Used by
+# upstream_cookie/forwarded_host, not by _get_server_port's own routing below: routing has its
+# own, separately-justified reason to send a metadata request to ui_uri() (App::Metadata's own
+# gate) and its own reason to send a plain www host there (it's the UI), so it keeps its own
+# inline www-hostname check rather than delegating its whole decision here - only the metadata
+# half is a shared implementation between the two, per is_metadata_request's own comment above.
+sub is_ui_request ($r) {
+   return 1 if is_metadata_request($r);
+
+   my ($host, $prefix) = domain_to_host($r);
+   return ( defined($host) && $host eq 'www' && $prefix eq '' ) ? 1 : 0;
+}
+
 # Renamed from get_server_port - see the fail-closed get_server_port wrapper below, which is
 # the name nginx config actually calls now.
 sub _get_server_port ($r, $protocol) {
@@ -99,13 +123,8 @@ sub _get_server_port ($r, $protocol) {
    # - User agent matches an expected profile e.g. Google/AWS metadata request;
    # - or nestCount means it's not a request directly from a client (but from an outer dockside container).
    # Ideally we should distinguish: request not from a client of this server; request not authorised with the expected header.
-   #
-   # If there's no X-Forwarded-For header, this container is not receiving a proxied request from another dockside container,
-   # but a direct request.
-   if(!$r->header_in("X-Forwarded-For")) {
-      if(($r->header_in('Metadata-Flavor') // '') eq 'Google') {
-         return ui_uri();
-      }
+   if ( is_metadata_request($r) ) {
+      return ui_uri();
    }
 
    # Lookup container
@@ -239,19 +258,6 @@ sub https_server_port ($r) {
    return get_server_port($r, 'https');
 }
 
-# True for exactly the same request shape _get_server_port's own UI checks above route to
-# ui_uri() - the metadata gate (no XFF, Metadata-Flavor: Google), or a plain 'www' host with no
-# devtainer prefix. Shared here so upstream_cookie and forwarded_host both apply the same
-# UI-vs-devtainer distinction as routing itself, rather than each re-deriving it.
-sub is_ui_request ($r) {
-   if ( !$r->header_in('X-Forwarded-For') && ( $r->header_in('Metadata-Flavor') // '' ) eq 'Google' ) {
-      return 1;
-   }
-
-   my ($host, $prefix) = domain_to_host($r);
-   return ( defined($host) && $host eq 'www' && $prefix eq '' ) ? 1 : 0;
-}
-
 # Remove the configured uidCookie(s) from the cookie header - for a devtainer-bound request
 # only; a UI/API-bound request (now genuinely proxied to bin/app-server, not handled in-process
 # - see is_ui_request's own comment) needs the cookie intact, since bin/app-server's own
@@ -271,8 +277,9 @@ sub upstream_cookie ($r) {
 # the port bin/app-server's own Mojolicious stack expects to see reflected back (matching
 # $r->header_in('Host') exactly, port included where present), while a devtainer-bound request
 # must keep receiving exactly the port-stripped value $host already gives it today (unchanged
-# behaviour - devtainer-side code depends on the header never carrying a port). is_ui_request is
-# exactly the same test that routes a request to ui_uri() in the first place, so this header only
+# behaviour - devtainer-side code depends on the header never carrying a port). is_ui_request
+# evaluates true for exactly the requests _get_server_port routes to ui_uri() (see its own
+# comment for why that's two independently-justified conditions, not one), so this header only
 # ever carries a port precisely when the request is actually going to the app server.
 #
 # $r->variable('host'), not a $r->hostname method - ngx_http_perl_module's documented $r API
