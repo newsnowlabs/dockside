@@ -118,6 +118,13 @@ $CONFIG_FILES = {
          # coordinated, not left to whatever the two defaults happened to leave.
          $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 300;
          $CONFIG->{'appServer'}{'shutdownGracePeriod'} //= 90;
+
+         # How long a hook-invocation log file (tmpPath/r-<id>-hook-<invocationId>.log) is kept
+         # before logrotate-daemon's age-based sweep deletes it - see
+         # app/scripts/runscripts/logrotate/data/logrotate-daemon. Independent of
+         # HOOK_HISTORY_MAX (Reservation.pm), which only bounds the JSON history *record*, not
+         # the log file an evicted record pointed at.
+         $CONFIG->{'hooks'}{'logRetentionDays'} //= 30;
       },
       'parse' => \&parse_json
    },

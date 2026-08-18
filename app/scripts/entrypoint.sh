@@ -523,6 +523,17 @@ if ! [ -d $DATA_DIR/config/profiles ]; then
   cp -a $APP_DIR/app/server/example/config/profiles $DATA_DIR/config/
 fi
 
+# logrotate-daemon needs tmpPath and hooks.logRetentionDays to prune orphaned/history-evicted
+# hook-invocation log files (r-<id>-hook-<invocationId>.log). Appended here, after
+# config.json is guaranteed to exist and be initialised/patched above, rather than in the
+# "Configuring standard services" data/env generation loop earlier in this script - that loop
+# runs before $DATA_DIR/config/config.json is installed on a fresh container.
+log "- Adding hook-log retention settings to logrotate service env ..."
+cat >>/etc/service/logrotate/data/env <<_EOE_
+TMP_PATH=$(jq_config_get -r '.tmpPath // "/tmp/dockside"')
+HOOK_LOG_RETENTION_DAYS=$(jq_config_get -r '.hooks.logRetentionDays // 30')
+_EOE_
+
 log "Checking SSL certificates ..."
 CONFIG_SSL=$(jq_config_get -r '.ssl.source')
 CONFIG_SSL_ZONES=($(jq_config_get -r '.ssl.domains[]'))
