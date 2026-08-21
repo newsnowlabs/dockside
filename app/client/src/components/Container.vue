@@ -286,7 +286,7 @@
    import copyToClipboard from '@/utilities/copy-to-clipboard';
    import UserTagsInput from '@/components/UserTagsInput';
    import ConfirmModal from '@/components/shared/ConfirmModal';
-   import { putContainer, controlContainer, getReservationLogsUri } from '@/services/container';
+   import { putContainer, controlContainer, getReservationLogsUri, formToQuery } from '@/services/container';
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';
 
@@ -403,27 +403,60 @@
             // We need to initialise the form when:
             // 1. Component created for launching
             // 2. Component in Edit mode
-            
+
             let edit = this.container && this.container.name && this.container.id !== 'new';
+
+            // Prelaunch only: a deep-linked/bookmarked URL's query string pre-fills the
+            // form (e.g. from a "Launch new" nav item, or a shared in-progress link).
+            // Only the profile-independent fields are seeded here — the profile-dependent
+            // ones (image, gitURL, runtime, network, IDE, access, options) are seeded by
+            // the 'form.profile' watcher below, which is the sole writer for those so
+            // there's never a race between two things populating the same field.
+            let hydrate = !edit && this.isPrelaunchMode;
+            let q = hydrate ? this.$route.query : {};
+
+            // Tell the 'form.profile' watcher (about to fire from the reassignment
+            // below, since this replaces the whole form object) that this particular
+            // firing should consult the query. The watcher resets this itself right
+            // after reading it, so a later, plain in-form profile switch (the user
+            // picking a different profile from the dropdown mid-session) applies pure
+            // profile defaults instead of stale values still sitting in the URL from
+            // the previously-selected profile's last debounced sync.
+            this.hydratingFromRoute = hydrate;
 
             this.form = {
                id: edit ? this.container.id : '',
-               name: edit ? this.container.name : '',
-               profile: edit ? this.container.profile : this.profileNames[0],
+               name: edit ? this.container.name : (q.name || ''),
+               profile: edit ? this.container.profile :
+                  (q.profile && this.profileNames.includes(q.profile) ? q.profile : this.profileNames[0]),
                gitURL: edit ? this.container.data.gitURL : '',
                image: edit ? this.container.docker.Image : '',
                runtime: edit ? this.container.docker.Runtime : '',
                network: edit ? this.container.docker.Networks : '',
-               private: edit ? (this.container.meta.private == 1 ? true : false) : false,
+               private: edit ? (this.container.meta.private == 1 ? true : false) : (q.private === '1'),
                access: edit ? this.container.meta.access : {},
-               viewers: edit ? this.container.meta.viewers : '',
-               developers: edit ? this.container.meta.developers : '',
-               description: edit ? this.container.meta.description : '',
+               viewers: edit ? this.container.meta.viewers : (q.viewers || ''),
+               developers: edit ? this.container.meta.developers : (q.developers || ''),
+               description: edit ? this.container.meta.description : (q.description || ''),
                IDE: edit ? this.container.meta.IDE : '',
                options: edit ? (this.container.data.options || {}) : {}
             };
 
             console.log('initialiseForm:', this.form);
+         },
+         // Parse a query-string value that's expected to be a JSON object (form.access,
+         // form.options). Falls back silently on anything malformed — a stale or
+         // hand-edited link shouldn't be able to throw inside the profile watcher; it
+         // just gets that field's profile default instead. See docs/plans note: this is
+         // a parse-safety guard, not business-rule validation (an out-of-schema-but-
+         // valid-JSON value is deliberately let through — the server is the validator).
+         parseQueryJSON(v) {
+            if (!v) { return undefined; }
+            try {
+               return JSON.parse(v);
+            } catch (e) {
+               return undefined;
+            }
          },
          copy(value) {
             copyToClipboard(value);
@@ -619,23 +652,50 @@
          }
       },
       mixins: [routing],
+      beforeDestroy() {
+         clearTimeout(this.querySyncTimeout);
+      },
       watch: {
+         // Vue Router reuses this component instance across navigations that resolve
+         // to the same v-for key: in prelaunch mode, Main.vue always renders the same
+         // fixed dummy reservation object (see filteredContainers), so clicking a
+         // different "Launch new" profile nav item while already on /container/new
+         // does NOT remount this component — created() (and initialiseForm()) simply
+         // doesn't re-fire. Detect a genuinely new incoming profile selection here and
+         // re-hydrate for it. Ignore our own debounced form->URL sync doing the
+         // navigating: it always encodes form.profile's *current* value, so
+         // query.profile already equals form.profile in that case, and this is a no-op.
+         $route(to) {
+            if (this.isPrelaunchMode && to.query.profile && to.query.profile !== this.form.profile) {
+               this.initialiseForm();
+            }
+         },
+         // Sole writer for every profile-dependent field. Whenever the selected profile
+         // changes (including the very first assignment from initialiseForm()), each
+         // field is taken from the URL's query string if present there, else from the
+         // newly-selected profile's own default — never both, so there's no race between
+         // a URL-hydration step and this defaulting step clobbering each other. The
+         // query is only consulted while hydratingFromRoute is set (i.e. this firing
+         // was caused by initialiseForm(), not a plain in-form profile switch) — see the
+         // comment in initialiseForm() for why that distinction matters.
          'form.profile'() {
             let f = this.form;
             let p = this.profile;
+            let q = (this.isPrelaunchMode && this.hydratingFromRoute) ? this.$route.query : {};
+            this.hydratingFromRoute = false;
 
             if(this.isPrelaunchMode) {
-               f.image = p.images.length > 0 ? p.images[0].replace("*","") : '';
-               f.gitURL = p.gitURLs && p.gitURLs.length > 0 ? p.gitURLs[0].replace("*","") : '';
-               f.runtime = p.runtimes[0];
-               f.network = p.networks[0];
-               f.IDE = p.IDEs[0];
-               f.access = Object.fromEntries(
+               f.image = q.image || (p.images.length > 0 ? p.images[0].replace("*","") : '');
+               f.gitURL = q.gitURL || (p.gitURLs && p.gitURLs.length > 0 ? p.gitURLs[0].replace("*","") : '');
+               f.runtime = q.runtime || p.runtimes[0];
+               f.network = q.network || p.networks[0];
+               f.IDE = q.IDE || p.IDEs[0];
+               f.access = this.parseQueryJSON(q.access) || Object.fromEntries(
                   p.routers.map(
                         r => [r.name ? r.name : r.prefixes[0], r.auth ? r.auth[0] : 'developer']
                   )
                );
-               f.options = Object.fromEntries(
+               f.options = this.parseQueryJSON(q.options) || Object.fromEntries(
                   (p.options || []).map(o => [o.name, o.default || ''])
                );
 
@@ -648,6 +708,21 @@
                if(f.gitURL && this.$refs.gitURLAutocompleteInput) {
                   this.$refs.gitURLAutocompleteInput.setValue(f.gitURL);
                }
+            }
+         },
+         // Mirror the in-progress form back into the URL so it stays bookmarkable/
+         // shareable as the user edits it. Debounced and a router *replace* (not push)
+         // so typing doesn't flood browser history. This never triggers a re-hydration
+         // loop: nothing in this component watches $route itself, only $route.query is
+         // read (once, imperatively) inside initialiseForm()/the 'form.profile' watcher.
+         form: {
+            deep: true,
+            handler() {
+               if (!this.isPrelaunchMode) { return; }
+               clearTimeout(this.querySyncTimeout);
+               this.querySyncTimeout = setTimeout(() => {
+                  this.$router.replace({ query: formToQuery(this.form) }).catch(() => {});
+               }, 300);
             }
          }
       }
