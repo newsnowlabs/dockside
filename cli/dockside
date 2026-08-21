@@ -885,6 +885,40 @@ def api_hook_status(opener, server, res_id, name):
     return data.get('data') or {}
 
 
+def api_router_add(opener, server, res_id, router, access=None):
+    """Add a router to a live devtainer (docs/adr/0008-router-mutation.md). `router` is a dict
+    with prefixes/domains/http/https/name, and optionally 'auth' (the access levels this router
+    may ever be set to) - never 'type', which is always server-assigned. `access` (optional) is
+    the initial access level to assign; omitted, the server defaults it to 'owner' if this user
+    owns the devtainer, else 'developer'."""
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/router/add'
+    params = {'router': router}
+    if access is not None:
+        params['access'] = access
+    data = _do_post(opener, url, params, timeout=30)
+    return data.get('reservation')
+
+
+def api_router_remove(opener, server, res_id, name):
+    """Remove router `name` from a live devtainer."""
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/router/remove'
+    data = _do_post(opener, url, {'name': name}, timeout=30)
+    return data.get('reservation')
+
+
+def api_router_replace(opener, server, res_id, name, router, access=None):
+    """Atomically replace router `name` with `router` (a convenience wrapper - see
+    docs/adr/0008-router-mutation.md). `access`, if given, is used only as a fallback when the
+    router's existing access level isn't legal under its (possibly narrowed) new 'auth' list -
+    the existing level is carried forward unchanged whenever it's still legal."""
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/router/replace'
+    params = {'name': name, 'router': router}
+    if access is not None:
+        params['access'] = access
+    data = _do_post(opener, url, params, timeout=30)
+    return data.get('reservation')
+
+
 def api_user_list(opener, server, sensitive=False):
     qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
     data = _do_get(opener, server.rstrip('/') + '/users' + qs)
@@ -2728,6 +2762,143 @@ def cmd_logs(args):
     sys.stdout.write(logs)
 
 
+# ── Router command implementations ────────────────────────────────────────────
+# docs/adr/0008-router-mutation.md. A router's public listener is always 'https' here,
+# matching every router this repo actually declares in practice - the private `protocol` (what
+# nginx speaks *to the container*) is the axis that varies (plain HTTP dev servers vs. a
+# container terminating its own TLS), so that's the one exposed as --private-protocol.
+
+def _router_fields_from_args(args):
+    fields = {
+        'prefixes': args.prefix,
+        'domains':  args.domain or ['*'],
+        'https':    {'protocol': args.private_protocol, 'port': args.port},
+    }
+    auth_groups = getattr(args, 'auth', None)
+    if auth_groups:
+        # Each --auth occurrence is itself a list (comma-split by _parse_auth_levels), and
+        # occurrences accumulate (action='append') - flatten into one combined list.
+        fields['auth'] = [level for group in auth_groups for level in group]
+    return fields
+
+
+def cmd_router_list(args):
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    routers = (c.get('profileObject') or {}).get('routers') or []
+    access = (c.get('meta') or {}).get('access') or {}
+
+    if args._fmt in ('json', 'yaml'):
+        emit(routers, args._fmt)
+        return
+
+    if not routers:
+        print('No routers.')
+        return
+
+    for r in routers:
+        priv = r.get('https') or r.get('http') or {}
+        print(
+            f"{r.get('name', ''):<20} "
+            f"type={r.get('type') or '-':<8} "
+            f"prefixes={','.join(r.get('prefixes') or []):<15} "
+            f"domains={','.join(r.get('domains') or []):<10} "
+            f"private={priv.get('protocol', '')}:{priv.get('port', '')} "
+            f"access={access.get(r.get('name', ''), '')}"
+        )
+
+
+def cmd_router_add(args):
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    res_id = c['id']
+    name   = c.get('name', res_id)
+    router = _router_fields_from_args(args)
+    if args.name:
+        router['name'] = args.name
+
+    try:
+        reservation = api_router_add(opener, server, res_id, router, access=args.access)
+    except APIError as e:
+        die(str(e))
+
+    print(f'Added router to {name!r}.', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(reservation, args._fmt)
+    else:
+        print(_fmt_detail(reservation))
+
+
+def cmd_router_remove(args):
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    res_id = c['id']
+    name   = c.get('name', res_id)
+
+    if not args.force:
+        try:
+            answer = input(f'Remove router {args.name!r} from {name!r}? [y/N] ').strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print('\nAborted.', file=sys.stderr)
+            sys.exit(0)
+        if answer not in ('y', 'yes'):
+            print('Aborted.', file=sys.stderr)
+            return
+
+    try:
+        reservation = api_router_remove(opener, server, res_id, args.name)
+    except APIError as e:
+        die(str(e))
+
+    print(f'Removed router {args.name!r} from {name!r}.', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(reservation, args._fmt)
+    else:
+        print(_fmt_detail(reservation))
+
+
+def cmd_router_replace(args):
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    res_id = c['id']
+    name   = c.get('name', res_id)
+    # Same name as the target being replaced - this CLI command doesn't support renaming via
+    # replace (it exists for in-place prefix/port edits, not identity changes).
+    router = _router_fields_from_args(args)
+    router['name'] = args.name
+
+    try:
+        reservation = api_router_replace(opener, server, res_id, args.name, router, access=args.access)
+    except APIError as e:
+        die(str(e))
+
+    print(f'Replaced router {args.name!r} on {name!r}.', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(reservation, args._fmt)
+    else:
+        print(_fmt_detail(reservation))
+
+
 # ── User command implementations ──────────────────────────────────────────────
 
 def cmd_user_list(args):
@@ -3752,6 +3923,104 @@ def build_parser():
     sp.add_argument('--timeout', type=int, default=None, metavar='SECONDS',
                     help='Server-side time limit for the hook to run (default: server-configured, currently 120s)')
     sp.set_defaults(func=cmd_hook_run)
+
+    # ── router ─────────────────────────────────────────────────────────────────
+    # docs/adr/0008-router-mutation.md. Requires addContainerRouter/removeContainerRouter
+    # (role-level permission) plus, for add/replace, the reservation's own profile opting in via
+    # userRouters (an admin-controlled decision - see the plan for why).
+    router_p = sub.add_parser(
+        'router',
+        help="Manage a devtainer's routers (requires addContainerRouter/removeContainerRouter permission)"
+    )
+    router_sub = router_p.add_subparsers(dest='router_command', metavar='SUBCOMMAND')
+    router_sub.required = True
+
+    _ROUTER_AUTH_LEVELS = ('user', 'developer', 'public', 'viewer', 'owner')
+
+    def _parse_auth_levels(value):
+        """argparse type= for --auth: splits one occurrence on commas (each occurrence may also
+        just be repeated instead, or both combined) and validates every token, since 'choices='
+        can't be applied to a type= that returns a list rather than a single value."""
+        levels = [v.strip() for v in value.split(',') if v.strip()]
+        for level in levels:
+            if level not in _ROUTER_AUTH_LEVELS:
+                raise argparse.ArgumentTypeError(
+                    f"invalid choice: {level!r} (choose from {', '.join(_ROUTER_AUTH_LEVELS)})")
+        return levels
+
+    def _add_router_def_flags(rsp, name_help=None):
+        rsp.add_argument('--prefix', action='append', required=True, metavar='PREFIX',
+                         help='Public URL prefix this router responds to (repeatable for more '
+                              'than one). Must not contain a hyphen.')
+        rsp.add_argument('--domain', action='append', metavar='DOMAIN',
+                         help="Domain to match (repeatable; default: '*')")
+        rsp.add_argument('--port', type=int, required=True, metavar='PORT',
+                         help='Private port inside the devtainer to forward to')
+        rsp.add_argument('--private-protocol', choices=['http', 'https'], default='http',
+                         dest='private_protocol',
+                         help="Protocol nginx speaks to the devtainer's own port (default: http - "
+                              "covers plain HTTP and websocket servers alike; use https only if "
+                              "the target server terminates its own TLS)")
+        rsp.add_argument('--auth', action='append', type=_parse_auth_levels,
+                         metavar='LEVEL[,LEVEL...]',
+                         help='Access levels this router may be set to (comma-separated and/or '
+                              'repeatable; default: all of them - the same wide allow-list an '
+                              "ordinary profile-declared router gets). Choices: " +
+                              ', '.join(_ROUTER_AUTH_LEVELS) + '.')
+        rsp.add_argument('--access', choices=_ROUTER_AUTH_LEVELS, metavar='LEVEL',
+                         help="Initial access level to set on this router (must be one of "
+                              "--auth's allowed levels, if given). Default: 'owner' if you own "
+                              "this devtainer, 'developer' if you're a shared developer on it.")
+        # name_help=None (replace's case): --name is already added by the caller, identifying
+        # the router being targeted - it doubles as the replacement's own name (no rename
+        # support in v1), so adding a second --name here would conflict.
+        if name_help is not None:
+            rsp.add_argument('--name', metavar='NAME', help=name_help)
+
+    sp = router_sub.add_parser('list', aliases=['ls'], help="List a devtainer's routers")
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER')
+    sp.set_defaults(func=cmd_router_list)
+
+    sp = router_sub.add_parser(
+        'add',
+        help='Add a router to a live devtainer',
+        description=(
+            "Add a router to a live devtainer, subject to the addContainerRouter permission and "
+            "the devtainer's profile allowing self-service routers at all. The public listener "
+            "is always https; --private-protocol is what nginx speaks *to the devtainer* "
+            "(default http, which also covers websocket upgrades). The new router's initial "
+            "access level defaults to 'owner' if you own this devtainer, or 'developer' if "
+            "you're a shared developer on it (override with --access) - widen or narrow it "
+            "afterward with 'dockside edit --access', within whatever --auth allows."
+        ),
+    )
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER')
+    _add_router_def_flags(sp, name_help="Router name (default: derived from --prefix)")
+    sp.set_defaults(func=cmd_router_add)
+
+    sp = router_sub.add_parser('remove', aliases=['rm', 'delete'], help='Remove a router from a live devtainer')
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER')
+    sp.add_argument('--name', required=True, metavar='NAME', help='Name of the router to remove')
+    sp.add_argument('--force', '-f', action='store_true', help='Skip confirmation prompt')
+    sp.set_defaults(func=cmd_router_remove)
+
+    sp = router_sub.add_parser(
+        'replace',
+        help='Atomically replace an existing router (e.g. to change its prefix or port)',
+        description=(
+            'Same-name remove+add under one server-side transaction, carrying the existing '
+            'access level forward - a convenience over a separate remove then add. Does not '
+            'support renaming; --name identifies the router being replaced and stays its name.'
+        ),
+    )
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER')
+    sp.add_argument('--name', required=True, metavar='NAME', help='Name of the router to replace')
+    _add_router_def_flags(sp)
+    sp.set_defaults(func=cmd_router_replace)
 
     # ── edit ───────────────────────────────────────────────────────────────────
     sp = sub.add_parser(

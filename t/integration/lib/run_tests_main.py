@@ -119,6 +119,43 @@ _ALPINE_PROFILE = {
     ],
 }
 
+# Otherwise identical to _ALPINE_PROFILE, but with userRouters enabled - the one profile-level
+# gate docs/adr/0008-router-mutation.md keeps (add only; remove has no profile gate at all).
+# Kept as its own profile literal (not a copy of _ALPINE_PROFILE, same reasoning
+# as _DEBIAN_PROFILE below being its own literal too - no shared-reference risk between
+# fixtures), distinct from _ALPINE_PROFILE precisely so 04's negative "profile does not allow
+# this" test can use a profile that does NOT set this - reusing _ALPINE_PROFILE for both would
+# make that case untestable.
+_ROUTER_PROFILE = {
+    "version": 2,
+    "name": "Integration Test - Router Mutation",
+    "active": True,
+    "userRouters": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo curl libgcc libstdc++ bash;); sleep infinity",
+    ],
+}
+
 # Debian counterpart to _ALPINE_PROFILE, used by the lifecycle (03) and IDE (07)
 # modules.  Those modules previously hard-coded the server's bundled '11-debian'
 # profile, which violates the suite's no-pre-existing-fixtures rule and breaks on
@@ -574,6 +611,11 @@ _DEVELOPER_ROLE_PERMISSIONS = {
     'getContainerLogs':           1,
     'runContainerHooks':          1,
     'viewAllContainers':          0,
+    # docs/adr/0008-router-mutation.md - granted to both dev1 and dev2 (they share this
+    # role), so a router-mutation test failing for dev2 on a container only dev1 owns/is
+    # shared on exercises the can_on(develop) gate specifically, not just a missing permission.
+    'addContainerRouter':         1,
+    'removeContainerRouter':      1,
 }
 
 _VIEW_ALL_ROLE_PERMISSIONS = {
@@ -1105,6 +1147,7 @@ class _EnvManager:
         # default_network / DocksideClient.create()), which is also what keeps every
         # devtainer's default network deterministic without touching the profile.
         self.profile_alpine     = self._ensure_profile('inttest-alpine',     _ALPINE_PROFILE)
+        self.profile_router     = self._ensure_profile('inttest-router',    _ROUTER_PROFILE)
         self.profile_debian     = self._ensure_profile('inttest-debian',     _DEBIAN_PROFILE)
         self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
         self.profile_git        = self._ensure_profile('inttest-git',        _GIT_PROFILE)
@@ -1301,6 +1344,7 @@ def main():
         test_role_view_all   = _env_manager.role_view_all
         test_role_develop_all = _env_manager.role_develop_all
         test_profile_alpine     = _env_manager.profile_alpine
+        test_profile_router     = _env_manager.profile_router
         test_profile_debian     = _env_manager.profile_debian
         test_profile_nginx      = _env_manager.profile_nginx
         test_profile_git        = _env_manager.profile_git
@@ -1333,6 +1377,7 @@ def main():
             'test_role_view_all':   test_role_view_all,
             'test_role_develop_all': test_role_develop_all,
             'test_profile_alpine':     test_profile_alpine,
+            'test_profile_router':     test_profile_router,
             'test_profile_debian':     test_profile_debian,
             'test_profile_nginx':      test_profile_nginx,
             'test_profile_git':        test_profile_git,
