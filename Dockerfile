@@ -661,10 +661,14 @@ RUN apt-get update && \
         fontconfig fonts-liberation && \
     apt-get clean && rm -rf /var/cache/apt/* && rm -rf /var/lib/apt/lists/* && rm -rf /tmp/*
 
-# Playwright MCP server + baked-in headless browser (no X server/Xvfb in this image)
+# Playwright MCP server + baked-in headless browser (no X server/Xvfb in this image).
+# This RUN executes as root, but this stage's ARG HOME is forced to $HOME regardless of
+# the active USER, so npm resolves its cache to $HOME/.npm and creates it root-owned inside
+# the otherwise dockside-owned home tree. Reclaim it, same as $HOME/.playwright below.
 RUN npm install -g @playwright/mcp && \
     npx playwright install chromium-headless-shell && \
-    chmod -R o+rx $PLAYWRIGHT_BROWSERS_PATH
+    chmod -R o+rx $PLAYWRIGHT_BROWSERS_PATH && \
+    chown -R $USER:$USER $HOME/.npm
 
 # Claude Code managed config (root-owned, read-only to $USER) + this MCP server's browser config
 RUN mkdir -p /etc/claude-code $HOME/.playwright && chown $USER:$USER $HOME/.playwright
