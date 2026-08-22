@@ -193,9 +193,47 @@
                            <th>Container ID</th>
                            <td>{{ container.docker.ID }}</td>
                         </tr>
-                        <tr v-if="container.permissions.auth.developer && container.dockerLaunchLogs && isSelected">
-                           <th>Launch logs</th>
-                           <td><pre class="logs">{{ container.dockerLaunchLogs.join("\n") }}</pre></td>
+                        <tr v-if="container.permissions.auth.developer && showLaunchProgress && isSelected">
+                           <th>Launch progress</th>
+                           <td>
+                              <div class="stage-line">
+                                 <b-badge :variant="launchStageVariant">{{ launchStageLabel }}</b-badge>
+                                 <span v-if="launchStage === 'pulling' && launchLayers.length" class="ml-2 text-muted">
+                                    {{ completedLayerCount }}/{{ launchLayers.length }} layers
+                                 </span>
+                              </div>
+                              <div v-if="launchStage === 'failed'" class="text-danger launch-error">
+                                 {{ container.createStatus.error }}
+                              </div>
+                              <div v-if="(launchStage === 'pulling' || launchStage === 'failed') && launchLayers.length" class="layer-list">
+                                 <div v-for="layer in launchLayers" v-bind:key="layer.id" class="layer-row">
+                                    <span class="layer-id">{{ layer.shortId }}</span>
+                                    <b-progress :max="100" height="0.6rem" class="flex-grow-1 mx-2">
+                                       <b-progress-bar :value="layer.percent" :variant="layer.variant" />
+                                    </b-progress>
+                                    <span class="layer-status text-muted">{{ layer.status }}</span>
+                                 </div>
+                              </div>
+                           </td>
+                        </tr>
+                        <tr v-if="container.permissions.auth.developer && launchHookIssues.length && isSelected">
+                           <th>Launch hooks</th>
+                           <td>
+                              <div v-for="issue in launchHookIssues" v-bind:key="issue.name" class="hook-issue-row">
+                                 <div class="stage-line">
+                                    <b-badge variant="danger">{{ issue.name }}: {{ issue.state }}</b-badge>
+                                    <b-button
+                                       v-if="issue.logPath"
+                                       size="sm" variant="link" class="ml-2 p-0"
+                                       v-on:click="toggleHookLog(issue.name)"
+                                       >{{ hookLogs[issue.name] !== undefined ? 'Hide log' : 'Show log' }}</b-button>
+                                 </div>
+                                 <pre v-if="hookLogs[issue.name] === 'loading'" class="hook-log text-muted">Loading…</pre>
+                                 <pre v-else-if="Array.isArray(hookLogs[issue.name])" class="hook-log">{{
+                                    hookLogs[issue.name].length ? hookLogs[issue.name].join('\n') : '(no output captured)'
+                                 }}</pre>
+                              </div>
+                           </td>
                         </tr>
                         <tr>
                            <th></th>
@@ -286,7 +324,7 @@
    import copyToClipboard from '@/utilities/copy-to-clipboard';
    import UserTagsInput from '@/components/UserTagsInput';
    import ConfirmModal from '@/components/shared/ConfirmModal';
-   import { putContainer, controlContainer, getReservationLogsUri } from '@/services/container';
+   import { putContainer, controlContainer, getReservationLogsUri, getHookStatus } from '@/services/container';
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';
 
@@ -303,7 +341,10 @@
       data() {
          return {
             form: {
-            }
+            },
+            // name => tail lines ([] once fetched with nothing to show, undefined until first
+            // fetch, 'loading' while a fetch is in flight) - see toggleHookLog/launchHookIssues.
+            hookLogs: {}
          };
       },
       created() {
@@ -334,6 +375,86 @@
             const owner = this.container.meta.owner;
             const entry = this.$store.state.account.viewers.find(v => v.username === owner);
             return (entry && entry.name) || owner;
+         },
+         // container.status already encodes "launch in flight" (-2) / "create failed" (-4) -
+         // see Reservation.pm's own comment deriving status from createStatus. createStatus
+         // itself persists on the reservation forever once set (stage stays 'done'/'failed'),
+         // so gating on status rather than "createStatus is truthy" is what keeps this row
+         // from showing on every already-running container.
+         showLaunchProgress() {
+            return (this.container.status === -2 || this.container.status === -4) &&
+               !!this.container.createStatus;
+         },
+         launchStage() {
+            return this.container.createStatus && this.container.createStatus.stage;
+         },
+         launchStageLabel() {
+            return {
+               pulling: 'Pulling image',
+               creating: 'Creating container',
+               starting: 'Starting container',
+               done: 'Done',
+               failed: 'Failed'
+            }[this.launchStage] || this.launchStage;
+         },
+         launchStageVariant() {
+            return {
+               pulling: 'info',
+               creating: 'info',
+               starting: 'info',
+               done: 'success',
+               failed: 'danger'
+            }[this.launchStage] || 'secondary';
+         },
+         // Docker's pull-progress stream reports layer status/current/total per digest id;
+         // most statuses (Waiting, Already exists, Pull complete, ...) don't carry a
+         // meaningful progressDetail, so they get a fixed percent instead of one derived
+         // from current/total. On failure, create_async now preserves the last layers seen
+         // before the pull died (rather than discarding them), so this same computed also
+         // drives the frozen-in-place list shown alongside the error message.
+         launchLayers() {
+            const layers = (this.container.createStatus && this.container.createStatus.layers) || {};
+            const STATUS_META = {
+               'Pulling fs layer':   { variant: 'secondary', percent: 0 },
+               'Waiting':            { variant: 'secondary', percent: 0 },
+               'Downloading':        { variant: 'info' },
+               'Verifying Checksum': { variant: 'info', percent: 100 },
+               'Download complete':  { variant: 'info', percent: 100 },
+               'Extracting':         { variant: 'primary' },
+               'Pull complete':      { variant: 'success', percent: 100 },
+               'Already exists':     { variant: 'success', percent: 100 }
+            };
+            return Object.keys(layers).map(id => {
+               const layer = layers[id];
+               const meta = STATUS_META[layer.status] || {};
+               const percent = meta.percent !== undefined ? meta.percent :
+                  (layer.total ? Math.round((layer.current / layer.total) * 100) : 0);
+               return {
+                  id,
+                  shortId: id.substring(0, 12),
+                  status: layer.status,
+                  percent,
+                  variant: meta.variant || 'secondary'
+               };
+            });
+         },
+         completedLayerCount() {
+            return this.launchLayers.filter(l => l.percent >= 100).length;
+         },
+         // The 5 launch:-/lifecycle:-DAG stage names docker-event-daemon dispatches after
+         // container create/start succeeds (mirrors the CLI's own LAUNCH_DAG_STAGES). Unlike
+         // showLaunchProgress above (createStatus, gated on container.status === -2/-4 - the
+         // earlier docker create/pull/start phase only), this reads data.hooks.status directly
+         // and isn't gated on container.status at all: a container can be Docker-'running'
+         // (createStatus already 'done') while a post-start hook stage has genuinely failed -
+         // that gap (a launch failure with zero visibility once the container starts) is
+         // exactly what this closes. Returns [] unless something is actually wrong.
+         launchHookIssues() {
+            const status = ((this.container.data || {}).hooks || {}).status || {};
+            const STAGES = ['launch:prep', 'launch:git', 'launch:ide', 'lifecycle:launch', 'lifecycle:start'];
+            return STAGES
+               .map(name => ({ name, ...(status[name] || {}) }))
+               .filter(s => ['failed', 'timedOut', 'aborted'].includes(s.state));
          },
          profileNames() {
             // Guard against launchProfiles being null/undefined.  This can happen
@@ -496,6 +617,22 @@
          },
          showLogs() {
             window.open(getReservationLogsUri({id: this.container.id}) , `docksideLogs_${this.container.id}`);
+         },
+         // Toggles a failed launch-DAG stage's captured log tail open/closed (see
+         // launchHookIssues), fetching it on first expand only - collapsing just hides the
+         // already-fetched lines rather than discarding them, so re-expanding is instant.
+         toggleHookLog(name) {
+            if (this.hookLogs[name] !== undefined) {
+               this.$delete(this.hookLogs, name);
+               return;
+            }
+            this.$set(this.hookLogs, name, 'loading');
+            getHookStatus(this.container.id, name)
+               .then(result => { this.$set(this.hookLogs, name, (result && result.output) || []); })
+               .catch(error => {
+                  console.error(error);
+                  this.$set(this.hookLogs, name, []);
+               });
          },
          // Fields makeLaunchCommand() needs, normalised to the same shape whether
          // they come from the in-progress launch form (prelaunch) or an
@@ -691,9 +828,58 @@
       color: red;
    }
 
-   pre.logs {
+   .stage-line {
+      display: flex;
+      align-items: center;
+      margin-bottom: 0.35rem;
+   }
+
+   .launch-error {
+      font-size: 0.85rem;
+      margin-bottom: 0.35rem;
+   }
+
+   .layer-list {
+      max-height: 10rem;
+      overflow-y: auto;
+   }
+
+   .layer-row {
+      display: flex;
+      align-items: center;
+      font-size: 0.8rem;
+      margin-bottom: 2px;
+   }
+
+   .layer-id {
+      font-family: monospace;
+      width: 6em;
+      flex-shrink: 0;
+   }
+
+   .layer-status {
+      width: 9em;
+      flex-shrink: 0;
+      text-align: right;
+   }
+
+   .hook-issue-row {
+      margin-bottom: 0.5rem;
+
+      &:last-child {
+         margin-bottom: 0;
+      }
+   }
+
+   .hook-log {
+      max-height: 16rem;
+      overflow-y: auto;
+      font-size: 0.75rem;
+      background-color: rgba(0, 0, 0, 0.05);
+      padding: 0.5rem;
+      margin: 0.35rem 0 0;
       white-space: pre-wrap;
-      margin: 0;
+      word-break: break-all;
    }
 </style>
 

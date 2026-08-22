@@ -11,9 +11,26 @@ use v5.36;
 
 use Try::Tiny;
 use Reservation;
-use Util qw(wlog);
+use Util qw(flog wlog);
 use Data qw($CONFIG $HOSTNAME);
 use Request;
+
+flog({ 'service' => 'dockside-proxy' });
+
+# Load at module-load time - previously App.pm's own perl_require (loaded first in nginx
+# config) guaranteed $CONFIG was populated before Proxy's own perl_set vars ever ran; that
+# module_require is gone now that App.pm's own content-handler role has moved to bin/app-server,
+# so Proxy must ensure this itself rather than depend on load order elsewhere in the config.
+Data::load();
+
+# Where a UI/API request gets proxied to, now that App.pm is no longer perl_require'd (and
+# hence no longer runs as nginx's own content handler) - bin/app-server, standalone, on
+# loopback. Replaces the old '_UI_' sentinel string (which relied on falling through to
+# nginx's own `perl App::handlerHTTP[S];` content-handler directive once no proxy_pass matched
+# - that directive is gone from the nginx config too, see the same cutover).
+sub ui_uri () {
+   return sprintf( 'http://127.0.0.1:%d', $CONFIG->{'appServer'}{'port'} // 8100 );
+}
 
 # Given a domain, extract the unique code identifying the host publicly.
 sub domain_to_host ($r) {
@@ -70,7 +87,33 @@ sub domain_to_host ($r) {
    return undef;
 }
 
-sub get_server_port ($r, $protocol) {
+# True for a direct (not Dockside-proxied) request claiming to be a GCE metadata lookup - no
+# X-Forwarded-For, Metadata-Flavor: Google. Independent of the www-hostname check below: this is
+# about *how* the request arrived, not *what hostname* it's addressed to - App::Metadata's own
+# gate (unaffected by this factoring - it reads $r->header_in directly, same as always) and
+# _get_server_port's reason to route it to ui_uri() happen to be the same test today, but that's
+# incidental, not a reason to treat them as one condition.
+sub is_metadata_request ($r) {
+   return ( !$r->header_in('X-Forwarded-For') && ( $r->header_in('Metadata-Flavor') // '' ) eq 'Google' ) ? 1 : 0;
+}
+
+# True for a UI/API request - a direct metadata request (is_metadata_request above) or a plain
+# 'www' host with no devtainer prefix - false for everything devtainer-bound. Used by
+# upstream_cookie/forwarded_host, not by _get_server_port's own routing below: routing has its
+# own, separately-justified reason to send a metadata request to ui_uri() (App::Metadata's own
+# gate) and its own reason to send a plain www host there (it's the UI), so it keeps its own
+# inline www-hostname check rather than delegating its whole decision here - only the metadata
+# half is a shared implementation between the two, per is_metadata_request's own comment above.
+sub is_ui_request ($r) {
+   return 1 if is_metadata_request($r);
+
+   my ($host, $prefix) = domain_to_host($r);
+   return ( defined($host) && $host eq 'www' && $prefix eq '' ) ? 1 : 0;
+}
+
+# Renamed from get_server_port - see the fail-closed get_server_port wrapper below, which is
+# the name nginx config actually calls now.
+sub _get_server_port ($r, $protocol) {
    # Reload config, containers and reservations as needed.
    Data::load();
 
@@ -80,18 +123,13 @@ sub get_server_port ($r, $protocol) {
    # - User agent matches an expected profile e.g. Google/AWS metadata request;
    # - or nestCount means it's not a request directly from a client (but from an outer dockside container).
    # Ideally we should distinguish: request not from a client of this server; request not authorised with the expected header.
-   #
-   # If there's no X-Forwarded-For header, this container is not receiving a proxied request from another dockside container,
-   # but a direct request.
-   if(!$r->header_in("X-Forwarded-For")) {
-      if(($r->header_in('Metadata-Flavor') // '') eq 'Google') {
-         return '_UI_';
-      }
+   if ( is_metadata_request($r) ) {
+      return ui_uri();
    }
 
    # Lookup container
    my ($host, $prefix, $domain, $nestCount) = domain_to_host($r);
-   # wlog( "get_server_port($protocol): IP=" . $r->remote_addr . "; URI=" . $r->uri . "; Host=" . $r->header_in("Host") . "; XFF=[" . $r->header_in('X-Forwarded-For') . "]; nestCount=$nestCount => host=$host; prefix=$prefix; domain=$domain");
+   # wlog( "_get_server_port($protocol): IP=" . $r->remote_addr . "; URI=" . $r->uri . "; Host=" . $r->header_in("Host") . "; XFF=[" . $r->header_in('X-Forwarded-For') . "]; nestCount=$nestCount => host=$host; prefix=$prefix; domain=$domain");
 
    # We handle the following cases:
    # - it’s a UI request;
@@ -102,8 +140,8 @@ sub get_server_port ($r, $protocol) {
    # - reservation found, container ID found, container running, success!
 
    if( $host eq 'www' && $prefix eq '' ) {
-      # wlog( "get_server_port($protocol): host='www' and prefix=''; proxying to UI" );
-      return '_UI_';
+      # wlog( "_get_server_port($protocol): host='www' and prefix=''; proxying to UI" );
+      return ui_uri();
    }
 
    # Attempt to identify a Reservation via $host
@@ -111,7 +149,7 @@ sub get_server_port ($r, $protocol) {
 
    # If not, return the non-branded error page code.
    unless( $reservation ) {
-      wlog( "get_server_port($protocol): reservation '$host' not found" );
+      wlog( "_get_server_port($protocol): reservation '$host' not found" );
       return 400;
    }
 
@@ -137,32 +175,32 @@ sub get_server_port ($r, $protocol) {
    # so that NGINX will display a branded error page only to authenticated users.
    my $errorCode = $User->username ? 410 : 400;
 
-   wlog( "get_server_port($protocol): Host=" . ($r->header_in("Host") // '[EMPTY]') . "; host=$host; prefix=$prefix; domain=$domain => reservation.name=$reservation->{'name'}; containerId=$reservation->{'containerId'}; uri:$props->{'uri'}; auth=$props->{'route'}{'auth'}; access=$authStateString" );
+   wlog( "_get_server_port($protocol): Host=" . ($r->header_in("Host") // '[EMPTY]') . "; host=$host; prefix=$prefix; domain=$domain => reservation.name=$reservation->{'name'}; containerId=$reservation->{'containerId'}; uri:$props->{'uri'}; auth=$props->{'route'}{'auth'}; access=$authStateString" );
 
    unless( $reservation->{'containerId'} ) {
-      wlog( "get_server_port($protocol): container not yet launched for reservation $reservation->{'id'}" );
+      wlog( "_get_server_port($protocol): container not yet launched for reservation $reservation->{'id'}" );
       return $errorCode;
    }
 
    if( $reservation->{'status'} == -3 ) {
-      wlog( "get_server_port($protocol): containerId $reservation->{'containerId'} for reservation $reservation->{'id'} no longer exists" );
+      wlog( "_get_server_port($protocol): containerId $reservation->{'containerId'} for reservation $reservation->{'id'} no longer exists" );
       return $errorCode;
    }
 
    unless( $reservation->{'status'} > 0 ) {
-      wlog( "get_server_port($protocol): containerId $reservation->{'containerId'} for reservation $reservation->{'id'} not running" );
+      wlog( "_get_server_port($protocol): containerId $reservation->{'containerId'} for reservation $reservation->{'id'} not running" );
       return $errorCode;
    }
 
    # Prevent proxying loops: although it seems an unlikely edge case that a container will be asked to proxy to itself.
    if($HOSTNAME && $reservation->{'containerId'} eq $HOSTNAME) {
-      wlog( "get_server_port($protocol): can't proxy to $reservation->{'containerId'} from host $HOSTNAME");
+      wlog( "_get_server_port($protocol): can't proxy to $reservation->{'containerId'} from host $HOSTNAME");
       return 400;
    }
 
    # If no container URI can be found, return $errorCode to trigger the error page.
    unless( $props->{'uri'} ) {
-      wlog( "get_server_port($protocol): container inaccessible: no shared network with reservation $reservation->{'id'}" );
+      wlog( "_get_server_port($protocol): container inaccessible: no shared network with reservation $reservation->{'id'}" );
       return $errorCode;
    }
 
@@ -189,6 +227,24 @@ sub get_server_port ($r, $protocol) {
    return $errorCode;
 }
 
+# Fail-closed wrapper around _get_server_port above. Before this split, an uncaught die here
+# left $upstream_http/$upstream_https unset, and nginx's own `perl App::handlerHTTP[S];`
+# directive (the location's default content handler) served the request instead - never
+# actually a *safe* fallback, just an accidental one. That directive is gone now (see the
+# cutover), so an uncaught die here would otherwise propagate as nginx's own generic 500 with
+# no branded error page and no log context. Catch here instead, log it, and fail closed to the
+# same '400' _get_server_port itself already uses for "reservation not found" - nginx's own
+# `if ($upstream_http = '400') {...}` block (see the nginx config) already handles that value.
+sub get_server_port ($r, $protocol) {
+   return try {
+      return _get_server_port($r, $protocol);
+   }
+   catch {
+      wlog("get_server_port($protocol): caught exception: " . ( ref($_) ? $_->dbg : $_ ));
+      return '400';
+   };
+}
+
 # PUBLIC METHODS
 # --------------
 
@@ -202,15 +258,38 @@ sub https_server_port ($r) {
    return get_server_port($r, 'https');
 }
 
-# Remove the configured uidCookie(s) from the cookie header.
-# We'll use this to set the cookie header on the request proxied to
-# the subcontainer.
+# Remove the configured uidCookie(s) from the cookie header - for a devtainer-bound request
+# only; a UI/API-bound request (now genuinely proxied to bin/app-server, not handled in-process
+# - see is_ui_request's own comment) needs the cookie intact, since bin/app-server's own
+# Request->authenticate reads it directly, same as App.pm always did when it ran embedded.
 sub upstream_cookie ($r) {
    my $cookie = $r->header_in('Cookie');
+
+   return $cookie if is_ui_request($r);
 
    $cookie =~ s/\b\Q$CONFIG->{'uidCookie'}{'name'}\E(?:_http)?=[^ ;]+(;\s*)?//sg;
 
    return $cookie;
+}
+
+# Backs the nginx config's own $forwarded_host perl_set var (replacing a plain
+# `proxy_set_header X-Forwarded-Host $host;`) - a UI/API request now needs its header to carry
+# the port bin/app-server's own Mojolicious stack expects to see reflected back (matching
+# $r->header_in('Host') exactly, port included where present), while a devtainer-bound request
+# must keep receiving exactly the port-stripped value $host already gives it today (unchanged
+# behaviour - devtainer-side code depends on the header never carrying a port). is_ui_request
+# evaluates true for exactly the requests _get_server_port routes to ui_uri() (see its own
+# comment for why that's two independently-justified conditions, not one), so this header only
+# ever carries a port precisely when the request is actually going to the app server.
+#
+# $r->variable('host'), not a $r->hostname method - ngx_http_perl_module's documented $r API
+# (header_in/header_out/variable/uri/args/... - see http://nginx.org/en/docs/http/
+# ngx_http_perl_module.html) has no 'hostname' method; $r->variable(name) is its own documented
+# mechanism for reading any nginx-level variable from Perl, and 'host' is nginx's own core
+# variable (the same $host already used elsewhere in this file's nginx config, port-stripped
+# per nginx's own docs) - this reads the exact same value.
+sub forwarded_host ($r) {
+   return is_ui_request($r) ? $r->header_in('Host') : $r->variable('host');
 }
 
 1;

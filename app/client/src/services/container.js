@@ -48,4 +48,14 @@ const getAuthCookies = () => {
    return axios.get(url).then(response => response.data);
 };
 
-export { getContainers, putContainer, controlContainer, getReservationLogsUri, getAuthCookies };
+// Reads back a dispatched hook invocation's status/log - the same route the `dockside` CLI's
+// api_hook_status uses (see its own comment there). Works for any name ever recorded in
+// data.hooks.status on this reservation, including docker-event-daemon's own launch:-/
+// lifecycle:-DAG stage names, not just profile-declared/manually-run hooks - see User::
+// runContainerHookStatus, which doesn't gate on the name being profile-declared.
+const getHookStatus = (id, name) => {
+   const url = `/containers/${encodeURIComponent(id)}/hook/status?name=${encodeURIComponent(name)}`;
+   return axios.get(url, { timeout: 10000 }).then(response => response.data.data);
+};
+
+export { getContainers, putContainer, controlContainer, getReservationLogsUri, getAuthCookies, getHookStatus };

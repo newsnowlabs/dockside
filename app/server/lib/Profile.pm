@@ -262,6 +262,7 @@ sub validate ($self) {
          gitURLs=@
          IDEs=@
          options=@
+         hooks=%
       )
    );
 
@@ -406,6 +407,87 @@ sub validate_profile_options ($self, $type, $data) {
    }
 }
 
+# Reserved lifecycle hook names, namespaced under 'lifecycle:' so they can never
+# collide with a custom hook name (custom names forbid ':' entirely - see
+# $CUSTOM_HOOK_NAME_RE below). 'lifecycle:launch' and 'lifecycle:start' are
+# implemented today - both run once launch-time git/ssh/gh setup completes,
+# 'lifecycle:launch' only on this devtainer's true first launch and 'lifecycle:start'
+# on every launch including that one (see Reservation::exec), and both are
+# re-runnable on demand if their own 'hooks' entry sets 'manual' true - see
+# Reservation::run_hook_manual. The remaining names are reserved for
+# docs/roadmap.md's broader (unimplemented) lifecycle-hooks ambition
+# (stop/rename/periodic), so the schema doesn't need to change shape again when
+# those land. Being schema-valid here is independent of being dispatchable:
+# run_hook_manual rejects every reserved name except 'lifecycle:launch'/
+# 'lifecycle:start' with a "not yet implemented" error regardless of this
+# allow-list or 'manual'.
+my @RESERVED_LIFECYCLE_HOOKS = map { "lifecycle:$_" } qw( launch start stop rename periodic );
+
+# Custom (non-lifecycle) hook names are free-form: lowercase, start with a letter,
+# hyphens allowed but not leading/trailing/doubled - mirrors the devtainer-name slug
+# rule (Reservation.pm's validate(), '/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/'). Never
+# matches a 'lifecycle:' name, since colons aren't a valid slug character.
+my $CUSTOM_HOOK_NAME_RE = qr/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/;
+
+# 'launch:*' is a second reserved namespace, but unlike 'lifecycle:*' it is never
+# profile-declarable at all - these names (launch:prep/launch:git/launch:ide) are DED's own
+# internal launch-dispatch bookkeeping, written directly into data('hooks') by DED itself, with
+# no profile-supplied script involved. The custom-name regex above already rejects any colon, so
+# a profile declaring 'hooks.launch:prep' would fail validation regardless - this exists purely
+# to give that specific, common-to-guess collision a clear, accurate error instead of the
+# generic "invalid hook name" message.
+my $RESERVED_LAUNCH_NAME_RE = qr/^launch:/;
+
+# Each hooks.<name> entry is an Object. 'script' is mandatory - the absolute in-image path to
+# run. 'manual' - may this hook also be run on demand via 'dockside hook run', in addition to
+# its automatic invocation? - is meaningful only on a reserved 'lifecycle:*' entry; custom
+# hooks are always manually invocable already (they never auto-fire), so setting 'manual' on
+# one would be meaningless and is rejected as a likely mistake. Neither 'manual' nor 'script'
+# says anything about whether the *lifecycle event itself* is implemented yet - see
+# Reservation::run_hook_manual's separate "is this actually implemented" gate.
+sub validate_profile_hooks ($self, $type, $data) {
+   unless( ref($data) eq 'HASH' ) {
+      return $self->errors( $type, "must be a JSON Object" );
+   }
+
+   my %reserved = map { $_ => 1 } @RESERVED_LIFECYCLE_HOOKS;
+
+   foreach my $name ( sort keys %$data ) {
+      if( $name =~ $RESERVED_LAUNCH_NAME_RE ) {
+         $self->errors( "$type.$name", "'launch:*' names are reserved for Dockside's own " .
+            "internal launch dispatch and can never be declared in a profile" );
+         next;
+      }
+
+      unless( $reserved{$name} || $name =~ $CUSTOM_HOOK_NAME_RE ) {
+         $self->errors( "$type.$name", sprintf(
+            "invalid hook name - must be a reserved lifecycle hook (%s) or a custom name " .
+            "(lowercase, starting with a letter, hyphens allowed but not leading/trailing/doubled)",
+            join( ', ', @RESERVED_LIFECYCLE_HOOKS )
+         ) );
+         next;
+      }
+
+      my $entry = $data->{$name};
+
+      unless( ref($entry) eq 'HASH' ) {
+         $self->errors( "$type.$name", "must be a JSON Object with a 'script' property" );
+         next;
+      }
+
+      $self->do_validate( "$type.$name", $entry, qw( script=s! manual=b ) );
+
+      my $script = $entry->{'script'};
+      if( defined($script) && length($script) && $script !~ m!^/! ) {
+         $self->errors( "$type.$name.script", "must be an absolute path to an executable in the image" );
+      }
+
+      if( !$reserved{$name} && exists $entry->{'manual'} ) {
+         $self->errors( "$type.$name.manual", "must not be set on a custom (non-lifecycle) hook - custom hooks are always manually invocable" );
+      }
+   }
+}
+
 sub validate_profile_mounts_tmpfs_dst ($self, $type, $data) {
    my $dstRE = '^/';
 
@@ -535,6 +617,10 @@ sub routers ($self) {
 
 sub options ($self) {
    return $self->{'options'} // [];
+}
+
+sub hooks ($self) {
+   return $self->{'hooks'} // {};
 }
 
 sub ssh ($self) {

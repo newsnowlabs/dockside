@@ -1,0 +1,63 @@
+{
+   "version": 4,
+   "name": "Git Clone + Entrypoint Branch/PR Switch",
+   "description": "Demonstrates docs/extensions/lifecycle-hooks.md's 'ad-hoc clone-at-start' repo provenance: a generic image with no repo baked in, whose own entrypoint clones one at container-create time and switches to {option.ref} before starting the long-running process - so branch/PR switching works from container start, with no dependency on launch.sh's timing. Accepts a bare branch name, a bare (optionally '#'-prefixed) PR number, or a full GitHub branch/PR URL copied from the browser. Contrast with 00-dockside.json/01-dockside-own-ide.json, whose repo is already baked into the image and which use a hook (not an entrypoint) to switch it. Uses a static/no credential here (public HTTPS clone); see mounts.bind below for how to add a statically-provisioned deploy key for a private repo - not a Dockside-managed one, which an entrypoint cannot rely on (see the doc's credential-source section).",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "*" ],
+   "images": [
+      "ubuntu:latest",
+      "debian:latest"
+   ],
+   "unixusers": ["dockside"],
+   "options": [
+      {
+         "name": "ref",
+         "label": "Branch or PR #",
+         "type": "text",
+         "default": "main",
+         "placeholder": "e.g. main, a PR number like 42, or a github.com/.../tree|pull/... URL"
+      }
+   ],
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
+      "bind": [
+         // For a private repo, point this at wherever your own deployment
+         // provisions a read-only deploy key (e.g. a secret dropped by your CI/ops
+         // tooling, or an encrypted volume). Present from container start, unlike
+         // Dockside-managed per-user SSH keys/gh auth (see pattern C in
+         // docs/extensions/lifecycle-hooks.md), which aren't ready until
+         // launch.sh has run. Commented out here since the demo below clones a
+         // public repo over HTTPS and needs no key; uncomment and adjust "src"
+         // to use it, then set GIT_SSH_COMMAND before cloning (see comment in
+         // "command" below).
+         // { "src": "/opt/example-deploy-keys/entrypoint-branch-switch", "dst": "/home/dockside/.ssh/deploy_key", "ro": true }
+      ],
+      "volume": []
+   },
+   "dockerArgs": ["--memory=1G", "--pids-limit=4000"],
+   "command": [
+      "/bin/sh", "-c",
+
+      // $1 (not a direct {option.*} substitution inside this script string)
+      // deliberately: passing the resolved option value as an argv positional
+      // parameter, rather than interpolating it into the script text itself,
+      // avoids a shell-metacharacter-injection surface - a `ref` value like
+      // `; rm -rf /` becomes a single literal argv string here, never
+      // re-parsed as shell syntax. See "sh", "{option.ref}" below, which
+      // supply $0/$1.
+      "set -e\napt-get update -qq && apt-get install -y -qq git sudo >/dev/null\nREPO=/home/dockside/app\nREF=\"$1\"\n# For a private repo: uncomment the mounts.bind entry above, then add:\n#   export GIT_SSH_COMMAND=\"ssh -i /home/dockside/.ssh/deploy_key -o StrictHostKeyChecking=accept-new\"\n# and use a git@... URL below instead of the https:// one.\n[ -d \"$REPO/.git\" ] || git clone https://github.com/newsnowlabs/dockside.git \"$REPO\"\ncd \"$REPO\"\n# See resolve_tree_branch() in app/scripts/container/launch.sh for the full rationale\n# (identical logic): the longest-prefix-first search is not just a heuristic - git's\n# hierarchical ref namespace means \"feature\" and \"feature/foo\" can never both exist as\n# branches at once, so there is exactly one real branch any given URL remainder could\n# resolve to.\nresolve_tree_branch() {\n  CANDIDATE=\"$1\"\n  while [ -n \"$CANDIDATE\" ]; do\n    if git ls-remote --exit-code origin \"refs/heads/$CANDIDATE\" >/dev/null 2>&1; then\n      echo \"$CANDIDATE\"\n      return 0\n    fi\n    case \"$CANDIDATE\" in\n      */*) CANDIDATE=\"${CANDIDATE%/*}\" ;;\n      *) return 1 ;;\n    esac\n  done\n  return 1\n}\n# A single 'ref' option covers several forms: a bare branch name; a bare PR number\n# (optionally '#'-prefixed); or a full GitHub URL copied from the browser - see\n# checkout_git_ref() in app/scripts/container/launch.sh, which uses the same logic.\nPR=\"\" BRANCH=\"\"\ncase \"$REF\" in\n  https://github.com/*/pull/*)\n    PR=${REF#*/pull/}\n    PR=${PR%%[/?#]*}\n    ;;\n  https://github.com/*/tree/*)\n    CANDIDATE=${REF#*/tree/}\n    CANDIDATE=${CANDIDATE%%[?#]*}\n    BRANCH=$(resolve_tree_branch \"$CANDIDATE\") || BRANCH=\"$CANDIDATE\"\n    ;;\n  https://github.com/*/commits/*)\n    CANDIDATE=${REF#*/commits/}\n    CANDIDATE=${CANDIDATE%%[?#]*}\n    BRANCH=$(resolve_tree_branch \"$CANDIDATE\") || BRANCH=\"$CANDIDATE\"\n    ;;\n  *)\n    NUM=\"${REF#'#'}\"\n    case \"$NUM\" in\n      ''|*[!0-9]*) BRANCH=\"$REF\" ;;\n      *)           PR=\"$NUM\" ;;\n    esac\n    ;;\nesac\nif [ -n \"$PR\" ]; then\n  # Two statements, not \"git fetch ... && git checkout ...\": under `set -e`, a\n  # non-final command in an && list is exempt from aborting the script on\n  # failure, so a bad PR number would otherwise fail silently and fall through.\n  git fetch origin \"refs/pull/$PR/head\"\n  git checkout FETCH_HEAD\nelif [ -n \"$BRANCH\" ]; then\n  git fetch origin \"refs/heads/$BRANCH:refs/remotes/origin/$BRANCH\"\n  git switch \"$BRANCH\" 2>/dev/null || git switch --track -c \"$BRANCH\" \"origin/$BRANCH\"\nfi\nsleep infinity",
+      "sh",
+      "{option.ref}"
+   ]
+}

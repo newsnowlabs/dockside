@@ -7,12 +7,14 @@ use Expect;
 use Try::Tiny;
 use Tie::File;
 use Storable qw(dclone);
-use Reservation::Mutate qw(update load_clean_map);
+use URI::Escape;
+use Mojo::Promise;
+use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running);
 use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog get_config trim is_true clean_pty run run_pty TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api unique run_system get_uri sanitize_sensitive_text);
+use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api_sync call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
@@ -415,11 +417,17 @@ sub update_container_info ($class) {
          }
       }
       # We have no containerId: either launch is in-flight (-2) or docker create failed (-4).
+      # createStatus is a structured {stage, failed, layers} hash written by create -
+      # shape-tolerant here because a reservation created before this branch's own launch()
+      # (deleted) may still have the old plain truthy/falsy exit-code value on disk. A bare
+      # truthy-hashref check would be wrong for the new shape: {} is truthy in Perl regardless
+      # of whether 'failed' is set, so create's very first (in-flight, not-yet-failed)
+      # write would otherwise show -4 immediately.
       else {
-         $r->{'status'} = ($r->{'createStatus'} ? -4 : -2);
+         my $cs = $r->{'createStatus'};
+         my $failed = ref($cs) eq 'HASH' ? $cs->{'failed'} : $cs;
+         $r->{'status'} = $failed ? -4 : -2;
       }
-
-      $r->load_launch_logs();      
    }
 
    return $class;
@@ -463,29 +471,34 @@ sub load ($class, $opts = undef) {
 # OBJECT METHODS
 # --------------
 
-# Updates the dockerLaunchLogs property of the Reservation,
-# to container the tail of the launch log file written by Reservation::launch.
+# Tails a hook invocation's outer log file (dispatch_hook_exec's own on_output callback,
+# below, writes the hook's stdout+stderr frames here as they arrive) for a status/log read
+# endpoint to serve - see User::runContainerHookStatus and bin/app-server's GET
+# /containers/<id>/hook/status route. Last $maxLines lines via Tie::File, read fresh from
+# disk on every call, no in-process caching - cheap for "poll a status field, fetch the
+# tail" use. No synthetic termination line to strip: docker_exec()'s on_output
+# callback writes only the hook's own raw stdout/stderr bytes.
 #
-sub load_launch_logs ($self) {
-   my $id = $self->id();
+# Returns [] (never undef) if $name has never been invoked (no status record yet, so no
+# logPath to read) or its log file cannot be opened (e.g. already cleaned up - see item I, not
+# yet built) - a caller can treat "no status" and "no log lines" as the same "nothing to show
+# yet" case without special-casing either.
+sub load_hook_log ($self, $name, $maxLines = 200) {
+   my $status = $self->hook_status($name) or return [];
+   my $logPath = $status->{'logPath'} or return [];
 
-   # LAST N LINES WITH Tie::File
    my @lines;
-   tie @lines, 'Tie::File', "$CONFIG->{'tmpPath'}/r-$id.log"
+   tie @lines, 'Tie::File', $logPath
    || do {
-      flog("Cannot open reservation log file '$id': $!");
+      flog("Cannot open hook log file '$logPath' for reservation " . $self->id() . ": $!");
       return [];
    };
 
-   my $TerminationRE = qr/^=== EXIT CODE \d+ ===$/;
-
    my $data = [];
-   for( my $i = (@lines) - 10; $i < (@lines); $i++ ) {
-      push(@$data, $lines[$i]) if $i >= 0 && $lines[$i] !~ /$TerminationRE/;
+   for( my $i = (@lines) - $maxLines; $i < (@lines); $i++ ) {
+      push(@$data, $lines[$i]) if $i >= 0;
    }
    untie @lines;
-
-   $self->{'dockerLaunchLogs'} = $data;
 
    return $data;
 }
@@ -507,7 +520,7 @@ sub load_container_logs ($self, $opts) {
       $opts->{'stdout'} ? 'true' : 'false'
    );
 
-   my $result = call_socket_api(
+   my $result = call_socket_api_sync(
       $CONFIG->{'docker'}{'socket'},
       $path
    );
@@ -578,8 +591,7 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
             'docker' => [ qw( ID Size CreatedAt Status Image ImageId Networks ) ],
             'meta' => [ qw( owner developers viewers private access description IDE ) ],
             'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
-            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options ) ],
-            'dockerLaunchLogs' => 1
+            'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options startCount hooks ) ]
          },
          [ qw(id name owner profile status containerId createStatus) ]
       );
@@ -817,30 +829,48 @@ sub referencing_reservations ($class, $identifier, $kind) {
 # RESERVATION CONTROL METHODS
 #
 
-sub action ($self, $action, $args = {}) {
-   my @command;
-   if($action eq 'start') {
-      @command = ('start');
+# The one survivor of the old action()/action_async() split that stays synchronous - a fast
+# local read, never worth an async version. Stop/start/remove (see action() below) are the
+# genuinely slow ones; getLogs isn't, so it isn't routed through action() at all.
+sub getLogs ($self, $args = {}) {
+   return $self->load_container_logs({
+      'stdout' => is_true($args->{'stdout'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
+      'stderr' => is_true($args->{'stderr'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
+      'merge' => is_true($args->{'merge'})
+   });
+}
+
+# stop/start/remove via the Docker Engine API directly (call_socket_api), no docker CLI
+# subprocess, no fork at all. Idempotent at Docker's own level for all three (repeat calls return
+# 304/304/404 respectively) - no guard needed, unlike create above. getLogs (above) is the one
+# container command that stays synchronous, never routed through here.
+sub action ($self, $action, $args, $cb) {
+   my $containerId = $self->containerId();
+   my ( $method, $path );
+
+   if ( $action eq 'stop' ) {
+      my $t = $args->{'t'} // 10;   # Docker CLI's own default stop grace period
+      ( $method, $path ) = ( 'POST', "/containers/$containerId/stop?t=$t" );
    }
-   elsif($action eq 'stop') {
-      @command = ('stop');
+   elsif ( $action eq 'start' ) {
+      ( $method, $path ) = ( 'POST', "/containers/$containerId/start" );
    }
-   elsif($action eq 'remove') {
-      @command = ('rm', '--volumes');
-   }
-   elsif($action eq 'getLogs') {
-      return $self->load_container_logs({
-         'stdout' => is_true($args->{'stdout'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
-         'stderr' => is_true($args->{'stderr'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
-         'merge' => is_true($args->{'merge'})
-      });
+   elsif ( $action eq 'remove' ) {
+      ( $method, $path ) = ( 'DELETE', "/containers/$containerId?v=true" );
    }
    else {
       die Exception->new( 'msg' => "Unknown docker container action '$action'" );
    }
 
-   my $containerId = $self->containerId();
-   return run_system($CONFIG->{'docker'}{'bin'}, @command, $containerId);
+   call_socket_api(
+      $CONFIG->{'docker'}{'socket'}, $path, { 'method' => $method },
+      sub ( $result, $err ) {
+         flog( "Reservation::action: '$action' on '$containerId' "
+            . ( $err ? "failed: $err" : 'returned ' . ( $result ? $result->code : '(no result)' ) ) );
+         $cb->( $result, $err );
+      }
+   );
+   return;
 }
 
 sub update_network ($self) {
@@ -893,159 +923,444 @@ sub store ($self) {
    return $self;
 }
 
-sub getGitDevContainer ($self) {
+# store_fields:
+#
+# Like store() above, but persists only the specific fields given, instead of this process's
+# entire in-memory record. $fields is a hashref shaped exactly like update()'s own $e (e.g.
+# { data => { runningIDE => 'openvscode/latest' } }, or { meta => { access => {...} } }, or
+# both) - never the whole 'data'/'meta' hash unless every key in it is genuinely being
+# authoritatively set right now.
+#
+# Why this matters, not just "is tidier": store()'s whole-record write only merges safely
+# nested-hash-by-nested-hash where BOTH the incoming payload and the fresh on-disk record are
+# hashes at every level down to the changed key (see Util::cloneHash's own comment) - a scalar
+# leaf, or a hash present in one but not the other, is blindly overwritten with whatever this
+# process happens to be carrying, however old. store()'s $e always includes this process's
+# *entire* in-memory 'data'/'meta' - so any field this process loaded a while ago and never
+# refreshed, but is NOT trying to change right now, still rides along and can clobber a fresher
+# value some *other* concurrent writer already persisted. That's not a rare edge case for a
+# writer whose own dispatch took several seconds before finally writing (a slow docker_exec
+# call, say): its own in-memory snapshot of every unrelated field is exactly that many seconds
+# stale by the time it stores.
+# store_fields avoids this at the source - a key genuinely absent from $fields is never sent at
+# all, so cloneHash never touches it.
+#
+# Only safe for "authoritative overwrite" values - ones that don't need reading their own prior
+# persisted value to compute (see Reservation::Mutate::increment_data_field for that case,
+# e.g. startCount).
+sub store_fields ($self, $fields) {
+   $self->update( { 'id' => $self->id(), %$fields } );
+   return $self;
+}
+
+# Atomically increments data.startCount and returns the new value - see
+# Reservation::Mutate::increment_data_field's own comment for why this needs a genuine
+# read-under-lock, not just a narrowly-scoped store_fields call. Also updates this process's
+# own in-memory copy, so a later read in the same process sees the value it just committed.
+sub increment_start_count ($self) {
+   my $newValue = increment_data_field( $self->id(), 'startCount' );
+   $self->{'data'}{'startCount'} = $newValue;
+   return $newValue;
+}
+
+# Fetches the devcontainer.json for this reservation's gitURL, if it points at a GitHub repo:
+# tries 'main' first, only falling back to 'master' if 'main' fails or returns unparseable
+# JSON - built on get_uri so User::createContainerReservation's own async chain never
+# blocks the reactor while GitHub responds. Expressed as a recursive callback chain (there's
+# no early 'return' across an async boundary). $cb fires exactly once, with the decoded
+# devcontainer.json hashref, or undef if there is none (no gitURL, non-GitHub URL, or neither
+# branch has one).
+sub getGitDevContainer ($self, $cb) {
    my $uri = $self->data('gitURL');
-   flog("getGitDevContainer: uri=$uri");
+   flog("getGitDevContainer: uri=" . ($uri // ''));
 
-   return undef unless $uri;
+   return $cb->(undef) unless $uri;
 
-   if( $uri =~ m!^(?:https://github.com/|git\@github\.com:)(.*)\.git$! ) {
-      my $path = $1;
+   unless ( $uri =~ m!^(?:https://github.com/|git\@github\.com:)(.*)\.git$! ) {
+      return $cb->(undef);
+   }
+   my $path = $1;
 
-      foreach my $branch (qw( main master )) {
-         # git@github.com:dwavesystems/ocean-devcontainer.git =>
-         # https://github.com/dwavesystems/ocean-devcontainer.git =>
-         # https://raw.githubusercontent.com/dwavesystems/ocean-devcontainer/refs/heads/main/.devcontainer/devcontainer.json
-         my $devcontainerUri = "https://raw.githubusercontent.com/$path/refs/heads/$branch/.devcontainer/devcontainer.json";
+   my $tryBranch;
+   $tryBranch = sub (@branches) {
+      unless (@branches) {
+         $cb->(undef);
+         return;
+      }
+      my ( $branch, @rest ) = @branches;
+      my $devcontainerUri = "https://raw.githubusercontent.com/$path/refs/heads/$branch/.devcontainer/devcontainer.json";
 
-         my $result = get_uri($devcontainerUri);
-         flog("getGitDevContainer: uri=$devcontainerUri; result=$result; is_success=" . ($result && $result->is_success) . "; body='" . ($result ? $result->body : 'N/A') . "'");
+      get_uri( $devcontainerUri, sub ($result) {
+         flog( "getGitDevContainer: uri=$devcontainerUri; result=" . ( $result // '(none)' )
+            . "; is_success=" . ( ( $result && $result->is_success ) ? 1 : 0 ) );
 
-         if( $result && $result->is_success ) {
-            # Strip comments
+         if ( $result && $result->is_success ) {
             my $body = $result->body;
             $body =~ s!//.*$!!gm;
-            return eval { return decode_json($body); };
+            my $decoded = eval { decode_json($body) };
+            if ($decoded) {
+               $cb->($decoded);
+               return;
+            }
          }
-      }
-   }
+         $tryBranch->(@rest);
+      } );
+   };
+   $tryBranch->( qw( main master ) );
 
-   return undef;
+   return;
 }
 
-sub launch ($self) {
-   my @cmdline = 
-   try {
-      return ($self->cmdline());
-   }
-   catch {
-      my $msg = (ref($_) eq 'Exception') ? $_->msg : $_;
-      flog("Reservation::launch: Reservation->cmdline() threw error: $_");
-      $self->update( {
-         'expiryTime' => YYYYMMDDHHMMSS(time)
-      } );
-      die Exception->new( 'msg' => "Failed to compile 'docker run' command line, with error: $msg", 'dbg' => "Reservation::launch: Reservation->cmdline() threw error: $msg" );
-   };
+# Updates createStatus both in-memory (so this same process's own later reads - including
+# cloneWithConstraints/sanitise, and hence anything that returns $self to a client after this
+# point - see it immediately) and on disk (so a later poller reading a *fresh* Reservation->load()
+# sees it too) - the same "set in-memory, then persist" shape containerId's own accessor +
+# update() call already uses. $extra merges in any other top-level fields that need to change
+# atomically with it (currently only 'expiryTime', on the failure paths below).
+sub _create_status_set ($self, $value, $extra = {}) {
+   $self->{'createStatus'} = $value;
+   $self->update( { 'createStatus' => $value, %$extra } );
+   return $self;
+}
 
+# reservation id => 1, while create()/reconcile_create()'s own promise chain is actively
+# running in *this* process - queried by bin/app-server's periodic reconciler (skip a
+# reservation this worker already owns, without even attempting a claim) and its exit handler
+# (wait for these to drain before letting the worker actually exit). See
+# docs/adr/0007-create-restart-recovery.md. Lives here, not as a bin/app-server-side hash as
+# that decision's first draft called for - Reservation.pm is the only code that actually
+# observes a chain's start/settle moments; a bin/app-server-side hash would need a second
+# callback threaded all the way through User::createContainerReservation's own unrelated
+# signature just to signal in/out, for no benefit over owning it where the lifecycle already
+# lives. create_in_flight/create_in_flight_count below are its only public surface.
+my %CREATE_IN_FLIGHT;
+
+sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
+sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
+
+# Ground-truth stage builders, shared by create() (always starts at 'pulling') and
+# reconcile_create() (resumes at whatever stage createStatus was stuck at) - see
+# docs/adr/0007-create-restart-recovery.md's own "Ground truth per stage" table for the
+# reasoning behind each one. Each returns a Mojo::Promise and is unconditionally safe to
+# (re)enter - there is no "first time" vs "recovery" branch inside any of them, so there is
+# exactly one code path per stage, not two.
+
+sub _create_stage_pulling ($self, $image) {
+   my $socket = $CONFIG->{'docker'}{'socket'};
+
+   return Mojo::Promise->new( sub ($resolve, $reject) {
+      call_socket_api( $socket, '/images/' . uri_escape($image) . '/json', {}, sub ($result, $err) {
+         return $reject->($err) if $err;
+         $resolve->( $result && $result->code == 200 );
+      } );
+   } )->then( sub ($present) {
+      return 1 if $present;
+
+      my ( $repo, $tag ) = $image =~ m{^(.+):([^/:]+)$} ? ( $1, $2 ) : ( $image, 'latest' );
+      my $lastPersist = 0;
+
+      return Mojo::Promise->new( sub ($resolve, $reject) {
+         my $buf = '';
+         my $failed;
+         call_socket_api( $socket, '/images/create?fromImage=' . uri_escape($repo) . '&tag=' . uri_escape($tag), {
+            'method'  => 'POST',
+            'on_read' => sub ($bytes) {
+               $buf .= $bytes;
+               while ( ( my $nl = index( $buf, "\n" ) ) >= 0 ) {
+                  my $line = substr( $buf, 0, $nl );
+                  $buf = substr( $buf, $nl + 1 );
+                  next unless length($line);
+                  my $event = eval { decode_json($line) };
+                  next unless $event;
+                  # Two distinct error shapes share this same stream: a per-layer failure
+                  # mid-pull uses 'error'/'errorDetail'
+                  # (Docker's documented pull-progress event shape); a pull that fails outright
+                  # before any layer progress starts (e.g. 404 'manifest unknown' for a bad tag)
+                  # delivers a single line shaped {"message":...} instead - Docker's generic
+                  # top-level API error shape, just delivered over this same on_read stream
+                  # rather than as a distinctly-shaped non-200 body (the completion callback
+                  # below never sees it separately: by the time it runs, this loop has already
+                  # consumed the line, including its trailing newline, out of $buf).
+                  if ( my $errMsg = $event->{'error'} // $event->{'message'} ) {
+                     $failed = $errMsg;
+                  }
+                  next unless $event->{'id'};
+
+                  my $cs = $self->{'createStatus'};
+                  $cs->{'layers'}{ $event->{'id'} } = {
+                     'status'  => $event->{'status'},
+                     'current' => $event->{'progressDetail'}{'current'},
+                     'total'   => $event->{'progressDetail'}{'total'},
+                  };
+                  $self->{'createStatus'} = $cs;
+
+                  # Debounce the disk write - hundreds of progress events can arrive over a
+                  # large pull. At most once/second is a reasonable default, not a
+                  # precisely-tuned one - revisit if a real client ends up wanting smoother
+                  # progress than that; the in-memory copy above is always current regardless.
+                  my $now = time();
+                  if ( $now > $lastPersist ) {
+                     $lastPersist = $now;
+                     $self->update( { 'createStatus' => $cs } );
+                  }
+               }
+            },
+         }, sub ($result, $err) {
+            if ( $err || !$result || !$result->is_success ) {
+               # A pull can fail two different ways: a clean top-level HTTP error before any
+               # streaming starts (e.g. 404 'manifest unknown' for a bad tag - a single
+               # {"message":...} JSON object body, no trailing newline for the while loop above
+               # to have consumed it, so it's still sitting unparsed in $buf), or an error
+               # embedded mid-stream after a 200 already started (a bad layer partway through an
+               # otherwise-real pull - $failed, above). $result->body is *always* empty here
+               # regardless of which - on_read replaces Mojo's own default body-accumulation
+               # (see call_socket_api's own comment) - so $buf/$failed are the only place
+               # the actual error text survives. An unknown-tag pull returns 404 with exactly
+               # this un-newline-terminated {"message":...} shape - without this fallback it
+               # would silently report an empty error string instead.
+               my $bodyErr = length($buf) ? ( eval { decode_json($buf)->{'message'} } // $buf ) : undef;
+               $reject->( $err // $failed // $bodyErr // ( $result ? 'HTTP ' . $result->code : 'no response' ) );
+               return;
+            }
+            if ($failed) {
+               $reject->($failed);
+               return;
+            }
+            $resolve->(1);
+         } );
+      } );
+   } );
+}
+
+sub _create_stage_creating ($self, $body) {
+   my $socket = $CONFIG->{'docker'}{'socket'};
+
+   # Ground-truth check, unconditional (not just for reconciliation) - does a container with
+   # this reservation's own name already exist? Makes this stage safely re-enterable by
+   # construction: a blind retry here would 409 on the name collision (create-restart-
+   # recovery-plan.md's own "Ground truth per stage" table) - checking first costs one extra
+   # GET on the ordinary, non-recovery path too, where it will (almost) always come back
+   # absent, but that's a cheap, uniform cost for not needing a second, recovery-only code
+   # path here at all.
+   return Mojo::Promise->new( sub ($resolve, $reject) {
+      call_socket_api( $socket, '/containers/' . uri_escape( $self->name ) . '/json', {}, sub ($result, $err) {
+         return $reject->($err) if $err;
+         $resolve->( $result && $result->code == 200 ? decode_json( $result->body )->{'Id'} : undef );
+      } );
+   } )->then( sub ($existingId) {
+      return $existingId if $existingId;
+
+      return Mojo::Promise->new( sub ($resolve, $reject) {
+         call_socket_api( $socket, '/containers/create?name=' . uri_escape( $self->name ), {
+            'method' => 'POST',
+            'json'   => $body,
+         }, sub ($result, $err) {
+            if ( $err || !$result || !$result->is_success ) {
+               $reject->( $err // ( $result ? $result->body : 'no response' ) );
+               return;
+            }
+            $resolve->( decode_json( $result->body )->{'Id'} );
+         } );
+      } );
+   } )->then( sub ($containerId) {
+      # Store the 12-char short id, matching Reservation::containerId's own established
+      # convention - docker-event-daemon's containers.json keys are the same 12-char short id
+      # (_update_merge: 'substr($c->{'Id'}, 0, 12)'), and both $BY_CONTAINERID (this file's own
+      # update_container_info) and load_clean_map match against those keys directly. The
+      # Create API's response 'Id' (and the ground-truth GET above) is the full 64-char id -
+      # storing it untruncated would silently never match either lookup: update_container_info
+      # would leave this reservation's status stuck at -3 ('destroyed') forever,
+      # onContainerStart would log "we don't manage" this containerId and never fire the
+      # launch DAG, and load_clean_map would conclude the container is gone and delete the
+      # reservation entirely after 30s - all while the container itself is alive and running.
+      my $shortId = substr( $containerId, 0, 12 );
+      $self->containerId($shortId);
+      $self->update( { 'containerId' => $shortId } );
+   } );
+}
+
+sub _create_stage_starting ($self, $containerId) {
+   my $socket = $CONFIG->{'docker'}{'socket'};
+
+   return Mojo::Promise->new( sub ($resolve, $reject) {
+      call_socket_api( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
+         if ( $err || !$result || !$result->is_success ) {
+            $reject->( $err // ( $result ? $result->body : 'no response' ) );
+            return;
+         }
+         $resolve->(1);
+      } );
+   } );
+}
+
+# The three-stage tail shared by create() and reconcile_create() below - each _create_run_from_*
+# does its own stage's work then hands off to the next, so create() (which always starts at
+# 'pulling') and a reconciliation resuming from any of the three stages both end up running
+# exactly the same code for every stage they actually need, never a separate recovery-only copy.
+sub _create_run_from_starting ($self) {
+   $self->_create_status_set( { 'stage' => 'starting', 'failed' => 0, 'layers' => {} } );
+   return _create_stage_starting( $self, $self->containerId() )->then( sub (@) {
+      flog("Reservation::create: reservation '" . $self->id() . "' created and started successfully");
+      $self->_create_status_set( { 'stage' => 'done', 'failed' => 0, 'layers' => {} } );
+   } );
+}
+
+sub _create_run_from_creating ($self, $body) {
+   $self->_create_status_set( { 'stage' => 'creating', 'failed' => 0, 'layers' => {} } );
+   return _create_stage_creating( $self, $body )->then( sub (@) {
+      return $self->_create_run_from_starting();
+   } );
+}
+
+sub _create_run_from_pulling ($self, $body) {
+   return _create_stage_pulling( $self, $self->data('image') )->then( sub (@) {
+      return $self->_create_run_from_creating($body);
+   } );
+}
+
+# Shared failure handling for create()/reconcile_create() - flogs, then records createStatus
+# 'failed' with a real error message, preserving whatever per-layer pull progress had already
+# been recorded rather than replacing the whole createStatus hash wholesale (lets the client
+# show where the pull actually died instead of the per-layer detail vanishing the instant
+# 'stage' flips to 'failed' - a failure before any layer progress exists, e.g. cmdline_json()
+# throwing, simply has no layers to preserve, {} either way). Returns the extracted message,
+# for a caller that also needs it for its own $cb.
+sub _create_fail ($self, $err) {
+   my $msg = ( ref($err) eq 'Exception' ) ? $err->msg : "$err";
+   flog("Reservation::create: reservation '" . $self->id() . "' failed: $msg");
+   my $layers = ( ref($self->{'createStatus'}) eq 'HASH' ? $self->{'createStatus'}{'layers'} : undef ) // {};
+   $self->_create_status_set(
+      { 'stage' => 'failed', 'failed' => 1, 'error' => $msg, 'layers' => $layers },
+      { 'expiryTime' => YYYYMMDDHHMMSS(time) }
+   );
+   return $msg;
+}
+
+# Registers this reservation in %CREATE_IN_FLIGHT for $promise's own duration (a
+# create()/reconcile_create() chain already running), clearing it once settled regardless of
+# outcome. $onSettled (default: no one's listening - create()'s own contract has no external
+# consumer for its tail) fires after cleanup, with the terminal ($self,undef)/(undef,$exception)
+# result - reconcile_create() below is the one real consumer, since unlike create()'s
+# fire-fast-then-continue $cb, its own $cb fires exactly once, on settle, with nothing else to
+# ack early.
+sub _create_track ($self, $promise, $onSettled = sub {}) {
+   my $id = $self->id();
+   $CREATE_IN_FLIGHT{$id} = 1;
+
+   $promise->then( sub (@) {
+      $onSettled->( $self, undef );
+   } )->catch( sub ($err) {
+      my $msg = $self->_create_fail($err);
+      $onSettled->( undef, Exception->new( 'msg' => $msg ) );
+   } )->finally( sub (@) {
+      delete $CREATE_IN_FLIGHT{$id};
+   } );
+
+   return;
+}
+
+# Creates and starts this reservation's container - no fork, no PTY, no docker CLI subprocess:
+# builds the Docker Create API body from cmdline_json() (Reservation/Launch.pm), pulls the
+# image first if it isn't already present (with real per-layer progress, not a PTY log-tail),
+# then POST /containers/create and POST /containers/{id}/start, all via call_socket_api.
+# docker-event-daemon's own onContainerStart (/events-driven, unconditional on who issued the
+# docker start) fires the launch DAG exactly as it does today - no signal to DED needed at all.
+#
+# $cb fires exactly once, synchronously, right after the idempotency guard below is written -
+# not once the container is actually created/started. The rest of this sub's own work (image
+# check/pull, create, start) continues independently afterwards, on this same process's event
+# loop, visible only via polling createStatus (see status()'s own comment on its shape) - this
+# preserves a fast-ack-then-poll client UX, which only holds if the initial API call keeps
+# returning quickly rather than waiting for the whole chain. If the process (or, under
+# Mojo::Server::Prefork, just the one worker) driving that background chain dies before it
+# reaches a terminal stage, nothing above this sub notices on its own - see reconcile_create()
+# below and docs/adr/0007-create-restart-recovery.md for what does.
+#
+# Idempotency guard: writes an initial createStatus synchronously, before any Docker call
+# begins, then checks-then-sets with no yield point in between - race-free because a single
+# Mojolicious worker processes one request at a time.
+#
+# Composed with Mojo::Promise, not nested callbacks - the one genuinely multi-step async chain
+# in this file (image check -> optional pull -> create -> start). This is a deliberate, scoped
+# exception to this file otherwise having no Mojolicious-framework dependency at all (no $c, no
+# ->render, no routes) - chosen here specifically because this is the one multi-step chain in
+# the whole file; the alternative (nested callbacks) would be a four-deep pyramid. Not precedent
+# for reaching for Mojo::Promise/Mojo::IOLoop elsewhere in this file - every other _async sub
+# here stays on the plain ($self, ..., $cb) single-callback convention.
+sub create ($self, $cb) {
    my $id = $self->id();
 
-   my @cmd;
-   push(@cmd,
-      $CONFIG->{'docker'}{'bin'},
-      'create',
-      '--cidfile', "$CONFIG->{'tmpPath'}/r-$id.cid",
-      '--label', "owner.username=" . $self->owner('username'),
-      '--label', "owner.name=" . $self->owner('name'),
-
-      # TODO: Configure Profiles to support launch user.
-      # '--user=root',
-
-      @cmdline
-   );
-
-   my $cmd = join(' ', @cmd);
-   $cmd =~ s!\s+! !g;
-
-   flog("Reservation::launch: FORKING TO RUN: $cmd");
-
-   # FIXME: Debug this code by uncommenting this line
-   # return { 'status' => undef, 'msg' => 'failed to launch container', 'cmd' => $cmd, 'dbg' => "XYZZY" };
-
-   flog("Reservation::launch: launching container with reservation id " . $self->id());
-
-   my $pid;
-   if( $pid = fork ) {
-
-      # --------------
-      # PARENT PROCESS
-      # --------------
-
-      # Reap our child process eventually
-      $SIG{'CHLD'} = sub {
-         waitpid $pid, 0; $SIG{'CHLD'} = 'DEFAULT';
-      };
-
-      return $self;
+   if ( $self->{'createStatus'} ) {
+      $cb->( undef, Exception->new( 'msg' => "Reservation '$id' already has a createStatus set; refusing a duplicate create" ) );
+      return;
    }
 
-   # -------------
-   # CHILD PROCESS
-   # -------------
-
-   my $exitCode;
+   my $body;
    try {
-
-      flog("Reservation::launch: RUNNING: $cmd");
-
-      # Set PATH required for 'docker create' to launch external credential helpers, like gcloud.
-      local $ENV{'PATH'} = $CONFIG->{'docker'}{'PATH'};
-      local $ENV{'HOME'} = $CONFIG->{'docker'}{'HOME'} // '/home/dockside';
-
-      # Enable this to simulate slow launches.
-      # sleep(30);
-
-      # Launch 'docker create' command in a subprocess with pty piped to specified file.
-      $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
-
-      my $o = get_config("$CONFIG->{'tmpPath'}/r-$id.cid");
-      flog("Reservation::launch: containerId='$o'; exitCode=$exitCode");
-
-      if( $exitCode != 0 ) {
-         flog("Reservation::launch: 'docker create' failed with exit code $exitCode");
-         die Exception->new( 'msg' => "docker create failed with exit code $exitCode" );
-      }
-
-      if( $o !~ /^([0-9a-f]{12})[0-9a-f]{52}$/i ) {
-         flog("Reservation::launch: 'docker create' failed to output container id");
-         die Exception->new( 'msg' => 'docker create failed to output container id' );
-      }
-
-      # Set containerId in $self
-      $self->containerId($1);
-
-      # Update containerId property in reservation db for $self
-      $self->update( {
-         'containerId' => $self->containerId()
-      } );
-
-      flog("Reservation::launch: updated reservation db successfully");
-
-      # Now the reservation db has been updated with the containerId,
-      # docker-event-daemon will be able to identify the container, when launched, as its responsibility.
-      #
-      # So, start the container.
-      $self->action('start');
-      flog("Reservation::launch: started container");
-
-      exit(0);
+      $body = $self->cmdline_json();
    }
    catch {
-      my $msg = (ref($_) eq 'Exception') ? $_->msg : $_;
-      flog("Reservation::launch: caught exception in 'docker create': '$msg'");
-      # Any exception reaching here means the create FAILED, so createStatus must
-      # be non-zero — status() maps a non-zero createStatus to -4 (failed) but a
-      # zero to -2 (launch in flight).  'docker create' can exit 0 yet still fail
-      # afterwards (e.g. no/garbled container id parsed from the output, which dies
-      # above with $exitCode still 0); use || not // so that post-command failure
-      # records 1 rather than the misleading success value 0.
-      $self->update( {
-         'createStatus' => ($exitCode || 1),
-         'expiryTime'   => YYYYMMDDHHMMSS(time)
-      } );
-      exit(0);
+      my $msg = $self->_create_fail($_);
+      $cb->( undef, Exception->new( 'msg' => "Failed to compile 'docker create' request body, with error: $msg" ) );
    };
+   return unless $body;   # cmdline_json() threw - already reported via $cb above
+
+   $self->_create_status_set( { 'stage' => 'pulling', 'failed' => 0, 'layers' => {} } );
+   $cb->( $self, undef );
+
+   $self->_create_track( $self->_create_run_from_pulling($body) );
+   return;
 }
 
+# Resumes a create() chain interrupted by the process (or, under Mojo::Server::Prefork, just
+# the one worker) that was driving it dying mid-flight - reads createStatus.stage to decide
+# where to resume, per docs/adr/0007-create-restart-recovery.md's own "Ground truth per
+# stage" table. No claim/locking of its own - callers (bin/app-server's startup sweep and
+# periodic reconciler) are responsible for ensuring only one caller ever reconciles a given
+# reservation at a time; the periodic reconciler does this via a single process-wide sweep
+# lock (not a per-reservation claim - see that doc's own "Revision 3" for why a per-reservation
+# claim, tried first, was more machinery than the actual concern needed).
+#
+# $cb fires exactly once, when reconciliation fully settles (success or failure) - unlike
+# create()'s own fire-fast-then-continue contract, nothing is waiting synchronously on this
+# (it's driven by a sweep/timer, not an HTTP request), so there is no early ack to give.
+sub reconcile_create ($self, $cb) {
+   my $stage = ( $self->{'createStatus'} // {} )->{'stage'} // '';
+
+   my $body;
+   try {
+      $body = $self->cmdline_json();
+   }
+   catch {
+      my $msg = $self->_create_fail($_);
+      $cb->( undef, Exception->new( 'msg' => $msg ) );
+   };
+   return unless $body;
+
+   my $chain =
+        $stage eq 'pulling'  ? $self->_create_run_from_pulling($body)
+      : $stage eq 'creating' ? $self->_create_run_from_creating($body)
+      : $stage eq 'starting' ? $self->_create_run_from_starting()
+      : undef;
+
+   unless ($chain) {
+      my $msg = "reservation '" . $self->id() . "' has unreconcilable createStatus.stage '$stage'";
+      flog("Reservation::reconcile_create: $msg");
+      $cb->( undef, Exception->new( 'msg' => $msg ) );
+      return;
+   }
+
+   $self->_create_track( $chain, $cb );
+   return;
+}
+
+# $command is undef for exactly one caller shape: docker-event-daemon's genuine container-start
+# dispatch (a live container-start event, or its deferred pendingLaunch retry once the launcher
+# is ready) - the only case that represents "this devtainer just started". Every other caller
+# (User::updateContainerReservation's 'update_ssh_authorized_keys', and 'restart_ide' if
+# re-enabled) always passes an explicit command naming a one-off action on an already-running
+# container. This distinction (not "is it 'restart_ide'?") is what gates the startCount
+# increment below.
 sub exec ($reservation, $command = undef) {
    my $reservationId = $reservation->id();
    my $containerId = $reservation->containerId();
@@ -1068,13 +1383,30 @@ sub exec ($reservation, $command = undef) {
 
       flog("exec: restarting IDE for reservationId=$reservationId, containerId=$containerId");
 
-      # Store before exec so the UI reflects the intended IDE immediately.
-      $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+      # Store before exec so the UI reflects the intended IDE immediately. Narrow store - see
+      # store_fields' own comment - since this reservation's own launch may concurrently be
+      # writing other, unrelated fields.
+      $reservation->data('runningIDE', $reservation->meta('IDE'));
+      $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
 
       run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', $reservation->unixuser(), $containerId, @Command);
 
       return 1;
    }
+
+   # Server-side start count, injected as DOCKSIDE_START_COUNT so launch.sh can tell a
+   # genuine first start (fires 'lifecycle:launch') from every later restart (fires
+   # 'lifecycle:start' instead - see below). Named for what it actually counts - every
+   # container-start event, including the first - not "launch" in the product-vocabulary sense
+   # of a one-time devtainer creation. Computed here but only persisted after run_system()
+   # below confirms the exec dispatch itself succeeded (it dies on failure) - deliberately
+   # not before: incrementing first would burn a count on a dispatch
+   # that never reached the container at all, permanently skipping 'lifecycle:launch' on what
+   # is still genuinely this devtainer's first real start next time. This does not cover every
+   # failure mode (a dispatch that succeeds but dies inside the container before reaching the
+   # hook still consumes the count) - closing that gap needs a completion signal from inside
+   # the container, which is item D; not a blocker for this.
+   my $startCount = defined($command) ? undef : ($reservation->data('startCount') // 0) + 1;
 
    my $owner = $reservation->owner('username');
    my $user = User->load($owner);
@@ -1126,26 +1458,22 @@ sub exec ($reservation, $command = undef) {
       );
    }
 
-   my @envGit;
-   if( $reservation->gitURL() ) {
-      # SCP-style URLs may use any username (see the gitURL validation regex
-      # above), not just literally 'git@' - match that here too, else
-      # $git_domain is left undef for e.g. 'deploy@host:path'.
-      my ($git_domain) = $reservation->gitURL() =~ m!^(?:https://|[a-zA-Z][\w-]*@)([^:/]+)!;
-      @envGit = (
-         "--env=GIT_URL=" . $reservation->gitURL(),
-         "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"
-      );
-   }
+   my @envCommonHook = $reservation->_hook_env($user);
 
-   my @envOptions = map {
-      "--env=DOCKSIDE_OPTION_" . uc($_) . "=" . ($reservation->data('options') // {})->{$_}
-   } keys %{ $reservation->data('options') // {} };
-
-   my @envGhToken;
-   if( my $token = $user->gh_token() ) {
-      @envGhToken = ( "--env=GH_TOKEN=$token" );
+   # Two separate env slots, not one: this single exec runs the whole perpetual launch_ide
+   # process, which must be able to auto-fire BOTH 'lifecycle:launch' (only on this devtainer's
+   # true first start, gated below on DOCKSIDE_START_COUNT) and 'lifecycle:start' (every start,
+   # including this one) without a second `docker exec` - see item E. Each name's script is
+   # resolved separately since they may differ (or either may be unconfigured).
+   my @envHook;
+   if( my $script = $reservation->hook_script('lifecycle:launch') ) {
+      @envHook = ( "--env=DOCKSIDE_HOOK_SCRIPT=$script" );
    }
+   my @envHookStart;
+   if( my $script = $reservation->hook_script('lifecycle:start') ) {
+      @envHookStart = ( "--env=DOCKSIDE_HOOK_SCRIPT_START=$script" );
+   }
+   my @envStartCount = defined($startCount) ? ( "--env=DOCKSIDE_START_COUNT=$startCount" ) : ();
 
    my @envIDE = (
       "--env=IDE=" . $reservation->meta('IDE')
@@ -1162,16 +1490,19 @@ sub exec ($reservation, $command = undef) {
    );
 
    # Store before exec so the UI reflects the intended IDE immediately,
-   # including during any retry window before the exec succeeds.
-   $reservation->data('runningIDE', $reservation->meta('IDE'))->store();
+   # including during any retry window before the exec succeeds. Narrow store - see
+   # store_fields' own comment.
+   $reservation->data('runningIDE', $reservation->meta('IDE'));
+   $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
 
    run_system($CONFIG->{'docker'}{'bin'}, 'exec', '-d', '-u', 'root',
       ($reservation->ide_command_env()),
       "--env=OWNER_DETAILS=$user_details",
       "--env=SSH_AGENT_KEYS=" . encode_json( $user->keypairs_all() ),
-      @envGit,
-      @envOptions,
-      @envGhToken,
+      @envCommonHook,
+      @envHook,
+      @envHookStart,
+      @envStartCount,
       @envSSH,
       @envDevContainer,
       @envIDE,
@@ -1179,7 +1510,375 @@ sub exec ($reservation, $command = undef) {
       @Command
    );
 
+   # Persist the increment only now that run_system() has confirmed the exec dispatch itself
+   # succeeded (see the comment where $startCount was computed above).
+   $reservation->data('startCount', $startCount)->store() if defined $startCount;
+
    return 1;
+}
+
+# The env vars any hook invocation (the launch-time auto-invoke, dispatched in-process by
+# launch.sh itself, or a later `docker exec ... launch.sh run_hook` built here) needs
+# regardless of which specific hook is running: the same GIT_URL/SSH_KNOWN_HOSTS_DOMAINS,
+# DOCKSIDE_OPTION_* and GH_TOKEN env this reservation's IDE launch already gets - shared here
+# to avoid duplicating/drifting that logic between exec() and dispatch_hook_exec().
+# Deliberately does NOT resolve a hook script path itself - exec() may need up to two script
+# paths at once ('lifecycle:launch' and 'lifecycle:start', see above) and
+# dispatch_hook_exec passes its one script path directly as a launch.sh CLI argument
+# instead (see below), so each caller resolves whichever script(s) it needs itself.
+#
+# Returns `docker` CLI flag strings ("--env=KEY=VALUE"), not plain "KEY=VALUE" - matching
+# exec()'s own @envHook/@envIDE/etc. below, since exec() still shells out to the `docker` CLI
+# directly (run_system(...'exec','-d',...,@envCommonHook,...)). dispatch_hook_exec
+# dispatches via the Docker Engine API's exec/create instead, whose `Env` field wants plain
+# "KEY=VALUE" strings, not "--env=KEY=VALUE" - passing the CLI-flag form straight into that
+# JSON field doesn't error, it just silently creates a nonsense env var literally named
+# "--env" whose value is "KEY=VALUE", so DOCKSIDE_OPTION_* (and GIT_URL/GH_TOKEN) never reach
+# the hook process at all. Fixed at dispatch_hook_exec's own call site (strips the
+# prefix there) rather than changing this function's output format, since exec() still needs
+# the CLI-flag form.
+# Plain "KEY=VALUE" strings for every DOCKSIDE_OPTION_<NAME> this reservation's profile
+# options resolve to - the one place that mapping is computed, so every consumer (currently
+# _hook_env's docker-exec env below, and Reservation::Launch::cmdline_json's docker-create Env)
+# reads the same values off the same $self->data('options') and can never drift apart on what a
+# devtainer's options actually are. Safe to expose at container-create time as well as via
+# docker exec: these are profile-author-declared option *values* (already visible in
+# {option.<name>}-substituted argv via `docker inspect`, and already handed to every hook
+# invocation), not a credential - unlike GIT_URL/GH_TOKEN below, deliberately left docker-exec-
+# only (see docs/extensions/lifecycle-hooks.md's credential-source section for why: a live
+# secret sitting in every process's environment from container boot is a materially different
+# exposure than one only reaching a hook that explicitly asked for it).
+sub _option_env_pairs ($self) {
+   return map {
+      'DOCKSIDE_OPTION_' . uc($_) . '=' . ($self->data('options') // {})->{$_}
+   } keys %{ $self->data('options') // {} };
+}
+
+sub _hook_env ($self, $user) {
+   my @envGit;
+   if( $self->gitURL() ) {
+      # SCP-style URLs may use any username (see the gitURL validation regex in
+      # Reservation::data), not just literally 'git@' - match that here too, else
+      # $git_domain is left undef for e.g. 'deploy@host:path'.
+      my ($git_domain) = $self->gitURL() =~ m!^(?:https://|[a-zA-Z][\w-]*@)([^:/]+)!;
+      @envGit = (
+         "--env=GIT_URL=" . $self->gitURL(),
+         "--env=SSH_KNOWN_HOSTS_DOMAINS=$git_domain"
+      );
+   }
+
+   my @envOptions = map { "--env=$_" } $self->_option_env_pairs();
+
+   my @envGhToken;
+   if( my $token = $user->gh_token() ) {
+      @envGhToken = ( "--env=GH_TOKEN=$token" );
+   }
+
+   return (@envGit, @envOptions, @envGhToken);
+}
+
+# --- Hook status/history storage ---
+#
+# data('hooks') = { status => {...}, history => [...] } - two structures nested under one
+# top-level data key, deliberately different shapes for different jobs:
+#
+# hooks.status is the master record, a hash keyed by hook name - one entry per name, holding
+# its current/last invocation's state. This is what a pre-exec "is this already running?"
+# check (hook_is_running) and a "what happened last time?" query (hook_status) both read.
+# Concurrent dispatches of *different* names on the same reservation must never clobber each
+# other's entries - see Reservation::store_fields' own comment for exactly what
+# that requires (not just "it's a nested hash", which alone isn't sufficient - a writer whose
+# own in-memory copy carries a *stale* copy of a name it isn't even trying to change can still
+# clobber it via an ordinary whole-record store()). _hook_status_store_one below is what
+# actually makes this safe: it persists only the one name being written, via store_fields, so a
+# name genuinely absent from a writer's own payload is never touched on disk, no matter how
+# stale that writer's own snapshot of it is.
+#
+# hooks.history is a bounded, oldest-first array of past invocations across all names.
+# Deliberately NOT maintained via store()/store_fields at all - cloneHash only recurses into
+# hashes; an array value is compared by reference and replaced wholesale, so two concurrent
+# appends via that path would race and the loser's row would simply be lost. record_hook_history()
+# (Reservation::Mutate) instead re-reads the reservation fresh under its own atomic mutate()
+# lock, appends, evicts, and writes back - safe under genuine concurrency.
+
+# Package (not lexical) so docker-event-daemon's own _launch_dispatch_hook_stage - which needs
+# the identical cap for its own hook_claim_if_not_running call, dispatching the same two
+# externally-reachable stage names (lifecycle:launch/lifecycle:start) - can reference it as
+# $Reservation::HOOK_HISTORY_MAX without a second, independently-drifting constant.
+our $HOOK_HISTORY_MAX = 100;
+
+# Internal helpers isolating hooks.status's read/write boilerplate.
+sub _hook_status_all ($self) {
+   return ($self->data('hooks') // {})->{'status'} // {};
+}
+
+# Persists exactly one name's entry - never the whole status hash (see the block comment
+# above for why that distinction matters) - while keeping this process's own in-memory copy
+# consistent too, so a later read in the same process (e.g. hook_status_set_running_details
+# reading back what hook_status_started just wrote a moment earlier) still sees it; only the
+# disk write is narrowed, not this process's own view of its own writes.
+sub _hook_status_store_one ($self, $name, $entry) {
+   my $status = ( $self->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+   $status->{$name} = $entry;
+   $self->store_fields( { 'data' => { 'hooks' => { 'status' => { $name => $entry } } } } );
+}
+
+# Returns true if $name's last-known invocation is still running, per the master record. A
+# cheap, purely *optimizing* pre-exec check (see item B) - it has no visibility into an
+# auto-invoked lifecycle:launch/lifecycle:start run (those never touch this record at all - see
+# item B's auto-invoke exception), so a false "not running" is possible and expected in that
+# specific race. The in-container mkdir lock (run_hook() in launch.sh) remains the actual
+# safety net regardless, exactly as it already is today - this only ever saves a wasted
+# round-trip in the common case, it was never the thing overlap-safety depends on.
+sub hook_is_running ($self, $name) {
+   my $status = $self->_hook_status_all->{$name};
+   return 0 unless $status && ($status->{'state'} // '') eq 'running';
+
+   # Newly-started, before docker_exec()'s own on_created callback has fired yet
+   # (see hook_status_started/hook_status_set_running_details below) - the execId doesn't
+   # exist yet, so there is nothing to check; it is, definitionally, still running.
+   return 1 unless defined($status->{'execId'});
+
+   # Stale-running detection, mirroring run_hook()'s own kill -0 reclaim for its in-container
+   # lock: an app-server/docker-event-daemon process that died before this dispatch's own
+   # completion callback ever ran (OOM, crash, restart) would otherwise wedge this name as
+   # "running" forever. The exec API's own Running state is the only signal available - nothing
+   # forks for this any more, so there is no local pid to check first.
+   my $res = call_socket_api_sync($CONFIG->{'docker'}{'socket'}, "/exec/$status->{'execId'}/json", {});
+   if( $res && $res->is_success ) {
+      my $info = decode_json($res->body);
+      return 1 if $info->{'Running'};
+
+      # Not running, and we have a real answer from the daemon about how it ended - use it,
+      # rather than defaulting to 'aborted' below regardless of what actually happened.
+      if( defined $info->{'ExitCode'} ) {
+         $self->hook_status_completed( $name, {
+            'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
+            'exitCode' => $info->{'ExitCode'},
+         } );
+         return 0;
+      }
+   }
+
+   # No conclusive answer from the daemon - self-heal the record (so a future check, and any
+   # status-read caller, sees 'aborted' rather than a misleadingly eternal 'running') and
+   # report not-running.
+   $self->hook_status_completed($name, { 'state' => 'aborted' });
+   return 0;
+}
+
+# Returns $name's master-record entry (undef if it has never been invoked on this
+# reservation), for a status/log read endpoint to serve. Normalizes the numeric-ish fields
+# (exitCode/timedOut/busy) back to real numbers before returning.
+#
+# The root cause this works around is fixed now (Util::cloneHash no longer stringifies
+# every value it copies as a side effect of comparing it via `ne` - see cloneHash's own
+# comment for the full story), so a freshly-written record no longer needs this. This stays
+# as a safety net for records already persisted to disk as JSON-quoted strings from before
+# that fix - decode_json on an on-disk `"busy":"0"` (a genuine JSON string in the file itself
+# now, not just a Perl-internal flag) always re-decodes as a Perl string, permanently, until
+# that exact field is next written - which normalizing here, rather than depending on every
+# such record eventually being rewritten, makes moot. Cheap, and harmless once every record
+# has been rewritten at least once post-fix, so left in rather than removed.
+sub hook_status ($self, $name) {
+   my $status = $self->_hook_status_all->{$name};
+   return undef unless $status;
+
+   my $clean = { %$status };
+   for my $f (qw(exitCode timedOut busy)) {
+      $clean->{$f} = 0 + $clean->{$f} if defined $clean->{$f};
+   }
+   return $clean;
+}
+
+# Called synchronously before dispatch begins (docker-event-daemon's own launch:-DAG stages
+# only - dispatch_hook_exec's own claim/dispatch, below, uses hook_claim_if_not_running
+# instead), to record that $name has started, so a poller sees 'running' immediately rather
+# than a gap where the record doesn't exist yet. execId is deliberately undef at this point -
+# it only exists once docker_exec's own on_created callback fires - see
+# hook_status_set_running_details, called from that callback once it's known.
+sub hook_status_started ($self, $name, $logPath) {
+   $self->_hook_status_store_one( $name, {
+      'name'      => $name,
+      'state'     => 'running',
+      'execId'    => undef,
+      'logPath'   => $logPath,
+      'startTime' => YYYYMMDDHHMMSS(time),
+   } );
+}
+
+# Called from docker_exec's own on_created callback once the exec id is known - see
+# hook_status_started above for why it can't be known any earlier.
+sub hook_status_set_running_details ($self, $name, $execId) {
+   my $existing = $self->_hook_status_all->{$name} or return;
+   $self->_hook_status_store_one( $name, { %$existing, 'execId' => $execId } );
+}
+
+# Called once the hook has finished, timed out, or been confirmed aborted, recording the
+# outcome on both the master record and the bounded history array. $fields must include
+# 'state' explicitly ('done' or 'aborted') - never defaulted, so a caller can never
+# accidentally leave a completed entry reading 'running' by omission.
+sub hook_status_completed ($self, $name, $fields) {
+   my $entry = { %{ $self->_hook_status_all->{$name} // { 'name' => $name } }, %$fields };
+   $self->_hook_status_store_one( $name, $entry );
+
+   record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
+}
+
+# The one canonical async hook-dispatch core - claims, dispatches via the exec API, and
+# records the outcome start to finish (hook_claim_if_not_running -> hook_status_set_running_
+# details -> hook_status_completed). Both remaining dispatch paths - this on-demand entry
+# point's own run_hook_manual below, and docker-event-daemon's launch DAG (via
+# _launch_dispatch_hook_stage, which just wraps this) - go through it, so there is exactly one
+# place that knows how to dispatch a hook and record its outcome.
+#
+# Two callbacks, not one, because callers need to act at two different points:
+#   $on_claimed->($claimedEntry_or_undef) - fires synchronously, before any Docker I/O, once the
+#      atomic claim (hook_claim_if_not_running) resolves. undef means another invocation already
+#      owns $name (busy) - the caller must not treat this as an error, and dispatch stops here.
+#      A caller that needs to return "started"/"busy" immediately without waiting for the hook to
+#      actually finish (run_hook_manual - matching the fork model's own fire-and-forget shape
+#      exactly, just without the fork) hooks in here only.
+#   $on_settled->($outcome, $err) - fires once dispatch has fully finished: $outcome is one of
+#      hook_status's own state values ('done'/'failed'/'aborted') once the exec resolves, or
+#      $err is set (and $outcome undef) if dispatch couldn't even be attempted. A caller that
+#      needs to know the final result (docker-event-daemon's launch DAG, to call
+#      launch_resolve_stage) hooks in here.
+#
+# Deliberately does NOT repeat run_hook_manual's own on-demand-specific validation gates
+# (declared? implemented? manual?) - a different caller may have entirely different gating;
+# those stay in each caller. $args:
+#   user    - exec user (default: $self->unixuser())
+#   timeout - seconds; defaults to $CONFIG->{'hooks'}{'defaultTimeoutSeconds'}
+sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) {
+   my $invocationId = sprintf( "%08x", int( rand(0xffffffff) ) );
+   my $logPath = "$CONFIG->{'tmpPath'}/r-" . $self->id() . "-hook-$invocationId.log";
+
+   my $claimedEntry = hook_claim_if_not_running( $self->id(), $name, $logPath, $HOOK_HISTORY_MAX );
+   unless ($claimedEntry) {
+      $on_claimed->(undef);
+      return;
+   }
+   # Sync this process's own in-memory copy - see hook_claim_if_not_running's own comment for
+   # why (mutate() only ever wrote a fresh, separately-loaded copy, not $self).
+   ( $self->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $claimedEntry;
+   $on_claimed->($claimedEntry);
+
+   my @Command = $self->ide_command();
+   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::dispatch_hook_exec: ide_command() returned empty' ) unless @Command;
+   $Command[-1] = 'run_hook';
+   push( @Command, $name, $script );
+
+   my $owner = $self->owner('username');
+   my $user  = User->load($owner);
+   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $user;
+
+   my @env = map { my $e = $_; $e =~ s/^--env=//; $e } $self->_hook_env($user);
+
+   my $timeout     = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   my $containerId = $self->containerId();
+
+   flog( "Reservation::dispatch_hook_exec: DISPATCHING (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
+
+   open( my $log, '>>', $logPath )
+      or die Exception->new( 'dbg' => "Reservation::dispatch_hook_exec: cannot open log '$logPath': $!" );
+   $log->autoflush(1);
+
+   docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
+      'Cmd' => \@Command, 'User' => $args->{'user'} // $self->unixuser(), 'Env' => \@env,
+   }, {
+      'inactivity_timeout' => $timeout + 30,
+      'request_timeout'    => $timeout,
+      'on_created' => sub ($execId) { $self->hook_status_set_running_details( $name, $execId ); },
+      'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
+   }, sub ( $result, $err ) {
+      try {
+         close($log);
+
+         if ( !$result ) {
+            flog("Reservation::dispatch_hook_exec: '$name' failed to dispatch: $err");
+            $self->hook_status_completed( $name, { 'state' => 'aborted' } );
+            $on_settled->( 'aborted', $err );
+            return;
+         }
+
+         my $rc       = $result->{'exitCode'};
+         my $timedOut = $result->{'timedOut'} ? 1 : 0;
+         my $busy     = ( defined($rc) && $rc == 2 && !$timedOut ) ? 1 : 0;
+
+         $self->hook_status_completed( $name, {
+            'state'    => 'done',
+            'exitCode' => $rc,
+            'timedOut' => $timedOut,
+            'busy'     => $busy,
+         } );
+         $on_settled->( _hook_outcome_state( $self->hook_status($name) ), undef );
+      }
+      catch {
+         flog("Reservation::dispatch_hook_exec: caught exception resolving '$name': " . ( ref($_) ? $_->dbg : $_ ));
+         $on_settled->( undef, $_ );
+      };
+   } );
+}
+
+# Maps a raw hook_status() record to done/failed/timedOut - the same vocabulary
+# docker-event-daemon's own launch_resolve_stage expects (was
+# _launch_state_from_hook_status, docker-event-daemon-local; now shared since
+# dispatch_hook_exec's $on_settled needs the identical mapping for its own
+# generic 'done'/'failed'/'aborted' outcome, not just the DAG's use of it).
+sub _hook_outcome_state ($status) {
+   return 'failed'   unless $status;
+   return 'failed'   if $status->{'state'} eq 'aborted';
+   return 'timedOut' if $status->{'timedOut'};
+   return ( $status->{'exitCode'} // 1 ) == 0 ? 'done' : 'failed';
+}
+
+# The on-demand entry point for running a hook now (User::runContainerHook, ultimately
+# `dockside hook run`): validates the request, then dispatches via dispatch_hook_exec.
+# $cb fires immediately once the claim resolves - not once the hook itself finishes; the
+# actual dispatch continues in the background, pollable via hook_status/
+# User::runContainerHookStatus.
+sub run_hook_manual ($self, $args, $cb) {
+   my $name = $args->{'name'};
+   die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length( $name // '' );
+
+   # $self->profileObject is this reservation's own profile snapshot from creation time, not a
+   # live read of the profile as it exists now - so if $script is empty, the message below
+   # names both possible causes (a typo, or the hook was added to the profile after this
+   # devtainer was created) without being able to tell which actually applies.
+   my $script = $self->hook_script($name);
+   die Exception->new(
+      'msg' => "No hook '$name' is configured for this devtainer - check the hook name's " .
+               "spelling, or recreate the devtainer if this hook has been added to the " .
+               "profile since it was created",
+      'status' => 400
+   ) unless length($script);
+
+   if ( $name =~ /^lifecycle:/ ) {
+      die Exception->new( 'msg' => "'$name' is reserved for a future release, not runnable yet", 'status' => 400 )
+         unless $name eq 'lifecycle:launch' || $name eq 'lifecycle:start';
+
+      die Exception->new( 'msg' => "'$name' is not configured as manually invocable for this profile (see its 'hooks' entry's 'manual' field)", 'status' => 400 )
+         unless $self->profileObject->hooks->{$name}{'manual'};
+   }
+
+   my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
+      unless $timeout =~ /^[1-9][0-9]*$/;
+
+   $self->dispatch_hook_exec(
+      $name, $script, { 'timeout' => $timeout },
+      sub ($claimedEntry) {
+         return $cb->( { 'busy' => 1 }, undef ) unless $claimedEntry;
+         return $cb->( { 'started' => 1, 'name' => $name }, undef );
+      },
+      sub ( $outcome, $err ) {
+         # Nothing further to do here - dispatch_hook_exec has already persisted the
+         # outcome via hook_status_completed; a client discovers it by polling
+         # User::runContainerHookStatus (the GET /containers/:id/hook/status route), a plain
+         # synchronous read.
+      }
+   );
 }
 
 1;

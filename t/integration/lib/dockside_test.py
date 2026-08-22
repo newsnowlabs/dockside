@@ -512,6 +512,16 @@ class DocksideClient:
             return self._run_mutating('stop', '--timeout', str(timeout), name)
         return self._run_mutating('stop', '--no-wait', name)
 
+    def hook_run(self, name, hook_name, timeout=None):
+        """Run a devtainer's profile-declared hook named `hook_name` now. Raises
+        APIError (via _run_mutating -> _run_once) if the CLI exits non-zero, i.e. on
+        hook failure (exit 1), a run already in progress (exit 3), or a timeout
+        (exit 4) - not just on a transport/API-level error."""
+        args = ['hook', 'run', name, hook_name]
+        if timeout:
+            args += ['--timeout', str(timeout)]
+        return self._run_mutating(*args)
+
     def remove(self, name, wait=False, timeout=60):
         if wait:
             return self._run_mutating('remove', '--force', '--timeout', str(timeout), name)
@@ -695,6 +705,120 @@ def resolve_allow_network_modify(test_mode, override=None):
     return test_mode == 'harness'
 
 
+def resolve_allow_service_restart(test_mode, override=None):
+    """Whether this run may restart Dockside's own s6-supervised services
+    (docker-event-daemon and app-server, for restart-recovery testing).
+
+    Unlike resolve_allow_network_modify, this has no default-True mode at all -
+    not even 'harness'. Restarting a live service needs host sudo/s6 access
+    that even harness mode does not guarantee (CLAUDE.md's mountIDE:false
+    requirement - only some launch profiles give a container that access), and
+    a wrong guess here doesn't just leave a stray Docker network to clean up,
+    it interrupts a real running daemon mid-request for whoever else is using
+    it. Always requires an explicit opt-in.
+
+    Always overridable via DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1/0, or an
+    explicit `override` (e.g. the runner's own attribute, itself derived from
+    the same env var — see callers).
+    """
+    env_val = os.environ.get('DOCKSIDE_TEST_ALLOW_SERVICE_RESTART', '').strip()
+    if env_val == '1':
+        return True
+    if env_val == '0':
+        return False
+    if override is not None:
+        return override
+    return False
+
+
+def _svstat_pid(output):
+    m = re.search(r'up \(pid (\d+)\)', output)
+    return m.group(1) if m else None
+
+
+def restart_docker_event_daemon(timeout=15):
+    """Restart docker-event-daemon via s6 and wait for it to report a new pid.
+
+    Infra-level action, not a devtainer operation - deliberately NOT a CLI
+    command (see CLAUDE.md's t/integration hard rules, point 5: the harness
+    may keep self-contained low-level helpers that bypass the CLI for exactly
+    this kind of concern - the same reasoning create_and_attach_test_network
+    above already relies on for direct `docker network` calls).
+
+    Raises CapabilityUnavailable if sudo/s6 access to the service isn't there
+    at all (wrong environment - see resolve_allow_service_restart's own
+    comment for why that's a legitimate, expected skip case, not a test
+    failure). Raises AssertionError if the restart was issued but the service
+    didn't come back up with a new pid within `timeout` (that IS a failure -
+    a stuck/crash-looping service, not an environment gap).
+    """
+    svc = '/etc/service/docker-event-daemon'
+    probe = subprocess.run(['sudo', '-n', 's6-svstat', svc], capture_output=True, text=True, timeout=10)
+    if probe.returncode != 0:
+        raise CapabilityUnavailable(
+            f'docker-event-daemon not reachable via sudo s6-svstat (rc={probe.returncode}, '
+            f'stderr={probe.stderr.strip()!r}) - needs a mountIDE:false environment with our '
+            f'own writable /opt/dockside, see CLAUDE.md\'s testing-capability matrix'
+        )
+    before_pid = _svstat_pid(probe.stdout)
+
+    r = subprocess.run(['sudo', '-n', 's6-svc', '-r', svc], capture_output=True, text=True, timeout=10)
+    if r.returncode != 0:
+        raise CapabilityUnavailable(
+            f'sudo s6-svc -r {svc} failed (rc={r.returncode}, stderr={r.stderr.strip()!r})'
+        )
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        probe = subprocess.run(['sudo', '-n', 's6-svstat', svc], capture_output=True, text=True, timeout=10)
+        pid = _svstat_pid(probe.stdout) if probe.returncode == 0 else None
+        if pid and pid != before_pid:
+            return
+    raise AssertionError(f'docker-event-daemon did not come back up with a new pid within {timeout}s of restart')
+
+
+def restart_app_server(timeout=15):
+    """Restart app-server via s6 and wait for it to report a new pid.
+
+    Same shape and same reasoning as restart_docker_event_daemon above - see its own
+    docstring, with one deliberate difference: this uses `-t`, not `-r`. `-r` is the
+    documented day-to-day restart command (CLAUDE.md), but app-server's own `down-signal`
+    file makes `-r` deliver a graceful `SIGQUIT` there - it would only exercise the exit
+    handler's drain, not the recovery path this test targets. `-t` always sends a bare
+    SIGTERM regardless of `down-signal` (confirmed live -
+    docs/adr/0007-create-restart-recovery.md), which Mojo::Server::Prefork's manager
+    treats as *non-graceful* (immediate SIGKILL of every worker, no drain) - standing in
+    here for any hard-kill scenario a graceful path can't intercept (OOM kill, `docker kill`,
+    host power loss), so this test proves the startup-sweep recovery itself, independent of
+    whether a graceful shutdown got a chance to run at all.
+    """
+    svc = '/etc/service/app-server'
+    probe = subprocess.run(['sudo', '-n', 's6-svstat', svc], capture_output=True, text=True, timeout=10)
+    if probe.returncode != 0:
+        raise CapabilityUnavailable(
+            f'app-server not reachable via sudo s6-svstat (rc={probe.returncode}, '
+            f'stderr={probe.stderr.strip()!r}) - needs a mountIDE:false environment with our '
+            f'own writable /opt/dockside, see CLAUDE.md\'s testing-capability matrix'
+        )
+    before_pid = _svstat_pid(probe.stdout)
+
+    r = subprocess.run(['sudo', '-n', 's6-svc', '-t', svc], capture_output=True, text=True, timeout=10)
+    if r.returncode != 0:
+        raise CapabilityUnavailable(
+            f'sudo s6-svc -t {svc} failed (rc={r.returncode}, stderr={r.stderr.strip()!r})'
+        )
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        probe = subprocess.run(['sudo', '-n', 's6-svstat', svc], capture_output=True, text=True, timeout=10)
+        pid = _svstat_pid(probe.stdout) if probe.returncode == 0 else None
+        if pid and pid != before_pid:
+            return
+    raise AssertionError(f'app-server did not come back up with a new pid within {timeout}s of restart')
+
+
 def create_and_attach_test_network(admin_client, ctr, probe_profile, probe_name,
                                     timeout=45, interval=3):
     """Create a throwaway Docker network, attach it to `ctr`, and wait until Dockside
@@ -781,6 +905,7 @@ class TestCase:
     test_mode = 'remote'       # 'local', 'remote', 'harness'
     harness_container_id = None
     allow_network_modify = None  # None = use mode default; True/False = explicit override
+    allow_service_restart = None  # None = use mode default (always False); True/False = explicit override
 
     # Dynamic test resource names (injected by TestRunner; may include suffix)
     test_username_dev1    = 'inttest-dev1'
@@ -840,6 +965,16 @@ class TestCase:
         just supplies this run's test_mode and allow_network_modify class attribute.
         """
         return resolve_allow_network_modify(self.test_mode, self.allow_network_modify)
+
+    def can_restart_services(self):
+        """Whether this test run may restart Dockside's own s6 services (e.g.
+        docker-event-daemon, for restart-recovery testing).
+
+        See resolve_allow_service_restart() for the default/override logic (an
+        explicit opt-in is always required - unlike can_modify_networks(),
+        there is no mode that defaults this on).
+        """
+        return resolve_allow_service_restart(self.test_mode, self.allow_service_restart)
 
     # ── Assertions ────────────────────────────────────────────────────────────
 

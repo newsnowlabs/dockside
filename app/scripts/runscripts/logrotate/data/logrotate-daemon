@@ -5,5 +5,13 @@
 
 /usr/sbin/logrotate ./data/logrotate.d/nginx.conf ./data/logrotate.d/dockside.conf
 
+# Prune old hook-invocation log files (tmpPath/r-<id>-hook-<invocationId>.log). These are
+# one-shot/static, not growing, so logrotate itself is the wrong tool for them - age-based
+# pruning here instead covers both: history-evicted logs from a still-live reservation
+# (Reservation::Mutate's record_hook_history caps the JSON history array, not the log files
+# evicted entries point at) and logs orphaned by reservation removal (which never touches
+# tmpPath). Glob is narrow enough to leave tmpPath/create-reconcile.lock untouched.
+[ -d "$TMP_PATH" ] && find "$TMP_PATH" -maxdepth 1 -name 'r-*-hook-*.log' -mtime +"$HOOK_LOG_RETENTION_DAYS" -delete 2>/dev/null
+
 # Sleep
 snore 60

@@ -70,7 +70,8 @@ my @CONTAINER_PERMISSIONS = (
    'startContainer', # Permission to start a container
    'stopContainer', # Permission to stop a container
    'removeContainer', # Permission to remove a container
-   'getContainerLogs' # Permission to retrieve container logs
+   'getContainerLogs', # Permission to retrieve container logs
+   'runContainerHooks' # Permission to run a container's profile-declared lifecycle hook
 );
 
 our $USER_PASSWD;
@@ -521,11 +522,6 @@ sub reservations ($self, $opts = {}) {
       # Skip containers the user isn't allowed to view.
       next unless $self->can_on( $reservation, 'view' );
 
-      # If container is not yet created, then update launch logs.
-      if($reservation->{'status'} == -2) {
-         $reservation->load_launch_logs();
-      }
-
       # If the data will be used externally (i.e. sent to the client),
       # make a copy, sanitise to remove unneeded data and annotate it with permissions data.
       # WARNING: Be careful to avoid storing the sanitised copy back into the reservations database!
@@ -922,11 +918,21 @@ sub updateContainerReservation ($self, $args) {
    # Create a deep clone of the original reservation for comparison
    my $origReservation = dclone($reservation);
 
-   # Update metadata fields if they are defined in the arguments
+   # Update metadata fields if they are defined in the arguments. Tracks which ones were
+   # actually touched (split by whether each lives under meta vs data - see set()'s own
+   # per-property branches) so the eventual store only sends what this request actually
+   # changed, not this process's entire in-memory copy of every meta/data field - see
+   # Reservation::store_fields' own comment for why a blind full store() risks clobbering a
+   # fresher value some concurrent writer (another admin's own edit, or this same devtainer's
+   # own docker-event-daemon launch dispatch if it's still mid-launch) already persisted.
+   my %touchedMeta;
+   my %touchedData;
    foreach my $m (qw( access viewers developers private network description IDE )) {
       if(defined($args->{$m})) {
-         $self->set($reservation, $m, $args->{$m}) || 
+         $self->set($reservation, $m, $args->{$m}) ||
             die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
+         if( $m eq 'network' ) { $touchedData{$m} = $reservation->data($m); }
+         else { $touchedMeta{$m} = $reservation->meta($m); }
       }
    }
 
@@ -934,9 +940,13 @@ sub updateContainerReservation ($self, $args) {
    # (if container is not running runningIDE should mirror requested IDE immediately)
    if(!$reservation->is_running) {
       $reservation->data('runningIDE', $reservation->meta('IDE'));
+      $touchedData{'runningIDE'} = $reservation->data('runningIDE');
    }
 
-   $reservation->store();
+   $reservation->store_fields( {
+      ( %touchedMeta ? ( 'meta' => \%touchedMeta ) : () ),
+      ( %touchedData ? ( 'data' => \%touchedData ) : () ),
+   } );
 
    # Only reconcile Docker network attachment when the requested network changed.
    if( ($origReservation->data('network') // '') ne ($reservation->data('network') // '') ) {
@@ -967,7 +977,7 @@ sub updateContainerReservation ($self, $args) {
 
 # Stops, starts or removed a container.
 # Named in camelCase for consistency with current REST API call.
-sub controlContainer ($self, $cmd, $id, $args = {}) {
+sub controlContainer ($self, $cmd, $id, $args = {}, $cb = undef) {
    if( $id !~ m!^([0-9a-f]+)$! || $cmd !~ m!^(stop|start|remove|getLogs)$! ) {
       die Exception->new( 'msg' => "command '$cmd' with invalid argument '$id' failed" );
    }
@@ -983,17 +993,90 @@ sub controlContainer ($self, $cmd, $id, $args = {}) {
       die Exception->new( 'msg' => "You need the 'develop' permission to execute '$cmd' on this devtainer" );
    }
 
-   # Execute the requested command.
+   # Execute the requested command. Narrow store - see Reservation::store_fields' own comment -
+   # since this container's own launch DAG (docker-event-daemon) may concurrently be writing
+   # other, unrelated fields once 'start' actually takes effect.
    if($cmd eq 'start' && !$container->is_running) {
-      $container->data('runningIDE', $container->meta('IDE'))->store();
+      $container->data('runningIDE', $container->meta('IDE'));
+      $container->store_fields( { 'data' => { 'runningIDE' => $container->data('runningIDE') } } );
    }
 
-   return $container->action($cmd, $args);
+   # $cb present (bin/app-server's native stop/start/remove routes) => async, via
+   # action, no fork, no docker CLI subprocess. $cb absent => the getLogs route, the
+   # one caller that stays on the synchronous getLogs() path deliberately - see getLogs()'s
+   # own comment for why.
+   return $container->action($cmd, $args, $cb) if $cb;
+   return $container->getLogs($args);
+}
+
+# Runs a container's profile-declared hook (named by $args->{'name'}) on demand (e.g. a user has
+# changed the 'branch'/'pr' options and wants their devtainer to switch now, without a full
+# relaunch). Named/shaped like controlContainer above. $args is forwarded opaquely to
+# run_hook_manual, which requires and validates 'name' itself - nothing here needs to know
+# its shape.
+#
+# $cb is required: bin/app-server's native hook route is this method's only caller now - the
+# old synchronous (forking) fallback, and the App.pm route that was its only caller, are both
+# gone (audited first - no other caller existed).
+sub runContainerHook ($self, $id, $args, $cb) {
+   if( $id !~ m!^([0-9a-f]+)$! ) {
+      die Exception->new( 'msg' => "hook run with invalid argument '$id' failed" );
+   }
+
+   if( !$self->has_permission('runContainerHooks') ) {
+      die Exception->new( 'msg' => "You need the 'runContainerHooks' permission to run a devtainer's hook" );
+   }
+
+   my $container = $self->reservation($id);
+
+   if( !$self->can_on( $container, 'develop' )) {
+      die Exception->new( 'msg' => "You need the 'develop' permission to run a hook on this devtainer" );
+   }
+
+   return $container->run_hook_manual($args, $cb);
+}
+
+# Reads a container's hook invocation status/log (named by $args->{'name'}), for a client to
+# poll now that runContainerHook above dispatches non-blockingly and returns almost
+# immediately. Same permission model as runContainerHook - reading a hook's own status/log
+# needs the same permissions as running it in the first place, not a separate lesser one.
+# Returns { status, output }:
+# status is hook_status($name)'s master-record entry (undef if $name has never been invoked
+# on this devtainer), output is load_hook_log($name)'s tailed log lines ([] if there is
+# nothing to show yet, for either reason).
+sub runContainerHookStatus ($self, $id, $args = {}) {
+   if( $id !~ m!^([0-9a-f]+)$! ) {
+      die Exception->new( 'msg' => "hook status read with invalid argument '$id' failed" );
+   }
+
+   if( !$self->has_permission('runContainerHooks') ) {
+      die Exception->new( 'msg' => "You need the 'runContainerHooks' permission to read a devtainer's hook status" );
+   }
+
+   my $container = $self->reservation($id);
+
+   if( !$self->can_on( $container, 'develop' )) {
+      die Exception->new( 'msg' => "You need the 'develop' permission to read a hook's status on this devtainer" );
+   }
+
+   my $name = $args->{'name'};
+   die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
+
+   return {
+      'status' => $container->hook_status($name),
+      'output' => $container->load_hook_log($name),
+   };
 }
 
 # Creates a Reservation object, stores it, and attempts to launch a container for that Reservation.
 # Named in camelCase for consistency with current REST API call.
-sub createContainerReservation ($self, $args) {
+#
+# $cb is required: bin/app-server's native create route is this method's only caller now -
+# async throughout (getGitDevContainer, then store(), then create - no fork, no
+# blocking GitHub fetch, no docker CLI subprocess). The old synchronous fallback, and the
+# App.pm route that was its only caller, are both gone (audited first - no other caller
+# existed).
+sub createContainerReservation ($self, $args, $cb) {
    # Launch new container.
    if( !$self->has_permission( 'createContainerReservation' ) ) {
       die Exception->new( 'msg' => "You need the 'createContainerReservation' permission to launch a devtainer" );
@@ -1015,7 +1098,7 @@ sub createContainerReservation ($self, $args) {
    );
 
    foreach my $m (qw( profile image runtime network unixuser access viewers developers private description gitURL IDE options )) {
-      $self->set($reservation, $m, $args->{$m}) || 
+      $self->set($reservation, $m, $args->{$m}) ||
          die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
    }
 
@@ -1024,25 +1107,43 @@ sub createContainerReservation ($self, $args) {
    # Test if we can construct the command line; on failure, we'll throw an error.
    $reservation->cmdline();
 
-   my $dc = $reservation->getGitDevContainer();
-   if($dc) {
+   $reservation->getGitDevContainer( sub ($dc) {
+      if ($dc) {
+         if($dc->{'image'}) {
+            $reservation->data('image', $dc->{'image'});
 
-      if($dc->{'image'}) {
-         $reservation->data('image', $dc->{'image'});
-         
-         if(!$dc->{'overrideCommand'}) {
-            $reservation->data('entrypoint', '/bin/sh');
-            $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+            if(!$dc->{'overrideCommand'}) {
+               $reservation->data('entrypoint', '/bin/sh');
+               $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+            }
          }
+
+         $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
+         $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
+         $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
       }
 
-      $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
-      $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
-      $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
-   }
-
-   # Store, launch, and create a sanitised clone of the reservation object, before returning.
-   return $self->createClientReservation( $reservation->store()->launch() );
+      # Store, then create/launch asynchronously, then hand $cb a sanitised clone of the
+      # reservation object. A full (not narrowed) store() is correct here specifically: this
+      # reservation id has never been persisted before this call, so no other process can
+      # possibly be concurrently writing to it - none of Reservation::store_fields' concerns (a
+      # stale in-memory copy of some unrelated field clobbering a fresher one) apply to a
+      # record's very first write. Wrapped in try/catch because this whole callback runs outside
+      # the caller's own try/catch frame (it fires later, off the event loop, once the GitHub
+      # fetch above resolves) - an uncaught die here would be an uncaught exception inside a Mojo
+      # completion callback, not something bin/app-server's own surrounding try/catch could ever
+      # see (see docker_exec's own comment on this same hazard, Util.pm).
+      try {
+         $reservation->store()->create( sub ($createdReservation, $err) {
+            return $cb->( undef, $err ) if $err;
+            return $cb->( $self->createClientReservation($createdReservation), undef );
+         } );
+      }
+      catch {
+         $cb->( undef, $_ );
+      };
+   } );
+   return;
 }
 
 1;
