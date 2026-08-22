@@ -15,17 +15,23 @@
    "images": [
       "ubuntu:latest",
       "debian:latest",
-      "alpine:latest"
+      "alpine:latest",
+      "*"
    ],
-   "gitURLs": ["*"],
+   "gitURLs": [
+      "https://github.com/newsnowlabs/dockside",
+      "https://github.com/newsnowlabs/runcvm",
+      "*"
+   ],
    "unixusers": ["dockside"],
    "options": [
       {
          "name": "branch",
          "label": "Branch",
-         "type": "text",
+         "type": "combo",
          "default": "",
-         "placeholder": "e.g. main, feature/my-feature (leave blank for default)"
+         "values": ["main"],
+         "placeholder": "main, or type another branch name (leave blank for default)"
       },
       {
          "name": "pr",
