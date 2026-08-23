@@ -1,6 +1,6 @@
 # ADR-0008: Live-reservation router add/remove/replace
 
-- **Status:** Implemented (server API + CLI; Vue UI not yet built)
+- **Status:** Implemented
 - **Date:** 2026-08-20
 - **Deciders:** Struan Bartlett
 
@@ -132,8 +132,9 @@ complexity there. `remove`/`replace` are unaffected.
 - Existing profiles are unaffected: `userRouters` defaults off, and the removal path has no new
   gate for admin-authored routers at all (permission + developer standing was already the bar for
   every other per-container mutation).
-- Vue UI surface (devtainer edit-state controls, admin permission-screen entries) is designed but
-  not yet built.
+- This ADR covers the server API and CLI only. A Vue UI surface (devtainer edit-state controls,
+  admin permission-screen entries) is a separate, independently-schedulable piece of work built
+  on the same API — its design is not this ADR's concern, and nothing here depends on it existing.
 - Listening-port autodetection (VS Code-style auto-forwarding) is an explicitly out-of-scope future
   extension; if built, it should call these same `add_router`/`remove_router` primitives rather
   than a separate code path.
