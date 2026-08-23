@@ -238,10 +238,18 @@ my %LAUNCH_STAGES = (
    'launch:ide' => {
       depends_on => ['launch:prep'],
       dispatch   => sub ($reservation, $cb) {
-         _launch_dispatch_exec( $reservation, 'launch:ide', 'launch_ide', $NONROOT_USER->($reservation), {
-            'detach'    => 1,
-            'extra_env' => [ "IDE=" . $reservation->meta('IDE') ],
-         }, $cb );
+         # A profile whose devtainer runs an older, pre-split launch.sh (Profile::
+         # ide_launch_version - only possible at all when mountIDE:false, since a mounted IDE is
+         # always the outer's own, in-sync copy) has no separate launch_prep/launch_git to have
+         # run - launch:prep/launch:git were skipped outright for it (see launch_reset_stages),
+         # never dispatched. Its single launch_ide already does all three stages' own work, so
+         # it takes over here instead of the split interface's slimmed-down, nonroot-only call.
+         ( $reservation->profileObject->ide_launch_version == 0 )
+            ? _launch_dispatch_legacy_ide( $reservation, $cb )
+            : _launch_dispatch_exec( $reservation, 'launch:ide', 'launch_ide', $NONROOT_USER->($reservation), {
+                 'detach'    => 1,
+                 'extra_env' => [ "IDE=" . $reservation->meta('IDE') ],
+              }, $cb );
       },
    },
    'lifecycle:launch' => {
@@ -299,6 +307,16 @@ sub launch_reset_stages ($reservation) {
       $reservation->id(), \@LAUNCH_STAGE_NAMES, $Reservation::HOOK_HISTORY_MAX );
    my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
    %$status = ( %$status, %$written );
+
+   # A launch-version-0 profile's own launch.sh (Profile::ide_launch_version) predates the
+   # launch:prep/launch:git split - it has no launch_prep/launch_git functions for those stages
+   # to exec, only the single, older launch_ide that does all three stages' own work itself (see
+   # launch:ide's dispatch above). Resolving both 'skipped' immediately, rather than leaving them
+   # 'pending' to dispatch and fail against a function that doesn't exist, is what lets
+   # _launch_deps_cleared('launch:ide') pass on launch_advance's very first pass.
+   if ( $reservation->profileObject->ide_launch_version == 0 ) {
+      launch_resolve_stage( $reservation, $_, 'skipped' ) for ( 'launch:prep', 'launch:git' );
+   }
 }
 
 # True if this reservation's launch DAG still has work left. launch:ide is deliberately excluded
@@ -460,22 +478,12 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
    } );
 }
 
-# launch:prep's own dispatch - not just a plain _launch_dispatch_exec call, because this stage
-# carries two things specific to it alone, both preserved from the pre-item-F single-exec
-# design this whole split replaces: (1) SSH-related env (only when this profile has ssh enabled
-# at all) plus OWNER_DETAILS/SSH_AGENT_KEYS; (2) DOCKSIDE_START_COUNT's compute-before/persist-
-# after-confirmed-success dance - computed here as a *prospective* value (purely informational
-# for the container), but only ever persisted via on_success once _launch_dispatch_exec confirms
-# real success - never on a failed or merely-attempted dispatch, which would otherwise burn a
-# count on a launch that never actually happened. This is exactly the moment data('startCount')
-# becomes the value launch:git's own dispatch and the lifecycle:launch/lifecycle:start
-# 'applicable' predicates read afterward - by the time either dispatches, launch:prep has
-# already succeeded, so the count is already final.
-sub _launch_dispatch_prep ($reservation, $cb) {
-   my $owner = $reservation->owner('username');
-   my $userObj = User->load($owner);
-   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $userObj;
-
+# SSH-related env (only when this profile has ssh enabled at all) plus OWNER_DETAILS/
+# SSH_AGENT_KEYS - shared by launch:prep and, for a launch-version-0 profile (Profile::
+# ide_launch_version), the single combined legacy dispatch below: both ultimately feed the same
+# root-privileged launch.sh setup (create_user/launch_sshd), just via a different entry-point
+# function on the container side.
+sub _launch_prep_env ($reservation, $userObj) {
    my @env;
    if ( $reservation->profileObject->ssh ) {
       my @developersMeta = split( ',', $reservation->meta('developers') );
@@ -497,6 +505,26 @@ sub _launch_dispatch_prep ($reservation, $cb) {
       "OWNER_DETAILS=" . encode_json( $userObj->details_full ),
       "SSH_AGENT_KEYS=" . encode_json( $userObj->keypairs_all() );
 
+   return @env;
+}
+
+# launch:prep's own dispatch - not just a plain _launch_dispatch_exec call, because this stage
+# carries two things specific to it alone, both preserved from the pre-item-F single-exec
+# design this whole split replaces: (1) _launch_prep_env's own SSH/owner env; (2)
+# DOCKSIDE_START_COUNT's compute-before/persist-after-confirmed-success dance - computed here as
+# a *prospective* value (purely informational for the container), but only ever persisted via
+# on_success once _launch_dispatch_exec confirms real success - never on a failed or merely-
+# attempted dispatch, which would otherwise burn a count on a launch that never actually
+# happened. This is exactly the moment data('startCount') becomes the value launch:git's own
+# dispatch and the lifecycle:launch/lifecycle:start 'applicable' predicates read afterward - by
+# the time either dispatches, launch:prep has already succeeded, so the count is already final.
+sub _launch_dispatch_prep ($reservation, $cb) {
+   my $owner = $reservation->owner('username');
+   my $userObj = User->load($owner);
+   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $userObj;
+
+   my @env = _launch_prep_env( $reservation, $userObj );
+
    # Store before dispatch so the UI reflects the intended IDE immediately, including during
    # any retry window before the dispatch succeeds. Narrow store - see store_fields' own comment.
    $reservation->data( 'runningIDE', $reservation->meta('IDE') );
@@ -512,6 +540,44 @@ sub _launch_dispatch_prep ($reservation, $cb) {
 
    return _launch_dispatch_exec( $reservation, 'launch:prep', 'launch_prep', $ROOT_USER->($reservation), {
       'extra_env'  => [ @env, "DOCKSIDE_START_COUNT=$startCount" ],
+      'on_success' => sub ($reservation) { $reservation->increment_start_count(); },
+   }, $cb );
+}
+
+# launch:ide's dispatch for a launch-version-0 profile (Profile::ide_launch_version): a devtainer
+# whose own launch.sh - never the outer's own, since this can only happen when mountIDE:false -
+# predates the launch:prep/launch:git split. Its single launch_ide entry point does all three
+# stages' own work itself (create_user/launch_sshd, then git clone/checkout, then the actual IDE
+# process), so this combines launch:prep's and launch:git's own env - both were resolved
+# 'skipped' outright rather than ever dispatched, see launch_reset_stages - into the one call.
+# Dispatched as root, not the split interface's nonroot: that interface's own slimmed-down
+# launch_ide only needs the nonroot user launch:prep already created; this container's
+# launch_ide still starts with create_user itself, which needs root exactly as launch:prep does.
+#
+# on_success here fires once dispatch is confirmed to have started (same as the split
+# interface's own launch:ide - see _launch_dispatch_exec's own comment on why Detach never
+# resolves via a real exit code), not once the launch has actually finished - there is no
+# separate bounded stage left to observe real completion on, since this container's own
+# launch_ide covers everything in one perpetual call.
+sub _launch_dispatch_legacy_ide ($reservation, $cb) {
+   my $owner = $reservation->owner('username');
+   my $userObj = User->load($owner);
+   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $userObj;
+
+   my @env = _launch_prep_env( $reservation, $userObj );
+   my $startCount = ( $reservation->data('startCount') // 0 ) + 1;
+
+   $reservation->data( 'runningIDE', $reservation->meta('IDE') );
+   $reservation->store_fields( { 'data' => { 'runningIDE' => $reservation->data('runningIDE') } } );
+
+   return _launch_dispatch_exec( $reservation, 'launch:ide', 'launch_ide', $ROOT_USER->($reservation), {
+      'detach'     => 1,
+      'extra_env'  => [
+         @env,
+         "DOCKSIDE_START_COUNT=$startCount",
+         "DEVCONTAINER_VSCODE_EXTENSIONS=" . encode_json( $reservation->data('vscode') ),
+         "IDE=" . $reservation->meta('IDE'),
+      ],
       'on_success' => sub ($reservation) { $reservation->increment_start_count(); },
    }, $cb );
 }

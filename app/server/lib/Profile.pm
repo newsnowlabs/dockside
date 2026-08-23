@@ -244,6 +244,7 @@ sub validate ($self) {
          description=s
          active=b!
          mountIDE=b
+         docksideLaunchVersion
          routers=@
          runtimes=@
          networks=@
@@ -364,6 +365,15 @@ sub do_validate ($self, $type, $data, @propcodes) {
       $self->$sub( "$type.$prop", $data->{$prop} );
    }
 
+}
+
+# Not =b: unlike mountIDE, this isn't a 0/1 flag - it's an open-ended interface version number
+# (see Profile::ide_launch_version), so the generic 'b' code's != 0 && != 1 check would reject
+# any future version beyond 1.
+sub validate_profile_docksideLaunchVersion ($self, $type, $data) {
+   unless( !ref($data) && $data =~ /^\d+$/ ) {
+      return $self->errors( $type, "must be a non-negative integer" );
+   }
 }
 
 sub validate_profile_IDEs ($self, $type, $data) {
@@ -781,6 +791,21 @@ sub should_mount_ide ($self) {
    return 1 unless exists($self->{'mountIDE'}) && $self->{'mountIDE'} == 0;
 
    return 0;
+}
+
+# A mountIDE:false devtainer supplies its own /opt/dockside (self-installed from its own image
+# on launch), unlike mountIDE:true, which bind-mounts the outer Dockside's own IDE volume and so
+# always runs the exact same launch.sh the outer does. Only the mountIDE:false case can ever run
+# a launch.sh of a different generation than the outer's own - docksideLaunchVersion lets such a
+# profile declare which launch.sh interface its devtainer actually speaks, so docker-event-daemon
+# can dispatch accordingly instead of assuming its own current interface. Ignored when mountIDE
+# is true: that case is always in sync by construction, so no version is meaningful there.
+#
+# Version 0 is the interface predating the launch:prep/launch:git split (a single monolithic
+# launch_ide covering user/sshd/git/IDE setup); version 1 (the default) is the current split
+# launch:prep -> {launch:git, launch:ide} interface docker-event-daemon otherwise assumes.
+sub ide_launch_version ($self) {
+   return $self->{'docksideLaunchVersion'} // 1;
 }
 
 sub run_docker_init ($self) {
