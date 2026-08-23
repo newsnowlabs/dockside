@@ -12,6 +12,7 @@ package Profile;
 use v5.36;
 
 use JSON;
+use Scalar::Util qw(looks_like_number);
 use Storable qw(dclone);
 use Data qw($CONFIG $HOSTNAME $HOSTINFO);
 use Util qw(flog TO_JSON);
@@ -244,7 +245,7 @@ sub validate ($self) {
          description=s
          active=b!
          mountIDE=b
-         docksideLaunchVersion
+         docksideLaunchVersion=n
          routers=@
          runtimes=@
          networks=@
@@ -338,6 +339,11 @@ sub do_validate ($self, $type, $data, @propcodes) {
          next;
       }
 
+      if( $props->{$prop}->{'n'} && ( ref($data->{$prop}) || !looks_like_number($data->{$prop}) ) ) {
+         $self->errors( $type, sprintf( 'property "%s" must be JSON type Number, not %s', $prop, $data->{$prop} ) );
+         next;
+      }
+
       if( $props->{$prop}->{'s'} && ref($data->{$prop}) ) {
          $self->errors( $type, sprintf( 'property "%s" must be JSON type String', $prop ) );
          next;
@@ -367,11 +373,11 @@ sub do_validate ($self, $type, $data, @propcodes) {
 
 }
 
-# Not =b: unlike mountIDE, this isn't a 0/1 flag - it's an open-ended interface version number
-# (see Profile::ide_launch_version), so the generic 'b' code's != 0 && != 1 check would reject
-# any future version beyond 1.
+# The generic =n code (see do_validate) only rules out a non-number; a version number (see
+# Profile::ide_launch_version) is narrower still - a non-negative integer - so this refines it
+# beyond what the generic check alone allows (e.g. a negative or fractional value).
 sub validate_profile_docksideLaunchVersion ($self, $type, $data) {
-   unless( !ref($data) && $data =~ /^\d+$/ ) {
+   unless( $data =~ /^\d+$/ ) {
       return $self->errors( $type, "must be a non-negative integer" );
    }
 }
