@@ -12,7 +12,8 @@ Dockside enables the IDE by default for all new devcontainers. To disable it glo
 `"ide": { "default": false }` in `config.json`. To disable it in an individual profile, set
 `"ide": false` in the profile. Either way, a profile with the IDE switched off resolves its `IDEs`
 list to `["none"]` regardless of whatever real IDE patterns it configured, and no `ide` router is
-added — the devtainer never spends any resources launching an IDE.
+added — the devtainer never spends any resources launching an IDE. (A profile that also
+hand-declares its own `ide` router keeps it, unreachable, rather than having it stripped.)
 
 For maximum resource savings on a constrained host, combine this with SSH access — see
 [Integrated SSH server support](ssh.md).
