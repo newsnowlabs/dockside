@@ -33,31 +33,24 @@
 </template>
 
 <script>
-   // Reusable "pick from a fixed list, or (if allowFreeEntry) type your own" input.
-   // Originally the image/gitURL fields each hand-rolled this same branch (native
-   // <select> vs. an @trevoreyre/autocomplete-vue combobox) against their own
-   // hardcoded values/wildcard-detection; this factors that out so profile 'options'
-   // of type 'combo' can reuse it too. See Container.vue for the two callers that
-   // derive allowFreeEntry from a '*' entry in the raw profile values (image/gitURL's
-   // existing wildcard convention) versus an explicit option type (combo).
+   // A "pick from a fixed list, or (if allowFreeEntry) type your own" input, used
+   // for every launch-form field with a set of choices (image/gitURL/runtime/
+   // network/IDE/access/select & combo profile options).
    //
-   // Also reused (with allowFreeEntry: false) for every other closed-list launch-form
-   // field (runtime/network/IDE/access/select-options): the <select> branch renders
-   // whenever free entry isn't allowed, regardless of how many values there are, so a
-   // single-option field still renders as a real (optionally disabled) <select> rather
-   // than falling through to the autocomplete widget. 'values' entries may be plain
-   // strings (value === label) or {value, label} objects for fields like 'access'
-   // whose displayed text differs from the underlying value; the autocomplete/combo
-   // branch is unaffected and still expects plain strings, since only string-valued
-   // fields (image, gitURL, combo options) ever set allowFreeEntry.
+   // The <select> branch renders whenever free entry isn't allowed, regardless of
+   // how many values there are, so a single-option field still renders as a real
+   // (optionally disabled) <select> rather than falling through to the autocomplete
+   // widget. Its 'values' entries may be plain strings (value === label) or
+   // {value, label} objects, for fields like 'access' whose displayed text differs
+   // from the underlying value; the autocomplete/combo branch always expects plain
+   // strings, since only string-valued fields (image, gitURL, combo options) ever
+   // allow free entry.
    //
-   // A free-entry field with no suggestions to offer (a 'text'-type option, or a
-   // profile whose images/gitURLs are nothing but a bare '*') is a plain text field,
-   // not a combobox with an empty dropdown - render a native <input> for it instead
-   // of the autocomplete widget. This also preserves live per-keystroke binding
-   // (@input, like v-model) for that case, rather than the autocomplete widget's
-   // commit-on-submit/blur behaviour, matching what a plain 'text' option had before
-   // it went through ChoiceInput.
+   // A free-entry field with no suggestions (a 'text'-type option, or an
+   // images/gitURLs list that's nothing but a bare '*') is a plain text field, not
+   // a combobox with an empty dropdown - it renders a native <input> instead,
+   // preserving live per-keystroke binding (@input) rather than the autocomplete
+   // widget's commit-on-submit/blur behaviour.
 
    import Autocomplete from '@trevoreyre/autocomplete-vue';
    import '@trevoreyre/autocomplete-vue/dist/style.css';

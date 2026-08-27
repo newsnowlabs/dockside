@@ -426,10 +426,9 @@
             copyToClipboard(value);
          },
          accessOptions(router) {
-            // Fixed display order + friendly labels for the access levels a router
-            // may permit; only levels the router actually lists in 'auth' are offered.
-            // (Mirrors the router.auth membership checks this replaced; 'containerCookie'
-            // was never wired up to a label and stays omitted here too.)
+            // Fixed display order + friendly labels for the access levels a router may
+            // permit; only levels the router actually lists in 'auth' are offered.
+            // 'containerCookie' has no friendly label and is deliberately excluded.
             const levels = [
                ['owner', 'Devtainer owner only'],
                ['developer', 'Devtainer developers only'],
