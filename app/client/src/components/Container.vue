@@ -447,9 +447,9 @@
          // Parse a query-string value that's expected to be a JSON object (form.access,
          // form.options). Falls back silently on anything malformed — a stale or
          // hand-edited link shouldn't be able to throw inside the profile watcher; it
-         // just gets that field's profile default instead. See docs/plans note: this is
-         // a parse-safety guard, not business-rule validation (an out-of-schema-but-
-         // valid-JSON value is deliberately let through — the server is the validator).
+         // just gets that field's profile default instead. A parse-safety guard only,
+         // not business-rule validation — an out-of-schema-but-valid-JSON value is
+         // deliberately let through, since the server is the validator.
          parseQueryJSON(v) {
             if (!v) { return undefined; }
             try {

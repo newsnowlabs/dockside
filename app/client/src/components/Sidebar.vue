@@ -3,9 +3,8 @@
       <b-col md="3" lg="2" class="sidebar d-none d-md-block">
          <b-nav vertical class="nav-sidebar">
             <!-- Heading doubles as a link to '/', so there's always a way into the
-                 devtainers list regardless of whether it's currently collapsed or
-                 empty — the old empty-list "Launch devtainer" fallback is redundant
-                 now that "Launch new" below is its own always-present section. -->
+                 devtainers list regardless of whether this section is currently
+                 collapsed or empty. -->
             <b-nav-item class="heading" v-on:click="goHome(false)">My devtainers</b-nav-item>
             <!-- Collapsed while launching: with a long devtainers list, showing it in
                  full here would push the profile links below out of reach without
