@@ -89,6 +89,7 @@
                               <ChoiceInput
                                  :values="images"
                                  :allow-free-entry="hasWildcardImages"
+                                 :disabled="images.length <= 1 && !hasWildcardImages"
                                  :value="form.image"
                                  @input="form.image = $event"
                                  placeholder="Choose an image"
