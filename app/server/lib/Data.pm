@@ -42,8 +42,7 @@ sub parse_json ($json) {
 
 sub valid_ide_name ($ide) {
    # 'none' is a pseudo-IDE meaning "no IDE" (SSH-only) - see Profile::applyDefaultsAndFilters.
-   return 1 if defined($ide) && $ide eq 'none';
-   return defined($ide) && $ide =~ m!\A[^./\0][^/\0]*/[^./\0][^/\0]*\z!;
+   return defined($ide) && ( $ide eq 'none' || $ide =~ m!\A[^./\0][^/\0]*/[^./\0][^/\0]*\z! );
 }
 
 ####################################################################################################

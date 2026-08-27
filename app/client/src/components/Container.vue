@@ -400,7 +400,13 @@
             'updateSelectedContainerMode'
          ]),
          ideLabel(IDE) {
-            return IDE === 'none' ? 'No IDE (SSH only)' : IDE;
+            if(IDE !== 'none') {
+               return IDE;
+            }
+            // Only claim SSH as the fallback if this profile's ssh router actually
+            // exists - 'ide' and 'ssh' are independently configurable, so a profile
+            // with both off would otherwise be told it has an access method it doesn't.
+            return this.routers.some(r => r.type === 'ssh') ? 'No IDE (SSH only)' : 'No IDE';
          },
          initialiseForm() {
             // We need to initialise the form when:
