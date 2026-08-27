@@ -2,8 +2,14 @@
    <div class="sidebar-wrapper">
       <b-col md="3" lg="2" class="sidebar d-none d-md-block">
          <b-nav vertical class="nav-sidebar">
-            <b-nav-text class="heading">My devtainers</b-nav-text>
-            <template v-if="sidebarContainers.length > 0">
+            <!-- Heading doubles as a link to '/', so there's always a way into the
+                 devtainers list regardless of whether this section is currently
+                 collapsed or empty. -->
+            <b-nav-item class="heading" v-on:click="goHome(false)">My devtainers</b-nav-item>
+            <!-- Collapsed while launching: with a long devtainers list, showing it in
+                 full here would push the profile links below out of reach without
+                 scrolling — exactly what "Launch new" exists to avoid. -->
+            <template v-if="!isPrelaunchMode">
                <b-nav-item v-for="container in sidebarContainers"
                   v-bind:key="container.id"
                   v-bind:class="[`status-${parseInt(container.status)} ${container.name === selectedContainer ? 'selected' : ''}`]"
@@ -11,8 +17,21 @@
                   {{ container.name }}
                </b-nav-item>
             </template>
-            <template v-else>
-               <b-nav-item class="status-selected" v-on:click="goToContainer('new', 'prelaunch')" href="javascript:">Launch devtainer</b-nav-item>
+         </b-nav>
+
+         <b-nav vertical class="nav-sidebar" v-if="canLaunch && profileNames.length">
+            <b-nav-item class="heading" v-on:click="goToContainer('new', 'prelaunch')">Launch new</b-nav-item>
+            <!-- Collapsed while viewing a non-empty devtainers list (isContainerSection:
+                 '/' or an existing devtainer's own page) — the mirror image of the
+                 collapse above, so neither section's full list clutters the other's
+                 screen. Stays expanded regardless if there are no devtainers at all;
+                 see showProfileList(). -->
+            <template v-if="showProfileList">
+               <b-nav-item v-for="profileName in profileNames"
+                  v-bind:key="'launch-' + profileName"
+                  v-on:click="launchWithProfile(profileName)">
+                  {{ profiles[profileName].name || profileName }}
+               </b-nav-item>
             </template>
          </b-nav>
       </b-col>
@@ -22,7 +41,8 @@
            both copies in sync if the list markup changes. -->
       <b-sidebar id="mobile-nav-sidebar" v-model="mobileNavOpen" title="My devtainers" backdrop shadow class="d-md-none">
          <b-nav vertical class="nav-sidebar">
-            <template v-if="sidebarContainers.length > 0">
+            <b-nav-item class="heading" v-on:click="onMobileSelect(() => goHome(false))">My devtainers</b-nav-item>
+            <template v-if="!isPrelaunchMode">
                <b-nav-item v-for="container in sidebarContainers"
                   v-bind:key="container.id"
                   v-bind:class="[`status-${parseInt(container.status)} ${container.name === selectedContainer ? 'selected' : ''}`]"
@@ -30,8 +50,16 @@
                   {{ container.name }}
                </b-nav-item>
             </template>
-            <template v-else>
-               <b-nav-item class="status-selected" v-on:click="onMobileSelect(() => goToContainer('new', 'prelaunch'))" href="javascript:">Launch devtainer</b-nav-item>
+         </b-nav>
+
+         <b-nav vertical class="nav-sidebar" v-if="canLaunch && profileNames.length">
+            <b-nav-item class="heading" v-on:click="onMobileSelect(() => goToContainer('new', 'prelaunch'))">Launch new</b-nav-item>
+            <template v-if="showProfileList">
+               <b-nav-item v-for="profileName in profileNames"
+                  v-bind:key="'mobile-launch-' + profileName"
+                  v-on:click="onMobileSelect(() => launchWithProfile(profileName))">
+                  {{ profiles[profileName].name || profileName }}
+               </b-nav-item>
             </template>
          </b-nav>
       </b-sidebar>
@@ -39,8 +67,8 @@
 </template>
 
 <script>
-   import { filteredContainers } from '@/components/mixins';
-   import { routing } from '@/components/mixins';
+   import { mapState, mapGetters } from 'vuex';
+   import { filteredContainers, routing, routePermissions } from '@/components/mixins';
 
    export default {
       name: 'Sidebar',
@@ -49,13 +77,53 @@
             mobileNavOpen: false
          };
       },
+      created() {
+         // Sidebar is part of the persistent app shell (mounted on every route), so
+         // it can't rely on Container.vue's prelaunch-gated fetch to keep the
+         // profile list fresh. Non-fatal on failure, same as elsewhere this is
+         // dispatched — the bootstrap-seeded profiles remain usable.
+         this.$store.dispatch('account/fetchLaunchProfiles');
+      },
+      computed: {
+         // isContainerSection (from routePermissions) reads this directly.
+         ...mapGetters(['isPrelaunchMode']),
+         ...mapState({ profiles: state => state.account.launchProfiles }),
+         user() {
+            return this.$store.state.account.currentUser;
+         },
+         canLaunch() {
+            return this.user.permissions.actions.createContainerReservation;
+         },
+         profileNames() {
+            return Object.keys(this.profiles || {}).sort();
+         },
+         showProfileList() {
+            // Expanded whenever we're not viewing devtainers (i.e. we're already on
+            // the launch route), or when there are no devtainers at all — with
+            // nothing in "My devtainers" to begin with, there's no scrolling problem
+            // to justify hiding "Launch new" behind an extra click on its heading.
+            return !this.isContainerSection || this.sidebarContainers.length === 0;
+         }
+      },
       methods: {
          onMobileSelect(action) {
             this.mobileNavOpen = false;
             action();
+         },
+         // Deliberately not goToContainer(): that merges extraQuery onto the
+         // *current* route's query, which here would carry forward the
+         // previously-selected profile's already-synced field values (image,
+         // access, etc.) into the newly-selected profile's form — values that are
+         // almost certainly wrong for it (an image string that isn't one of the new
+         // profile's own options, or a router key its access schema doesn't even
+         // have). A profile nav click should always start from a clean slate: just
+         // the chosen profile, nothing else.
+         launchWithProfile(profileId) {
+            this.$router.push({ name: 'container', params: { name: 'new' }, query: { profile: profileId } }).catch(() => {})
+               .then(() => this.$store.dispatch('updateSelectedContainerMode', 'prelaunch'));
          }
       },
-      mixins: [filteredContainers, routing],
+      mixins: [filteredContainers, routing, routePermissions],
    };
 </script>
 
@@ -106,8 +174,18 @@
       }
 
       &.heading a {
-         // background-color: black;
-         font-weight: bold;
+         // Small-caps section label (Slack/Linear/Notion-style sidebar convention):
+         // small, muted, spaced-out uppercase reads as a label for the section
+         // rather than a list item, without the admin sidebar's much stronger
+         // black-uppercase treatment (too heavy for everyday use here). Distinct
+         // from .selected below on more than just font-weight, since a heading and
+         // a selected item could otherwise both render bold and look too similar.
+         font-size: 0.75rem;
+         font-weight: 700;
+         letter-spacing: 0.06em;
+         text-transform: uppercase;
+         color: #999;
+         margin-top: 8px;
 
          &:hover {
             color: #337ab7;
@@ -117,12 +195,5 @@
       &.selected a {
          font-weight: bold;
       }
-   }
-
-   .navbar-text {
-      // background-color: black;
-      font-weight: bold;
-      padding-left: 20px;
-      padding-right: 20px;
    }
 </style>

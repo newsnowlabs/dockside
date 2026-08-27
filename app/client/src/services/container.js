@@ -6,17 +6,33 @@ const getContainers = () => {
       .catch((e) => { console.error(e); });
 };
 
+// Shared by createReservationArgs (POST body) and formToQuery (URL query string) so
+// the two serializations of the same form object can't drift apart.
+const flattenValue = (v) => (
+   (typeof(v) === 'boolean') ? (v ? 1 : 0) :
+   ((typeof(v) === 'object') ? JSON.stringify(v) : v)
+);
+
 const createReservationArgs = (args) => {
    return Object.keys(args)
       .filter(k => args[k] !== undefined)
-      .map(k => (
-         encodeURIComponent(k) + '=' + 
-         encodeURIComponent(
-            (typeof(args[k]) === 'boolean') ? (args[k] ? 1 : 0) :
-            ((typeof(args[k]) === 'object') ? JSON.stringify(args[k]) : args[k])
-         )
-      ))
+      .map(k => encodeURIComponent(k) + '=' + encodeURIComponent(flattenValue(args[k])))
       .join('&');
+};
+
+// Serialize a launch form to a Vue Router `query` object (plain string k/v pairs),
+// so an in-progress launch can be reflected in and restored from the URL. Omits
+// empty/default-ish values to keep the URL from ballooning with noise.
+const formToQuery = (form) => {
+   const query = {};
+   Object.keys(form).forEach(k => {
+      if (k === 'id') { return; } // irrelevant while prelaunching
+      const v = form[k];
+      if (v === undefined || v === null || v === '' || v === false) { return; }
+      if (typeof v === 'object' && Object.keys(v).length === 0) { return; }
+      query[k] = String(flattenValue(v));
+   });
+   return query;
 };
 
 const getReservationLogsUri = (args) => {
@@ -48,4 +64,4 @@ const getAuthCookies = () => {
    return axios.get(url).then(response => response.data);
 };
 
-export { getContainers, putContainer, controlContainer, getReservationLogsUri, getAuthCookies };
+export { getContainers, putContainer, controlContainer, getReservationLogsUri, getAuthCookies, formToQuery };
