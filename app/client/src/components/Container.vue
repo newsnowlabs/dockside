@@ -453,7 +453,14 @@
          parseQueryJSON(v) {
             if (!v) { return undefined; }
             try {
-               return JSON.parse(v);
+               const parsed = JSON.parse(v);
+               // An object that parses but carries no keys is functionally the same as
+               // absent for our two callers (form.access/form.options) - both fall
+               // through to computing full per-router/per-option defaults otherwise.
+               // Mirrors formToQuery's own equivalent skip-if-empty-object rule, which
+               // is why this can only be hit via a hand-edited link in the first place -
+               // formToQuery never emits '={}' for a value it generates itself.
+               return (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0) ? undefined : parsed;
             } catch (e) {
                return undefined;
             }
