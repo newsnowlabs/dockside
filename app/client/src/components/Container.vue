@@ -121,6 +121,7 @@
                                  <ChoiceInput
                                     :values="opt.values || []"
                                     :allow-free-entry="opt.type !== 'select'"
+                                    :disabled="opt.type === 'select' && (opt.values || []).length <= 1"
                                     :value="form.options[opt.name]"
                                     @input="form.options[opt.name] = $event"
                                     :placeholder="opt.placeholder || ''"
