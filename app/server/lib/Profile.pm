@@ -211,14 +211,12 @@ sub new ($class, $data, $validated = 0) {
    # TODO: Should defaults and filters be separated?
    $self->applyDefaultsAndFilters();
 
-   # Add the IDE router, if none specified - unless the profile's resolved IDEs is
-   # non-empty and consists entirely of 'none' (i.e. no real IDE is ever offered, so
-   # there is nothing to proxy to). Otherwise, a profile offering a genuine choice
-   # between 'none' and a real IDE still gets the router: routers cannot be added to
-   # an existing reservation post-launch (see Reservation::profile()/Profile->load()),
-   # so it must exist now in case a user picks 'none' today but a real IDE later.
-   # (A profile whose resolved IDEs is empty - no host IDE installed, no 'none'
-   # declared - still gets a router too, unchanged from prior behaviour.)
+   # Add the IDE router unless the profile's resolved IDEs consists entirely of
+   # 'none' (nothing to proxy to). Routers can't be added to a reservation
+   # post-launch (see Reservation::profile()/Profile->load()), so a profile
+   # offering a genuine none-or-real-IDE choice needs the router now, in case a
+   # user picks 'none' today and a real IDE later; a profile whose resolved
+   # IDEs is simply empty gets one too, for the same reason.
    my @resolvedIDEs = @{ $self->{'IDEs'} // [] };
    my $isNoneOnly = @resolvedIDEs && ! grep { $_ ne 'none' } @resolvedIDEs;
    if( ! $isNoneOnly && ! grep { $_->{'type'} eq 'ide' } @{$self->{'routers'}} ) {
