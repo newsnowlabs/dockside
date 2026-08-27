@@ -104,6 +104,7 @@
                               <ChoiceInput
                                  :values="gitURLs"
                                  :allow-free-entry="hasWildcardGitURLs"
+                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
                                  :auto-select="true"
                                  :value="form.gitURL"
                                  @input="form.gitURL = $event"
