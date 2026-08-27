@@ -106,9 +106,32 @@ sub applyDefaultsAndFilters ($self) {
    $self->{'networks'} = ["*"] unless defined($self->{'networks'});
    $self->{'networks'} = $applyFilters->('network', \@hostNetworks);
 
-   # IDE
+   # IDE (global on/off switch)
+   # If unspecified in profile, set to value of config.json ide.default, or true.
+   $self->{'ide'} //= $CONFIG->{'ide'}{'default'} // 1;
+
+   # IDE (choice of IDE, or 'none' for no IDE / SSH-only)
    $self->{'IDEs'} = ["*"] unless defined($self->{'IDEs'});
-   $self->{'IDEs'} = $applyFilters->('IDE', $HOSTINFO->{'IDEs'}, 'tag/version');
+
+   # Exact-match only: '*' (or any wildcard pattern) never implies 'none' - a profile
+   # author must opt in to offering 'none' explicitly, since it is never a real,
+   # host-installed IDE for the wildcard filter below to match it against.
+   my $noneOffered = scalar( grep { $_ eq 'none' } @{$self->{'IDEs'}} );
+
+   if( ! $self->{'ide'} ) {
+      # IDE subsystem switched off entirely for this profile (config.json ide.default,
+      # or a profile-level "ide": false override): 'none' is the only possible value,
+      # regardless of whatever real IDE patterns the profile's own IDEs list names.
+      $self->{'IDEs'} = ['none'];
+   }
+   else {
+      $self->{'IDEs'} = $applyFilters->('IDE', $HOSTINFO->{'IDEs'}, 'tag/version');
+
+      # Append 'none' *after* the sort, so it is unconditionally last - this guarantees
+      # default_IDE() and the Vue client's naive IDEs[0] selection never pick 'none'
+      # unless it is the only element.
+      push(@{$self->{'IDEs'}}, 'none') if $noneOffered;
+   }
 
    # Runtimes
    $self->{'runtimes'} = ["*"] unless defined($self->{'runtimes'});
@@ -188,8 +211,15 @@ sub new ($class, $data, $validated = 0) {
    # TODO: Should defaults and filters be separated?
    $self->applyDefaultsAndFilters();
 
-   # Add the IDE router, if none specified
-   if( ! grep { $_->{'type'} eq 'ide' } @{$self->{'routers'}} ) {
+   # Add the IDE router unless the profile's resolved IDEs consists entirely of
+   # 'none' (nothing to proxy to). Routers can't be added to a reservation
+   # post-launch (see Reservation::profile()/Profile->load()), so a profile
+   # offering a genuine none-or-real-IDE choice needs the router now, in case a
+   # user picks 'none' today and a real IDE later; a profile whose resolved
+   # IDEs is simply empty gets one too, for the same reason.
+   my @resolvedIDEs = @{ $self->{'IDEs'} // [] };
+   my $isNoneOnly = @resolvedIDEs && ! grep { $_ ne 'none' } @resolvedIDEs;
+   if( ! $isNoneOnly && ! grep { $_->{'type'} eq 'ide' } @{$self->{'routers'}} ) {
       push(@{$self->{'routers'}}, {
          "name" => 'ide',
          "type" => 'ide',
@@ -258,6 +288,7 @@ sub validate ($self) {
          metadata
          lxcfs=b
          ssh=b
+         ide=b
          security=%
          gitURLs=@
          IDEs=@
@@ -392,15 +423,18 @@ sub validate_profile_options ($self, $type, $data) {
          $self->errors( "$type\[$i\].name", "must consist only of letters, digits, and underscores, and begin with a letter or underscore" );
       }
 
-      # Validate 'type': must be 'text' or 'select' if specified
-      if( defined($opt->{'type'}) && $opt->{'type'} !~ /^(text|select)$/ ) {
-         $self->errors( "$type\[$i\].type", "must be 'text' or 'select'" );
+      # Validate 'type': must be 'text', 'select' or 'combo' if specified. 'combo' is
+      # like 'select' (a menu of 'values') but also accepts a submitted value outside
+      # that list - see User.pm's reservation-options validation, which only rejects
+      # out-of-list values for 'select'.
+      if( defined($opt->{'type'}) && $opt->{'type'} !~ /^(text|select|combo)$/ ) {
+         $self->errors( "$type\[$i\].type", "must be 'text', 'select' or 'combo'" );
       }
 
-      # If type is 'select', 'values' must be a non-empty array
-      if( defined($opt->{'type'}) && $opt->{'type'} eq 'select' ) {
+      # If type is 'select' or 'combo', 'values' must be a non-empty array
+      if( defined($opt->{'type'}) && $opt->{'type'} =~ /^(select|combo)$/ ) {
          unless( ref($opt->{'values'}) eq 'ARRAY' && @{$opt->{'values'}} ) {
-            $self->errors( "$type\[$i\].values", "must be a non-empty Array when type is 'select'" );
+            $self->errors( "$type\[$i\].values", "must be a non-empty Array when type is 'select' or 'combo'" );
          }
       }
    }
@@ -539,6 +573,12 @@ sub options ($self) {
 
 sub ssh ($self) {
    return $self->{'ssh'};
+}
+
+# N.B. distinct from Reservation's own '{ide}' key (the launch-command config copied
+# from $CONFIG->{'ide'} - path/command/env), which lives on a different blessed object.
+sub ide ($self) {
+   return $self->{'ide'};
 }
 
 # Test if Profile property $type contains (or encompasses) value $value.

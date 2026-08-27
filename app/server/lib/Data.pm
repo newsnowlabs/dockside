@@ -41,7 +41,8 @@ sub parse_json ($json) {
 }
 
 sub valid_ide_name ($ide) {
-   return defined($ide) && $ide =~ m!\A[^./\0][^/\0]*/[^./\0][^/\0]*\z!;
+   # 'none' is a pseudo-IDE meaning "no IDE" (SSH-only) - see Profile::applyDefaultsAndFilters.
+   return defined($ide) && ( $ide eq 'none' || $ide =~ m!\A[^./\0][^/\0]*/[^./\0][^/\0]*\z! );
 }
 
 ####################################################################################################
@@ -89,6 +90,7 @@ $CONFIG_FILES = {
          $CONFIG->{'ide'}{'path'} //= '/opt/dockside';
          $CONFIG->{'ide'}{'subPath'} //= 'ide';
          $CONFIG->{'ide'}{'fullPath'} //= "$CONFIG->{'ide'}{'path'}/$CONFIG->{'ide'}{'subPath'}";
+         $CONFIG->{'ide'}{'default'} //= 1;
 
          $CONFIG->{'ssh'}{'path'} //= "$CONFIG->{'ide'}{'path'}/host";
          $CONFIG->{'ssh'}{'port'} //= 2222;    # in-container wstunnel v6 listen port
