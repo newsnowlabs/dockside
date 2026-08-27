@@ -74,10 +74,10 @@
                            <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.IDE }}</td>
                            <td v-else>
                               <ChoiceInput
-                                 :values="IDEs"
+                                 :values="ideOptions()"
                                  :value="form.IDE"
                                  @input="form.IDE = $event"
-                                 :disabled="IDEs.length <= 1"
+                                 :disabled="ideOptions().length <= 1"
                                  aria-label="Choose an IDE"
                               />
                            </td>
@@ -137,8 +137,8 @@
                         <tr v-for="(router, index) in routers" v-bind:key="index" v-bind:class="{'list-item':true}">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
-                              <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
-                              <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
                               <b-button v-if="router.type === 'ssh' && container.status >= 0" size="sm" variant="outline-secondary" type="button" v-b-modal="'sshinfo-modal'" v-b-tooltip title="Configure SSH for Dockside">Setup</b-button>
                               ({{ container.meta.access[router.name] }} access)
                            </td>
@@ -402,6 +402,15 @@
          ...mapActions([
             'updateSelectedContainerMode'
          ]),
+         ideLabel(IDE) {
+            if(IDE !== 'none') {
+               return IDE;
+            }
+            // Only claim SSH as the fallback if this profile's ssh router actually
+            // exists - 'ide' and 'ssh' are independently configurable, so a profile
+            // with both off would otherwise be told it has an access method it doesn't.
+            return this.routers.some(r => r.type === 'ssh') ? 'No IDE (SSH only)' : 'No IDE';
+         },
          initialiseForm() {
             // We need to initialise the form when:
             // 1. Component created for launching
@@ -445,6 +454,9 @@
             return levels
                .filter(([value]) => router.auth.includes(value))
                .map(([value, label]) => ({ value, label }));
+         },
+         ideOptions() {
+            return this.IDEs.map(IDE => ({ value: IDE, label: this.ideLabel(IDE) }));
          },
          confirmRemove() {
             this.$bvModal.show(`confirm-modal-${this.removeConfirmId}`);
