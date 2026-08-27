@@ -578,21 +578,6 @@ sub reservation ($self, $arg = undef) {
 #
 
 # Private method.
-# Builds the exception message for a denied set() call. For 'IDE' specifically, lists
-# the caller's currently-permitted choices (profile/role/user-constrained), including
-# 'none' where applicable, instead of a generic message with no actionable detail.
-sub _set_denied_msg ($self, $reservation, $property, $value) {
-   if( $property eq 'IDE' && $reservation->profileObject ) {
-      my $profileObject = $reservation->profileObject->cloneWithConstraints($self->derivedResourceConstraints);
-      my @choices = @{$profileObject->IDEs};
-      return @choices
-         ? "You have no permission to set 'IDE' to '$value' in this reservation (allowed: " . join(', ', @choices) . ")"
-         : "You have no permission to set 'IDE' to '$value' in this reservation (no IDE choices are currently permitted)";
-   }
-   return "You have no permissions to set '$property' to '$value' in this reservation";
-}
-
-# Private method.
 # Returns truthy if user is authorised to set $property to $value
 # Returns falsey if not.
 sub set ($self, $reservation, $property, $value = '') {
@@ -940,8 +925,8 @@ sub updateContainerReservation ($self, $args) {
    # Update metadata fields if they are defined in the arguments
    foreach my $m (qw( access viewers developers private network description IDE )) {
       if(defined($args->{$m})) {
-         $self->set($reservation, $m, $args->{$m}) ||
-            die Exception->new( 'msg' => $self->_set_denied_msg($reservation, $m, $args->{$m}) );
+         $self->set($reservation, $m, $args->{$m}) || 
+            die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
       }
    }
 
@@ -1030,8 +1015,8 @@ sub createContainerReservation ($self, $args) {
    );
 
    foreach my $m (qw( profile image runtime network unixuser access viewers developers private description gitURL IDE options )) {
-      $self->set($reservation, $m, $args->{$m}) ||
-         die Exception->new( 'msg' => $self->_set_denied_msg($reservation, $m, $args->{$m}) );
+      $self->set($reservation, $m, $args->{$m}) || 
+         die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
    }
 
    $reservation->data('runningIDE', $reservation->meta('IDE'));
