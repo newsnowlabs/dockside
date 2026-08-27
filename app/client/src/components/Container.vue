@@ -118,8 +118,12 @@
                               <th>{{ opt.label }}</th>
                               <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
                               <td v-else>
+                                 <!-- A 'text' option is always a plain free-entry field, even if it also
+                                      declares 'values' (permitted, if pointless, by profile validation) -
+                                      passing those through would misroute it into ChoiceInput's
+                                      commit-on-blur autocomplete branch instead. -->
                                  <ChoiceInput
-                                    :values="opt.values || []"
+                                    :values="opt.type === 'text' ? [] : (opt.values || [])"
                                     :allow-free-entry="opt.type !== 'select'"
                                     :disabled="opt.type === 'select' && (opt.values || []).length <= 1"
                                     :value="form.options[opt.name]"
