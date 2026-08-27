@@ -423,15 +423,18 @@ sub validate_profile_options ($self, $type, $data) {
          $self->errors( "$type\[$i\].name", "must consist only of letters, digits, and underscores, and begin with a letter or underscore" );
       }
 
-      # Validate 'type': must be 'text' or 'select' if specified
-      if( defined($opt->{'type'}) && $opt->{'type'} !~ /^(text|select)$/ ) {
-         $self->errors( "$type\[$i\].type", "must be 'text' or 'select'" );
+      # Validate 'type': must be 'text', 'select' or 'combo' if specified. 'combo' is
+      # like 'select' (a menu of 'values') but also accepts a submitted value outside
+      # that list - see User.pm's reservation-options validation, which only rejects
+      # out-of-list values for 'select'.
+      if( defined($opt->{'type'}) && $opt->{'type'} !~ /^(text|select|combo)$/ ) {
+         $self->errors( "$type\[$i\].type", "must be 'text', 'select' or 'combo'" );
       }
 
-      # If type is 'select', 'values' must be a non-empty array
-      if( defined($opt->{'type'}) && $opt->{'type'} eq 'select' ) {
+      # If type is 'select' or 'combo', 'values' must be a non-empty array
+      if( defined($opt->{'type'}) && $opt->{'type'} =~ /^(select|combo)$/ ) {
          unless( ref($opt->{'values'}) eq 'ARRAY' && @{$opt->{'values'}} ) {
-            $self->errors( "$type\[$i\].values", "must be a non-empty Array when type is 'select'" );
+            $self->errors( "$type\[$i\].values", "must be a non-empty Array when type is 'select' or 'combo'" );
          }
       }
    }

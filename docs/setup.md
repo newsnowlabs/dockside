@@ -68,7 +68,7 @@ The currently-supported root properties within a profile are:
 | gitURLs | allowed git repository URLs that may be cloned on launch; use `["*"]` to allow any URL | optional | `[]` | `["https://github.com/myorg/*"]` or `["*"]`
 | IDEs | allowed IDE installations for the devtainer; use `["*"]` to allow all IDEs available in the Dockside image (under `/opt/dockside/ide/`); include the literal string `"none"` to also permit launching with no IDE at all (SSH-only) — see [SSH-only devtainers](extensions/ide.md) | optional | `["*"]` | `["theia/latest", "openvscode/latest", "none"]`
 | ide | whether the IDE subsystem is available at all for this profile; if `false`, `IDEs` resolves to `["none"]` regardless of any real IDE patterns configured — see [SSH-only devtainers](extensions/ide.md) | optional | as specified in `config.json` | `false` |
-| options | dynamic user-input fields displayed in the launch form; each entry has `name`, `label`, `type`, `default`, and `placeholder` sub-fields; values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables or via `entrypoint` or `command` placeholders of form `{option.<NAME>}` | optional | `[]` | `[{"name": "branch", "label": "Branch", "type": "text", "default": "", "placeholder": "e.g. main"}]`
+| options | dynamic user-input fields displayed in the launch form; each entry has `name`, `label`, `type`, `default`, `placeholder`, and (for `type: "select"`/`"combo"`) `values` sub-fields; values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables or via `entrypoint` or `command` placeholders of form `{option.<NAME>}` | optional | `[]` | `[{"name": "branch", "label": "Branch", "type": "combo", "default": "", "values": ["main"], "placeholder": "main, or type another branch name"}]`
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
 | lxcfs | whether to mount [lxcfs](extensions/lxcfs.md) | optional | as specified in `config.json` | `true` |
@@ -98,9 +98,27 @@ Docker network names may contain letters, digits, hyphens, underscores (`_`), an
 
 Values in `gitURLs`, and the `gitURL` field supplied at launch, may optionally end with `.git` (e.g. `https://github.com/org/repo.git` is equivalent to `https://github.com/org/repo`). Both HTTPS (e.g. `https://github.com/newsnowlabs/dockside.git`) and SSH (e.g. `git@github.com:newsnowlabs/dockside.git`) URLs are supported.
 
+#### Option types
+
+Each `options` entry's `type` is either:
+
+- `"text"` (the default if `type` is omitted): a free-text input.
+- `"select"`: a dropdown restricted to the entries listed in that option's `values` array (mandatory,
+  non-empty, for this type) — a submitted value outside `values` is rejected.
+- `"combo"`: like `"select"` — a dropdown menu sourced from `values` (mandatory, non-empty) — but
+  editable: any typed value is accepted too, not just one of the listed entries. Good for a "common
+  choices, or type your own" field; see the `branch` option in
+  [`03-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/03-git-repo.json)
+  for a working example.
+
+If `default` is set, it pre-fills the input as real, editable text the user can overwrite — it is
+*not* shown as greyed-out placeholder hint text. `placeholder` is a separate, independent sub-field:
+native input hint text, shown only while the field is empty (so it has no visible effect once
+`default` has populated the field, unless the user clears it).
+
 #### Launch-time git branch/PR checkout
 
-The example [`03-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/03-git-repo.json) profile builds on `gitURLs` clone-on-launch by adding two `options` entries with the reserved names `branch` and `pr`. These names are special-cased by `launch.sh`: once the launch-time `gitURL` has been cloned, it will, if `pr` is set, run `gh pr checkout <pr>` (falling back to `git fetch origin refs/pull/<pr>/head && git checkout FETCH_HEAD` if `gh` is unavailable or that fails); otherwise, if `branch` is set, it fetches and switches to that branch from `origin`, failing loudly rather than silently creating an empty local branch if the branch doesn't exist there. `pr` takes precedence if both are set.
+The example [`03-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/03-git-repo.json) profile builds on `gitURLs` clone-on-launch by adding two `options` entries with the reserved names `branch` and `pr`. `branch` is a `"combo"` option (see [Option types](#option-types)) offering `main` as a one-click default while still accepting any other branch name typed in. These names are special-cased by `launch.sh`: once the launch-time `gitURL` has been cloned, it will, if `pr` is set, run `gh pr checkout <pr>` (falling back to `git fetch origin refs/pull/<pr>/head && git checkout FETCH_HEAD` if `gh` is unavailable or that fails); otherwise, if `branch` is set, it fetches and switches to that branch from `origin`, failing loudly rather than silently creating an empty local branch if the branch doesn't exist there. `pr` takes precedence if both are set.
 
 This checkout only happens when a repository was actually cloned, i.e. when the profile's `gitURLs` is non-empty *and* the user supplies a `gitURL` at launch. For profiles with no `gitURLs`, or when the `gitURL` field is left blank at launch, no cloning or branch/PR switching occurs — the `branch`/`pr` fields still populate `DOCKSIDE_OPTION_BRANCH`/`DOCKSIDE_OPTION_PR` like any other `options` entry (see the `options` row above), but those values have no special meaning unless the profile's own `command`/`entrypoint` chooses to consume them.
 
