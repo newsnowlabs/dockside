@@ -6,6 +6,7 @@
 #   bash test.sh                  # run all checks
 #   bash test.sh --only perl      # run one category
 #   bash test.sh --only vue
+#   bash test.sh --only vuetest
 #   bash test.sh --only eslint
 #   bash test.sh --only stylelint
 #   bash test.sh --only shellcheck
@@ -151,7 +152,24 @@ check_vue() {
   )
 }
 
-# ── 3. ESLint ────────────────────────────────────────────────────────────────
+# ── 3. Vue unit tests (Vitest smoke suite) ───────────────────────────────────
+check_vuetest() {
+  if ! command -v npm &>/dev/null; then
+    echo "npm not found — cannot run Vue unit tests"
+    return 1
+  fi
+  if [[ ! -d app/client/node_modules ]]; then
+    echo "node_modules not installed — run the 'vue' check first"
+    return 1
+  fi
+  (
+    cd app/client
+    echo "  Running Vitest..."
+    npx --no-install vitest run 2>&1
+  )
+}
+
+# ── 4. ESLint ────────────────────────────────────────────────────────────────
 check_eslint() {
   if ! command -v npm &>/dev/null; then
     echo "npm not found — cannot run ESLint"
@@ -168,7 +186,7 @@ check_eslint() {
   )
 }
 
-# ── 4. StyleLint ─────────────────────────────────────────────────────────────
+# ── 5. StyleLint ─────────────────────────────────────────────────────────────
 check_stylelint() {
   if ! command -v npm &>/dev/null; then
     echo "npm not found — cannot run StyleLint"
@@ -185,7 +203,7 @@ check_stylelint() {
   )
 }
 
-# ── 5. ShellCheck ─────────────────────────────────────────────────────────────
+# ── 6. ShellCheck ─────────────────────────────────────────────────────────────
 check_shellcheck() {
   if ! command -v shellcheck &>/dev/null; then
     echo "shellcheck not found (install with: apt-get install -y shellcheck)"
@@ -231,7 +249,7 @@ check_shellcheck() {
   return $failed
 }
 
-# ── 6. perltidy formatting check ─────────────────────────────────────────────
+# ── 7. perltidy formatting check ─────────────────────────────────────────────
 check_perltidy() {
   if ! command -v perltidy &>/dev/null; then
     echo "perltidy not found"
@@ -268,7 +286,7 @@ check_perltidy() {
   return $failed
 }
 
-# ── 7. JSON / YAML validation ─────────────────────────────────────────────────
+# ── 8. JSON / YAML validation ─────────────────────────────────────────────────
 check_json() {
   local failed=0
 
@@ -342,7 +360,7 @@ check_json() {
   return $failed
 }
 
-# ── 8. Python syntax check ───────────────────────────────────────────────────
+# ── 9. Python syntax check ───────────────────────────────────────────────────
 check_python() {
   local failed=0
   local py_files=()
@@ -384,6 +402,7 @@ echo "Repo: $REPO_ROOT"
 
 run_check "perl"       check_perl
 run_check "vue"        check_vue
+run_check "vuetest"    check_vuetest
 run_check "eslint"     check_eslint
 run_check "stylelint"  check_stylelint
 run_check "shellcheck" check_shellcheck
@@ -400,7 +419,7 @@ echo ""
 echo -e "${BOLD}━━━ Summary ━━━${RESET}"
 
 overall=0
-for name in perl vue eslint stylelint shellcheck json perltidy; do
+for name in perl vue vuetest eslint stylelint shellcheck json perltidy; do
   result="${RESULTS[$name]:-SKIP}"
   case "$result" in
     PASS) echo -e "  ${GREEN}✓ PASS${RESET}  $name" ;;

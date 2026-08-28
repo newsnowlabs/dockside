@@ -1,7 +1,7 @@
 # Repo Notes
 
-- `./test.sh` runs the full static suite (Perl compile, Vue build, ESLint, StyleLint,
-  ShellCheck, JSON/YAML, Python compile) — run it regularly, not just for Perl.
+- `./test.sh` runs the full static suite (Perl compile, Vue build, Vue unit tests (Vitest),
+  ESLint, StyleLint, ShellCheck, JSON/YAML, Python compile) — run it regularly, not just for Perl.
   `./test.sh --only <check>` runs a single check (e.g. `--only perl` while iterating on
   Perl under `app/server/lib` or `app/server/bin`; `--only vue`, `--only eslint`, …).
 - Perl server code runs across **three** independent processes, each loading its own copy of

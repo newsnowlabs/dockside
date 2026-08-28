@@ -1,4 +1,10 @@
 {
+   "overrides": [
+      {
+         "files": ["*.vue", "**/*.vue"],
+         "customSyntax": "postcss-html"
+      }
+   ],
    "rules": {
       "block-no-empty": true,
       "color-no-invalid-hex": true
