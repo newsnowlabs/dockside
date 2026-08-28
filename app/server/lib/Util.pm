@@ -767,6 +767,9 @@ sub get_cookie ($cookie, $name) {
 }
 
 sub encrypt_password ($p, $salt = undef) {
+   # ~5-9ms pure CPU per call (deliberately slow, a security property, not a bug) - the one thing
+   # app-server's async I/O can't help by nature; if ever worth fixing, Mojo::IOLoop::Subprocess
+   # is the natural mechanism, not a bespoke worker pool. Not urgent: login/password-set only.
 
    my @letters = ( 'A' .. 'Z', 'a' .. 'z', '0' .. '9', '/', '.' );
 
