@@ -142,7 +142,7 @@
             <SshEditor
                :ssh="form.ssh"
                :readonly="!isEditMode && !isNew"
-               @input="form.ssh = $event"
+               @update:ssh="form.ssh = $event"
             />
          </b-form-group>
 
@@ -174,278 +174,280 @@
 </template>
 
 <script>
-   import { mapState, mapGetters } from 'vuex';
-   import PermissionsEditor from '@/components/admin/PermissionsEditor';
-   import ResourcesEditor   from '@/components/admin/ResourcesEditor';
-   import SshEditor         from '@/components/admin/SshEditor';
-   import ConfirmModal      from '@/components/shared/ConfirmModal';
-   import { getSelf }       from '@/services/account';
+import { defineComponent } from 'vue';
 
-   // EMPTY_FORM is a factory (not a static object) so each component instance
-   // gets its own independent form state with no shared reference.
-   const EMPTY_FORM = () => ({
-      username:        '',
-      name:            '',
-      email:           '',
-      role:            'user',
-      password:        '',
-      gh_token:        '',        // new token value typed by user (empty = don't change)
-      gh_token_is_set: false,     // true when server returned a masked token (token exists on server)
-      gh_token_masked: '',        // the server-masked value (e.g. "ghp_****abcd"), for display
-      permissions:     {},
-      resources:       {},
-      ssh:             {},
-   });
+import { mapState, mapGetters } from 'vuex';
+import PermissionsEditor from '@/components/admin/PermissionsEditor';
+import ResourcesEditor   from '@/components/admin/ResourcesEditor';
+import SshEditor         from '@/components/admin/SshEditor';
+import ConfirmModal      from '@/components/shared/ConfirmModal';
+import { getSelf }       from '@/services/account';
 
-   export default {
-      name: 'UserDetail',
-      components: { PermissionsEditor, ResourcesEditor, SshEditor, ConfirmModal },
+// EMPTY_FORM is a factory (not a static object) so each component instance
+// gets its own independent form state with no shared reference.
+const EMPTY_FORM = () => ({
+   username:        '',
+   name:            '',
+   email:           '',
+   role:            'user',
+   password:        '',
+   gh_token:        '',        // new token value typed by user (empty = don't change)
+   gh_token_is_set: false,     // true when server returned a masked token (token exists on server)
+   gh_token_masked: '',        // the server-masked value (e.g. "ghp_****abcd"), for display
+   permissions:     {},
+   resources:       {},
+   ssh:             {},
+});
 
-      props: {
-         username: {
-            type: String,
-            default: null,
-         },
-         selfEdit: {
-            type: Boolean,
-            default: false,
-         },
-      },
+export default defineComponent({
+  name: 'UserDetail',
+  components: { PermissionsEditor, ResourcesEditor, SshEditor, ConfirmModal },
 
-      data() {
-         // Pre-populate name/email from bootstrap data so the account view
-         // shows real content instantly without waiting for getSelf().
-         const initial = EMPTY_FORM();
-         if (this.selfEdit) {
-            const u = this.$store.state.account.currentUser;
-            if (u) {
-               initial.username = u.username || '';
-               initial.name     = u.name     || '';
-               initial.email    = u.email    || '';
-            }
-         }
-         return {
-            form:          initial,
-            showToken:     false,
-            saving:        false,
-            saveError:     null,
-            localEditMode: false,  // view/edit toggle used for selfEdit
-            savedForm:     null,   // snapshot of form taken when entering edit mode
-            sshLoaded:     false,  // true once SSH data has been fetched from server
-         };
-      },
+  props: {
+     username: {
+        type: String,
+        default: null,
+     },
+     selfEdit: {
+        type: Boolean,
+        default: false,
+     },
+  },
 
-      computed: {
-         ...mapState('admin', ['users', 'roles', 'selected', 'usersLoaded']),
-         ...mapGetters('admin', ['isNewItem', 'roleNames']),
+  data() {
+     // Pre-populate name/email from bootstrap data so the account view
+     // shows real content instantly without waiting for getSelf().
+     const initial = EMPTY_FORM();
+     if (this.selfEdit) {
+        const u = this.$store.state.account.currentUser;
+        if (u) {
+           initial.username = u.username || '';
+           initial.name     = u.name     || '';
+           initial.email    = u.email    || '';
+        }
+     }
+     return {
+        form:          initial,
+        showToken:     false,
+        saving:        false,
+        saveError:     null,
+        localEditMode: false,  // view/edit toggle used for selfEdit
+        savedForm:     null,   // snapshot of form taken when entering edit mode
+        sshLoaded:     false,  // true once SSH data has been fetched from server
+     };
+  },
 
-         isNew() {
-            return !this.username;
-         },
+  computed: {
+     ...mapState('admin', ['users', 'roles', 'selected', 'usersLoaded']),
+     ...mapGetters('admin', ['isNewItem', 'roleNames']),
 
-         // Two edit-mode mechanisms coexist:
-         //   selfEdit — uses local component state (localEditMode) because the
-         //              /account route has no admin/selected Vuex state to drive mode.
-         //   admin    — uses the admin/isEditMode Vuex getter (set via setSelectedMode);
-         //              new items are always in edit mode regardless of Vuex state.
-         isEditMode() {
-            if (this.selfEdit) return this.localEditMode;
-            return this.$store.getters['admin/isEditMode'] || this.isNew;
-         },
+     isNew() {
+        return !this.username;
+     },
 
-         // Prevent a user from deleting their own account; the server also enforces
-         // this, but blocking it in the UI avoids a confusing error response.
-         canDelete() {
-            return this.username && this.username !== this.$store.state.account.currentUser.username;
-         },
+     // Two edit-mode mechanisms coexist:
+     //   selfEdit — uses local component state (localEditMode) because the
+     //              /account route has no admin/selected Vuex state to drive mode.
+     //   admin    — uses the admin/isEditMode Vuex getter (set via setSelectedMode);
+     //              new items are always in edit mode regardless of Vuex state.
+     isEditMode() {
+        if (this.selfEdit) return this.localEditMode;
+        return this.$store.getters['admin/isEditMode'] || this.isNew;
+     },
 
-         roleOptions() {
-            return this.roleNames.map(n => ({ value: n, text: n }));
-         },
+     // Prevent a user from deleting their own account; the server also enforces
+     // this, but blocking it in the UI avoids a confusing error response.
+     canDelete() {
+        return this.username && this.username !== this.$store.state.account.currentUser.username;
+     },
 
-         usernameState() {
-            if (!this.form.username) return null;
-            return /^[A-Za-z0-9_-]+$/.test(this.form.username) ? true : false;
-         },
+     roleOptions() {
+        return this.roleNames.map(n => ({ value: n, text: n }));
+     },
 
-         currentUserRecord() {
-            // For self-edit, source from account.currentUser rather than admin.users
-            // because a user without manageUsers permission has no admin.users list.
-            // account.currentUser is always populated from the bootstrap data and
-            // refreshed via account/fetchSelf after saves.
-            if (this.selfEdit) return this.$store.state.account.currentUser || null;
-            return this.users.find(u => u.username === this.username) || null;
-         },
+     usernameState() {
+        if (!this.form.username) return null;
+        return /^[A-Za-z0-9_-]+$/.test(this.form.username) ? true : false;
+     },
 
-         // True once the users list has loaded and confirmed there is no user with
-         // this username (and we're neither on the create flow nor the self-edit
-         // account view, which sources its record from account.currentUser rather
-         // than admin.users). Gated on usersLoaded so we don't flash "not found"
-         // while the list is still being fetched.
-         userNotFound() {
-            return !this.isNew && !this.selfEdit && this.usersLoaded && !this.currentUserRecord;
-         },
+     currentUserRecord() {
+        // For self-edit, source from account.currentUser rather than admin.users
+        // because a user without manageUsers permission has no admin.users list.
+        // account.currentUser is always populated from the bootstrap data and
+        // refreshed via account/fetchSelf after saves.
+        if (this.selfEdit) return this.$store.state.account.currentUser || null;
+        return this.users.find(u => u.username === this.username) || null;
+     },
 
-         rolePermissions() {
-            const role = this.roles.find(r => r.name === this.form.role);
-            return (role && role.permissions) || {};
-         },
+     // True once the users list has loaded and confirmed there is no user with
+     // this username (and we're neither on the create flow nor the self-edit
+     // account view, which sources its record from account.currentUser rather
+     // than admin.users). Gated on usersLoaded so we don't flash "not found"
+     // while the list is still being fetched.
+     userNotFound() {
+        return !this.isNew && !this.selfEdit && this.usersLoaded && !this.currentUserRecord;
+     },
 
-         // Effective default for permissions not explicitly set in the user's role
-         // definition.  'admin' roles grant all permissions by default; all other
-         // roles deny by default.  The PermissionsEditor uses this as the baseline
-         // so inherited (unset) permissions are shown with the correct default indicator.
-         rolePermDefault() {
-            return this.form.role === 'admin' ? '1' : '0';
-         },
+     rolePermissions() {
+        const role = this.roles.find(r => r.name === this.form.role);
+        return (role && role.permissions) || {};
+     },
 
-         hasSshChanges() {
-            const ssh = this.form.ssh || {};
-            return Object.keys(ssh).length > 0;
-         },
-      },
+     // Effective default for permissions not explicitly set in the user's role
+     // definition.  'admin' roles grant all permissions by default; all other
+     // roles deny by default.  The PermissionsEditor uses this as the baseline
+     // so inherited (unset) permissions are shown with the correct default indicator.
+     rolePermDefault() {
+        return this.form.role === 'admin' ? '1' : '0';
+     },
 
-      created() {
-         if (this.selfEdit) {
-            // Populate synchronously from the store first so there is no blank flash
-            // while the network fetch below is in-flight.
-            if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
-            // Then fetch from the server directly (bypassing the Vuex store) to get
-            // sensitive fields (gh_token, ssh.keypairs) that the bootstrap data does
-            // not include.  This is a raw service call, not a store dispatch, because
-            // we only need the sensitive data for the local form — we do not want to
-            // write private key material into the Vuex store.
-            // The catch is intentionally silent: if the fetch fails (e.g. server
-            // restart), the user sees the stale bootstrap data rather than an error,
-            // which is acceptable for a read operation on the account page.
-            getSelf().then(record => {
-               if (!this.localEditMode) this.populateForm(record);
-            }).catch(() => {});
-         } else if (!this.isNew && this.currentUserRecord) {
-            this.populateForm(this.currentUserRecord);
-         }
-      },
+     hasSshChanges() {
+        const ssh = this.form.ssh || {};
+        return Object.keys(ssh).length > 0;
+     },
+  },
 
-      watch: {
-         // Re-sync view data when store updates (e.g. after save or fetchAll).
-         // Never re-sync while the user is actively editing.
-         currentUserRecord(r) {
-            if (r && !this.isEditMode) this.populateForm(r);
-         },
-      },
+  created() {
+     if (this.selfEdit) {
+        // Populate synchronously from the store first so there is no blank flash
+        // while the network fetch below is in-flight.
+        if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
+        // Then fetch from the server directly (bypassing the Vuex store) to get
+        // sensitive fields (gh_token, ssh.keypairs) that the bootstrap data does
+        // not include.  This is a raw service call, not a store dispatch, because
+        // we only need the sensitive data for the local form — we do not want to
+        // write private key material into the Vuex store.
+        // The catch is intentionally silent: if the fetch fails (e.g. server
+        // restart), the user sees the stale bootstrap data rather than an error,
+        // which is acceptable for a read operation on the account page.
+        getSelf().then(record => {
+           if (!this.localEditMode) this.populateForm(record);
+        }).catch(() => {});
+     } else if (!this.isNew && this.currentUserRecord) {
+        this.populateForm(this.currentUserRecord);
+     }
+  },
 
-      methods: {
-         populateForm(record) {
-            const maskedToken = record.gh_token || '';
-            const tokenIsSet  = !!maskedToken;
-            this.form = {
-               username:        record.username    || '',
-               name:            record.name        || '',
-               email:           record.email       || '',
-               role:            record.role        || 'user',
-               password:        '',
-               gh_token:        '',
-               gh_token_is_set: tokenIsSet,
-               gh_token_masked: maskedToken,
-               permissions:     record.permissions ? { ...record.permissions } : {},
-               resources:       record.resources   ? { ...record.resources }   : {},
-               ssh:             record.ssh         ? { ...record.ssh }         : {},
-            };
-            if (record.ssh !== undefined) this.sshLoaded = true;
-         },
+  watch: {
+     // Re-sync view data when store updates (e.g. after save or fetchAll).
+     // Never re-sync while the user is actively editing.
+     currentUserRecord(r) {
+        if (r && !this.isEditMode) this.populateForm(r);
+     },
+  },
 
-         startEdit() {
-            if (this.selfEdit) {
-               // Snapshot current form so cancel() can revert cleanly.
-               this.savedForm    = JSON.parse(JSON.stringify(this.form));
-               this.showToken    = false;
-               this.localEditMode = true;
-            } else {
-               this.$store.commit('admin/setSelectedMode', 'edit');
-            }
-         },
+  methods: {
+     populateForm(record) {
+        const maskedToken = record.gh_token || '';
+        const tokenIsSet  = !!maskedToken;
+        this.form = {
+           username:        record.username    || '',
+           name:            record.name        || '',
+           email:           record.email       || '',
+           role:            record.role        || 'user',
+           password:        '',
+           gh_token:        '',
+           gh_token_is_set: tokenIsSet,
+           gh_token_masked: maskedToken,
+           permissions:     record.permissions ? { ...record.permissions } : {},
+           resources:       record.resources   ? { ...record.resources }   : {},
+           ssh:             record.ssh         ? { ...record.ssh }         : {},
+        };
+        if (record.ssh !== undefined) this.sshLoaded = true;
+     },
 
-         cancel() {
-            if (this.isNew) {
-               this.$router.push('/admin/users').catch(() => {});
-               this.$store.commit('admin/clearSelected');
-            } else if (this.selfEdit) {
-               this.localEditMode = false;
-               // Restore the pre-edit snapshot.
-               if (this.savedForm) {
-                  this.form      = this.savedForm;
-                  this.savedForm = null;
-               } else if (this.currentUserRecord) {
-                  this.populateForm(this.currentUserRecord);
-               }
-            } else {
-               this.$store.commit('admin/setSelectedMode', 'view');
-               if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
-            }
-         },
+     startEdit() {
+        if (this.selfEdit) {
+           // Snapshot current form so cancel() can revert cleanly.
+           this.savedForm    = JSON.parse(JSON.stringify(this.form));
+           this.showToken    = false;
+           this.localEditMode = true;
+        } else {
+           this.$store.commit('admin/setSelectedMode', 'edit');
+        }
+     },
 
-         async save() {
-            this.saving    = true;
-            this.saveError = null;
-            if (!this.selfEdit && !this.form.role) {
-               this.saveError = 'A role is required.';
-               this.saving = false;
-               return;
-            }
-            try {
-               const payload = {
-                  name:  this.form.name,
-                  email: this.form.email,
-               };
-               // Only include SSH in the payload when we can be sure we have a
-               // complete picture of the user's SSH state.  If the getSelf() fetch
-               // failed and the user hasn't made any SSH changes, omitting ssh from
-               // the payload prevents a partial (bootstrap-only) ssh block from
-               // overwriting keys the server has but the client never received.
-               if (this.isNew || this.sshLoaded || this.hasSshChanges) payload.ssh = this.form.ssh;
-               // Only send gh_token when the user has typed a new value.
-               if (this.form.gh_token) payload.gh_token = this.form.gh_token;
+     cancel() {
+        if (this.isNew) {
+           this.$router.push('/admin/users').catch(() => {});
+           this.$store.commit('admin/clearSelected');
+        } else if (this.selfEdit) {
+           this.localEditMode = false;
+           // Restore the pre-edit snapshot.
+           if (this.savedForm) {
+              this.form      = this.savedForm;
+              this.savedForm = null;
+           } else if (this.currentUserRecord) {
+              this.populateForm(this.currentUserRecord);
+           }
+        } else {
+           this.$store.commit('admin/setSelectedMode', 'view');
+           if (this.currentUserRecord) this.populateForm(this.currentUserRecord);
+        }
+     },
 
-               if (!this.selfEdit) {
-                  payload.role        = this.form.role;
-                  payload.permissions = this.form.permissions;
-                  payload.resources   = this.form.resources;
-                  if (this.form.password) payload.password = this.form.password;
-               }
+     async save() {
+        this.saving    = true;
+        this.saveError = null;
+        if (!this.selfEdit && !this.form.role) {
+           this.saveError = 'A role is required.';
+           this.saving = false;
+           return;
+        }
+        try {
+           const payload = {
+              name:  this.form.name,
+              email: this.form.email,
+           };
+           // Only include SSH in the payload when we can be sure we have a
+           // complete picture of the user's SSH state.  If the getSelf() fetch
+           // failed and the user hasn't made any SSH changes, omitting ssh from
+           // the payload prevents a partial (bootstrap-only) ssh block from
+           // overwriting keys the server has but the client never received.
+           if (this.isNew || this.sshLoaded || this.hasSshChanges) payload.ssh = this.form.ssh;
+           // Only send gh_token when the user has typed a new value.
+           if (this.form.gh_token) payload.gh_token = this.form.gh_token;
 
-               if (this.selfEdit) {
-                  await this.$store.dispatch('account/updateSelf', payload);
-                  this.savedForm     = null;
-                  this.localEditMode = false;
-                  // currentUserRecord watcher fires after store update and re-populates form.
-               } else if (this.isNew) {
-                  payload.username = this.form.username;
-                  const record = await this.$store.dispatch('admin/createUser', payload);
-                  this.$router.push(`/admin/users/${encodeURIComponent(record.username)}`).catch(() => {});
-                  this.$store.commit('admin/setSelected', { type: 'user', id: record.username, mode: 'view' });
-                  return;
-               } else {
-                  await this.$store.dispatch('admin/updateUser', { username: this.username, data: payload });
-                  this.$store.commit('admin/setSelectedMode', 'view');
-               }
-            } catch (e) {
-               this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
-            } finally {
-               this.saving = false;
-            }
-         },
+           if (!this.selfEdit) {
+              payload.role        = this.form.role;
+              payload.permissions = this.form.permissions;
+              payload.resources   = this.form.resources;
+              if (this.form.password) payload.password = this.form.password;
+           }
 
-         async deleteUser() {
-            try {
-               await this.$store.dispatch('admin/removeUser', this.username);
-               this.$router.push('/admin/users').catch(() => {});
-               this.$store.commit('admin/clearSelected');
-            } catch (e) {
-               this.saveError = e.message;
-            }
-         },
-      },
-   };
+           if (this.selfEdit) {
+              await this.$store.dispatch('account/updateSelf', payload);
+              this.savedForm     = null;
+              this.localEditMode = false;
+              // currentUserRecord watcher fires after store update and re-populates form.
+           } else if (this.isNew) {
+              payload.username = this.form.username;
+              const record = await this.$store.dispatch('admin/createUser', payload);
+              this.$router.push(`/admin/users/${encodeURIComponent(record.username)}`).catch(() => {});
+              this.$store.commit('admin/setSelected', { type: 'user', id: record.username, mode: 'view' });
+              return;
+           } else {
+              await this.$store.dispatch('admin/updateUser', { username: this.username, data: payload });
+              this.$store.commit('admin/setSelectedMode', 'view');
+           }
+        } catch (e) {
+           this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
+        } finally {
+           this.saving = false;
+        }
+     },
+
+     async deleteUser() {
+        try {
+           await this.$store.dispatch('admin/removeUser', this.username);
+           this.$router.push('/admin/users').catch(() => {});
+           this.$store.commit('admin/clearSelected');
+        } catch (e) {
+           this.saveError = e.message;
+        }
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>

@@ -26,222 +26,225 @@
 </template>
 
 <script>
-   import VueTagsInput from '@johmun/vue-tags-input';
+import { defineComponent } from 'vue';
 
-   /**
-    * Map a single resource value to '1' (allowed) or '0' (denied).
-    *
-    * Default-deny: only an explicit affirmative value grants access.  This must
-    * NOT use plain truthiness — the server may serialise a denial as the string
-    * "0", which is truthy in JS, so `v ? '1' : '0'` would silently promote a
-    * denied resource to a grant the moment its record was edited.
-    */
-   function grantState(v) {
-      return (v === 1 || v === '1' || v === true || v === 'true') ? '1' : '0';
+import VueTagsInput from '@johmun/vue-tags-input';
+
+/**
+ * Map a single resource value to '1' (allowed) or '0' (denied).
+ *
+ * Default-deny: only an explicit affirmative value grants access.  This must
+ * NOT use plain truthiness — the server may serialise a denial as the string
+ * "0", which is truthy in JS, so `v ? '1' : '0'` would silently promote a
+ * denied resource to a grant the moment its record was edited.
+ */
+function grantState(v) {
+   return (v === 1 || v === '1' || v === true || v === 'true') ? '1' : '0';
+}
+
+/**
+ * Normalise a resource value to an internal map { key: '1'|'0' }
+ *   ["a","b"]         → { a: "1", b: "1" }
+ *   { a: 1, b: "0" }  → { a: "1", b: "0" }
+ *   undefined/null    → {}
+ */
+function normalise(val) {
+   if (!val) return {};
+   if (Array.isArray(val)) {
+      return Object.fromEntries(val.map(v => [String(v), '1']));
    }
-
-   /**
-    * Normalise a resource value to an internal map { key: '1'|'0' }
-    *   ["a","b"]         → { a: "1", b: "1" }
-    *   { a: 1, b: "0" }  → { a: "1", b: "0" }
-    *   undefined/null    → {}
-    */
-   function normalise(val) {
-      if (!val) return {};
-      if (Array.isArray(val)) {
-         return Object.fromEntries(val.map(v => [String(v), '1']));
-      }
-      if (typeof val === 'object') {
-         return Object.fromEntries(
-            Object.entries(val).map(([k, v]) => [k, grantState(v)])
-         );
-      }
-      return {};
+   if (typeof val === 'object') {
+      return Object.fromEntries(
+         Object.entries(val).map(([k, v]) => [k, grantState(v)])
+      );
    }
+   return {};
+}
 
-   /**
-    * Serialise map back:
-    *   all '1' → plain array (compact form)
-    *   any '0' → object with numeric 1/0 values
-    *   empty   → null (no constraint)
-    */
-   function serialise(map) {
-      const entries = Object.entries(map);
-      if (entries.length === 0) return null;
-      if (entries.every(([, v]) => v === '1')) {
-         return entries.map(([k]) => k);
-      }
-      return Object.fromEntries(entries.map(([k, v]) => [k, v === '1' ? 1 : 0]));
+/**
+ * Serialise map back:
+ *   all '1' → plain array (compact form)
+ *   any '0' → object with numeric 1/0 values
+ *   empty   → null (no constraint)
+ */
+function serialise(map) {
+   const entries = Object.entries(map);
+   if (entries.length === 0) return null;
+   if (entries.every(([, v]) => v === '1')) {
+      return entries.map(([k]) => k);
    }
+   return Object.fromEntries(entries.map(([k, v]) => [k, v === '1' ? 1 : 0]));
+}
 
-   function buildTags(val) {
-      const map = normalise(val);
-      return Object.entries(map).map(([key, state]) => ({
-         text:    key,
-         classes: state === '1' ? 'state-allowed' : 'state-denied',
-      }));
-   }
+function buildTags(val) {
+   const map = normalise(val);
+   return Object.entries(map).map(([key, state]) => ({
+      text:    key,
+      classes: state === '1' ? 'state-allowed' : 'state-denied',
+   }));
+}
 
-   export default {
-      name: 'ResourceTagsInput',
-      components: { VueTagsInput },
+export default defineComponent({
+  emits: ['update:value'],
+  name: 'ResourceTagsInput',
+  components: { VueTagsInput },
 
-      props: {
-         // The raw resource value: Array (all-allowed) or Object (mixed) or null/undefined
-         value: {
-            default: null,
-         },
-         // Known values to autocomplete from
-         suggestions: {
-            type: Array,
-            default: () => [],
-         },
-         // allowDeny=true:  support green (allowed) / red (denied) tags;
-         //                  autocomplete includes "value:disabled" variants
-         // allowDeny=false: images mode — plain string list, always treated as allowed
-         allowDeny: {
-            type: Boolean,
-            default: true,
-         },
-         readonly: {
-            type: Boolean,
-            default: false,
-         },
-      },
+  props: {
+     // The raw resource value: Array (all-allowed) or Object (mixed) or null/undefined
+     value: {
+        default: null,
+     },
+     // Known values to autocomplete from
+     suggestions: {
+        type: Array,
+        default: () => [],
+     },
+     // allowDeny=true:  support green (allowed) / red (denied) tags;
+     //                  autocomplete includes "value:disabled" variants
+     // allowDeny=false: images mode — plain string list, always treated as allowed
+     allowDeny: {
+        type: Boolean,
+        default: true,
+     },
+     readonly: {
+        type: Boolean,
+        default: false,
+     },
+  },
 
-      data() {
-         return {
-            inputText: '',
-            tags: buildTags(this.value),
-         };
-      },
+  data() {
+     return {
+        inputText: '',
+        tags: buildTags(this.value),
+     };
+  },
 
-      computed: {
-         placeholder() {
-            if (this.readonly) return '';
-            if (this.allowDeny) return 'Type to add · value (Denied) to deny · * to allow all';
-            return 'Type to add · * to allow all';
-         },
+  computed: {
+     placeholder() {
+        if (this.readonly) return '';
+        if (this.allowDeny) return 'Type to add · value (Denied) to deny · * to allow all';
+        return 'Type to add · * to allow all';
+     },
 
-         autocompleteItems() {
-            const existing = new Set(this.tags.map(t => t.text));
-            // Strip a trailing " (Denied)" from the query for base-name matching
-            const searchQ = this.inputText.toLowerCase().replace(/ \(denied\)$/i, '');
+     autocompleteItems() {
+        const existing = new Set(this.tags.map(t => t.text));
+        // Strip a trailing " (Denied)" from the query for base-name matching
+        const searchQ = this.inputText.toLowerCase().replace(/ \(denied\)$/i, '');
 
-            const base = this.suggestions.filter(
-               s => !existing.has(s) && (searchQ === '' || s.toLowerCase().includes(searchQ))
-            );
+        const base = this.suggestions.filter(
+           s => !existing.has(s) && (searchQ === '' || s.toLowerCase().includes(searchQ))
+        );
 
-            if (!this.allowDeny) {
-               return base.map(s => ({ text: s }));
-            }
-            return [
-               ...base.map(s => ({ text: s })),
-               ...base.map(s => ({ text: s + ' (Denied)' })),
-            ];
-         },
-      },
+        if (!this.allowDeny) {
+           return base.map(s => ({ text: s }));
+        }
+        return [
+           ...base.map(s => ({ text: s })),
+           ...base.map(s => ({ text: s + ' (Denied)' })),
+        ];
+     },
+  },
 
-      watch: {
-         value(newVal) {
-            const newTags = buildTags(newVal);
-            // Re-sync only when genuinely different (avoids clobbering in-progress typing)
-            if (JSON.stringify(newTags) !== JSON.stringify(this.tags)) {
-               this.tags = newTags;
-            }
-         },
-      },
+  watch: {
+     value(newVal) {
+        const newTags = buildTags(newVal);
+        // Re-sync only when genuinely different (avoids clobbering in-progress typing)
+        if (JSON.stringify(newTags) !== JSON.stringify(this.tags)) {
+           this.tags = newTags;
+        }
+     },
+  },
 
-      methods: {
-         noop() {},
+  methods: {
+     noop() {},
 
-         tagTooltip(tag) {
-            if (!this.allowDeny) {
-               return this.readonly ? tag.text : `${tag.text} — × to remove`;
-            }
-            const allowed = tag.classes === 'state-allowed';
-            if (this.readonly) {
-               return allowed ? `${tag.text}: allowed` : `${tag.text}: denied`;
-            }
-            return allowed
-               ? `${tag.text}: allowed — click to deny, × to remove`
-               : `${tag.text}: denied — click to allow, × to remove`;
-         },
+     tagTooltip(tag) {
+        if (!this.allowDeny) {
+           return this.readonly ? tag.text : `${tag.text} — × to remove`;
+        }
+        const allowed = tag.classes === 'state-allowed';
+        if (this.readonly) {
+           return allowed ? `${tag.text}: allowed` : `${tag.text}: denied`;
+        }
+        return allowed
+           ? `${tag.text}: allowed — click to deny, × to remove`
+           : `${tag.text}: denied — click to allow, × to remove`;
+     },
 
-         /**
-          * Click-to-toggle: clicking a tag text (not the × close button) cycles
-          * its state between allowed (green ✓) and denied (red ✗).
-          * Only active when allowDeny=true and not readonly.
-          */
-         handleTagAreaClick(event) {
-            if (!this.allowDeny || this.readonly) return;
+     /**
+      * Click-to-toggle: clicking a tag text (not the × close button) cycles
+      * its state between allowed (green ✓) and denied (red ✗).
+      * Only active when allowDeny=true and not readonly.
+      */
+     handleTagAreaClick(event) {
+        if (!this.allowDeny || this.readonly) return;
 
-            // Ignore clicks on the close button
-            if (event.target.closest('.ti-icon-close')) return;
+        // Ignore clicks on the close button
+        if (event.target.closest('.ti-icon-close')) return;
 
-            // Find the enclosing tag element
-            const tagEl = event.target.closest('.ti-tag');
-            if (!tagEl) return;
+        // Find the enclosing tag element
+        const tagEl = event.target.closest('.ti-tag');
+        if (!tagEl) return;
 
-            // Tag text is in .ti-tag-center > span
-            const textEl = tagEl.querySelector('.ti-tag-center > span');
-            const tagText = textEl ? textEl.textContent.trim() : null;
-            if (!tagText) return;
+        // Tag text is in .ti-tag-center > span
+        const textEl = tagEl.querySelector('.ti-tag-center > span');
+        const tagText = textEl ? textEl.textContent.trim() : null;
+        if (!tagText) return;
 
-            const tagIndex = this.tags.findIndex(t => t.text === tagText);
-            if (tagIndex < 0) return;
+        const tagIndex = this.tags.findIndex(t => t.text === tagText);
+        if (tagIndex < 0) return;
 
-            const tag      = this.tags[tagIndex];
-            const newState = tag.classes === 'state-allowed' ? '0' : '1';
-            const newTags  = this.tags.map((t, i) =>
-               i !== tagIndex ? t : { ...t, classes: newState === '1' ? 'state-allowed' : 'state-denied' }
-            );
-            this.tags = newTags;
+        const tag      = this.tags[tagIndex];
+        const newState = tag.classes === 'state-allowed' ? '0' : '1';
+        const newTags  = this.tags.map((t, i) =>
+           i !== tagIndex ? t : { ...t, classes: newState === '1' ? 'state-allowed' : 'state-denied' }
+        );
+        this.tags = newTags;
 
-            const newMap = Object.fromEntries(
-               newTags.map(t => [t.text, t.classes === 'state-allowed' ? '1' : '0'])
-            );
-            this.$emit('update:value', serialise(newMap));
-         },
+        const newMap = Object.fromEntries(
+           newTags.map(t => [t.text, t.classes === 'state-allowed' ? '1' : '0'])
+        );
+        this.$emit('update:value', serialise(newMap));
+     },
 
-         onTagsChanged(newVtiTags) {
-            const processedTags = [];
-            const newMap = {};
+     onTagsChanged(newVtiTags) {
+        const processedTags = [];
+        const newMap = {};
 
-            for (const tag of newVtiTags) {
-               let key   = tag.text;
-               let state;
+        for (const tag of newVtiTags) {
+           let key   = tag.text;
+           let state;
 
-               if (tag.classes === 'state-allowed' || tag.classes === 'state-denied') {
-                  // Existing tag — preserve its state from the class we assigned
-                  state = tag.classes === 'state-allowed' ? '1' : '0';
-               } else if (this.allowDeny && key.toLowerCase().endsWith(' (denied)')) {
-                  // New tag typed/selected with the " (Denied)" deny-convention
-                  key   = key.replace(/ \(denied\)$/i, ''); // strip ' (Denied)'
-                  state = '0';
-               } else {
-                  // New plain tag → allowed
-                  state = '1';
-               }
+           if (tag.classes === 'state-allowed' || tag.classes === 'state-denied') {
+              // Existing tag — preserve its state from the class we assigned
+              state = tag.classes === 'state-allowed' ? '1' : '0';
+           } else if (this.allowDeny && key.toLowerCase().endsWith(' (denied)')) {
+              // New tag typed/selected with the " (Denied)" deny-convention
+              key   = key.replace(/ \(denied\)$/i, ''); // strip ' (Denied)'
+              state = '0';
+           } else {
+              // New plain tag → allowed
+              state = '1';
+           }
 
-               // Deduplicate (in case :disabled and plain variant somehow both appear)
-               if (key && !newMap[key]) {
-                  newMap[key] = state;
-                  processedTags.push({
-                     text:    key,
-                     classes: state === '1' ? 'state-allowed' : 'state-denied',
-                  });
-               }
-            }
+           // Deduplicate (in case :disabled and plain variant somehow both appear)
+           if (key && !newMap[key]) {
+              newMap[key] = state;
+              processedTags.push({
+                 text:    key,
+                 classes: state === '1' ? 'state-allowed' : 'state-denied',
+              });
+           }
+        }
 
-            // Update local tags immediately so vue-tags-input shows the right state
-            // (avoids a flash where e.g. "runc:disabled" briefly appears as a tag)
-            this.tags = processedTags;
+        // Update local tags immediately so vue-tags-input shows the right state
+        // (avoids a flash where e.g. "runc:disabled" briefly appears as a tag)
+        this.tags = processedTags;
 
-            this.$emit('update:value', serialise(newMap));
-         },
-      },
-   };
+        this.$emit('update:value', serialise(newMap));
+     },
+  },
+});
 </script>
 
 <!--

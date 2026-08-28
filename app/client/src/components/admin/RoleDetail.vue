@@ -90,151 +90,153 @@
 </template>
 
 <script>
-   import { mapState } from 'vuex';
-   import PermissionsEditor from '@/components/admin/PermissionsEditor';
-   import ResourcesEditor   from '@/components/admin/ResourcesEditor';
-   import ConfirmModal      from '@/components/shared/ConfirmModal';
+import { defineComponent } from 'vue';
 
-   const EMPTY_FORM = () => ({
-      name:        '',
-      permissions: {},
-      resources:   {},
-   });
+import { mapState } from 'vuex';
+import PermissionsEditor from '@/components/admin/PermissionsEditor';
+import ResourcesEditor   from '@/components/admin/ResourcesEditor';
+import ConfirmModal      from '@/components/shared/ConfirmModal';
 
-   export default {
-      name: 'RoleDetail',
-      components: { PermissionsEditor, ResourcesEditor, ConfirmModal },
+const EMPTY_FORM = () => ({
+   name:        '',
+   permissions: {},
+   resources:   {},
+});
 
-      props: {
-         roleName: {
-            type: String,
-            default: null,
-         },
-      },
+export default defineComponent({
+  name: 'RoleDetail',
+  components: { PermissionsEditor, ResourcesEditor, ConfirmModal },
 
-      data() {
-         return {
-            form:      EMPTY_FORM(),
-            saving:    false,
-            saveError: null,
-         };
-      },
+  props: {
+     roleName: {
+        type: String,
+        default: null,
+     },
+  },
 
-      computed: {
-         ...mapState('admin', ['roles', 'users', 'selected', 'rolesLoaded']),
+  data() {
+     return {
+        form:      EMPTY_FORM(),
+        saving:    false,
+        saveError: null,
+     };
+  },
 
-         isNew() {
-            return !this.roleName;
-         },
+  computed: {
+     ...mapState('admin', ['roles', 'users', 'selected', 'rolesLoaded']),
 
-         // Override the Vuex getter: a role is always in edit mode when it is new
-         // (no roleName prop), regardless of the stored admin/selected.mode value.
-         isEditMode() {
-            return this.$store.getters['admin/isEditMode'] || this.isNew;
-         },
+     isNew() {
+        return !this.roleName;
+     },
 
-         nameState() {
-            if (!this.form.name) return null;
-            return /^[A-Za-z0-9_-]+$/.test(this.form.name) ? true : false;
-         },
+     // Override the Vuex getter: a role is always in edit mode when it is new
+     // (no roleName prop), regardless of the stored admin/selected.mode value.
+     isEditMode() {
+        return this.$store.getters['admin/isEditMode'] || this.isNew;
+     },
 
-         currentRoleRecord() {
-            return this.roles.find(r => r.name === this.roleName) || null;
-         },
+     nameState() {
+        if (!this.form.name) return null;
+        return /^[A-Za-z0-9_-]+$/.test(this.form.name) ? true : false;
+     },
 
-         // True once the roles list has loaded and the requested role still does
-         // not exist — i.e. a 404 in the server.  Gated on rolesLoaded so we do
-         // not flash "not found" while the list is still being fetched.
-         roleNotFound() {
-            return !this.isNew && this.rolesLoaded && !this.currentRoleRecord;
-         },
+     currentRoleRecord() {
+        return this.roles.find(r => r.name === this.roleName) || null;
+     },
 
-         // Whether the editable form / actions should render: the create flow,
-         // or an existing, resolved record.
-         showForm() {
-            return this.isNew || !!this.currentRoleRecord;
-         },
+     // True once the roles list has loaded and the requested role still does
+     // not exist — i.e. a 404 in the server.  Gated on rolesLoaded so we do
+     // not flash "not found" while the list is still being fetched.
+     roleNotFound() {
+        return !this.isNew && this.rolesLoaded && !this.currentRoleRecord;
+     },
 
-         // Mirror the server-side guard: prevent deletion of a role that is still
-         // assigned to at least one user.  Disabling the button in the UI avoids
-         // an error round-trip; the server enforces this independently.
-         deleteDisabled() {
-            return this.users.some(u => u.role === this.roleName);
-         },
-      },
+     // Whether the editable form / actions should render: the create flow,
+     // or an existing, resolved record.
+     showForm() {
+        return this.isNew || !!this.currentRoleRecord;
+     },
 
-      created() {
-         if (!this.isNew && this.currentRoleRecord) {
-            this.populateForm(this.currentRoleRecord);
-         }
-      },
+     // Mirror the server-side guard: prevent deletion of a role that is still
+     // assigned to at least one user.  Disabling the button in the UI avoids
+     // an error round-trip; the server enforces this independently.
+     deleteDisabled() {
+        return this.users.some(u => u.role === this.roleName);
+     },
+  },
 
-      watch: {
-         currentRoleRecord(r) {
-            if (r && !this.isEditMode) this.populateForm(r);
-         },
-      },
+  created() {
+     if (!this.isNew && this.currentRoleRecord) {
+        this.populateForm(this.currentRoleRecord);
+     }
+  },
 
-      methods: {
-         populateForm(record) {
-            this.form = {
-               name:        record.name        || '',
-               permissions: record.permissions ? { ...record.permissions } : {},
-               resources:   record.resources   ? { ...record.resources }   : {},
-            };
-         },
+  watch: {
+     currentRoleRecord(r) {
+        if (r && !this.isEditMode) this.populateForm(r);
+     },
+  },
 
-         startEdit() {
-            this.$store.commit('admin/setSelectedMode', 'edit');
-         },
+  methods: {
+     populateForm(record) {
+        this.form = {
+           name:        record.name        || '',
+           permissions: record.permissions ? { ...record.permissions } : {},
+           resources:   record.resources   ? { ...record.resources }   : {},
+        };
+     },
 
-         cancel() {
-            if (this.isNew) {
-               this.$router.push('/admin/roles').catch(() => {});
-               this.$store.commit('admin/clearSelected');
-            } else {
-               this.$store.commit('admin/setSelectedMode', 'view');
-               if (this.currentRoleRecord) this.populateForm(this.currentRoleRecord);
-            }
-         },
+     startEdit() {
+        this.$store.commit('admin/setSelectedMode', 'edit');
+     },
 
-         async save() {
-            this.saving    = true;
-            this.saveError = null;
-            try {
-               const payload = {
-                  name:        this.form.name,
-                  permissions: this.form.permissions,
-                  resources:   this.form.resources,
-               };
+     cancel() {
+        if (this.isNew) {
+           this.$router.push('/admin/roles').catch(() => {});
+           this.$store.commit('admin/clearSelected');
+        } else {
+           this.$store.commit('admin/setSelectedMode', 'view');
+           if (this.currentRoleRecord) this.populateForm(this.currentRoleRecord);
+        }
+     },
 
-               if (this.isNew) {
-                  const record = await this.$store.dispatch('admin/createRole', payload);
-                  this.$router.push(`/admin/roles/${encodeURIComponent(record.name)}`).catch(() => {});
-                  this.$store.commit('admin/setSelected', { type: 'role', id: record.name, mode: 'view' });
-                  return;
-               } else {
-                  await this.$store.dispatch('admin/updateRole', { name: this.roleName, data: payload });
-                  this.$store.commit('admin/setSelectedMode', 'view');
-               }
-            } catch (e) {
-               this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
-            } finally {
-               this.saving = false;
-            }
-         },
+     async save() {
+        this.saving    = true;
+        this.saveError = null;
+        try {
+           const payload = {
+              name:        this.form.name,
+              permissions: this.form.permissions,
+              resources:   this.form.resources,
+           };
 
-         async deleteRole() {
-            try {
-               await this.$store.dispatch('admin/removeRole', this.roleName);
-               this.$router.push('/admin/roles').catch(() => {});
-               this.$store.commit('admin/clearSelected');
-            } catch (e) {
-               this.saveError = e.message;
-            }
-         },
-      },
-   };
+           if (this.isNew) {
+              const record = await this.$store.dispatch('admin/createRole', payload);
+              this.$router.push(`/admin/roles/${encodeURIComponent(record.name)}`).catch(() => {});
+              this.$store.commit('admin/setSelected', { type: 'role', id: record.name, mode: 'view' });
+              return;
+           } else {
+              await this.$store.dispatch('admin/updateRole', { name: this.roleName, data: payload });
+              this.$store.commit('admin/setSelectedMode', 'view');
+           }
+        } catch (e) {
+           this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
+        } finally {
+           this.saving = false;
+        }
+     },
+
+     async deleteRole() {
+        try {
+           await this.$store.dispatch('admin/removeRole', this.roleName);
+           this.$router.push('/admin/roles').catch(() => {});
+           this.$store.commit('admin/clearSelected');
+        } catch (e) {
+           this.saveError = e.message;
+        }
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>

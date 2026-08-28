@@ -101,126 +101,129 @@
 </template>
 
 <script>
-   export default {
-      name: 'SshEditor',
+import { defineComponent } from 'vue';
 
-      props: {
-         // ssh sub-object: { publicKeys: { name: keyString }, keypairs: { name: { public, private } } }
-         ssh: {
-            type: Object,
-            default: () => ({}),
-         },
-         readonly: {
-            type: Boolean,
-            default: false,
-         },
-      },
+export default defineComponent({
+  emits: ['update:ssh'],
+  name: 'SshEditor',
 
-      data() {
-         return {
-            // Authorized public keys as a newline-joined string for the textarea
-            publicKeysText: this.buildPublicKeysText(this.ssh),
-            showAddModal: false,
-            newKpName:    '',
-            newKpPublic:  '',
-            newKpPrivate: '',
-         };
-      },
+  props: {
+     // ssh sub-object: { publicKeys: { name: keyString }, keypairs: { name: { public, private } } }
+     ssh: {
+        type: Object,
+        default: () => ({}),
+     },
+     readonly: {
+        type: Boolean,
+        default: false,
+     },
+  },
 
-      computed: {
-         keypairNames() {
-            return Object.keys((this.ssh && this.ssh.keypairs) || {});
-         },
+  data() {
+     return {
+        // Authorized public keys as a newline-joined string for the textarea
+        publicKeysText: this.buildPublicKeysText(this.ssh),
+        showAddModal: false,
+        newKpName:    '',
+        newKpPublic:  '',
+        newKpPrivate: '',
+     };
+  },
 
-         newKpNameState() {
-            if (!this.newKpName) return null;
-            return /^[A-Za-z0-9_*-]+$/.test(this.newKpName) && !this.keypairNames.includes(this.newKpName)
-               ? true : false;
-         },
+  computed: {
+     keypairNames() {
+        return Object.keys((this.ssh && this.ssh.keypairs) || {});
+     },
 
-         canAddKeypair() {
-            return this.newKpNameState === true && this.newKpPublic.trim() && this.newKpPrivate.trim();
-         },
+     newKpNameState() {
+        if (!this.newKpName) return null;
+        return /^[A-Za-z0-9_*-]+$/.test(this.newKpName) && !this.keypairNames.includes(this.newKpName)
+           ? true : false;
+     },
 
-         // Distinguish the two failure reasons so the message isn't misleading
-         // (e.g. '*' is a valid name, but every user already has a legacy '*' keypair).
-         newKpNameError() {
-            if (!this.newKpName) return '';
-            if (this.keypairNames.includes(this.newKpName))
-               return `A keypair named '${this.newKpName}' already exists.`;
-            if (!/^[A-Za-z0-9_*-]+$/.test(this.newKpName))
-               return "Use only letters, digits, hyphens, underscores or '*'.";
-            return '';
-         },
-      },
+     canAddKeypair() {
+        return this.newKpNameState === true && this.newKpPublic.trim() && this.newKpPrivate.trim();
+     },
 
-      watch: {
-         ssh(val) {
-            this.publicKeysText = this.buildPublicKeysText(val);
-         },
-      },
+     // Distinguish the two failure reasons so the message isn't misleading
+     // (e.g. '*' is a valid name, but every user already has a legacy '*' keypair).
+     newKpNameError() {
+        if (!this.newKpName) return '';
+        if (this.keypairNames.includes(this.newKpName))
+           return `A keypair named '${this.newKpName}' already exists.`;
+        if (!/^[A-Za-z0-9_*-]+$/.test(this.newKpName))
+           return "Use only letters, digits, hyphens, underscores or '*'.";
+        return '';
+     },
+  },
 
-      methods: {
-         buildPublicKeysText(ssh) {
-            if (!ssh || !ssh.publicKeys) return '';
-            return Object.values(ssh.publicKeys).join('\n');
-         },
+  watch: {
+     ssh(val) {
+        this.publicKeysText = this.buildPublicKeysText(val);
+     },
+  },
 
-         publicKeyFor(name) {
-            const kp = (this.ssh && this.ssh.keypairs && this.ssh.keypairs[name]) || {};
-            const pub = kp.public || '';
-            return pub.length > 60 ? pub.slice(0, 57) + '…' : pub;
-         },
+  methods: {
+     buildPublicKeysText(ssh) {
+        if (!ssh || !ssh.publicKeys) return '';
+        return Object.values(ssh.publicKeys).join('\n');
+     },
 
-         emitUpdate() {
-            // Rebuild publicKeys from the textarea (one key per non-blank line).
-            // Preserve the existing name for any unchanged line, and give every
-            // other line a guaranteed-unique name (its full comment if present,
-            // else key-N). Keying naively by the comment field collapsed two keys
-            // that shared a comment word into one — silently dropping a key.
-            const lines = this.publicKeysText.split('\n').map(l => l.trim()).filter(Boolean);
-            const origByLine = Object.fromEntries(
-               Object.entries((this.ssh && this.ssh.publicKeys) || {}).map(([n, l]) => [l, n]));
-            const publicKeys = {};
-            const used = new Set();
-            let counter = 0;
-            for (const line of lines) {
-               let name = origByLine[line];
-               if (!name || used.has(name)) {
-                  const parts = line.split(/\s+/);
-                  const base = parts.slice(2).join(' ') || `key-${++counter}`;
-                  name = base;
-                  while (used.has(name)) name = `${base}-${++counter}`;
-               }
-               used.add(name);
-               publicKeys[name] = line;
-            }
-            this.$emit('input', { ...this.ssh, publicKeys });
-         },
+     publicKeyFor(name) {
+        const kp = (this.ssh && this.ssh.keypairs && this.ssh.keypairs[name]) || {};
+        const pub = kp.public || '';
+        return pub.length > 60 ? pub.slice(0, 57) + '…' : pub;
+     },
 
-         deleteKeypair(name) {
-            const keypairs = { ...(this.ssh.keypairs || {}) };
-            delete keypairs[name];
-            this.$emit('input', { ...this.ssh, keypairs });
-         },
+     emitUpdate() {
+        // Rebuild publicKeys from the textarea (one key per non-blank line).
+        // Preserve the existing name for any unchanged line, and give every
+        // other line a guaranteed-unique name (its full comment if present,
+        // else key-N). Keying naively by the comment field collapsed two keys
+        // that shared a comment word into one — silently dropping a key.
+        const lines = this.publicKeysText.split('\n').map(l => l.trim()).filter(Boolean);
+        const origByLine = Object.fromEntries(
+           Object.entries((this.ssh && this.ssh.publicKeys) || {}).map(([n, l]) => [l, n]));
+        const publicKeys = {};
+        const used = new Set();
+        let counter = 0;
+        for (const line of lines) {
+           let name = origByLine[line];
+           if (!name || used.has(name)) {
+              const parts = line.split(/\s+/);
+              const base = parts.slice(2).join(' ') || `key-${++counter}`;
+              name = base;
+              while (used.has(name)) name = `${base}-${++counter}`;
+           }
+           used.add(name);
+           publicKeys[name] = line;
+        }
+        this.$emit('update:ssh', { ...this.ssh, publicKeys });
+     },
 
-         commitAddKeypair() {
-            const keypairs = { ...(this.ssh.keypairs || {}) };
-            keypairs[this.newKpName] = {
-               public:  this.newKpPublic.trim(),
-               private: this.newKpPrivate.trim(),
-            };
-            this.$emit('input', { ...this.ssh, keypairs });
-            this.resetAddForm();
-         },
+     deleteKeypair(name) {
+        const keypairs = { ...(this.ssh.keypairs || {}) };
+        delete keypairs[name];
+        this.$emit('update:ssh', { ...this.ssh, keypairs });
+     },
 
-         resetAddForm() {
-            this.newKpName    = '';
-            this.newKpPublic  = '';
-            this.newKpPrivate = '';
-         },
-      },
-   };
+     commitAddKeypair() {
+        const keypairs = { ...(this.ssh.keypairs || {}) };
+        keypairs[this.newKpName] = {
+           public:  this.newKpPublic.trim(),
+           private: this.newKpPrivate.trim(),
+        };
+        this.$emit('update:ssh', { ...this.ssh, keypairs });
+        this.resetAddForm();
+     },
+
+     resetAddForm() {
+        this.newKpName    = '';
+        this.newKpPublic  = '';
+        this.newKpPrivate = '';
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>

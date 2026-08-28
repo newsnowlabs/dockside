@@ -25,27 +25,33 @@
 </template>
 
 <script>
-   import { routing } from '@/components/mixins';
+import { defineComponent } from 'vue';
 
-   export default {
-      name: 'Footer',
-      components: {
-      },
-      data() {
-         return {
-            version: window.dockside.version
-         };
-      },
-      computed: {
-      },
-      methods: {
-      },
-      mixins: [routing]
-   };
+import { routing } from '@/components/mixins';
+
+export default defineComponent({
+  name: 'Footer',
+
+  components: {
+  },
+
+  data() {
+     return {
+        version: window.dockside.version
+     };
+  },
+
+  computed: {
+  },
+
+  methods: {
+  },
+
+  mixins: [routing],
+});
 </script>
 
 <style lang="scss">
-
    body {
       padding-bottom: 4em; /* Footer height */
       position: relative;

@@ -50,47 +50,49 @@
 </template>
 
 <script>
-   import { mapState } from 'vuex';
-   import UserDetail    from '@/components/admin/UserDetail';
-   import RoleDetail    from '@/components/admin/RoleDetail';
-   import ProfileDetail from '@/components/admin/ProfileDetail';
+import { defineComponent } from 'vue';
 
-   // AdminMain is the right-hand content pane for all /admin/* and /account routes.
-   // It renders the appropriate detail component based on admin.selected (set by
-   // App.vue's updateStateFromRoute and AdminSidebar's selectItem), or the account
-   // self-edit form when on /account, or a placeholder when nothing is selected.
-   export default {
-      name: 'AdminMain',
-      components: { UserDetail, RoleDetail, ProfileDetail },
+import { mapState } from 'vuex';
+import UserDetail    from '@/components/admin/UserDetail';
+import RoleDetail    from '@/components/admin/RoleDetail';
+import ProfileDetail from '@/components/admin/ProfileDetail';
 
-      computed: {
-         ...mapState('admin', ['selected', 'error']),
+// AdminMain is the right-hand content pane for all /admin/* and /account routes.
+// It renders the appropriate detail component based on admin.selected (set by
+// App.vue's updateStateFromRoute and AdminSidebar's selectItem), or the account
+// self-edit form when on /account, or a placeholder when nothing is selected.
+export default defineComponent({
+  name: 'AdminMain',
+  components: { UserDetail, RoleDetail, ProfileDetail },
 
-         accountError() {
-            return this.$store.state.account.accountError;
-         },
+  computed: {
+     ...mapState('admin', ['selected', 'error']),
 
-         isAccountRoute() {
-            // Match by route name (see App.vue): '/account/' also resolves here under
-            // Vue Router's non-strict matching, and a path === '/account' check would
-            // wrongly treat it as a non-account route.
-            return this.$route.name === 'account';
-         },
+     accountError() {
+        return this.$store.state.account.accountError;
+     },
 
-         currentUsername() {
-            return this.$store.state.account.currentUser.username;
-         },
-      },
+     isAccountRoute() {
+        // Match by route name (see App.vue): '/account/' also resolves here under
+        // Vue Router's non-strict matching, and a path === '/account' check would
+        // wrongly treat it as a non-account route.
+        return this.$route.name === 'account';
+     },
 
-      methods: {
-         clearError() {
-            this.$store.commit('admin/setError', null);
-         },
-         clearAccountError() {
-            this.$store.commit('account/setAccountError', null);
-         },
-      },
-   };
+     currentUsername() {
+        return this.$store.state.account.currentUser.username;
+     },
+  },
+
+  methods: {
+     clearError() {
+        this.$store.commit('admin/setError', null);
+     },
+     clearAccountError() {
+        this.$store.commit('account/setAccountError', null);
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>

@@ -157,272 +157,274 @@
 </template>
 
 <script>
-   import { mapState } from 'vuex';
-   import JsonEditor   from '@/components/shared/JsonEditor';
-   import ConfirmModal from '@/components/shared/ConfirmModal';
+import { defineComponent } from 'vue';
 
-   // Keys that are surfaced as individual form fields (id, name, description, active,
-   // version).  All other keys from the profile record are passed to the JSON editor
-   // as the 'body' so the admin can edit them in a structured tree view.
-   const STRUCTURED_KEYS = ['id', 'name', 'description', 'active', 'version'];
+import { mapState } from 'vuex';
+import JsonEditor   from '@/components/shared/JsonEditor';
+import ConfirmModal from '@/components/shared/ConfirmModal';
 
-   // Mirror the server's reserved profile identifiers (Profile::Manage %RESERVED_NAMES):
-   // the route verbs plus 'new', the create-form sentinel. 'new' must be included or the
-   // client accepts an id the server then rejects.
-   const RESERVED_NAMES = new Set(['create', 'update', 'remove', 'rename', 'new']);
+// Keys that are surfaced as individual form fields (id, name, description, active,
+// version).  All other keys from the profile record are passed to the JSON editor
+// as the 'body' so the admin can edit them in a structured tree view.
+const STRUCTURED_KEYS = ['id', 'name', 'description', 'active', 'version'];
 
-   const EMPTY_FORM = () => ({
-      id:          '',
-      name:        '',
-      description: '',
-      active:      false,
-      version:     null,
-   });
+// Mirror the server's reserved profile identifiers (Profile::Manage %RESERVED_NAMES):
+// the route verbs plus 'new', the create-form sentinel. 'new' must be included or the
+// client accepts an id the server then rejects.
+const RESERVED_NAMES = new Set(['create', 'update', 'remove', 'rename', 'new']);
 
-   // Template body shown in the JSON editor when creating a new profile.
-   // Lists every supported top-level property at the current schema version (4)
-   // with sensible empty defaults so the user can see what's available.
-   const PROFILE_TEMPLATE_BODY = {
-      version:          4,
-      routers:          [],
-      runtimes:         [],
-      networks:         [],
-      images:           [],
-      unixusers:        [],
-      ssh:              false,
-      IDEs:             [],
-      mountIDE:         false,
-      imagePathsFilter: [],
-      mounts:           {},
-      runDockerInit:    false,
-      dockerArgs:       [],
-      command:          [],
-      entrypoint:       [],
-      metadata:         {},
-      lxcfs:            false,
-      security:         {},
-      gitURLs:          [],
-      options:          [],
-   };
+const EMPTY_FORM = () => ({
+   id:          '',
+   name:        '',
+   description: '',
+   active:      false,
+   version:     null,
+});
 
-   export default {
-      name: 'ProfileDetail',
-      components: { JsonEditor, ConfirmModal },
+// Template body shown in the JSON editor when creating a new profile.
+// Lists every supported top-level property at the current schema version (4)
+// with sensible empty defaults so the user can see what's available.
+const PROFILE_TEMPLATE_BODY = {
+   version:          4,
+   routers:          [],
+   runtimes:         [],
+   networks:         [],
+   images:           [],
+   unixusers:        [],
+   ssh:              false,
+   IDEs:             [],
+   mountIDE:         false,
+   imagePathsFilter: [],
+   mounts:           {},
+   runDockerInit:    false,
+   dockerArgs:       [],
+   command:          [],
+   entrypoint:       [],
+   metadata:         {},
+   lxcfs:            false,
+   security:         {},
+   gitURLs:          [],
+   options:          [],
+};
 
-      props: {
-         profileId: {
-            type: String,
-            default: null,
-         },
-      },
+export default defineComponent({
+  name: 'ProfileDetail',
+  components: { JsonEditor, ConfirmModal },
 
-      data() {
-         return {
-            form:         EMPTY_FORM(),
-            profileBody:  this.profileId ? {} : { ...PROFILE_TEMPLATE_BODY },
-            saving:       false,
-            saveError:    null,
-            isRenaming:   false,
-            renameValue:  '',
-            renaming:     false,
-            renameError:  null,
-            origForm:     null, // snapshot for unsaved-edits detection
-            origBody:     null,
-         };
-      },
+  props: {
+     profileId: {
+        type: String,
+        default: null,
+     },
+  },
 
-      computed: {
-         ...mapState('admin', ['profiles', 'selected', 'profilesLoaded']),
+  data() {
+     return {
+        form:         EMPTY_FORM(),
+        profileBody:  this.profileId ? {} : { ...PROFILE_TEMPLATE_BODY },
+        saving:       false,
+        saveError:    null,
+        isRenaming:   false,
+        renameValue:  '',
+        renaming:     false,
+        renameError:  null,
+        origForm:     null, // snapshot for unsaved-edits detection
+        origBody:     null,
+     };
+  },
 
-         isNew() {
-            return !this.profileId;
-         },
+  computed: {
+     ...mapState('admin', ['profiles', 'selected', 'profilesLoaded']),
 
-         isEditMode() {
-            return this.$store.getters['admin/isEditMode'] || this.isNew;
-         },
+     isNew() {
+        return !this.profileId;
+     },
 
-         idState() {
-            if (!this.form.id) return null;
-            return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(this.form.id) &&
-                   !RESERVED_NAMES.has(this.form.id) ? true : false;
-         },
+     isEditMode() {
+        return this.$store.getters['admin/isEditMode'] || this.isNew;
+     },
 
-         renameState() {
-            if (!this.renameValue) return null;
-            return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(this.renameValue) &&
-                   !RESERVED_NAMES.has(this.renameValue) &&
-                   this.renameValue !== this.profileId ? true : false;
-         },
+     idState() {
+        if (!this.form.id) return null;
+        return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(this.form.id) &&
+               !RESERVED_NAMES.has(this.form.id) ? true : false;
+     },
 
-         currentProfileRecord() {
-            return this.profiles.find(p => p.id === this.profileId) || null;
-         },
+     renameState() {
+        if (!this.renameValue) return null;
+        return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(this.renameValue) &&
+               !RESERVED_NAMES.has(this.renameValue) &&
+               this.renameValue !== this.profileId ? true : false;
+     },
 
-         // True once the list has loaded and confirmed there is no profile with
-         // this id (and we're not on the create flow). Gated on profilesLoaded so
-         // we don't flash "not found" while the list is still being fetched.
-         profileNotFound() {
-            return !this.isNew && this.profilesLoaded && !this.currentProfileRecord;
-         },
+     currentProfileRecord() {
+        return this.profiles.find(p => p.id === this.profileId) || null;
+     },
 
-         hasUnsavedEdits() {
-            if (!this.origForm) return false;
-            return JSON.stringify(this.form) !== this.origForm ||
-                   JSON.stringify(this.profileBody) !== this.origBody;
-         },
-      },
+     // True once the list has loaded and confirmed there is no profile with
+     // this id (and we're not on the create flow). Gated on profilesLoaded so
+     // we don't flash "not found" while the list is still being fetched.
+     profileNotFound() {
+        return !this.isNew && this.profilesLoaded && !this.currentProfileRecord;
+     },
 
-      created() {
-         if (!this.isNew && this.currentProfileRecord) {
-            this.populateForm(this.currentProfileRecord);
-         }
-      },
+     hasUnsavedEdits() {
+        if (!this.origForm) return false;
+        return JSON.stringify(this.form) !== this.origForm ||
+               JSON.stringify(this.profileBody) !== this.origBody;
+     },
+  },
 
-      watch: {
-         currentProfileRecord(r) {
-            if (r && !this.isEditMode) this.populateForm(r);
-         },
-      },
+  created() {
+     if (!this.isNew && this.currentProfileRecord) {
+        this.populateForm(this.currentProfileRecord);
+     }
+  },
 
-      methods: {
-         populateForm(record) {
-            this.form = {
-               id:          record.id          || '',
-               name:        record.name        || '',
-               description: record.description || '',
-               active:      !!record.active,
-               version:     record.version     || null,
-            };
-            // Extract body: everything except structured keys
-            const body = {};
-            for (const [k, v] of Object.entries(record)) {
-               if (!STRUCTURED_KEYS.includes(k)) body[k] = v;
-            }
-            this.profileBody = body;
-            // Snapshot for unsaved-edits detection
-            this.origForm = JSON.stringify(this.form);
-            this.origBody = JSON.stringify(this.profileBody);
-         },
+  watch: {
+     currentProfileRecord(r) {
+        if (r && !this.isEditMode) this.populateForm(r);
+     },
+  },
 
-         startEdit() {
-            this.$store.commit('admin/setSelectedMode', 'edit');
-            this.origForm = JSON.stringify(this.form);
-            this.origBody = JSON.stringify(this.profileBody);
-         },
+  methods: {
+     populateForm(record) {
+        this.form = {
+           id:          record.id          || '',
+           name:        record.name        || '',
+           description: record.description || '',
+           active:      !!record.active,
+           version:     record.version     || null,
+        };
+        // Extract body: everything except structured keys
+        const body = {};
+        for (const [k, v] of Object.entries(record)) {
+           if (!STRUCTURED_KEYS.includes(k)) body[k] = v;
+        }
+        this.profileBody = body;
+        // Snapshot for unsaved-edits detection
+        this.origForm = JSON.stringify(this.form);
+        this.origBody = JSON.stringify(this.profileBody);
+     },
 
-         cancel() {
-            if (this.isNew) {
-               this.$router.push('/admin/profiles').catch(() => {});
-               this.$store.commit('admin/clearSelected');
-            } else {
-               this.$store.commit('admin/setSelectedMode', 'view');
-               if (this.currentProfileRecord) this.populateForm(this.currentProfileRecord);
-            }
-         },
+     startEdit() {
+        this.$store.commit('admin/setSelectedMode', 'edit');
+        this.origForm = JSON.stringify(this.form);
+        this.origBody = JSON.stringify(this.profileBody);
+     },
 
-         buildPayload() {
-            // Build the JSON blob (_json) by merging structured fields back into
-            // the body.  The server's createProfile/updateProfile will decode _json
-            // as the authoritative profile body, so it must be complete.
-            //
-            // JsonEditor may hand back the body as a string (its documented contract,
-            // e.g. when edited in code mode), so coerce to an object before spreading —
-            // otherwise `{...string}` would explode into character-indexed keys and the
-            // server would reject the record.  Invalid JSON surfaces as a clean error
-            // (caught by save()) rather than a corrupt payload.
-            let body = this.profileBody;
-            if (typeof body === 'string') {
-               try {
-                  body = JSON.parse(body);
-               } catch (e) {
-                  throw new Error(`Profile body is not valid JSON: ${e.message}`);
-               }
-            }
-            if (!body || typeof body !== 'object' || Array.isArray(body)) {
-               throw new Error('Profile body must be a JSON object');
-            }
-            const fullProfile = {
-               ...body,
-               name:        this.form.name,
-               description: this.form.description,
-               active:      this.form.active,  // boolean (JS) → JSON boolean in _json
-            };
-            if (this.form.version) fullProfile.version = this.form.version;
-            return {
-               id:    this.form.id || this.profileId,
-               name:  this.form.name,
-               // active is carried inside _json as a JSON boolean; the server's
-               // coerce step (active ? JSON::true : JSON::false) handles it correctly.
-               _json: JSON.stringify(fullProfile),
-            };
-         },
+     cancel() {
+        if (this.isNew) {
+           this.$router.push('/admin/profiles').catch(() => {});
+           this.$store.commit('admin/clearSelected');
+        } else {
+           this.$store.commit('admin/setSelectedMode', 'view');
+           if (this.currentProfileRecord) this.populateForm(this.currentProfileRecord);
+        }
+     },
 
-         async save() {
-            this.saving    = true;
-            this.saveError = null;
-            try {
-               const payload = this.buildPayload();
+     buildPayload() {
+        // Build the JSON blob (_json) by merging structured fields back into
+        // the body.  The server's createProfile/updateProfile will decode _json
+        // as the authoritative profile body, so it must be complete.
+        //
+        // JsonEditor may hand back the body as a string (its documented contract,
+        // e.g. when edited in code mode), so coerce to an object before spreading —
+        // otherwise `{...string}` would explode into character-indexed keys and the
+        // server would reject the record.  Invalid JSON surfaces as a clean error
+        // (caught by save()) rather than a corrupt payload.
+        let body = this.profileBody;
+        if (typeof body === 'string') {
+           try {
+              body = JSON.parse(body);
+           } catch (e) {
+              throw new Error(`Profile body is not valid JSON: ${e.message}`);
+           }
+        }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+           throw new Error('Profile body must be a JSON object');
+        }
+        const fullProfile = {
+           ...body,
+           name:        this.form.name,
+           description: this.form.description,
+           active:      this.form.active,  // boolean (JS) → JSON boolean in _json
+        };
+        if (this.form.version) fullProfile.version = this.form.version;
+        return {
+           id:    this.form.id || this.profileId,
+           name:  this.form.name,
+           // active is carried inside _json as a JSON boolean; the server's
+           // coerce step (active ? JSON::true : JSON::false) handles it correctly.
+           _json: JSON.stringify(fullProfile),
+        };
+     },
 
-               if (this.isNew) {
-                  const record = await this.$store.dispatch('admin/createProfile', payload);
-                  this.$router.push(`/admin/profiles/${encodeURIComponent(record.id)}`).catch(() => {});
-                  this.$store.commit('admin/setSelected', { type: 'profile', id: record.id, mode: 'view' });
-                  return;
-               } else {
-                  await this.$store.dispatch('admin/updateProfile', { id: this.profileId, data: payload });
-                  this.$store.commit('admin/setSelectedMode', 'view');
-                  this.origForm = JSON.stringify(this.form);
-                  this.origBody = JSON.stringify(this.profileBody);
-               }
-            } catch (e) {
-               this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
-            } finally {
-               this.saving = false;
-            }
-         },
+     async save() {
+        this.saving    = true;
+        this.saveError = null;
+        try {
+           const payload = this.buildPayload();
 
-         startRename() {
-            this.renameValue = this.profileId;
-            this.renameError = null;
-            this.isRenaming  = true;
-         },
+           if (this.isNew) {
+              const record = await this.$store.dispatch('admin/createProfile', payload);
+              this.$router.push(`/admin/profiles/${encodeURIComponent(record.id)}`).catch(() => {});
+              this.$store.commit('admin/setSelected', { type: 'profile', id: record.id, mode: 'view' });
+              return;
+           } else {
+              await this.$store.dispatch('admin/updateProfile', { id: this.profileId, data: payload });
+              this.$store.commit('admin/setSelectedMode', 'view');
+              this.origForm = JSON.stringify(this.form);
+              this.origBody = JSON.stringify(this.profileBody);
+           }
+        } catch (e) {
+           this.saveError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
+        } finally {
+           this.saving = false;
+        }
+     },
 
-         cancelRename() {
-            this.isRenaming  = false;
-            this.renameValue = '';
-            this.renameError = null;
-         },
+     startRename() {
+        this.renameValue = this.profileId;
+        this.renameError = null;
+        this.isRenaming  = true;
+     },
 
-         async commitRename() {
-            if (this.renameState !== true) return;
-            this.renaming    = true;
-            this.renameError = null;
-            try {
-               const result = await this.$store.dispatch('admin/renameProfile', {
-                  id: this.profileId, newName: this.renameValue,
-               });
-               this.$router.push(`/admin/profiles/${encodeURIComponent(result.id)}`).catch(() => {});
-               this.$store.commit('admin/setSelected', { type: 'profile', id: result.id, mode: 'view' });
-               this.isRenaming = false;
-            } catch (e) {
-               this.renameError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
-            } finally {
-               this.renaming = false;
-            }
-         },
+     cancelRename() {
+        this.isRenaming  = false;
+        this.renameValue = '';
+        this.renameError = null;
+     },
 
-         async deleteProfile() {
-            try {
-               await this.$store.dispatch('admin/removeProfile', this.profileId);
-               this.$router.push('/admin/profiles').catch(() => {});
-               this.$store.commit('admin/clearSelected');
-            } catch (e) {
-               this.saveError = e.message;
-            }
-         },
-      },
-   };
+     async commitRename() {
+        if (this.renameState !== true) return;
+        this.renaming    = true;
+        this.renameError = null;
+        try {
+           const result = await this.$store.dispatch('admin/renameProfile', {
+              id: this.profileId, newName: this.renameValue,
+           });
+           this.$router.push(`/admin/profiles/${encodeURIComponent(result.id)}`).catch(() => {});
+           this.$store.commit('admin/setSelected', { type: 'profile', id: result.id, mode: 'view' });
+           this.isRenaming = false;
+        } catch (e) {
+           this.renameError = e.response ? (e.response.data && e.response.data.msg) || e.message : e.message;
+        } finally {
+           this.renaming = false;
+        }
+     },
+
+     async deleteProfile() {
+        try {
+           await this.$store.dispatch('admin/removeProfile', this.profileId);
+           this.$router.push('/admin/profiles').catch(() => {});
+           this.$store.commit('admin/clearSelected');
+        } catch (e) {
+           this.saveError = e.message;
+        }
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>

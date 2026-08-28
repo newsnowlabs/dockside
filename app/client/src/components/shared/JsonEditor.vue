@@ -1,7 +1,8 @@
 <template>
    <div class="json-editor-wrap">
       <json-editor-vue
-         v-model="localValue"
+         :value="localValue"
+         @input="localValue = $event"
          :mode="currentMode"
          :modes="allowedModes"
          :read-only="readonly"
@@ -30,13 +31,28 @@
     *         readonly (Boolean)          default false — shows read-only tree view
     * Emits:  input(newValue)
     *
-    * Vue 3 migration: rename 'value' → 'modelValue' and 'input' → 'update:modelValue'.
+    * Deliberately still value/input, not modelValue/update:modelValue, despite
+    * running under Vue 3 + @vue/compat: the app's global compilerOptions.
+    * compatConfig (MODE 2, see vite.config.js) makes the *compiler* rewrite
+    * ANY 'modelValue'-named prop key back to 'value' wherever it's bound to a
+    * component - confirmed directly (an explicit :modelValue="..." binding
+    * here arrived in this component's $attrs as {value: ...}, never reaching
+    * the modelValue prop at all, whether via v-model shorthand or an explicit
+    * :modelValue/@update:modelValue binding). That single global compatConfig
+    * has no per-component escape hatch that showed up under investigation, so
+    * every one of *our own* components stays on the old value/input contract
+    * until Stage 4's cutover away from compat mode - matching json-editor-vue
+    * itself, which independently lands on 'value'/'input' too here (it picks
+    * its prop/event names via vue-demi's own isVue3 check, which also
+    * resolves false in this same compat environment).
     */
    import JsonEditorVue from 'json-editor-vue';
 
    export default {
       name: 'JsonEditor',
-      components: { JsonEditorVue },
+      components: {
+         JsonEditorVue,
+      },
       props: {
          value: {
             default: null,

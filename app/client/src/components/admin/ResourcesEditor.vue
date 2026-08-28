@@ -29,65 +29,68 @@
 </template>
 
 <script>
-   import { mapState } from 'vuex';
-   import { RESOURCES }        from '@/schemas/admin';
-   import ResourceTagsInput    from '@/components/admin/ResourceTagsInput';
+import { defineComponent } from 'vue';
 
-   // Fallback auth modes if the server /resources call hasn't completed yet
-   const DEFAULT_AUTH_MODES = ['user', 'developer', 'public', 'viewer', 'owner'];
+import { mapState } from 'vuex';
+import { RESOURCES }        from '@/schemas/admin';
+import ResourceTagsInput    from '@/components/admin/ResourceTagsInput';
 
-   export default {
-      name: 'ResourcesEditor',
-      components: { ResourceTagsInput },
+// Fallback auth modes if the server /resources call hasn't completed yet
+const DEFAULT_AUTH_MODES = ['user', 'developer', 'public', 'viewer', 'owner'];
 
-      props: {
-         // { resourceKey: arrayOrObject }
-         resources: {
-            type: Object,
-            default: () => ({}),
-         },
-         readonly: {
-            type: Boolean,
-            default: false,
-         },
-      },
+export default defineComponent({
+  emits: ['update:resources'],
+  name: 'ResourcesEditor',
+  components: { ResourceTagsInput },
 
-      data() {
-         return { RESOURCES };
-      },
+  props: {
+     // { resourceKey: arrayOrObject }
+     resources: {
+        type: Object,
+        default: () => ({}),
+     },
+     readonly: {
+        type: Boolean,
+        default: false,
+     },
+  },
 
-      computed: {
-         ...mapState('admin', ['profiles', 'hostResources']),
+  data() {
+     return { RESOURCES };
+  },
 
-         suggestionMap() {
-            const hr = this.hostResources || {};
-            return {
-               profiles: ['*', ...(this.profiles || []).map(p => p.id)],
-               runtimes: ['*', ...(hr.runtimes  || [])],
-               networks: ['*', ...(hr.networks  || [])],
-               auth:     ['*', ...(hr.authModes || DEFAULT_AUTH_MODES)],
-               images:   ['*'],
-               IDEs:     ['*', 'none', ...(hr.IDEs || [])],
-            };
-         },
-      },
+  computed: {
+     ...mapState('admin', ['profiles', 'hostResources']),
 
-      methods: {
-         suggestionsFor(key) {
-            return this.suggestionMap[key] || [];
-         },
+     suggestionMap() {
+        const hr = this.hostResources || {};
+        return {
+           profiles: ['*', ...(this.profiles || []).map(p => p.id)],
+           runtimes: ['*', ...(hr.runtimes  || [])],
+           networks: ['*', ...(hr.networks  || [])],
+           auth:     ['*', ...(hr.authModes || DEFAULT_AUTH_MODES)],
+           images:   ['*'],
+           IDEs:     ['*', 'none', ...(hr.IDEs || [])],
+        };
+     },
+  },
 
-         onResourceUpdate(resKey, newValue) {
-            const updated = { ...this.resources };
-            if (newValue == null) {
-               delete updated[resKey];
-            } else {
-               updated[resKey] = newValue;
-            }
-            this.$emit('update:resources', updated);
-         },
-      },
-   };
+  methods: {
+     suggestionsFor(key) {
+        return this.suggestionMap[key] || [];
+     },
+
+     onResourceUpdate(resKey, newValue) {
+        const updated = { ...this.resources };
+        if (newValue == null) {
+           delete updated[resKey];
+        } else {
+           updated[resKey] = newValue;
+        }
+        this.$emit('update:resources', updated);
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>

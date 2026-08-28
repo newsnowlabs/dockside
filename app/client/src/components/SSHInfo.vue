@@ -1,4 +1,4 @@
-// https://bootstrap-vue.org/docs/components/modal#modal
+<!-- https://bootstrap-vue.org/docs/components/modal#modal -->
 
 <template>
    <b-modal id="sshinfo-modal" size="lg" v-model="showModal" @show="onModalShow" title="How to set up SSH" centered>
@@ -101,100 +101,105 @@
 </template>
 
 <script>
-   import copyToClipboard from '@/utilities/copy-to-clipboard';
-   import { getAuthCookies } from '@/services/container';
+import { defineComponent } from 'vue';
 
-   export default {
-      name: 'SSHInfo',
-      data() {
-         return {
-            showModal: false,
-            cookiesRaw: ''
-         };
-      },
-      methods: {
-         openModal() {
-            this.showModal = true;
-         },
-         onModalShow() {
-            this.getCookies();
-         },
-         closeModal() {
-            this.showModal = false;
-         },
-         copy(value) {
-            copyToClipboard(value);
-         },
-         getCookies() {
-            getAuthCookies()
-               .then(data => {
-                  this.cookiesRaw = data.data;
-               })
-               .catch((error) => {
-                  if(error.response && error.response.status == 401) {
-                     console.log(error.response.data.msg);
-                     alert(error.response.data.msg);
-                  }
-                  else {
-                     console.error("Error fetching authentication cookie", error);
-                  }
-               });
-         }
-      },
-      computed: {
-         cookies() {
-            return this.cookiesRaw.replace(/%/g, '%%');
-         },
-         sshHost() {
-            return window.location.host;
-         },
-         sshHostname() {
-            return window.location.hostname;
-         },
-         sshPort() {
-            const port = window.location.port;
-            return port ? `:${port}` : '';
-         },
-         sshWildcardHost() {
-            return 'ssh-*' + window.dockside.host.split(':')[0];
-         },
-         isNestedInstance() {
-            // parentFQDN starts with '.' for standalone/outermost Dockside, '-' for nested
-            return !window.dockside.host.startsWith('.');
-         },
-         setupScript() {
-            if (!this.cookiesRaw) return '(loading...)';
-            return `mkdir -p ~/.config/dockside/wstunnel-manual
+import copyToClipboard from '@/utilities/copy-to-clipboard';
+import { getAuthCookies } from '@/services/container';
+
+export default defineComponent({
+  name: 'SSHInfo',
+
+  data() {
+     return {
+        showModal: false,
+        cookiesRaw: ''
+     };
+  },
+
+  methods: {
+     openModal() {
+        this.showModal = true;
+     },
+     onModalShow() {
+        this.getCookies();
+     },
+     closeModal() {
+        this.showModal = false;
+     },
+     copy(value) {
+        copyToClipboard(value);
+     },
+     getCookies() {
+        getAuthCookies()
+           .then(data => {
+              this.cookiesRaw = data.data;
+           })
+           .catch((error) => {
+              if(error.response && error.response.status == 401) {
+                 console.log(error.response.data.msg);
+                 alert(error.response.data.msg);
+              }
+              else {
+                 console.error("Error fetching authentication cookie", error);
+              }
+           });
+     }
+  },
+
+  computed: {
+     cookies() {
+        return this.cookiesRaw.replace(/%/g, '%%');
+     },
+     sshHost() {
+        return window.location.host;
+     },
+     sshHostname() {
+        return window.location.hostname;
+     },
+     sshPort() {
+        const port = window.location.port;
+        return port ? `:${port}` : '';
+     },
+     sshWildcardHost() {
+        return 'ssh-*' + window.dockside.host.split(':')[0];
+     },
+     isNestedInstance() {
+        // parentFQDN starts with '.' for standalone/outermost Dockside, '-' for nested
+        return !window.dockside.host.startsWith('.');
+     },
+     setupScript() {
+        if (!this.cookiesRaw) return '(loading...)';
+        return `mkdir -p ~/.config/dockside/wstunnel-manual
 cat > ~/.config/dockside/wstunnel-manual/${this.sshHostname} << 'EOF'
 Cookie: ${this.cookiesRaw}
 EOF
 chmod 600 ~/.config/dockside/wstunnel-manual/${this.sshHostname}`;
-         },
-         loginCommand() {
-            const cmd = `dockside login --server https://${this.sshHost}`;
-            return this.isNestedInstance ? `${cmd} --parent <alias>` : cmd;
-         },
-         textB() {
-            return `Host ${this.sshWildcardHost}
-   ProxyCommand wstunnel client --log-lvl=error --http-headers-file ~/.config/dockside/wstunnel-manual/%h -L stdio://127.0.0.1:%p wss://%n${this.sshPort}
-   Hostname ${this.sshHostname}
-   ForwardAgent yes`;
-         },
-         textC() {
-            return `Host ${this.sshWildcardHost}
-   ProxyCommand dockside ssh exec-proxy %n
-   Hostname ${this.sshHostname}
-   ForwardAgent yes`;
-         },
-         textA() {
-            if (!this.cookiesRaw) return '(loading...)';
-            return `Host ${this.sshWildcardHost}
-   ProxyCommand wstunnel --hostHeader=%n "--customHeaders=Cookie: ${this.cookies}" -L stdio:127.0.0.1:%p wss://${this.sshHost}
-   Hostname ${this.sshHostname}
-   ForwardAgent yes`;
-         }
-      }
-   };
+     },
+     loginCommand() {
+        const cmd = `dockside login --server https://${this.sshHost}`;
+        return this.isNestedInstance ? `${cmd} --parent <alias>` : cmd;
+     },
+     textB() {
+        return `Host ${this.sshWildcardHost}
+ProxyCommand wstunnel client --log-lvl=error --http-headers-file ~/.config/dockside/wstunnel-manual/%h -L stdio://127.0.0.1:%p wss://%n${this.sshPort}
+Hostname ${this.sshHostname}
+ForwardAgent yes`;
+     },
+     textC() {
+        return `Host ${this.sshWildcardHost}
+ProxyCommand dockside ssh exec-proxy %n
+Hostname ${this.sshHostname}
+ForwardAgent yes`;
+     },
+     textA() {
+        if (!this.cookiesRaw) return '(loading...)';
+        return `Host ${this.sshWildcardHost}
+ProxyCommand wstunnel --hostHeader=%n "--customHeaders=Cookie: ${this.cookies}" -L stdio:127.0.0.1:%p wss://${this.sshHost}
+Hostname ${this.sshHostname}
+ForwardAgent yes`;
+     }
+  },
+});
 </script>
 
 <style scoped>

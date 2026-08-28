@@ -1,15 +1,16 @@
-import Vue from 'vue';
-import VueRouter from 'vue-router';
-import Vuex from 'vuex';
+import Vue, { createApp, configureCompat } from 'vue';
+import { createRouter, createWebHistory } from 'vue-router';
 import { BootstrapVue, IconsPlugin } from 'bootstrap-vue';
 import createStore from '@/store';
 import './index.scss';
 import App from '@/components/App.vue';
 
-Vue.use(VueRouter);
-Vue.use(Vuex);
-Vue.use(BootstrapVue);
-Vue.use(IconsPlugin);
+// @vue/compat's MODE 2 has two separate configuration points, not one:
+// vite.config.js's compilerOptions.compatConfig controls how .vue SFC
+// *templates* compile (Options API, filters, v-model defaults, ...); this
+// configureCompat() call controls the *runtime* library's own compat
+// behavior. Must run before any other Vue API call.
+configureCompat({ MODE: 2 });
 
 // Create store before route guards so guards read live currentUser state
 // rather than the stale window.dockside.user bootstrap snapshot.
@@ -34,11 +35,17 @@ function adminTypeGuard(to, from, next) {
 
 const routes = [
    { path: '/container/:name', name: 'container', component: App },
-   { path: '/admin', beforeEnter(to, from, next) {
+   { path: '/admin', redirect: () => {
+      // A route record with only `beforeEnter` and no component/redirect/
+      // children stopped matching under vue-router 4 (confirmed live: the
+      // guard never fired at all, not even a failed redirect - the record
+      // was simply never selected for '/admin'). `redirect` is the
+      // purpose-built feature for this exact "no view of its own, always
+      // sends you elsewhere" case, so use that instead of a guard.
       const p = store.state.account.currentUser.permissions.actions;
-      if (p.manageUsers)         next('/admin/users');
-      else if (p.manageProfiles) next('/admin/profiles');
-      else                       next('/');
+      if (p.manageUsers)         return '/admin/users';
+      else if (p.manageProfiles) return '/admin/profiles';
+      else                       return '/';
    }},
    { path: '/admin/:type',     name: 'adminList',   component: App, beforeEnter: adminTypeGuard },
    { path: '/admin/:type/:id', name: 'adminDetail', component: App, beforeEnter: adminTypeGuard },
@@ -50,7 +57,7 @@ const routes = [
    { path: '/newsnow', name: 'newsnow', beforeEnter() { window.open("https://www.newsnow.co.uk/about", "newsnow"); } },
 ];
 
-const router = new VueRouter({
+const router = createRouter({
    routes,
    // https://v3.router.vuejs.org/guide/advanced/scroll-behavior.html
    scrollBehavior (to, from) {
@@ -71,10 +78,41 @@ const router = new VueRouter({
       }
       return { x: 0, y: 0 };
    },
-   mode: 'history' // https://router.vuejs.org/guide/essentials/history-mode.html
+   history: createWebHistory() // https://router.vuejs.org/guide/essentials/history-mode.html
 });
 
-new Vue({
-   router,
-   store,
-}).$mount('#app');
+// createApp(), not `new Vue({ router, store }).$mount(...)`: that Vue-2-style
+// global-API pattern (root-instance `router`/`store` options, relying on an
+// earlier `Vue.use(VueRouter)`/`Vue.use(Vuex)` *class* registration to wire up
+// the reactive $route/$router/$store plumbing) doesn't carry over cleanly -
+// vue-router 4 / Vuex 4 have no such installable class any more, only an
+// installable *instance* (`app.use(router)`), so there's nothing left for
+// @vue/compat's `new Vue()` shim to auto-detect and wire up: router/store
+// passed as bare instance options silently did nothing (confirmed via
+// RouterView's injected route context being undefined, and separately via
+// router.isReady() never resolving - the initial navigation never started).
+// createApp() is the real Vue 3 entry point and fully supports MODE 2
+// Options-API components/plugins otherwise, so switching to it here doesn't
+// require touching anything else in the app.
+const app = createApp({
+   // Explicit rather than relying on in-DOM template compilation of the
+   // pre-existing markup App.pm's server HTML puts in #app (see App.pm's
+   // get_body handler) - matches that markup exactly, so this is a no-op
+   // change in what actually renders, just no longer depending on whichever
+   // compat/runtime-compilation behavior in-DOM templates need.
+   template: '<router-view></router-view>',
+});
+app.use(router);
+app.use(store);
+// Global Vue.use(), not app.use(), for these two: app.use(plugin) is Vue 3's
+// plain native implementation (plugin.install(app, ...) - no compat
+// translation at all, confirmed by reading it in the built bundle), so
+// bootstrap-vue's install(Vue, config) receives the raw app instance and,
+// while it doesn't throw, its icon components silently fail to resolve to
+// their real SVGs (all rendered as bootstrap-vue's own "blank" fallback
+// icon instead - confirmed live). Vue.use() on the compat *global* Vue
+// object is what actually triggers @vue/compat's legacy-plugin handling -
+// the same call the pre-migration app always made, unchanged here.
+Vue.use(BootstrapVue);
+Vue.use(IconsPlugin);
+app.mount('#app');

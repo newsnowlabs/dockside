@@ -3,10 +3,9 @@
       <b-col md="3" lg="2" class="sidebar admin-sidebar d-none d-md-block">
          <b-nav vertical class="nav-sidebar">
 
-            <template v-for="section in visibleSections">
+            <template v-for="section in visibleSections" :key="section.type">
                <!-- Section heading (click to collapse) -->
                <b-nav-text
-                  :key="section.type + '-heading'"
                   class="heading"
                   @click="toggleSection(section.type)"
                >
@@ -15,7 +14,6 @@
                </b-nav-text>
 
                <b-collapse
-                  :key="section.type + '-collapse'"
                   :visible="!collapsed[section.type]"
                >
                   <!-- Loading placeholder -->
@@ -54,9 +52,8 @@
       <b-sidebar id="mobile-nav-sidebar" v-model="mobileNavOpen" title="Admin" backdrop shadow class="d-md-none">
          <b-nav vertical class="nav-sidebar">
 
-            <template v-for="section in visibleSections">
+            <template v-for="section in visibleSections" :key="section.type">
                <b-nav-text
-                  :key="section.type + '-heading'"
                   class="heading"
                   @click="toggleSection(section.type)"
                >
@@ -65,7 +62,6 @@
                </b-nav-text>
 
                <b-collapse
-                  :key="section.type + '-collapse'"
                   :visible="!collapsed[section.type]"
                >
                   <b-nav-item v-if="loading" disabled class="loading-item">
@@ -98,77 +94,79 @@
 </template>
 
 <script>
-   import { mapState, mapGetters } from 'vuex';
+import { defineComponent } from 'vue';
 
-   const SECTIONS = [
-      { type: 'user',    label: 'USERS',    singular: 'user'    },
-      { type: 'role',    label: 'ROLES',    singular: 'role'    },
-      { type: 'profile', label: 'PROFILES', singular: 'profile' },
-   ];
+import { mapState, mapGetters } from 'vuex';
 
-   export default {
-      name: 'AdminSidebar',
+const SECTIONS = [
+   { type: 'user',    label: 'USERS',    singular: 'user'    },
+   { type: 'role',    label: 'ROLES',    singular: 'role'    },
+   { type: 'profile', label: 'PROFILES', singular: 'profile' },
+];
 
-      data() {
-         return {
-            collapsed: { user: false, role: false, profile: false },
-            mobileNavOpen: false,
-         };
-      },
+export default defineComponent({
+  name: 'AdminSidebar',
 
-      computed: {
-         ...mapState('admin', ['users', 'roles', 'profiles', 'selected', 'loading']),
+  data() {
+     return {
+        collapsed: { user: false, role: false, profile: false },
+        mobileNavOpen: false,
+     };
+  },
 
-         ...mapGetters('admin', ['isEditMode']),
+  computed: {
+     ...mapState('admin', ['users', 'roles', 'profiles', 'selected', 'loading']),
 
-         // Filter the SECTIONS list down to only those the current user has
-         // permission to manage.  A user with only manageProfiles sees no Users
-         // or Roles sections; a user with only manageUsers sees no Profiles section.
-         visibleSections() {
-            const p = this.$store.state.account.currentUser.permissions.actions;
-            return SECTIONS.filter(s => {
-               if (s.type === 'user' || s.type === 'role') return !!p.manageUsers;
-               if (s.type === 'profile')                   return !!p.manageProfiles;
-               return true;
-            });
-         },
-      },
+     ...mapGetters('admin', ['isEditMode']),
 
-      methods: {
-         // Map a section type to the list items it should show in the sidebar.
-         // Profile items carry an 'active' flag to drive the coloured dot indicator.
-         itemsFor(type) {
-            if (type === 'user')    return this.users.map(u => ({ id: u.username, label: u.username }));
-            if (type === 'role')    return this.roles.map(r => ({ id: r.name,     label: r.name }));
-            if (type === 'profile') return this.profiles.map(p => ({ id: p.id, label: p.name || p.id, active: p.active }));
-            return [];
-         },
+     // Filter the SECTIONS list down to only those the current user has
+     // permission to manage.  A user with only manageProfiles sees no Users
+     // or Roles sections; a user with only manageUsers sees no Profiles section.
+     visibleSections() {
+        const p = this.$store.state.account.currentUser.permissions.actions;
+        return SECTIONS.filter(s => {
+           if (s.type === 'user' || s.type === 'role') return !!p.manageUsers;
+           if (s.type === 'profile')                   return !!p.manageProfiles;
+           return true;
+        });
+     },
+  },
 
-         isSelected(type, id) {
-            return this.selected.type === type && this.selected.id === id;
-         },
+  methods: {
+     // Map a section type to the list items it should show in the sidebar.
+     // Profile items carry an 'active' flag to drive the coloured dot indicator.
+     itemsFor(type) {
+        if (type === 'user')    return this.users.map(u => ({ id: u.username, label: u.username }));
+        if (type === 'role')    return this.roles.map(r => ({ id: r.name,     label: r.name }));
+        if (type === 'profile') return this.profiles.map(p => ({ id: p.id, label: p.name || p.id, active: p.active }));
+        return [];
+     },
 
-         // Select an item: commit the selection to Vuex AND push the corresponding
-         // route so the URL is bookmarkable and the browser back button works.
-         // App.vue's $route watcher will also call setSelected via updateStateFromRoute,
-         // but that is idempotent (same value, mode: 'view') so the duplicate is harmless.
-         selectItem(type, id) {
-            this.$store.commit('admin/setSelected', { type, id, mode: 'view' });
-            const typeToRoute = { user: 'users', role: 'roles', profile: 'profiles' };
-            this.$router.push(`/admin/${typeToRoute[type]}/${encodeURIComponent(id)}`).catch(() => {});
-         },
+     isSelected(type, id) {
+        return this.selected.type === type && this.selected.id === id;
+     },
 
-         toggleSection(type) {
-            this.$set(this.collapsed, type, !this.collapsed[type]);
-         },
+     // Select an item: commit the selection to Vuex AND push the corresponding
+     // route so the URL is bookmarkable and the browser back button works.
+     // App.vue's $route watcher will also call setSelected via updateStateFromRoute,
+     // but that is idempotent (same value, mode: 'view') so the duplicate is harmless.
+     selectItem(type, id) {
+        this.$store.commit('admin/setSelected', { type, id, mode: 'view' });
+        const typeToRoute = { user: 'users', role: 'roles', profile: 'profiles' };
+        this.$router.push(`/admin/${typeToRoute[type]}/${encodeURIComponent(id)}`).catch(() => {});
+     },
 
-         // Same as selectItem, but also closes the mobile drawer first.
-         onMobileSelect(type, id) {
-            this.mobileNavOpen = false;
-            this.selectItem(type, id);
-         },
-      },
-   };
+     toggleSection(type) {
+        this.collapsed[type] = !this.collapsed[type];
+     },
+
+     // Same as selectItem, but also closes the mobile drawer first.
+     onMobileSelect(type, id) {
+        this.mobileNavOpen = false;
+        this.selectItem(type, id);
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>

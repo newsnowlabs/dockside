@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import vue2 from '@vitejs/plugin-vue2';
+import vue from '@vitejs/plugin-vue';
 import path from 'path';
 
 // No index.html: `app/server/lib/App.pm` serves the SPA shell itself and
@@ -10,7 +10,36 @@ import path from 'path';
 // output to a single JS file and a single CSS file, same shape webpack
 // produced (main.js, main.css - see README's "Build outputs").
 export default defineConfig({
-   plugins: [vue2()],
+   // Stage 2 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): Vue 3
+   // + @vue/compat running in MODE 2, not native Vue 3 - this is the "soft
+   // landing" the whole app runs on until Stage 4's cutover. MODE 2 makes
+   // @vue/compat behave like Vue 2 by default (global Vue.use/Vue.component,
+   // legacy $listeners/$children, v-model default prop/event names, ...),
+   // logging a runtime deprecation warning per legacy feature actually hit
+   // instead of breaking outright - which is what lets bootstrap-vue (a real
+   // Vue-2-internals library, not compat-aware) keep working unmodified. The
+   // 'vue' -> '@vue/compat' alias below is bundler-level only: the real `vue`
+   // package stays installed (and pinned to the exact version @vue/compat
+   // requires - see package.json) purely so npm's own peer-dependency
+   // resolution for vuex/vue-router/etc. is satisfied; nothing actually
+   // imports from it directly.
+   plugins: [vue({
+      template: {
+         compilerOptions: {
+            compatConfig: { MODE: 2 },
+            // Vue 3's compiler default ('condense') strips inter-element
+            // template whitespace containing a newline entirely, rather than
+            // collapsing it to one space the way the old webpack/vue-loader
+            // pipeline effectively did - this app's markup relies on exactly
+            // that whitespace for visual gaps (e.g. a run of <b-button>s,
+            // one per line, with no explicit margin classes between them,
+            // confirmed live: they rendered edge-to-edge with 'condense').
+            // 'preserve' restores the old rendered spacing without touching
+            // any of the affected templates directly.
+            whitespace: 'preserve',
+         },
+      },
+   })],
    resolve: {
       // Source imports `.vue` files without an extension throughout (e.g.
       // `import Header from '@/components/Header'`), matching the old webpack
@@ -18,15 +47,15 @@ export default defineConfig({
       extensions: ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json', '.vue'],
       alias: {
          '@': path.resolve(__dirname, 'src'),
-         // Full compiler+runtime build, not runtime-only: index.js's root
-         // Vue instance (`new Vue({router, store}).$mount('#app')`) has no
-         // template/render option of its own - it compiles the pre-existing
-         // `<router-view>` markup already in #app (see App.pm's page HTML)
-         // at runtime, which the runtime-only build can't do. .vue SFCs
-         // themselves are still precompiled by @vitejs/plugin-vue2; this
-         // alias only matters for that one root-mount case. Mirrors the old
-         // webpack 'vue$' alias exactly (same vue.esm.js target).
-         'vue': 'vue/dist/vue.esm.js',
+         // The specific dist file, not the bare '@vue/compat' specifier:
+         // @vue/compat's package.json exports map lists a 'module' condition
+         // (-> the runtime-only vue.runtime.esm-bundler.js) before its
+         // 'import' condition (-> this, the full compiler+runtime build) -
+         // Vite's resolver matches 'module' first, silently handing us the
+         // runtime-only build even though this alias's whole point is the
+         // compiler-included one (see index.js's root `template:` option,
+         // which needs runtime template compilation to work at all).
+         'vue': '@vue/compat/dist/vue.esm-bundler.js',
       },
    },
    build: {

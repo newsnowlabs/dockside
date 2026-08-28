@@ -13,7 +13,7 @@ import { makeContainer } from './fixtures/container';
 describe('Container.vue', () => {
    it('renders a devtainer card without throwing', () => {
       const wrapper = mountApp(Container, {
-         propsData: { container: makeContainer() },
+         props: { container: makeContainer() },
       });
       expect(wrapper.text()).toContain('my-devtainer');
       expect(wrapper.text()).toContain('Dockside'); // profileObject.name

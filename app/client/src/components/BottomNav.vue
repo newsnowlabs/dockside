@@ -21,19 +21,22 @@
 </template>
 
 <script>
-   import { mapGetters } from 'vuex';
-   import { routing, routePermissions } from '@/components/mixins';
+import { defineComponent } from 'vue';
 
-   export default {
-      name: 'BottomNav',
-      mixins: [routing, routePermissions],
-      computed: {
-         ...mapGetters(['isPrelaunchMode']),
-         user() {
-            return this.$store.state.account.currentUser;
-         }
-      }
-   };
+import { mapGetters } from 'vuex';
+import { routing, routePermissions } from '@/components/mixins';
+
+export default defineComponent({
+  name: 'BottomNav',
+  mixins: [routing, routePermissions],
+
+  computed: {
+     ...mapGetters(['isPrelaunchMode']),
+     user() {
+        return this.$store.state.account.currentUser;
+     }
+  },
+});
 </script>
 
 <style lang="scss" scoped>

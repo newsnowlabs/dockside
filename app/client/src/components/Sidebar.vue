@@ -67,64 +67,71 @@
 </template>
 
 <script>
-   import { mapState, mapGetters } from 'vuex';
-   import { filteredContainers, routing, routePermissions } from '@/components/mixins';
+import { defineComponent } from 'vue';
 
-   export default {
-      name: 'Sidebar',
-      data() {
-         return {
-            mobileNavOpen: false
-         };
-      },
-      created() {
-         // Sidebar is part of the persistent app shell (mounted on every route), so
-         // it can't rely on Container.vue's prelaunch-gated fetch to keep the
-         // profile list fresh. Non-fatal on failure, same as elsewhere this is
-         // dispatched — the bootstrap-seeded profiles remain usable.
-         this.$store.dispatch('account/fetchLaunchProfiles');
-      },
-      computed: {
-         // isContainerSection (from routePermissions) reads this directly.
-         ...mapGetters(['isPrelaunchMode']),
-         ...mapState({ profiles: state => state.account.launchProfiles }),
-         user() {
-            return this.$store.state.account.currentUser;
-         },
-         canLaunch() {
-            return this.user.permissions.actions.createContainerReservation;
-         },
-         profileNames() {
-            return Object.keys(this.profiles || {}).sort();
-         },
-         showProfileList() {
-            // Expanded whenever we're not viewing devtainers (i.e. we're already on
-            // the launch route), or when there are no devtainers at all — with
-            // nothing in "My devtainers" to begin with, there's no scrolling problem
-            // to justify hiding "Launch new" behind an extra click on its heading.
-            return !this.isContainerSection || this.sidebarContainers.length === 0;
-         }
-      },
-      methods: {
-         onMobileSelect(action) {
-            this.mobileNavOpen = false;
-            action();
-         },
-         // Deliberately not goToContainer(): that merges extraQuery onto the
-         // *current* route's query, which here would carry forward the
-         // previously-selected profile's already-synced field values (image,
-         // access, etc.) into the newly-selected profile's form — values that are
-         // almost certainly wrong for it (an image string that isn't one of the new
-         // profile's own options, or a router key its access schema doesn't even
-         // have). A profile nav click should always start from a clean slate: just
-         // the chosen profile, nothing else.
-         launchWithProfile(profileId) {
-            this.$router.push({ name: 'container', params: { name: 'new' }, query: { profile: profileId } }).catch(() => {})
-               .then(() => this.$store.dispatch('updateSelectedContainerMode', 'prelaunch'));
-         }
-      },
-      mixins: [filteredContainers, routing, routePermissions],
-   };
+import { mapState, mapGetters } from 'vuex';
+import { filteredContainers, routing, routePermissions } from '@/components/mixins';
+
+export default defineComponent({
+  name: 'Sidebar',
+
+  data() {
+     return {
+        mobileNavOpen: false
+     };
+  },
+
+  created() {
+     // Sidebar is part of the persistent app shell (mounted on every route), so
+     // it can't rely on Container.vue's prelaunch-gated fetch to keep the
+     // profile list fresh. Non-fatal on failure, same as elsewhere this is
+     // dispatched — the bootstrap-seeded profiles remain usable.
+     this.$store.dispatch('account/fetchLaunchProfiles');
+  },
+
+  computed: {
+     // isContainerSection (from routePermissions) reads this directly.
+     ...mapGetters(['isPrelaunchMode']),
+     ...mapState({ profiles: state => state.account.launchProfiles }),
+     user() {
+        return this.$store.state.account.currentUser;
+     },
+     canLaunch() {
+        return this.user.permissions.actions.createContainerReservation;
+     },
+     profileNames() {
+        return Object.keys(this.profiles || {}).sort();
+     },
+     showProfileList() {
+        // Expanded whenever we're not viewing devtainers (i.e. we're already on
+        // the launch route), or when there are no devtainers at all — with
+        // nothing in "My devtainers" to begin with, there's no scrolling problem
+        // to justify hiding "Launch new" behind an extra click on its heading.
+        return !this.isContainerSection || this.sidebarContainers.length === 0;
+     }
+  },
+
+  methods: {
+     onMobileSelect(action) {
+        this.mobileNavOpen = false;
+        action();
+     },
+     // Deliberately not goToContainer(): that merges extraQuery onto the
+     // *current* route's query, which here would carry forward the
+     // previously-selected profile's already-synced field values (image,
+     // access, etc.) into the newly-selected profile's form — values that are
+     // almost certainly wrong for it (an image string that isn't one of the new
+     // profile's own options, or a router key its access schema doesn't even
+     // have). A profile nav click should always start from a clean slate: just
+     // the chosen profile, nothing else.
+     launchWithProfile(profileId) {
+        this.$router.push({ name: 'container', params: { name: 'new' }, query: { profile: profileId } }).catch(() => {})
+           .then(() => this.$store.dispatch('updateSelectedContainerMode', 'prelaunch'));
+     }
+  },
+
+  mixins: [filteredContainers, routing, routePermissions],
+});
 </script>
 
 <style lang="scss" scoped>

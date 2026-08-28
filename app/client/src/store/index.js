@@ -1,11 +1,14 @@
-import Vuex from 'vuex';
+import { createStore as createVuexStore } from 'vuex';
 import { getContainers } from '@/services/container';
 import adminModule   from '@/store/admin';
 import accountModule from '@/store/account';
 
 const welcomeTextStatusLocalStorageKey = '/dockside/welcomeTextStatus';
 
-const createStore = () => new Vuex.Store({
+// Aliased to createVuexStore on import: this factory is itself also named
+// createStore (and exported as the default below) - importing Vuex's own
+// createStore under the same name would shadow it and self-recurse.
+const createStore = () => createVuexStore({
    strict: process.env.NODE_ENV !== 'production',
    modules: {
       admin:   adminModule,

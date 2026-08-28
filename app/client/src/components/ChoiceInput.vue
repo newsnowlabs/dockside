@@ -33,71 +33,84 @@
 </template>
 
 <script>
-   // A "pick from a fixed list, or (if allowFreeEntry) type your own" input, used
-   // for every launch-form field with a set of choices (image/gitURL/runtime/
-   // network/IDE/access/select & combo profile options).
-   //
-   // The <select> branch renders whenever free entry isn't allowed, regardless of
-   // how many values there are, so a single-option field still renders as a real
-   // (optionally disabled) <select> rather than falling through to the autocomplete
-   // widget. Its 'values' entries may be plain strings (value === label) or
-   // {value, label} objects, for fields like 'access' whose displayed text differs
-   // from the underlying value; the autocomplete/combo branch always expects plain
-   // strings, since only string-valued fields (image, gitURL, combo options) ever
-   // allow free entry.
-   //
-   // A free-entry field with no suggestions (a 'text'-type option, or an
-   // images/gitURLs list that's nothing but a bare '*') is a plain text field, not
-   // a combobox with an empty dropdown - it renders a native <input> instead,
-   // preserving live per-keystroke binding (@input) rather than the autocomplete
-   // widget's commit-on-submit/blur behaviour.
+import { defineComponent } from 'vue';
 
-   import Autocomplete from '@trevoreyre/autocomplete-vue';
-   import '@trevoreyre/autocomplete-vue/dist/style.css';
+// A "pick from a fixed list, or (if allowFreeEntry) type your own" input, used
+// for every launch-form field with a set of choices (image/gitURL/runtime/
+// network/IDE/access/select & combo profile options).
+//
+// The <select> branch renders whenever free entry isn't allowed, regardless of
+// how many values there are, so a single-option field still renders as a real
+// (optionally disabled) <select> rather than falling through to the autocomplete
+// widget. Its 'values' entries may be plain strings (value === label) or
+// {value, label} objects, for fields like 'access' whose displayed text differs
+// from the underlying value; the autocomplete/combo branch always expects plain
+// strings, since only string-valued fields (image, gitURL, combo options) ever
+// allow free entry.
+//
+// A free-entry field with no suggestions (a 'text'-type option, or an
+// images/gitURLs list that's nothing but a bare '*') is a plain text field, not
+// a combobox with an empty dropdown - it renders a native <input> instead,
+// preserving live per-keystroke binding (@input) rather than the autocomplete
+// widget's commit-on-submit/blur behaviour.
 
-   export default {
-      name: 'ChoiceInput',
-      components: {
-         Autocomplete
-      },
-      props: {
-         values: { type: Array, default: () => [] },
-         allowFreeEntry: { type: Boolean, default: false },
-         value: { type: String, default: '' },
-         placeholder: { type: String, default: '' },
-         ariaLabel: { type: String, default: '' },
-         autoSelect: { type: Boolean, default: false },
-         disabled: { type: Boolean, default: false }
-      },
-      watch: {
-         value(v) {
-            // Keep the autocomplete's own internal text in sync when the value
-            // changes from outside (e.g. a profile switch resetting the default),
-            // without re-poking it in response to its own just-emitted input.
-            if(this.$refs.autocompleteInput && this.$refs.autocompleteInput.value !== v) {
-               this.$refs.autocompleteInput.setValue(v);
-            }
-         }
-      },
-      methods: {
-         // Select-branch helpers: 'values' entries may be a plain string (value ===
-         // label) or a {value, label} object (e.g. access's friendly auth-type text).
-         optionValue(v) {
-            return (v && typeof v === 'object') ? v.value : v;
-         },
-         optionLabel(v) {
-            return (v && typeof v === 'object') ? v.label : v;
-         },
-         submit() {
-            this.$emit('input', this.$refs.autocompleteInput.value);
-         },
-         search(input) {
-            const matching = this.values.filter(v => v === input).length;
-            if(matching || input.length < 1) { return this.values; }
-            return this.values.filter(v => v.toLowerCase().includes(input.toLowerCase()));
-         }
-      }
-   };
+import Autocomplete from '@trevoreyre/autocomplete-vue';
+import '@trevoreyre/autocomplete-vue/dist/style.css';
+
+// Deliberately value/input, not modelValue/update:modelValue: the app's
+// global compatConfig MODE 2 (vite.config.js) makes the compiler rewrite ANY
+// 'modelValue'-named prop key on a component back to 'value', even for an
+// explicit :modelValue binding, not just v-model shorthand - confirmed
+// directly on JsonEditor.vue (see its own comment). Every one of our own
+// components stays on the old contract until Stage 4's cutover.
+export default defineComponent({
+  emits: ['input'],
+  name: 'ChoiceInput',
+
+  components: {
+     Autocomplete
+  },
+
+  props: {
+     values: { type: Array, default: () => [] },
+     allowFreeEntry: { type: Boolean, default: false },
+     value: { type: String, default: '' },
+     placeholder: { type: String, default: '' },
+     ariaLabel: { type: String, default: '' },
+     autoSelect: { type: Boolean, default: false },
+     disabled: { type: Boolean, default: false }
+  },
+
+  watch: {
+     value(v) {
+        // Keep the autocomplete's own internal text in sync when the value
+        // changes from outside (e.g. a profile switch resetting the default),
+        // without re-poking it in response to its own just-emitted input.
+        if(this.$refs.autocompleteInput && this.$refs.autocompleteInput.value !== v) {
+           this.$refs.autocompleteInput.setValue(v);
+        }
+     }
+  },
+
+  methods: {
+     // Select-branch helpers: 'values' entries may be a plain string (value ===
+     // label) or a {value, label} object (e.g. access's friendly auth-type text).
+     optionValue(v) {
+        return (v && typeof v === 'object') ? v.value : v;
+     },
+     optionLabel(v) {
+        return (v && typeof v === 'object') ? v.label : v;
+     },
+     submit() {
+        this.$emit('input', this.$refs.autocompleteInput.value);
+     },
+     search(input) {
+        const matching = this.values.filter(v => v === input).length;
+        if(matching || input.length < 1) { return this.values; }
+        return this.values.filter(v => v.toLowerCase().includes(input.toLowerCase()));
+     }
+  },
+});
 </script>
 
 <style lang="scss">

@@ -38,76 +38,79 @@
 </template>
 
 <script>
-   import { groupedPermissions } from '@/schemas/admin';
-   import ValueTag from '@/components/shared/ValueTag';
+import { defineComponent } from 'vue';
 
-   export default {
-      name: 'PermissionsEditor',
-      components: { ValueTag },
+import { groupedPermissions } from '@/schemas/admin';
+import ValueTag from '@/components/shared/ValueTag';
 
-      props: {
-         // { permissionKey: "1" | "0" }  — only explicitly set values; absent = inherited
-         permissions: {
-            type: Object,
-            default: () => ({}),
-         },
-         // For user context: the effective permissions of the user's role (for hint display)
-         rolePermissions: {
-            type: Object,
-            default: () => ({}),
-         },
-         // false for roles (no inheritance); true for users
-         allowInherit: {
-            type: Boolean,
-            default: true,
-         },
-         readonly: {
-            type: Boolean,
-            default: false,
-         },
-         // For role context (allowInherit=false): effective value when a permission is not set.
-         // '1' = admin-style role (granted by default); '0' = normal role (denied by default).
-         permDefault: {
-            default: null,
-            validator: v => v === null || v === '1' || v === '0',
-         },
-      },
+export default defineComponent({
+  emits: ['update:permissions'],
+  name: 'PermissionsEditor',
+  components: { ValueTag },
 
-      computed: {
-         groupedPermissions() {
-            return groupedPermissions();
-         },
-      },
+  props: {
+     // { permissionKey: "1" | "0" }  — only explicitly set values; absent = inherited
+     permissions: {
+        type: Object,
+        default: () => ({}),
+     },
+     // For user context: the effective permissions of the user's role (for hint display)
+     rolePermissions: {
+        type: Object,
+        default: () => ({}),
+     },
+     // false for roles (no inheritance); true for users
+     allowInherit: {
+        type: Boolean,
+        default: true,
+     },
+     readonly: {
+        type: Boolean,
+        default: false,
+     },
+     // For role context (allowInherit=false): effective value when a permission is not set.
+     // '1' = admin-style role (granted by default); '0' = normal role (denied by default).
+     permDefault: {
+        default: null,
+        validator: v => v === null || v === '1' || v === '0',
+     },
+  },
 
-      methods: {
-         tagValue(key) {
-            const v = this.permissions[key];
-            if (v === '1' || v === 1 || v === true)  return '1';
-            if (v === '0' || v === 0 || v === false) return '0';
-            return null;
-         },
+  computed: {
+     groupedPermissions() {
+        return groupedPermissions();
+     },
+  },
 
-         // Normalise the role's permission value for this key to '1', '0', or null.
-         // Passed to ValueTag as :role-permission so it can build a context-aware tooltip.
-         rolePermValue(key) {
-            const rp = this.rolePermissions[key];
-            if (rp === '1' || rp === 1 || rp === true)  return '1';
-            if (rp === '0' || rp === 0 || rp === false) return '0';
-            return null;
-         },
+  methods: {
+     tagValue(key) {
+        const v = this.permissions[key];
+        if (v === '1' || v === 1 || v === true)  return '1';
+        if (v === '0' || v === 0 || v === false) return '0';
+        return null;
+     },
 
-         onTagChange(key, newValue) {
-            if (this.readonly) return;
-            const updated = { ...this.permissions };
-            if (newValue === null) {
-               delete updated[key];
-            } else {
-               updated[key] = newValue;
-            }
-            this.$emit('update:permissions', updated);
-         },
-      },
-   };
+     // Normalise the role's permission value for this key to '1', '0', or null.
+     // Passed to ValueTag as :role-permission so it can build a context-aware tooltip.
+     rolePermValue(key) {
+        const rp = this.rolePermissions[key];
+        if (rp === '1' || rp === 1 || rp === true)  return '1';
+        if (rp === '0' || rp === 0 || rp === false) return '0';
+        return null;
+     },
+
+     onTagChange(key, newValue) {
+        if (this.readonly) return;
+        const updated = { ...this.permissions };
+        if (newValue === null) {
+           delete updated[key];
+        } else {
+           updated[key] = newValue;
+        }
+        this.$emit('update:permissions', updated);
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>

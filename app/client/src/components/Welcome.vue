@@ -55,43 +55,48 @@
 </template>
 
 <script>
-   import { mapActions, mapGetters } from 'vuex';
-   import { filteredContainers, routing } from '@/components/mixins';
-   import Dockside from '@/components/Dockside';
+import { defineComponent } from 'vue';
 
-   export default {
-      name: 'Welcome',
-      mixins: [filteredContainers, routing],
-      components: {
-         Dockside
-      },
-      props: {
-         mode: Boolean
-      },
-      computed: {
-         ...mapGetters([
-            'welcomeTextStatus',
-            'haveContainers'
-         ]),
-         computedwelcomeTextStatus() {
-            // If there are no devtainers, display Welcome text with no 'hide' link.
-            // If there are devtainers, display according to the welcomeTextStatus flag:
-            // -1: Dismissed - Don't display
-            //  0: Hidden    - Display only 'show' and 'dismiss' links
-            //  1: Show      - Display in full, and 'hide' link.
-            return !this.haveContainers || this.welcomeTextStatus;
-         }
-      },
-      methods: {
-         ...mapActions([
-            'updateWelcomeTextStatus'
-         ])
-      }
-   };
+import { mapActions, mapGetters } from 'vuex';
+import { filteredContainers, routing } from '@/components/mixins';
+import Dockside from '@/components/Dockside';
+
+export default defineComponent({
+  name: 'Welcome',
+  mixins: [filteredContainers, routing],
+
+  components: {
+     Dockside
+  },
+
+  props: {
+     mode: Boolean
+  },
+
+  computed: {
+     ...mapGetters([
+        'welcomeTextStatus',
+        'haveContainers'
+     ]),
+     computedwelcomeTextStatus() {
+        // If there are no devtainers, display Welcome text with no 'hide' link.
+        // If there are devtainers, display according to the welcomeTextStatus flag:
+        // -1: Dismissed - Don't display
+        //  0: Hidden    - Display only 'show' and 'dismiss' links
+        //  1: Show      - Display in full, and 'hide' link.
+        return !this.haveContainers || this.welcomeTextStatus;
+     }
+  },
+
+  methods: {
+     ...mapActions([
+        'updateWelcomeTextStatus'
+     ])
+  },
+});
 </script>
 
 <style lang="scss" scoped>
-
 h2 {
    display:inline-block;
    padding-right: 10px;

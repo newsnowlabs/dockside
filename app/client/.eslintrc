@@ -10,7 +10,7 @@
    },
    "extends": [
       "eslint:recommended",
-      "plugin:vue/essential"
+      "plugin:vue/vue3-essential"
    ],
    "rules": {
       "semi": ["error", "always"],
