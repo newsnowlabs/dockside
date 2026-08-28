@@ -22,8 +22,8 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue2": "^2.3.4",
-    "eslint": "^6.8.0",
-    "eslint-plugin-vue": "^6.1.2",
+    "eslint": "^8.57.1",
+    "eslint-plugin-vue": "^9.33.0",
     "sass": "^1.103.1",
     "stylelint": "^13.0.0",
     "vite": "^7.3.6",

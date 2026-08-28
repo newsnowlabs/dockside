@@ -164,12 +164,14 @@
                         <!-- FIXME: Only owner or admin should be able to specify developers -->
                         <tr v-if="container.permissions.actions.setContainerDevelopers && isSelected">
                            <th>Developers</th>
+                           <!-- eslint-disable-next-line vue/no-mutating-props -- read-only display: :disabled means UserTagsInput never emits, so v-model never actually writes back to the prop -->
                            <td v-if="!isEditMode && !isPrelaunchMode && container.meta.developers"><UserTagsInput v-model="container.meta.developers" :disabled="true"/></td>
                            <td v-else-if="!isEditMode && !isPrelaunchMode && !container.meta.developers"><em>[ Edit to share with developers (by name or role) ]</em></td>
                            <td v-else><UserTagsInput v-model="form.developers"/></td>
                         </tr>
                         <tr v-if="container.permissions.actions.setContainerViewers && isSelected">
                            <th>Viewers</th>
+                           <!-- eslint-disable-next-line vue/no-mutating-props -- read-only display: :disabled means UserTagsInput never emits, so v-model never actually writes back to the prop -->
                            <td v-if="!isEditMode && !isPrelaunchMode && container.meta.viewers"><UserTagsInput v-model="container.meta.viewers" :disabled="true"/></td>
                            <td v-else-if="!isEditMode && !isPrelaunchMode && !container.meta.viewers"><em>[ Edit to share with viewers (by name or role) ]</em></td>
                            <td v-else><UserTagsInput v-model="form.viewers"/></td>

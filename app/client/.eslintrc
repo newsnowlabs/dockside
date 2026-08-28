@@ -1,9 +1,11 @@
 {
    "env": {
-      "node": true
+      "node": true,
+      "browser": true,
+      "es2021": true
    },
    "parserOptions": {
-      "ecmaVersion": 2018,
+      "ecmaVersion": "latest",
       "sourceType": "module"
    },
    "extends": [
@@ -13,6 +15,15 @@
    "rules": {
       "semi": ["error", "always"],
       "no-debugger": 0,
-      "vue/no-parsing-error": [2, { "invalid-first-character-of-tag-name": false }]
+      "vue/no-parsing-error": [2, { "invalid-first-character-of-tag-name": false }],
+      // New in eslint-plugin-vue 7/8 (not present in the v6 'essential' tier this
+      // project used before): flags the project's existing single-word component
+      // names (Header, Footer, Main, Sidebar, ...) and the three that shadow
+      // reserved HTML tag names. Both are real, but renaming ~7 components across
+      // all their call sites is out of scope for a tooling-only bump - defer to
+      // Stage 3 of docs/plans/vue2-vue3-migration.md, which already touches every
+      // one of these files for the UI-library swap.
+      "vue/multi-word-component-names": 0,
+      "vue/no-reserved-component-names": 0
    }
 }
