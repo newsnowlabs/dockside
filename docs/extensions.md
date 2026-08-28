@@ -7,5 +7,6 @@ A variety of extensions are available to facilitate advanced usage:
 - [Alternative runtimes](extensions/runtimes.md) — Sysbox (Docker-in-Dockside), RunCVM (KVM VMs), and gVisor (sandboxed isolation)
 - [Integrated SSH server support](extensions/ssh.md) -- allows seamless SSH access to devtainers from the command line and accessing devtainers using VS Code
 - [Lifecycle hooks](extensions/lifecycle-hooks.md) -- switch a launched devtainer to a requested branch or PR, and actually run it (rebuild/restart), including for multi-repo devtainers
+- [SSH-only devtainers](extensions/ide.md) -- disable the IDE entirely, globally or per profile, to save RAM/CPU on constrained hosts
 - Firewall or redirect outgoing devtainer traffic using custom Docker networks.
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications

@@ -53,7 +53,22 @@ const routes = [
 const router = new VueRouter({
    routes,
    // https://v3.router.vuejs.org/guide/advanced/scroll-behavior.html
-   scrollBehavior () {
+   scrollBehavior (to, from) {
+      if (to.path === from.path) {
+         // A profile switch (nav-click or the launch form's own profile select)
+         // replaces most of the form's fields at once — new image, runtime,
+         // network, IDE, access and options defaults. Different enough from a
+         // single field edit that scrolling back to the top to review the
+         // freshly-defaulted form from the top down is more helpful than leaving
+         // the user scrolled at a position whose content just changed meaning.
+         if (to.query.profile !== from.query.profile) {
+            return { x: 0, y: 0 };
+         }
+         // Any other query-only update on the same route (a single field edit,
+         // or the containers-filter select) isn't a real navigation — don't yank
+         // scroll position out from under whatever the user was doing.
+         return false;
+      }
       return { x: 0, y: 0 };
    },
    mode: 'history' // https://router.vuejs.org/guide/essentials/history-mode.html

@@ -15,9 +15,14 @@
    "images": [
       "ubuntu:latest",
       "debian:latest",
-      "alpine:latest"
+      "alpine:latest",
+      "*"
    ],
-   "gitURLs": ["*"],
+   "gitURLs": [
+      "https://github.com/newsnowlabs/dockside",
+      "https://github.com/newsnowlabs/runcvm",
+      "*"
+   ],
    "unixusers": ["dockside"],
    "options": [
       {

@@ -3,9 +3,12 @@
  *
  * HTTP/HTTPS proxy for Playwright MCP.
  *
- * Remaps requests to a local server based on either regex hostname matching
- * or DNS resolution (if the hostname resolves to localhost, the port is
- * remapped). All other traffic passes through unchanged.
+ * Remaps requests to a local server via either of two independent checks: a
+ * regex hostname match (any port), or the hostname resolving to localhost
+ * while the request is on this proxy's own standard port (80 HTTP / 443
+ * HTTPS). Everything else — including a localhost-resolving host on any
+ * other port, which belongs to a separate local service rather than this
+ * proxy — passes through unchanged.
  *
  * Usage:
  *   node playwright-proxy.js [proxy-port] [https-port] [http-port] [regex] [tls-cert] [tls-key]
@@ -19,8 +22,10 @@
  *
  * Remapping priority (per request):
  *   1. Regex match  — remap immediately, no DNS lookup
- *   2. DNS match    — remap if hostname resolves to 127.0.0.1 / ::1
- *   3. Pass-through — connect to the original host:port
+ *   2. DNS match    — remap if hostname resolves to 127.0.0.1 / ::1 AND the
+ *                      request is on this proxy's own standard port (80/443)
+ *   3. Pass-through — connect to the original host:port (also covers a
+ *                      localhost-resolving host on any other port)
  *
  * X-Nest-Level injection (regex-matched hosts only):
  *
@@ -85,8 +90,10 @@ Usage:
 
 Remapping priority (per request):
   1. Regex match  — remap immediately, no DNS lookup
-  2. DNS match    — remap if hostname resolves to 127.0.0.1 / ::1
-  3. Pass-through — connect to the original host:port
+  2. DNS match    — remap if hostname resolves to 127.0.0.1 / ::1 AND the
+                     request is on this proxy's own standard port (80/443)
+  3. Pass-through — connect to the original host:port (also covers a
+                     localhost-resolving host on any other port)
 
 When tls-cert/tls-key are given, regex-matched HTTPS requests have TLS
 terminated locally (using that certificate) so an X-Nest-Level header can be
@@ -140,11 +147,18 @@ async function resolveRemap(host, requestedPort, localPort) {
     return { host: '127.0.0.1', port: localPort, remapped: true, reason: 'regex' };
   }
 
-  // 2. DNS-based detection
+  // 2. DNS-based detection — a loopback-resolving host only gets remapped when
+  // the caller gave a localPort for this request's port; a null localPort
+  // means the port isn't one this proxy owns (see handleHttp/handleConnect),
+  // so it's connected to as requested instead — the resolved loopback
+  // address, unremapped, e.g. a local dev server on its own port.
   try {
     const { address } = await dns.lookup(host);
     if (LOCALHOST.has(address)) {
-      return { host: '127.0.0.1', port: localPort, remapped: true, reason: 'dns', resolved: address };
+      if (localPort !== null) {
+        return { host: '127.0.0.1', port: localPort, remapped: true, reason: 'dns', resolved: address };
+      }
+      return { host: address, port: requestedPort, remapped: false, resolved: address };
     }
     return { host, port: requestedPort, remapped: false, resolved: address };
   } catch (err) {
@@ -175,6 +189,9 @@ async function handleHttp(req, res) {
   }
 
   const requestedPort = url.port ? +url.port : 80;
+  // null on any port other than 80: that port isn't this proxy's own, so a
+  // DNS-matched loopback host on it is a separate local service, not us (see
+  // resolveRemap).
   const localPort     = requestedPort === 80 ? LOCAL_HTTP_PORT : null;
   const result        = await resolveRemap(url.hostname, requestedPort, localPort);
 

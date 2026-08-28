@@ -47,105 +47,109 @@
                            <th>Runtime</th>
                            <td v-if="!isPrelaunchMode">{{ container.data ? container.data.runtime : '' }}</td>
                            <td v-else>
-                              <select class="form-control" v-model="form.runtime" :disabled="runtimes.length <= 1">
-                                 <option v-for="runtime in runtimes" v-bind:key="runtime">{{ runtime }}</option>
-                              </select>
+                              <ChoiceInput
+                                 :values="runtimes"
+                                 :value="form.runtime"
+                                 @input="form.runtime = $event"
+                                 :disabled="runtimes.length <= 1"
+                                 aria-label="Choose a runtime"
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>Network</th>
                            <td v-if="!isEditMode && !isPrelaunchMode">{{ container.docker ? container.docker.Networks : '' }}</td>
                            <td v-else>
-                              <select class="form-control" v-model="form.network" :disabled="networks.length <= 1">
-                                 <option v-for="network in networks" v-bind:key="network">{{ network }}</option>
-                              </select>
+                              <ChoiceInput
+                                 :values="networks"
+                                 :value="form.network"
+                                 @input="form.network = $event"
+                                 :disabled="networks.length <= 1"
+                                 aria-label="Choose a network"
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>IDE</th>
                            <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.IDE }}</td>
                            <td v-else>
-                              <select class="form-control" v-model="form.IDE" :disabled="IDEs.length <= 1">
-                                 <option v-for="IDE in IDEs" v-bind:key="IDE">{{ IDE }}</option>
-                              </select>
+                              <ChoiceInput
+                                 :values="ideOptions()"
+                                 :value="form.IDE"
+                                 @input="form.IDE = $event"
+                                 :disabled="ideOptions().length <= 1"
+                                 aria-label="Choose an IDE"
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
                            <th>Image</th>
                            <td v-if="!isPrelaunchMode">{{ container.data.image }} ({{ container.docker ? container.docker.ImageId : '' }})</td>
-                           <td v-else-if="images.length > 1 && !hasWildcardImages">
-                              <select class="form-control" v-model="form.image" :disabled="images.length <= 1">
-                                 <option v-for="image in images" v-bind:key="image">{{ image }}</option>
-                              </select>
-                           </td>
                            <td v-else>
-                              <autocomplete
-                                 class="autocomplete-class"
+                              <ChoiceInput
+                                 :values="images"
+                                 :allow-free-entry="hasWildcardImages"
+                                 :disabled="images.length <= 1 && !hasWildcardImages"
+                                 :value="form.image"
+                                 @input="form.image = $event"
                                  placeholder="Choose an image"
                                  aria-label="Choose an image"
-                                 ref="imageAutocompleteInput"
-                                 :search="imageAutocompleteSearch"
-                                 @submit="imageAutocompleteSubmit"
-                                 @blur="imageAutocompleteSubmit"
-                                 :disabled="images.length <= 1 && !hasWildcardImages"
-                                 :default-value="images[0]"
-                                 :readonly="!hasWildcardImages"
-                              ></autocomplete>
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
                            <th>Git URL</th>
                            <td v-if="!isPrelaunchMode">{{ container.data.gitURL }}</td>
                            <td v-else>
-                              <autocomplete
-                                 auto-select
-                                 class="autocomplete-class"
+                              <ChoiceInput
+                                 :values="gitURLs"
+                                 :allow-free-entry="hasWildcardGitURLs"
+                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
+                                 :auto-select="true"
+                                 :value="form.gitURL"
+                                 @input="form.gitURL = $event"
                                  placeholder="Choose a gitURL"
                                  aria-label="Choose a gitURL"
-                                 ref="gitURLAutocompleteInput"
-                                 :search="gitURLAutocompleteSearch"
-                                 @submit="gitURLAutocompleteSubmit"
-                                 @blur="gitURLAutocompleteSubmit"
-                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
-                                 :default-value="gitURLs[0]"
-                                 :readonly="!hasWildcardGitURLs"
-                              ></autocomplete>
+                              />
                            </td>
                         </tr>
                         <template v-if="container.permissions.auth.developer && isSelected">
                            <tr v-for="opt in options" :key="'option-' + opt.name">
                               <th>{{ opt.label }}</th>
                               <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
-                              <td v-else-if="opt.type === 'select'">
-                                 <select class="form-control" v-model="form.options[opt.name]">
-                                    <option v-for="v in opt.values" :key="v">{{ v }}</option>
-                                 </select>
-                              </td>
                               <td v-else>
-                                 <input type="text" class="form-control"
-                                        v-model="form.options[opt.name]"
-                                        :placeholder="opt.placeholder || ''">
+                                 <!-- A 'text' option is always a plain free-entry field, even if it also
+                                      declares 'values' (permitted, if pointless, by profile validation) -
+                                      passing those through would misroute it into ChoiceInput's
+                                      commit-on-blur autocomplete branch instead. -->
+                                 <ChoiceInput
+                                    :values="opt.type === 'text' ? [] : (opt.values || [])"
+                                    :allow-free-entry="opt.type !== 'select'"
+                                    :disabled="opt.type === 'select' && (opt.values || []).length <= 1"
+                                    :value="form.options[opt.name]"
+                                    @input="form.options[opt.name] = $event"
+                                    :placeholder="opt.placeholder || ''"
+                                    :aria-label="opt.label"
+                                 />
                               </td>
                            </tr>
                         </template>
                         <tr v-for="(router, index) in routers" v-bind:key="index" v-bind:class="{'list-item':true}">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode">
-                              <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
-                              <b-button v-if="router.type != 'passthru' && container.status == 1" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
+                              <b-button v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
                               <b-button v-if="router.type === 'ssh' && container.status >= 0" size="sm" variant="outline-secondary" type="button" v-b-modal="'sshinfo-modal'" v-b-tooltip title="Configure SSH for Dockside">Setup</b-button>
                               ({{ container.meta.access[router.name] }} access)
                            </td>
                            <td v-else>
-                              <!-- FIXME: Replace with a for loop, and disable if 1 option -->
-                              <select class="form-control" v-model="form.access[router.name]">
-                                 <option value="owner" v-if="router.auth.filter(a => a === 'owner').length">Devtainer owner only</option>
-                                 <option value="developer" v-if="router.auth.filter(a => a === 'developer').length">Devtainer developers only</option>
-                                 <option value="viewer" v-if="router.auth.filter(a => a === 'viewer').length">Devtainer developers and viewers only</option>
-                                 <option value="user" v-if="router.auth.filter(a => a === 'user').length">Dockside users</option>
-                                 <!-- <option value="containerCookie" v-if="router.auth.filter(a => a === 'containerCookie').length">Devtainer cookie</option> -->
-                                 <option value="public" v-if="router.auth.filter(a => a === 'public').length">Public</option>
-                              </select>
+                              <ChoiceInput
+                                 :values="accessOptions(router)"
+                                 :value="form.access[router.name]"
+                                 @input="form.access[router.name] = $event"
+                                 :disabled="accessOptions(router).length <= 1"
+                                 :aria-label="'Access for ' + router.name"
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.actions.setContainerPrivacy === 1 && isSelected">
@@ -324,16 +328,15 @@
    import copyToClipboard from '@/utilities/copy-to-clipboard';
    import UserTagsInput from '@/components/UserTagsInput';
    import ConfirmModal from '@/components/shared/ConfirmModal';
-   import { putContainer, controlContainer, getReservationLogsUri, getHookStatus } from '@/services/container';
-   import Autocomplete from '@trevoreyre/autocomplete-vue';
-   import '@trevoreyre/autocomplete-vue/dist/style.css';
+   import { putContainer, controlContainer, getReservationLogsUri, getHookStatus, formToQuery } from '@/services/container';
+   import ChoiceInput from '@/components/ChoiceInput';
 
    export default {
       name: 'Container',
       components: {
          UserTagsInput,
          ConfirmModal,
-         Autocomplete
+         ChoiceInput
       },
       props: {
          container: Object
@@ -520,34 +523,101 @@
          ...mapActions([
             'updateSelectedContainerMode'
          ]),
+         ideLabel(IDE) {
+            if(IDE !== 'none') {
+               return IDE;
+            }
+            // Only claim SSH as the fallback if this profile's ssh router actually
+            // exists - 'ide' and 'ssh' are independently configurable, so a profile
+            // with both off would otherwise be told it has an access method it doesn't.
+            return this.routers.some(r => r.type === 'ssh') ? 'No IDE (SSH only)' : 'No IDE';
+         },
          initialiseForm() {
             // We need to initialise the form when:
             // 1. Component created for launching
             // 2. Component in Edit mode
-            
+
             let edit = this.container && this.container.name && this.container.id !== 'new';
+
+            // Prelaunch only: a deep-linked/bookmarked URL's query string pre-fills the
+            // form (e.g. from a "Launch new" nav item, or a shared in-progress link).
+            // Only the profile-independent fields are seeded here — the profile-dependent
+            // ones (image, gitURL, runtime, network, IDE, access, options) are seeded by
+            // the 'form.profile' watcher below, which is the sole writer for those so
+            // there's never a race between two things populating the same field.
+            let hydrate = !edit && this.isPrelaunchMode;
+            let q = hydrate ? this.$route.query : {};
+
+            // Tell the 'form.profile' watcher (about to fire from the reassignment
+            // below, since this replaces the whole form object) that this particular
+            // firing should consult the query. The watcher resets this itself right
+            // after reading it, so a later, plain in-form profile switch (the user
+            // picking a different profile from the dropdown mid-session) applies pure
+            // profile defaults instead of stale values still sitting in the URL from
+            // the previously-selected profile's last debounced sync.
+            this.hydratingFromRoute = hydrate;
 
             this.form = {
                id: edit ? this.container.id : '',
-               name: edit ? this.container.name : '',
-               profile: edit ? this.container.profile : this.profileNames[0],
+               name: edit ? this.container.name : (q.name || ''),
+               profile: edit ? this.container.profile :
+                  (q.profile && this.profileNames.includes(q.profile) ? q.profile : this.profileNames[0]),
                gitURL: edit ? this.container.data.gitURL : '',
                image: edit ? this.container.docker.Image : '',
                runtime: edit ? this.container.docker.Runtime : '',
                network: edit ? this.container.docker.Networks : '',
-               private: edit ? (this.container.meta.private == 1 ? true : false) : false,
+               private: edit ? (this.container.meta.private == 1 ? true : false) : (q.private === '1'),
                access: edit ? this.container.meta.access : {},
-               viewers: edit ? this.container.meta.viewers : '',
-               developers: edit ? this.container.meta.developers : '',
-               description: edit ? this.container.meta.description : '',
+               viewers: edit ? this.container.meta.viewers : (q.viewers || ''),
+               developers: edit ? this.container.meta.developers : (q.developers || ''),
+               description: edit ? this.container.meta.description : (q.description || ''),
                IDE: edit ? this.container.meta.IDE : '',
                options: edit ? (this.container.data.options || {}) : {}
             };
 
             console.log('initialiseForm:', this.form);
          },
+         // Parse a query-string value that's expected to be a JSON object (form.access,
+         // form.options). Falls back silently on anything malformed — a stale or
+         // hand-edited link shouldn't be able to throw inside the profile watcher; it
+         // just gets that field's profile default instead. A parse-safety guard only,
+         // not business-rule validation — an out-of-schema-but-valid-JSON value is
+         // deliberately let through, since the server is the validator.
+         parseQueryJSON(v) {
+            if (!v) { return undefined; }
+            try {
+               const parsed = JSON.parse(v);
+               // An object that parses but carries no keys is functionally the same as
+               // absent for our two callers (form.access/form.options) - both fall
+               // through to computing full per-router/per-option defaults otherwise.
+               // Mirrors formToQuery's own equivalent skip-if-empty-object rule, which
+               // is why this can only be hit via a hand-edited link in the first place -
+               // formToQuery never emits '={}' for a value it generates itself.
+               return (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0) ? undefined : parsed;
+            } catch (e) {
+               return undefined;
+            }
+         },
          copy(value) {
             copyToClipboard(value);
+         },
+         accessOptions(router) {
+            // Fixed display order + friendly labels for the access levels a router may
+            // permit; only levels the router actually lists in 'auth' are offered.
+            // 'containerCookie' has no friendly label and is deliberately excluded.
+            const levels = [
+               ['owner', 'Devtainer owner only'],
+               ['developer', 'Devtainer developers only'],
+               ['viewer', 'Devtainer developers and viewers only'],
+               ['user', 'Dockside users'],
+               ['public', 'Public']
+            ];
+            return levels
+               .filter(([value]) => router.auth.includes(value))
+               .map(([value, label]) => ({ value, label }));
+         },
+         ideOptions() {
+            return this.IDEs.map(IDE => ({ value: IDE, label: this.ideLabel(IDE) }));
          },
          confirmRemove() {
             this.$bvModal.show(`confirm-modal-${this.removeConfirmId}`);
@@ -727,64 +797,70 @@
          edit() {
             this.initialiseForm();
             this.goToContainer(this.container.name, 'edit');
-         },
-         imageAutocompleteSubmit() { 
-            this.form.image = this.$refs.imageAutocompleteInput.value;
-         },
-         imageAutocompleteSearch(input) {
-            const matchingImages = this.images.filter(image => {
-               return image === input;
-            }).length;
-
-            if (matchingImages || input.length < 1) { return this.images; }
-            return this.images.filter(image => {
-               return image.toLowerCase().includes(input.toLowerCase());
-            });
-         },
-         gitURLAutocompleteSubmit() { 
-            this.form.gitURL = this.$refs.gitURLAutocompleteInput.value;
-         },
-         gitURLAutocompleteSearch(input) {
-            const matchingGitURLs = this.gitURLs.filter(gitURL => {
-               return gitURL === input;
-            }).length;
-
-            if (matchingGitURLs || input.length < 1) { return this.gitURLs; }
-            return this.gitURLs.filter(gitURL => {
-               return gitURL.toLowerCase().includes(input.toLowerCase());
-            });
          }
       },
       mixins: [routing],
+      beforeDestroy() {
+         clearTimeout(this.querySyncTimeout);
+      },
       watch: {
+         // Vue Router reuses this component instance across navigations that resolve
+         // to the same v-for key: in prelaunch mode, Main.vue always renders the same
+         // fixed dummy reservation object (see filteredContainers), so clicking a
+         // different "Launch new" profile nav item while already on /container/new
+         // does NOT remount this component — created() (and initialiseForm()) simply
+         // doesn't re-fire. Detect a genuinely new incoming profile selection here and
+         // re-hydrate for it. Ignore our own debounced form->URL sync doing the
+         // navigating: it always encodes form.profile's *current* value, so
+         // query.profile already equals form.profile in that case, and this is a no-op.
+         $route(to) {
+            if (this.isPrelaunchMode && to.query.profile && to.query.profile !== this.form.profile) {
+               this.initialiseForm();
+            }
+         },
+         // Sole writer for every profile-dependent field. Whenever the selected profile
+         // changes (including the very first assignment from initialiseForm()), each
+         // field is taken from the URL's query string if present there, else from the
+         // newly-selected profile's own default — never both, so there's no race between
+         // a URL-hydration step and this defaulting step clobbering each other. The
+         // query is only consulted while hydratingFromRoute is set (i.e. this firing
+         // was caused by initialiseForm(), not a plain in-form profile switch) — see the
+         // comment in initialiseForm() for why that distinction matters.
          'form.profile'() {
             let f = this.form;
             let p = this.profile;
+            let q = (this.isPrelaunchMode && this.hydratingFromRoute) ? this.$route.query : {};
+            this.hydratingFromRoute = false;
 
             if(this.isPrelaunchMode) {
-               f.image = p.images.length > 0 ? p.images[0].replace("*","") : '';
-               f.gitURL = p.gitURLs && p.gitURLs.length > 0 ? p.gitURLs[0].replace("*","") : '';
-               f.runtime = p.runtimes[0];
-               f.network = p.networks[0];
-               f.IDE = p.IDEs[0];
-               f.access = Object.fromEntries(
+               f.image = q.image || (p.images.length > 0 ? p.images[0].replace("*","") : '');
+               f.gitURL = q.gitURL || (p.gitURLs && p.gitURLs.length > 0 ? p.gitURLs[0].replace("*","") : '');
+               f.runtime = q.runtime || p.runtimes[0];
+               f.network = q.network || p.networks[0];
+               f.IDE = q.IDE || p.IDEs[0];
+               f.access = this.parseQueryJSON(q.access) || Object.fromEntries(
                   p.routers.map(
                         r => [r.name ? r.name : r.prefixes[0], r.auth ? r.auth[0] : 'developer']
                   )
                );
-               f.options = Object.fromEntries(
+               f.options = this.parseQueryJSON(q.options) || Object.fromEntries(
                   (p.options || []).map(o => [o.name, o.default || ''])
                );
-
-               // Patch the image into the image autocomplete component.
-               if(f.image && this.$refs.imageAutocompleteInput) {
-                  this.$refs.imageAutocompleteInput.setValue(f.image);
-               }
-
-               // Patch the gitURL into the gitURL autocomplete component.
-               if(f.gitURL && this.$refs.gitURLAutocompleteInput) {
-                  this.$refs.gitURLAutocompleteInput.setValue(f.gitURL);
-               }
+            }
+         },
+         // Mirror the in-progress form back into the URL so it stays bookmarkable/
+         // shareable as the user edits it. Debounced and a router *replace* (not push)
+         // so typing doesn't flood browser history. This never triggers a re-hydration
+         // loop: nothing in this component watches $route itself, only $route.query is
+         // read (once, imperatively) inside initialiseForm()/the 'form.profile' watcher.
+         form: {
+            deep: true,
+            handler() {
+               if (!this.isPrelaunchMode) { return; }
+               clearTimeout(this.querySyncTimeout);
+               this.querySyncTimeout = setTimeout(() => {
+                  this.$router.replace({ query: formToQuery(this.form) }).catch(() => {});
+               }, 300);
             }
          }
       }
@@ -881,36 +957,4 @@
       white-space: pre-wrap;
       word-break: break-all;
    }
-</style>
-
-<style lang="scss">
-   // Match Bootstrap
-   input.autocomplete-input {
-      height: calc(1.5em + 0.75rem + 2px);
-      font-size: 0.9rem;
-      border-radius: 4px;
-      padding-top: 8px;
-      padding-bottom: 8px;
-      padding-left: 12px;
-      border: 1px solid #ddd;
-      background-image: none;
-      background-color: white;
-      color: #495057;
-   }
-
-   input.autocomplete-input:focus {
-      border-color: #8bb8df;
-      box-shadow: 0 0 0 0.2rem rgba(51, 122, 183, 0.25);
-   }
-
-   input.autocomplete-input:disabled {
-      background-color: #e9ecef;
-      opacity: 1;
-   }
-
-   .autocomplete-result {
-      background-image: none;
-      padding-left: 12px;
-   }
-
 </style>

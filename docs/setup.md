@@ -66,8 +66,9 @@ The currently-supported root properties within a profile are:
 | unixusers | array of the unix user account for which to run the IDE | optional | `["dockside"]` | `["john","jim"]`
 | mounts | tmpfs, bind and/or volume mounts | optional | `{}` | `{ "tmpfs": [{ "dst": "/tmp","tmpfs-size": "1G"}], "volume": [{"src": "ssh-keys", "dst":"/home/mycompany/.ssh"}], "bind": [{"src": "/source/path", "dst": "/dest/path", "readonly": true}] }`
 | gitURLs | allowed git repository URLs that may be cloned on launch; use `["*"]` to allow any URL | optional | `[]` | `["https://github.com/myorg/*"]` or `["*"]`
-| IDEs | allowed IDE installations for the devtainer; use `["*"]` to allow all IDEs available in the Dockside image (under `/opt/dockside/ide/`) | optional | `["*"]` | `["theia/latest", "openvscode/latest"]`
-| options | dynamic user-input fields displayed in the launch form; each entry has `name`, `label`, `type`, `default`, and `placeholder` sub-fields; values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables or via `entrypoint` or `command` placeholders of form `{option.<NAME>}` | optional | `[]` | `[{"name": "branch", "label": "Branch", "type": "text", "default": "", "placeholder": "e.g. main"}]`
+| IDEs | allowed IDE installations for the devtainer; use `["*"]` to allow all IDEs available in the Dockside image (under `/opt/dockside/ide/`); include the literal string `"none"` to also permit launching with no IDE at all (SSH-only) — see [SSH-only devtainers](extensions/ide.md) | optional | `["*"]` | `["theia/latest", "openvscode/latest", "none"]`
+| ide | whether the IDE subsystem is available at all for this profile; if `false`, `IDEs` resolves to `["none"]` regardless of any real IDE patterns configured — see [SSH-only devtainers](extensions/ide.md) | optional | as specified in `config.json` | `false` |
+| options | dynamic user-input fields displayed in the launch form; each entry has `name`, `label`, `type`, `default`, `placeholder`, and (for `type: "select"`/`"combo"`) `values` sub-fields; values are injected into the container as `DOCKSIDE_OPTION_<NAME>` environment variables or via `entrypoint` or `command` placeholders of form `{option.<NAME>}` | optional | `[]` | `[{"name": "branch", "label": "Branch", "type": "combo", "default": "", "values": ["main"], "placeholder": "main, or type another branch name"}]`
 | [hooks](extensions/lifecycle-hooks.md) | named in-image hook scripts. Keys are either a reserved `lifecycle:<event>` name (only `lifecycle:launch`/`lifecycle:start` are implemented - auto-run once launch-time git/ssh/gh setup completes) or any custom name (lowercase, hyphens allowed) for an on-demand-only action; each value is an Object with `script` (absolute in-image path, mandatory) and, for reserved lifecycle names only, `manual` (may this hook also be run on demand via `dockside hook run`, in addition to its automatic invocation? custom hooks are always on-demand-runnable and must not set this) | optional | `{}` | `{"lifecycle:launch": {"script": "/opt/myapp/hooks/on-launch.sh", "manual": true}, "update": {"script": "/opt/myapp/hooks/on-update.sh"}}`
 | runDockerInit | if true, run an init process inside the devtainer | optional | `true` | `true` |
 | dockerArgs | arguments to pass verbatim to docker | optional | `[]` | `["--memory", "2G", "--storage-opt", "size=1.2G","--pids-limit", "4000"]` |
@@ -88,6 +89,8 @@ Profiles using `["*"]` for `networks`, `runtimes`, or `IDEs` will present only t
 
 This means profiles using `["*"]` require no updates when new runtimes, networks, or IDEs become available (subject always to the resources the user is granted access to in `users.json` and `roles.json`).
 
+`"none"` (no IDE / SSH-only) is never auto-discovered or implied by `["*"]` — it is not a real installed IDE, so it must be listed explicitly in a profile's `IDEs`, or forced on for every devtainer via `ide: false` (per-profile) or `ide.default: false` (globally, in `config.json`). See [SSH-only devtainers](extensions/ide.md).
+
 #### Network name format
 
 Docker network names may contain letters, digits, hyphens, underscores (`_`), and dots (`.`).
@@ -95,6 +98,24 @@ Docker network names may contain letters, digits, hyphens, underscores (`_`), an
 #### Git URL format
 
 Values in `gitURLs`, and the `gitURL` field supplied at launch, may optionally end with `.git` (e.g. `https://github.com/org/repo.git` is equivalent to `https://github.com/org/repo`). Both HTTPS (e.g. `https://github.com/newsnowlabs/dockside.git`) and SSH (e.g. `git@github.com:newsnowlabs/dockside.git`) URLs are supported.
+
+#### Option types
+
+Each `options` entry's `type` is either:
+
+- `"text"` (the default if `type` is omitted): a free-text input.
+- `"select"`: a dropdown restricted to the entries listed in that option's `values` array (mandatory,
+  non-empty, for this type) — a submitted value outside `values` is rejected.
+- `"combo"`: like `"select"` — a dropdown menu sourced from `values` (mandatory, non-empty) — but
+  editable: any typed value is accepted too, not just one of the listed entries. Good for a "common
+  choices, or type your own" field; see the `branch` option in
+  [`03-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/03-git-repo.json)
+  for a working example.
+
+If `default` is set, it pre-fills the input as real, editable text the user can overwrite — it is
+*not* shown as greyed-out placeholder hint text. `placeholder` is a separate, independent sub-field:
+native input hint text, shown only while the field is empty (so it has no visible effect once
+`default` has populated the field, unless the user clears it).
 
 #### Launch-time git branch/PR checkout
 
@@ -277,7 +298,7 @@ Available resource names are:
 - `profiles`: specify allowed profile filenames
 - `networks`: specify allowed Docker networks
 - `runtimes`: specify allowed Docker runtimes
-- `IDEs`: specify allowed IDE installations (e.g. `theia/latest`, `openvscode/latest`, or `openvscode/1.109.5`)
+- `IDEs`: specify allowed IDE installations (e.g. `theia/latest`, `openvscode/latest`, or `openvscode/1.109.5`), or the literal `"none"` to permit choosing no IDE (SSH-only) — treated exactly like any other IDE name, so an existing `["*"]` grant already covers `"none"` once a profile offers it; see [SSH-only devtainers](extensions/ide.md)
 - `images`: specify allowed Docker images
 - `auth`: specify allowed [auth/access levels](#router-auth%2Faccess-levels)
 
@@ -352,3 +373,5 @@ The `config.json` file contains global config for the Dockside instance. Not all
 - `docker.security`: the default `apparmor` and `seccomp` security profiles (may be overriden within Dockside profiles)
 - `ssh`:
     - `default`: a boolean indicating whether devtainers launched from profiles that do not contain an `ssh` property should have ssh access enabled (default true)
+- `ide`:
+    - `default`: a boolean indicating whether devtainers launched from profiles that do not contain an `ide` property should have the IDE subsystem enabled (default true); see [SSH-only devtainers](extensions/ide.md)
