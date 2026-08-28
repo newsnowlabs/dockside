@@ -8,8 +8,8 @@ $theme-colors: (
    stopped: $stopped
 );
 
-@import 'node_modules/bootstrap/scss/bootstrap';
-@import 'node_modules/bootstrap-vue/src/index.scss';
+@import 'bootstrap/scss/bootstrap';
+@import 'bootstrap-vue/src/index.scss';
 
 .card.card--hoverable {
    &.bg-started {

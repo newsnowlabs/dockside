@@ -4,8 +4,8 @@
   "description": "A lightweight tool for provisioning access-controlled IDEs, staging environments and sandboxes",
   "main": "./src/index.js",
   "scripts": {
-    "start": "webpack --config ./build/webpack.dev.js",
-    "build": "webpack --config ./build/webpack.prod.js"
+    "start": "vite build --watch --mode development",
+    "build": "vite build"
   },
   "author": "NewsNow Publishing Limited",
   "license": "Apache-2.0",
@@ -21,24 +21,12 @@
     "vuex": "^3.6.2"
   },
   "devDependencies": {
-    "@babel/core": "^7.8.4",
-    "@babel/preset-env": "^7.8.4",
-    "babel-loader": "^8.0.6",
-    "babel-plugin-transform-object-rest-spread": "^6.26.0",
-    "clean-webpack-plugin": "^3.0.0",
-    "css-loader": "^3.4.2",
+    "@vitejs/plugin-vue2": "^2.3.4",
     "eslint": "^6.8.0",
-    "eslint-loader": "^3.0.3",
     "eslint-plugin-vue": "^6.1.2",
-    "mini-css-extract-plugin": "^0.9.0",
-    "sass": "^1.101.0",
-    "sass-loader": "^8.0.2",
+    "sass": "^1.103.1",
     "stylelint": "^13.0.0",
-    "stylelint-webpack-plugin": "^1.2.1",
-    "vue-loader": "^15.8.3",
-    "vue-template-compiler": "^2.7.16",
-    "webpack": "^4.41.5",
-    "webpack-cli": "^3.3.10",
-    "webpack-merge": "^4.2.2"
+    "vite": "^7.3.6",
+    "vue-template-compiler": "^2.7.16"
   }
 }
