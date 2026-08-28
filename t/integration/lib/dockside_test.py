@@ -502,6 +502,45 @@ class DocksideClient:
     def update(self, name, **fields):
         return self._run_mutating('edit', name, *_fields_to_args(fields))
 
+    # docs/adr/0008-router-mutation.md. `prefix`/`domain` accept either a single string or a
+    # list (multiple --prefix/--domain flags) - _fields_to_args can't express repeated flags, so
+    # these build their own argv rather than reusing it.
+    def add_router(self, name, prefix, port, domain=None, router_name=None, private_protocol='http',
+                    auth=None, access=None):
+        args = ['router', 'add', name]
+        for p in ([prefix] if isinstance(prefix, str) else prefix):
+            args.extend(['--prefix', p])
+        for d in ([domain] if isinstance(domain, str) else (domain or [])):
+            args.extend(['--domain', d])
+        args.extend(['--port', str(port), '--private-protocol', private_protocol])
+        if router_name:
+            args.extend(['--name', router_name])
+        for a in ([auth] if isinstance(auth, str) else (auth or [])):
+            args.extend(['--auth', a])
+        if access:
+            args.extend(['--access', access])
+        return self._run_mutating(*args)
+
+    def remove_router(self, name, router_name, force=True):
+        args = ['router', 'remove', name, '--name', router_name]
+        if force:
+            args.append('--force')
+        return self._run_mutating(*args)
+
+    def replace_router(self, name, router_name, prefix, port, domain=None, private_protocol='http',
+                        auth=None, access=None):
+        args = ['router', 'replace', name, '--name', router_name]
+        for p in ([prefix] if isinstance(prefix, str) else prefix):
+            args.extend(['--prefix', p])
+        for d in ([domain] if isinstance(domain, str) else (domain or [])):
+            args.extend(['--domain', d])
+        args.extend(['--port', str(port), '--private-protocol', private_protocol])
+        for a in ([auth] if isinstance(auth, str) else (auth or [])):
+            args.extend(['--auth', a])
+        if access:
+            args.extend(['--access', access])
+        return self._run_mutating(*args)
+
     def start(self, name, wait=True, timeout=120):
         if wait:
             return self._run_mutating('start', '--timeout', str(timeout), name)
@@ -920,6 +959,7 @@ class TestCase:
     test_role_view_all    = 'inttest-viewall-role'
     test_role_develop_all = 'inttest-developall-role'
     test_profile_alpine     = 'inttest-alpine'
+    test_profile_router     = 'inttest-router'
     test_profile_nginx      = 'inttest-nginx'
     test_profile_bad_image  = 'inttest-bad-image'
     test_image_alpine       = 'alpine:latest'

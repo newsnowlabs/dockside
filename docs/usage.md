@@ -22,6 +22,8 @@ When ready, click the green `Launch` button. Launch progress (image pull, per la
 
 To edit the developer and users lists, change the connected network, change the auth/access levels for the devtainer's services, or change its privacy setting, click `Edit`, make changes, then `Save`.
 
+Adding, removing, or replacing an individual service (router) on an already-launched devtainer — as opposed to editing the auth/access level of one the profile already declared — is not yet available from the UI; use the [Dockside CLI](#using-the-dockside-cli)'s `router` commands instead.
+
 To open a preconfigured devtainer service, click the `Open` button adjoining the service.
 
 Where SSH has been enabled, you can open an SSH terminal to a devtainer by clicking the `Open` button adjoining the SSH service. SSH support requires setup; see [Integrated SSH server support](extensions/ssh.md#integrated-ssh-server-support).
@@ -70,9 +72,12 @@ dockside profile create myprofile --file myprofile.json
 # Manage users and roles (requires manageUsers)
 dockside user create alice --email alice@example.com --role developer --user-password s3cret
 dockside role list
+
+# Add, remove, or replace a router (service) on a live devtainer - not yet available from the UI
+dockside router add my-feature --prefix api --port 8080
 ```
 
-See the [Dockside CLI README](../cli/README.md) for installation instructions, all available commands, multi-server configuration, and CI/CD usage examples.
+See the [Dockside CLI README](../cli/README.md) for installation instructions, all available commands (including router management), multi-server configuration, and CI/CD usage examples.
 
 ### Root access within Devtainers
 

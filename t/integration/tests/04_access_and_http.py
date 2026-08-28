@@ -7,9 +7,14 @@ developers/viewers are modified:
   - What routers appear in list/get responses for each user
   - What HTTP status code the proxy returns for each user/mode combination
 
-Uses two containers:
-  inttest-ac-01    (alpine) — dev1 is owner; used for list/get/edit tests
-  inttest-nginx-01 (nginx)  — admin is owner; used for HTTP proxy tests
+Uses three containers:
+  inttest-ac-01     (alpine)               — dev1 is owner; used for list/get/edit tests
+  inttest-nginx-01  (nginx)                — admin is owner; used for HTTP proxy tests
+  inttest-router-01 (alpine, userRouters=1) — dev1 is owner; used for router add/remove/replace
+                                              tests (docs/adr/0008-router-mutation.md) - its
+                                              own profile/container so AC_CONTAINER's profile
+                                              (userRouters unset) stays available for the
+                                              negative "profile does not allow this" case
 """
 
 import sys
@@ -19,8 +24,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
 from dockside_test import TestCase, APIError, verbose_enabled
 
-_BASE_AC_CONTAINER    = 'inttest-ac-01'
-_BASE_NGINX_CONTAINER = 'inttest-nginx-01'
+_BASE_AC_CONTAINER     = 'inttest-ac-01'
+_BASE_NGINX_CONTAINER  = 'inttest-nginx-01'
+_BASE_ROUTER_CONTAINER = 'inttest-router-01'
 
 
 class AccessAndHttpTests(TestCase):
@@ -33,12 +39,13 @@ class AccessAndHttpTests(TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.AC_CONTAINER    = cls._sfx(_BASE_AC_CONTAINER)
-        cls.NGINX_CONTAINER = cls._sfx(_BASE_NGINX_CONTAINER)
+        cls.AC_CONTAINER     = cls._sfx(_BASE_AC_CONTAINER)
+        cls.NGINX_CONTAINER  = cls._sfx(_BASE_NGINX_CONTAINER)
+        cls.ROUTER_CONTAINER = cls._sfx(_BASE_ROUTER_CONTAINER)
 
     @classmethod
     def tearDownClass(cls):
-        for name in (cls.AC_CONTAINER, cls.NGINX_CONTAINER):
+        for name in (cls.AC_CONTAINER, cls.NGINX_CONTAINER, cls.ROUTER_CONTAINER):
             for fn in (
                 lambda n=name: cls.admin.stop(n, wait=False),
                 lambda n=name: cls.admin.remove(n, wait=False),
@@ -69,6 +76,13 @@ class AccessAndHttpTests(TestCase):
                 raise
         try:
             self.admin.create(profile=self.test_profile_nginx, name=self.NGINX_CONTAINER)
+        except APIError as e:
+            if 'already' in str(e).lower() or 'exists' in str(e).lower():
+                pass
+            else:
+                raise
+        try:
+            self.dev1.create(profile=self.test_profile_router, name=self.ROUTER_CONTAINER)
         except APIError as e:
             if 'already' in str(e).lower() or 'exists' in str(e).lower():
                 pass
@@ -342,3 +356,220 @@ class AccessAndHttpTests(TestCase):
                        f'dev2 does not see www router in developer mode: {dev2_routers}')
         self.assert_true('www' not in viewer_routers,
                          f'viewer sees www router in developer mode: {viewer_routers}')
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Section F — Router mutation (docs/adr/0008-router-mutation.md)
+    #
+    # ROUTER_CONTAINER (dev1-owned, inttest-router profile with userRouters=1) exercises the
+    # permission + developer-standing + profile-gate matrix for add; AC_CONTAINER (dev1-owned,
+    # inttest-alpine profile, userRouters unset) is reused for the negative profile-gate case.
+    # NGINX_CONTAINER doubles for a genuine live-reachability check (Section E's server is
+    # already running there, so a new router pointed at its own port 80 is provably real - no
+    # need to stand up a second server just for this).
+    #
+    # Not covered here: gatewayMode rejection on add - a host-level, not per-reservation, config
+    # the harness has no supported way to toggle per-test; left to manual/unit-level verification
+    # rather than forcing a brittle test around it.
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def test_40_router_add_rejected_without_permission(self):
+        """viewer (no addContainerRouter permission at all) cannot add a router."""
+        self.assert_api_error(
+            lambda: self.viewer.add_router(self.ROUTER_CONTAINER, prefix='nope', port=9001))
+
+    def test_41_router_add_rejected_without_developer_standing(self):
+        """dev2 holds addContainerRouter (shared role with dev1) but isn't owner/developer here."""
+        self.assert_api_error(
+            lambda: self.dev2.add_router(self.ROUTER_CONTAINER, prefix='nope2', port=9002))
+
+    def test_42_router_add_rejected_when_profile_disallows(self):
+        """dev1 (owner, has permission) is still rejected: AC_CONTAINER's profile has no userRouters."""
+        self.assert_api_error(
+            lambda: self.dev1.add_router(self.AC_CONTAINER, prefix='nope3', port=9003))
+
+    def test_43_router_add_succeeds_for_owner_on_userRouters_profile(self):
+        """dev1 (owner) adds a router on the userRouters=1 profile; it's live, type=user."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='extra', port=9101)
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        routers = (data.get('profileObject') or {}).get('routers') or []
+        added = next((r for r in routers if r.get('name') == 'extra'), None)
+        self.assert_true(added is not None, f'added router not present: {routers}')
+        self.assert_equal(added.get('type'), 'user', "added router's type is not 'user'")
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('extra'), 'owner',
+                          "added router's meta.access was not set to the default for an "
+                          "owner-added router ('owner') - without any meta.access entry it "
+                          "would be invisible to every client despite being live (see "
+                          "docs/adr/0008-router-mutation.md)")
+
+    def test_44_router_add_rejects_duplicate_name(self):
+        """Adding a router with a name already in use is a collision, not a silent shadow."""
+        # No hyphen in the prefix - this must fail on the name collision specifically, not be
+        # a false positive from the separate hyphenated-prefix rejection.
+        self.assert_api_error(
+            lambda: self.dev1.add_router(self.ROUTER_CONTAINER, prefix='extraagain', port=9102, router_name='extra'))
+
+    def test_45_router_remove_rejected_for_ide_type(self):
+        """The auto-injected 'ide' router can never be removed, even by the owner."""
+        self.assert_api_error(
+            lambda: self.dev1.remove_router(self.ROUTER_CONTAINER, 'ide'))
+
+    def test_46_router_remove_succeeds_for_shared_developer_not_just_creator(self):
+        """dev2, once shared as a developer (but not the one who added it), can remove it too."""
+        self.dev1.update(self.ROUTER_CONTAINER, developers=self.test_username_dev2)
+        # No hyphen in the prefix (only in the router's own name, which is fine) - a hyphenated
+        # *prefix* is rejected server-side, since the proxy treats any hyphen in an actual
+        # request prefix as a passthrough indicator (see Reservation::normalise_router_def).
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='sharedtest', port=9103, router_name='shared-test')
+        # dev2 did not add 'shared-test' - only shares developer standing on the reservation.
+        self.dev2.remove_router(self.ROUTER_CONTAINER, 'shared-test')
+        routers = self.get_routers_for(self.dev1, self.ROUTER_CONTAINER)
+        self.assert_true('shared-test' not in routers,
+                         f"dev2's remove of a router it didn't create had no effect: {routers}")
+
+    def test_47_router_replace_carries_access_forward(self):
+        """replace (same name) keeps the existing meta.access value, only the port changes."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='replaceme', port=9104, router_name='replaceme')
+        self.dev1.update(self.ROUTER_CONTAINER, access='{"replaceme":"owner"}')
+        self.dev1.replace_router(self.ROUTER_CONTAINER, 'replaceme', prefix='replaceme', port=9105)
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        routers = (data.get('profileObject') or {}).get('routers') or []
+        replaced = next((r for r in routers if r.get('name') == 'replaceme'), None)
+        self.assert_true(replaced is not None, 'replaced router not present')
+        port = ((replaced.get('https') or replaced.get('http') or {}).get('port'))
+        self.assert_equal(port, 9105, f'replace did not update the port: {replaced}')
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('replaceme'), 'owner',
+                          "replace did not carry the pre-existing access level ('owner') forward")
+
+    def test_48_router_add_succeeds_for_admin_bypassing_profile_gate(self):
+        """admin adds a router even though NGINX_CONTAINER's profile has no userRouters."""
+        self._ensure_nginx_running()
+        # Points at nginx's own real listening port (80, already proxied by the 'www' router) -
+        # so the next test can prove it's genuinely live, not just present in metadata.
+        self.admin.add_router(self.NGINX_CONTAINER, prefix='adminadded', port=80)
+        routers = self.get_routers_for(self.admin, self.NGINX_CONTAINER)
+        self.assert_in('adminadded', routers, f'admin-added router not present: {routers}')
+
+    def test_49_router_added_by_admin_is_live_reachable(self):
+        """The router test_48 added works against the real, already-running nginx - no restart."""
+        service_url = self._service_url(self.NGINX_CONTAINER, router_prefix='adminadded')
+        status, _ = self.admin.check_url(service_url)
+        self.assert_http_status(status, 200, f'admin-added router not live-reachable: {status}')
+
+    def test_50_router_default_auth_allows_widening_access_later(self):
+        """With no --auth given, the wide default allow-list still permits widening to 'public'."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='widenme', port=9105, router_name='widenme')
+        self.dev1.update(self.ROUTER_CONTAINER, access='{"widenme":"public"}')
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('widenme'), 'public',
+                          "widening a default-auth router's access to 'public' was rejected")
+
+    def test_51_router_custom_auth_is_honoured_and_enforced(self):
+        """--auth narrows what a router's access can ever be set to, not just its starting value.
+
+        Added by dev2, a shared developer but *not* the owner (test_46 shared developer standing
+        on ROUTER_CONTAINER) - dev2's own preferred default is 'developer' (see
+        User::_defaultRouterAccessLevel), which isn't in this router's caller-narrowed auth list,
+        so this genuinely exercises the fallback-to-sole-permitted-level path, not just a
+        coincidence of dev1 (the owner) already preferring 'owner'.
+        """
+        self.dev2.add_router(self.ROUTER_CONTAINER, prefix='locked', port=9106,
+                             router_name='locked', auth=['owner'])
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        routers = (data.get('profileObject') or {}).get('routers') or []
+        locked = next((r for r in routers if r.get('name') == 'locked'), None)
+        self.assert_true(locked is not None, 'custom-auth router not present')
+        self.assert_equal(locked.get('auth'), ['owner'], "custom 'auth' list was not honoured")
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('locked'), 'owner',
+                          "default access level did not fall back to the sole permitted level "
+                          "('owner') when dev2's own preferred default ('developer') isn't in "
+                          "a caller-narrowed auth list")
+        # 'developer' is not in this router's auth list, so widening (or any change) to it must
+        # still be rejected even though dev2 (the adder) has developer standing on this reservation.
+        self.assert_api_error(
+            lambda: self.dev1.update(self.ROUTER_CONTAINER, access='{"locked":"developer"}'))
+
+    def test_52_router_add_default_access_depends_on_adder_identity(self):
+        """A developer (not the owner) adding a router defaults to 'developer', not 'owner' -
+        the counterpart of test_43 (an owner-added router defaults to 'owner')."""
+        self.dev2.add_router(self.ROUTER_CONTAINER, prefix='devadded', port=9107,
+                             router_name='devadded')
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('devadded'), 'developer',
+                          "a router added by a shared developer (not the owner) did not "
+                          "default to 'developer' access")
+
+    def test_53_router_add_explicit_access_overrides_default(self):
+        """--access explicitly overrides the owner/developer default, either direction."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='ownerpicksdev', port=9108,
+                             router_name='ownerpicksdev', access='developer')
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('ownerpicksdev'), 'developer',
+                          "--access did not override the owner's own default ('owner')")
+
+    def test_54_router_add_rejects_access_not_in_auth_list(self):
+        """An explicit --access value not permitted by --auth is rejected, not silently coerced."""
+        self.assert_api_error(
+            lambda: self.dev1.add_router(self.ROUTER_CONTAINER, prefix='badaccess', port=9109,
+                                         router_name='badaccess', auth=['owner'], access='developer'))
+
+    def test_55_router_auth_accepts_comma_separated_list(self):
+        """--auth accepts a single comma-separated value, equivalent to repeating the flag."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='commaauth', port=9110,
+                             router_name='commaauth', auth=['owner,developer'])
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        routers = (data.get('profileObject') or {}).get('routers') or []
+        commaauth = next((r for r in routers if r.get('name') == 'commaauth'), None)
+        self.assert_true(commaauth is not None, 'comma-auth router not present')
+        self.assert_equal(sorted(commaauth.get('auth') or []), ['developer', 'owner'],
+                          "comma-separated --auth value was not parsed into both levels")
+
+    def test_56_router_auth_accepts_repeated_flags(self):
+        """--auth also works given as separate repeated flags, not just one comma-separated value
+        (test_55's form) - both are supposed to accumulate into the same combined list."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='repeatedauth', port=9111,
+                             router_name='repeatedauth', auth=['owner', 'developer'])
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        routers = (data.get('profileObject') or {}).get('routers') or []
+        repeated = next((r for r in routers if r.get('name') == 'repeatedauth'), None)
+        self.assert_true(repeated is not None, 'repeated --auth flags router not present')
+        self.assert_equal(sorted(repeated.get('auth') or []), ['developer', 'owner'],
+                          "repeated --auth flags were not both honoured")
+
+    def test_57_router_replace_auth_narrowing_falls_back_like_add(self):
+        """--auth/--access apply to 'replace' too, not just 'add'. Narrowing --auth on replace to
+        exclude the carried-forward value rules out carry-forward, falling back to the same
+        owner/developer-aware default 'add' would use - not the old value, and not a bare
+        'developer'."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='replacenarrow', port=9112,
+                             router_name='replacenarrow')
+        # dev1 (owner) added it, so it starts at 'owner' (test_43's rule) - confirm that first,
+        # since the rest of this test depends on it.
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('replacenarrow'), 'owner', 'unexpected starting access level')
+        self.dev1.replace_router(self.ROUTER_CONTAINER, 'replacenarrow', prefix='replacenarrow',
+                                 port=9112, auth=['developer', 'public'])
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('replacenarrow'), 'developer',
+                          "replace did not fall back to the new auth list's first entry "
+                          "('developer') once the carried-forward value ('owner') became illegal")
+
+    def test_58_router_replace_explicit_access_used_when_carry_forward_invalid(self):
+        """--access on replace is only consulted once carry-forward is ruled out (the old value
+        is no longer legal under the new --auth); it then picks the specific level requested,
+        not just the owner/developer default."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='replaceexplicit', port=9113,
+                             router_name='replaceexplicit')
+        self.dev1.replace_router(self.ROUTER_CONTAINER, 'replaceexplicit', prefix='replaceexplicit',
+                                 port=9113, auth=['developer', 'public'], access='public')
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('replaceexplicit'), 'public',
+                          "--access on replace was not honoured once carry-forward became invalid")

@@ -667,6 +667,61 @@ $authed->post( '/containers/:id/update' => sub ($c) {
 } );
 $authed->any( '/containers/:id/update' => \&_post_only );
 
+# Router add/remove/replace (docs/adr/0008-router-mutation.md) - a sub-resource of the
+# devtainer, same shape as the /hook routes below, rather than folded into /update: add/remove
+# are two distinct permissions and a router definition has enough shape to want its own request
+# body rather than riding inside /update's generic args.
+$authed->post( '/containers/:id/router/add' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+      $args->{'id'} = $id if $id;
+
+      my $reservation = $User->addContainerRouter($args);
+      _json( $c, 200, { 'status' => '200', 'reservation' => $reservation } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+$authed->any( '/containers/:id/router/add' => \&_post_only );
+
+$authed->post( '/containers/:id/router/remove' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+      $args->{'id'} = $id if $id;
+
+      my $reservation = $User->removeContainerRouter($args);
+      _json( $c, 200, { 'status' => '200', 'reservation' => $reservation } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+$authed->any( '/containers/:id/router/remove' => \&_post_only );
+
+$authed->post( '/containers/:id/router/replace' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+      $args->{'id'} = $id if $id;
+
+      my $reservation = $User->replaceContainerRouter($args);
+      _json( $c, 200, { 'status' => '200', 'reservation' => $reservation } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+$authed->any( '/containers/:id/router/replace' => \&_post_only );
+
 $authed->get( '/containers/:id/hook/status' => sub ($c) {
    my $User = $c->stash('user');
    _require_login( $c, $User ) or return;

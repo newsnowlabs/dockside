@@ -4,7 +4,7 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running launch_reset_stages_if_idle);
+our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
 
 use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync);
 use Exception;
@@ -231,6 +231,146 @@ sub increment_data_field ($id, $key) {
       }
    );
    return $newValue;
+}
+
+################################################################################
+# ROUTER MUTATION (add / remove / replace)
+#
+# docs/adr/0008-router-mutation.md - these run the whole read-validate-mutate-write cycle inside
+# mutate()'s own flock, against the freshly-reread on-disk record, not whatever the caller's
+# in-memory Reservation object last saw - closing the same class of lost-update race
+# store_fields()'s own comment warns about for a blind whole-array overwrite (cloneHash only
+# merges HASH-vs-HASH pairs; 'routers' is an array, a pure leaf-overwrite). Called only via
+# Reservation.pm's own add_router/remove_router/replace_router methods (never directly), which
+# also keep this process's in-memory copy in sync afterward - see those methods' own comments.
+# Permission/profile-gate checks happen in User.pm before any of these are ever called; nothing
+# here re-checks them - only the array mutation itself, plus the one hard, non-bypassable
+# ide/ssh removal block, needs the lock's protection. This module also makes no *access-level
+# policy* decision of its own: add_router/replace_router take the initial meta.access value as an
+# already-resolved $accessLevel argument (User.pm decides what that should be - its own
+# owner/developer default, or an explicit caller override) and only check it's legal under the
+# router's final auth list - see _check_router_access_level below.
+
+# Confirms $accessLevel is actually legal under $auth (the router's final, default-wide or
+# caller-narrowed, auth list) and dies with a clear Exception if not. This module makes no policy
+# decision about *what* the level should be - that's resolved entirely by User.pm (its own
+# owner/developer default, or an explicit caller override - docs/adr/0008-router-mutation.md) and
+# handed down as $accessLevel already-chosen; this is a pure data-integrity check, the same kind
+# add_router/replace_router already do for shape/collision problems.
+sub _check_router_access_level ($accessLevel, $auth) {
+   die Exception->new(
+      'msg'    => "access level '$accessLevel' is not among this router's allowed access levels: " . join(', ', @$auth),
+      'status' => 400
+   ) unless grep { $_ eq $accessLevel } @$auth;
+}
+
+# Adds a router to reservation $id. Validates/normalises $routerDef via
+# Reservation::normalise_router_def against the fresh on-disk router list (dies with an Exception
+# on any collision or shape problem), then sets meta.access[name] to $accessLevel - already
+# resolved by User.pm, only checked here for legality against the router's final auth list (see
+# _check_router_access_level above) - in the same transaction. That's needed regardless of who
+# resolves the value: without it, cloneWithConstraints (Reservation.pm's own client-sanitising
+# clone) silently drops the new router from every client payload, since (unlike the live-routing
+# default in Reservation::routers()) it has no fallback for a missing meta.access entry. Rejects
+# outright in gatewayMode (deprecated, not worth this feature's complexity budget there) before
+# ever taking the lock, since that's a static, non-racy config fact. Returns
+# ($normalised, $accessLevel) - Reservation.pm's own add_router needs both to keep its in-memory
+# copy in sync (the second is just $accessLevel echoed back, kept for shape-parity with
+# replace_router below, whose second return value can genuinely differ from what was passed in).
+sub add_router ($id, $routerDef, $accessLevel) {
+   die Exception->new(
+      'msg'    => "adding a router is not supported while this Dockside instance runs in gatewayMode",
+      'status' => 400
+   ) if $CONFIG->{'gatewayMode'};
+
+   my $normalised;
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id}
+            or die Exception->new( 'msg' => "Reservation '$id' not found", 'status' => 400 );
+         my $routers = $reservation->{'profileObject'}{'routers'} //= [];
+         $normalised = Reservation::normalise_router_def( $routerDef, $routers );
+         _check_router_access_level( $accessLevel, $normalised->{'auth'} );
+         push( @$routers, $normalised );
+         $reservation->{'meta'}{'access'}{ $normalised->{'name'} } = $accessLevel;
+         return 1;
+      }
+   );
+   return ( $normalised, $accessLevel );
+}
+
+# Removes router $name from reservation $id. Dies if $name doesn't exist, or is type ide/ssh -
+# the one hard, non-bypassable rule left; every other router (admin-authored or type=user alike)
+# is removable once User.pm's own permission + can_on(develop) gate passed.
+# Also deletes the now-orphaned meta.access[$name] entry, so a later router reusing this name
+# starts from add_router's own fresh default rather than inheriting stale access.
+sub remove_router ($id, $name) {
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id}
+            or die Exception->new( 'msg' => "Reservation '$id' not found", 'status' => 400 );
+         my $routers = $reservation->{'profileObject'}{'routers'} // [];
+         my ($target) = grep { $_->{'name'} eq $name } @$routers;
+         die Exception->new( 'msg' => "router '$name' not found", 'status' => 400 ) unless $target;
+         die Exception->new(
+            'msg'    => "router '$name' has type '" . ( $target->{'type'} // '' ) . "' and can never be removed",
+            'status' => 400
+         ) if ( $target->{'type'} // '' ) =~ /^(?:ide|ssh)$/;
+
+         $reservation->{'profileObject'}{'routers'} = [ grep { $_->{'name'} ne $name } @$routers ];
+         delete $reservation->{'meta'}{'access'}{$name};
+         return 1;
+      }
+   );
+   return 1;
+}
+
+# Atomically replaces router $name with $routerDef - same-name remove+add under one lock, so a
+# rename-in-place never has a window where the router is simply gone. Carries meta.access[$name]
+# forward when $routerDef's (possibly caller-supplied) name is unchanged *and* that carried value
+# is still legal under the new (possibly caller-narrowed) auth list; otherwise falls back to
+# $accessLevel - already resolved by User.pm exactly as add_router's own $accessLevel is, not
+# decided here. Returns ($normalised, $accessLevel) - the caller (Reservation.pm's own
+# replace_router) needs both to keep its in-memory copy in sync. Same hard ide/ssh block as
+# remove_router; collision-checked against the router list with the old entry already excluded,
+# so replacing a router with an unchanged definition of the same name never spuriously collides
+# with itself.
+sub replace_router ($id, $name, $routerDef, $accessLevel) {
+   my ( $normalised, $resolvedAccessLevel );
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id}
+            or die Exception->new( 'msg' => "Reservation '$id' not found", 'status' => 400 );
+         my $routers = $reservation->{'profileObject'}{'routers'} // [];
+         my ($target) = grep { $_->{'name'} eq $name } @$routers;
+         die Exception->new( 'msg' => "router '$name' not found", 'status' => 400 ) unless $target;
+         die Exception->new(
+            'msg'    => "router '$name' has type '" . ( $target->{'type'} // '' ) . "' and can never be removed/replaced",
+            'status' => 400
+         ) if ( $target->{'type'} // '' ) =~ /^(?:ide|ssh)$/;
+
+         my @remaining = grep { $_->{'name'} ne $name } @$routers;
+         $normalised = Reservation::normalise_router_def( $routerDef, \@remaining );
+         push( @remaining, $normalised );
+         $reservation->{'profileObject'}{'routers'} = \@remaining;
+
+         # Carry the old level forward only if it's still legal under the (possibly caller-
+         # narrowed) new auth list - e.g. replacing a 'public' router with one whose auth has been
+         # narrowed to ['owner'] must not silently keep 'public' just because the name matched.
+         # Otherwise fall back to $accessLevel, which is still checked for legality either way.
+         my $carried = $reservation->{'meta'}{'access'}{$name};
+         $resolvedAccessLevel = ( $normalised->{'name'} eq $name && defined($carried) &&
+                                   grep { $_ eq $carried } @{ $normalised->{'auth'} } )
+            ? $carried
+            : $accessLevel;
+         _check_router_access_level( $resolvedAccessLevel, $normalised->{'auth'} );
+         delete $reservation->{'meta'}{'access'}{$name} unless $normalised->{'name'} eq $name;
+         $reservation->{'meta'}{'access'}{ $normalised->{'name'} } = $resolvedAccessLevel;
+
+         return 1;
+      }
+   );
+   return ( $normalised, $resolvedAccessLevel );
 }
 
 # Shared by hook_claim_if_not_running and launch_reset_stages_if_idle below - both need the

@@ -10,6 +10,11 @@ use Storable qw(dclone);
 use URI::Escape;
 use Mojo::Promise;
 use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running);
+# Not imported: Reservation::Mutate's own add_router/remove_router/replace_router - Reservation.pm
+# defines its OWN methods of the same name below (the public API other code calls), which call
+# Reservation::Mutate's versions fully-qualified. Importing both under the same bare names into
+# this package would collide (whichever `sub` in this file compiles last silently wins), so the
+# Mutate-side functions are deliberately left unimported and always called fully-qualified.
 use Reservation::Load;
 use Reservation::Launch;
 use Containers;
@@ -211,14 +216,17 @@ sub meta ($self, $key, @rest) {
    }
    elsif( $key eq 'access' ) {
       foreach my $name (keys %$value) {
-         # Allow any value from this list:
-         # - owner|viewer|developer|user|public|containerCookie
+         # Allow any value known_router_auth_levels() recognises (owner/viewer/developer/user/
+         # public) - one shared list rather than a second hardcoded copy that could drift from
+         # it. 'containerCookie' used to be in this list too, but has no actual code support
+         # (User::reservationPermissions never grants it, Proxy.pm's own handling is commented
+         # out) - dropped rather than accepted here and silently unusable everywhere else.
          # (unless type eq ide, in which case allow only owner|developer).
          #
          # If no value specified, set to the default ('developers' if none specified in the profile).
          my $access = $value->{$name};
          die Exception->new( 'msg' => "Cannot set auth/access mode for router '$name' to '$access'" )
-            unless $access =~ /^(?:owner|viewer|developer|user|public|containerCookie)$/;
+            unless grep { $_ eq $access } @{ known_router_auth_levels() };
 
          die Exception->new( 'msg' => "Cannot set auth/access mode for router '$name' to '$access'" )
             if $name =~ /^(?:ide|ssh)$/ && !($access =~ /^(?:owner|developer)$/);
@@ -784,6 +792,192 @@ sub lookup_container_uri ($self, $host, $actualPrefix, $actualDomain, $protocol)
    );
 
    return { 'uri' => $uri, 'route' => $route };
+}
+
+################################################################################
+# ROUTER MUTATION (add / remove / replace)
+#
+# docs/adr/0008-router-mutation.md - lets a permission-holding developer add/remove routers on
+# a live reservation, subject to a profile-level opt-in for add (Profile->userRouters) and the
+# standard addContainerRouter/removeContainerRouter permission + can_on(develop) gate, both
+# checked by User.pm before any of the methods below are ever called. Nothing here re-checks
+# permissions - these are the mutation primitives only.
+
+# The full vocabulary of router access levels this codebase recognises (User::reservationPermissions'
+# own $permittedAuth keys, minus the explicitly-incomplete 'containerCookie' - see that sub's own
+# comment). normalise_router_def below validates a router's 'auth' list against this; User.pm's
+# addContainerRouter/replaceContainerRouter reuse it (via known_router_auth_levels() below) as the
+# default 'auth' list when the caller didn't supply one - deciding *that* default is User.pm's job,
+# not this file's or Reservation::Mutate's (see docs/adr/0008-router-mutation.md).
+my @KNOWN_ROUTER_AUTH_LEVELS = qw( user developer public viewer owner );
+
+# Returns a fresh copy of the known-levels list above - the same wide allow-list Profile.pm's own
+# applyDefaultsAndFilters gives every non-ide/ssh router. Called fully-qualified
+# (Reservation::known_router_auth_levels()) from User.pm, which is the only place that decides
+# *when* to fall back to it.
+sub known_router_auth_levels () {
+   return [ @KNOWN_ROUTER_AUTH_LEVELS ];
+}
+
+# Validates and normalises a client-submitted router definition (docs/adr/0008-router-mutation.md).
+# Deliberately not a Profile method/reuse of Profile::validate_profile_routers - a self-service
+# add has a narrower, server-controlled field set ('type' is forced below, never caller-supplied;
+# 'auth' is caller-*optional*, defaulting to the wide list rather than being forced) and needs two
+# checks the profile loader itself never bothered with:
+# reject on any (protocol, prefix, domain) collision against $existingRouters, rather than
+# silently shadowing it the way Reservation::routers()'s own last-write-wins lookup table would;
+# and reject a hyphenated prefix outright, since lookup_container_uri (this file, the
+# `$prefix =~ /-/` branch) unconditionally treats any hyphen in the *actual request* prefix as a
+# passthrough indicator and diverts to the '**' router, never consulting the literal prefix table
+# at all - a router registered under a hyphenated prefix would be added successfully but could
+# never actually be reached by it.
+#
+# Called only from inside Reservation::Mutate's own locked callback, against the freshly-reread
+# on-disk router list - there is no separate, unlocked "fast early error" pre-check in User.pm
+# (nothing needs one enough to justify a second call; the lock is cheap and uncontended in the
+# common case).
+#
+# Dies with an Exception (status 400) on any problem. Returns a new, normalised router hashref -
+# never mutates $routerDef or $existingRouters.
+sub normalise_router_def ($routerDef, $existingRouters) {
+   $routerDef = {} unless ref($routerDef) eq 'HASH';
+   $existingRouters //= [];
+
+   my $prefixes = $routerDef->{'prefixes'};
+   $prefixes = [$prefixes] if defined($prefixes) && !ref($prefixes);
+   die Exception->new( 'msg' => "router 'prefixes' must be a non-empty Array of strings", 'status' => 400 )
+      unless ref($prefixes) eq 'ARRAY' && @$prefixes;
+   for my $prefix (@$prefixes) {
+      die Exception->new(
+         'msg'    => "router prefix '$prefix' must not contain a hyphen - the proxy treats any " .
+                     "hyphenated request prefix as a passthrough indicator, so a router registered " .
+                     "under one could never actually be reached by it",
+         'status' => 400
+      ) if $prefix =~ /-/;
+   }
+
+   my $domains = $routerDef->{'domains'};
+   $domains = [$domains] if defined($domains) && !ref($domains);
+   $domains = ['*'] unless ref($domains) eq 'ARRAY' && @$domains;
+
+   my $name = $routerDef->{'name'} // $prefixes->[0];
+   die Exception->new( 'msg' => "router 'name' must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter", 'status' => 400 )
+      unless $name =~ /^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/;
+   die Exception->new( 'msg' => "a router named '$name' already exists on this reservation", 'status' => 400 )
+      if grep { $_->{'name'} eq $name } @$existingRouters;
+
+   my %public;
+   for my $publicProtocol (qw( http https )) {
+      my $proto = $routerDef->{$publicProtocol};
+      next unless $proto;
+      die Exception->new( 'msg' => "router '$publicProtocol' must be an Object with 'protocol' and 'port'", 'status' => 400 )
+         unless ref($proto) eq 'HASH' && $proto->{'protocol'} && defined($proto->{'port'});
+      die Exception->new( 'msg' => "router '$publicProtocol.port' must be an integer between 1 and 65535", 'status' => 400 )
+         unless $proto->{'port'} =~ /^\d+$/ && $proto->{'port'} >= 1 && $proto->{'port'} <= 65535;
+      $public{$publicProtocol} = { 'protocol' => $proto->{'protocol'}, 'port' => 0 + $proto->{'port'} };
+   }
+   die Exception->new( 'msg' => "router must declare at least one of 'http'/'https'", 'status' => 400 )
+      unless %public;
+
+   # 'auth' is required by this point - User.pm always supplies one (the caller's own --auth, or
+   # its own default of every known level via known_router_auth_levels() above if the caller gave
+   # none) before ever calling down to add_router/replace_router. This function only validates
+   # shape/membership; it makes no decision about what belongs here when nothing was supplied.
+   my $auth = $routerDef->{'auth'};
+   $auth = [$auth] if defined($auth) && !ref($auth);
+   die Exception->new(
+      'msg'    => "router 'auth' must be a non-empty Array containing only: " . join(', ', @KNOWN_ROUTER_AUTH_LEVELS),
+      'status' => 400
+   ) unless ref($auth) eq 'ARRAY' && @$auth && !grep { my $a = $_; !grep { $_ eq $a } @KNOWN_ROUTER_AUTH_LEVELS } @$auth;
+
+   # Collision check: reject if any (publicProtocol, prefix, domain) tuple this router would
+   # claim is already claimed by an existing router. '*' on either side is treated as an overlap
+   # with anything - conservative (some non-wildcard pairs it flags aren't a *real* nginx-level
+   # collision) rather than precise, matching this feature's "reject on any overlap" intent.
+   # $existingPrefixes/$existingDomains depend only on $existing, so they're computed once per
+   # existing router, not once per (protocol, prefix, domain) combination being tested against it.
+   for my $publicProtocol (keys %public) {
+      for my $existing (@$existingRouters) {
+         my $existingProto = $existing->{$publicProtocol} or next;
+         my $existingPrefixes = ($existing->{'prefixes'} && @{$existing->{'prefixes'}}) ? $existing->{'prefixes'} : ['*'];
+         my $existingDomains  = ($existing->{'domains'}  && @{$existing->{'domains'}})  ? $existing->{'domains'}  : ['*'];
+         for my $prefix (@$prefixes) {
+            for my $domain (@$domains) {
+               if( (grep { $_ eq $prefix || $_ eq '*' || $prefix eq '*' } @$existingPrefixes) &&
+                   (grep { $_ eq $domain || $_ eq '*' || $domain eq '*' } @$existingDomains) ) {
+                  die Exception->new(
+                     'msg' => "router prefix '$prefix' (domain '$domain', $publicProtocol) already claimed by router '$existing->{'name'}'",
+                     'status' => 400
+                  );
+               }
+            }
+         }
+      }
+   }
+
+   return {
+      'name'     => $name,
+      'type'     => 'user',   # server-assigned, always
+      # Whatever User.pm resolved and handed down (caller-narrowed via --auth, or its own
+      # wide-by-default known_router_auth_levels() fallback) - the *conservative* part of this
+      # feature is the initial meta.access value User.pm also resolves alongside this (see
+      # add_router/replace_router below), not the eligible range: an owner/developer must still be
+      # able to widen access later via the existing, already permission-gated
+      # `dockside edit --access` flow, which checks the requested level against exactly this list
+      # (User::set's own 'access' branch).
+      'auth'     => $auth,
+      'prefixes' => $prefixes,
+      'domains'  => $domains,
+      %public,
+   };
+}
+
+# Adds a router to this live reservation. $accessLevel is the initial meta.access value to
+# assign - resolved by User.pm (its own owner/developer default, or an explicit caller override),
+# never decided here or in Reservation::Mutate: this method and Mutate only validate it's actually
+# legal under the router's final (default-wide, or caller-narrowed) auth list, they don't choose
+# it. Persists via Reservation::Mutate::add_router (locked, re-validated against the fresh
+# on-disk router list - see normalise_router_def's own comment) then updates this process's
+# in-memory copy so an immediate createClientReservation() reflects the change without a second
+# reload.
+sub add_router ($self, $routerDef, $accessLevel) {
+   my ($normalised, $resolvedAccessLevel) = Reservation::Mutate::add_router( $self->id(), $routerDef, $accessLevel );
+   push( @{ $self->{'profileObject'}{'routers'} }, $normalised );
+   $self->{'meta'}{'access'}{ $normalised->{'name'} } = $resolvedAccessLevel;
+   $self->{'routersLookup'} = $self->routers();
+   return $normalised;
+}
+
+# Removes router $name from this live reservation. Dies (via Reservation::Mutate::remove_router)
+# if $name doesn't exist or is a hard-blocked ide/ssh router - no other per-router check is left;
+# permission/profile-gate checks already happened in User.pm before this is called.
+sub remove_router ($self, $name) {
+   Reservation::Mutate::remove_router( $self->id(), $name );
+   $self->{'profileObject'}{'routers'} = [ grep { $_->{'name'} ne $name } @{ $self->{'profileObject'}{'routers'} } ];
+   delete $self->{'meta'}{'access'}{$name};
+   $self->{'routersLookup'} = $self->routers();
+   return $self;
+}
+
+# Atomically replaces router $name with $routerDef (a convenience wrapper - remove+add under one
+# lock, carrying meta.access[$name] forward when the name is unchanged). $accessLevel is the
+# fallback initial value to use only when that carry-forward isn't legal under the router's final
+# auth list (User.pm resolves it exactly as add_router's own $accessLevel is resolved). Gated by
+# both addContainerRouter and removeContainerRouter in User.pm, same hard ide/ssh block as
+# remove_router.
+sub replace_router ($self, $name, $routerDef, $accessLevel) {
+   # The actually-assigned level is decided inside the lock (carried forward from the fresh
+   # on-disk meta.access[$name] when the name is unchanged and still legal, else $accessLevel) -
+   # see Reservation::Mutate::replace_router's own comment.
+   my ($normalised, $resolvedAccessLevel) = Reservation::Mutate::replace_router( $self->id(), $name, $routerDef, $accessLevel );
+   $self->{'profileObject'}{'routers'} = [
+      grep { $_->{'name'} ne $name } @{ $self->{'profileObject'}{'routers'} }
+   ];
+   push( @{ $self->{'profileObject'}{'routers'} }, $normalised );
+   delete $self->{'meta'}{'access'}{$name} unless $normalised->{'name'} eq $name;
+   $self->{'meta'}{'access'}{ $normalised->{'name'} } = $resolvedAccessLevel;
+   $self->{'routersLookup'} = $self->routers();
+   return $normalised;
 }
 
 ################################################################################

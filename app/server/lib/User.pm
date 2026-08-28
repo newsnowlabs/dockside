@@ -71,7 +71,9 @@ my @CONTAINER_PERMISSIONS = (
    'stopContainer', # Permission to stop a container
    'removeContainer', # Permission to remove a container
    'getContainerLogs', # Permission to retrieve container logs
-   'runContainerHooks' # Permission to run a container's profile-declared lifecycle hook
+   'runContainerHooks', # Permission to run a container's profile-declared lifecycle hook
+   'addContainerRouter', # Permission to add a router to a live reservation (profile must also opt in via Profile->userRouters, unless admin)
+   'removeContainerRouter' # Permission to remove any router (except ide/ssh) from a live reservation - no profile opt-in needed
 );
 
 our $USER_PASSWD;
@@ -468,6 +470,18 @@ sub reservationPermissions ($self, $reservation) {
    my $permittedActions;
    foreach my $permission (@CONTAINER_PERMISSIONS) {
       $permittedActions->{$permission} = ($permittedAuth->{'developer'} && $self->has_permission($permission)) ? 1 : 0;
+   }
+
+   # addContainerRouter needs one more gate the generic loop above can't express: the profile
+   # itself must opt in via userRouters (docs/adr/0008-router-mutation.md) - unless this user is
+   # admin, who bypasses the profile-level gate by default (only an explicit per-account denial
+   # of addContainerRouter, already reflected in has_permission above, blocks an admin). Give this
+   # one permission its own line rather than special-casing it inside the loop above, so every
+   # other @CONTAINER_PERMISSIONS entry keeps the plain, generic check. removeContainerRouter
+   # needs no equivalent - it has no profile-level component, so the generic loop already
+   # produced the right answer for it.
+   if( $permittedActions->{'addContainerRouter'} ) {
+      $permittedActions->{'addContainerRouter'} = $self->_canAddRoutersToReservation($reservation);
    }
 
    return { 'auth' => $permittedAuth, 'actions' => $permittedActions };
@@ -972,6 +986,148 @@ sub updateContainerReservation ($self, $args) {
    }
 
    # Return a sanitized clone of the reservation object for client-side use
+   return $self->createClientReservation($reservation);
+}
+
+# Decodes an $args->{'router'} value into a plain hashref, mirroring set()'s own 'access'/'options'
+# branches above - the request body is form-urlencoded like every other API call in this file
+# (App::split_args), so a structured field like a router definition arrives as one JSON-encoded
+# string value, not as nested form fields. Dies with a 400 Exception on malformed JSON, same
+# status normalise_router_def itself uses for every other input problem.
+sub _decode_router_arg ($value) {
+   die Exception->new( 'msg' => "'router' is required", 'status' => 400 )
+      unless defined($value) && $value ne '';
+   my $decoded;
+   try {
+      $decoded = decode_json($value);
+   }
+   catch {
+      die Exception->new( 'msg' => "'router' must be valid JSON", 'status' => 400 );
+   };
+   die Exception->new( 'msg' => "'router' must be a JSON Object", 'status' => 400 )
+      unless ref($decoded) eq 'HASH';
+   # 'type' is the one field a client has no legitimate reason to send - always server-assigned by
+   # Reservation::normalise_router_def, which builds its return value as a fresh whitelist of
+   # known fields rather than merging $decoded in, so a stray 'type' here is discarded downstream
+   # regardless. 'auth', unlike 'type', *is* legitimately caller-suppliable (a narrowed allow-list
+   # via --auth) - see addContainerRouter/replaceContainerRouter below, which fill in the wide
+   # default themselves when it's absent, rather than leaving that decision to
+   # Reservation::normalise_router_def (docs/adr/0008-router-mutation.md).
+   return $decoded;
+}
+
+# Shared by reservationPermissions (deriving the client-visible actions.addContainerRouter flag)
+# and addContainerRouter/replaceContainerRouter (enforcing the same rule) - docs/adr/0008-router-mutation.md's
+# profile-level opt-in for *adding* a router, bypassed by default for role='admin'. Factored into
+# one place so the two can never drift apart - the enforcement and the "can I?" signal shown to
+# any client (CLI or a future UI) must always agree.
+sub _canAddRoutersToReservation ($self, $reservation) {
+   return (
+      $self->role eq 'admin' || ( $reservation->profileObject && $reservation->profileObject->userRouters )
+   ) ? 1 : 0;
+}
+
+# The initial meta.access value a self-service add/replace gets when the caller didn't request an
+# explicit one via --access: 'owner' if this user owns $reservation, else 'developer' - the
+# narrowest access level that still includes the caller. Anyone reaching this code who isn't the
+# owner already passed can_on(develop), i.e. is a named developer, so 'developer' is the correct
+# non-owner preference, not a further-narrowed "just me" level (no such level exists in this
+# codebase's vocabulary - see Reservation's @KNOWN_ROUTER_AUTH_LEVELS). Falls back to the first
+# entry of $auth (the router's own final, default-wide or caller-narrowed, auth list) if the
+# preferred level isn't actually a member of it - e.g. a developer adding a router with
+# --auth owner can't have 'developer' as its default, so this falls back to 'owner' instead.
+#
+# This is deliberately a different mechanism from User::set()'s own 'access' branch (the
+# profile-declared-router launch-time default, "first entry of the router's auth list") - that
+# one is unavoidably actor-agnostic (only the owner exists at launch time; there's nothing to be
+# actor-aware about), so retrofitting this rule there would just always resolve to 'owner',
+# silently overriding whatever order a profile author chose. Self-service add/replace has no such
+# prior convention to preserve, so it's free to use the more precise rule.
+#
+# Reservation::Mutate makes no such actor-aware (or any other) decision itself - it only checks
+# that whatever value is resolved here is actually legal under $auth; this is the one place that
+# fallback is decided. See docs/adr/0008-router-mutation.md.
+sub _defaultRouterAccessLevel ($self, $reservation, $auth) {
+   my $preferred = ( $reservation->meta('owner') eq $self->username ) ? 'owner' : 'developer';
+   return ( grep { $_ eq $preferred } @$auth ) ? $preferred : $auth->[0];
+}
+
+# Adds a router to a live reservation (docs/adr/0008-router-mutation.md). Gated on
+# addContainerRouter + can_on(develop) (the same two-part shape as every other developer-level
+# container mutation above - see the 'access'/'private' branches of set()) and, unless this user
+# is admin, the profile's own userRouters opt-in - the one profile-level gate that survived
+# review. Shape and collision validation, and the actual persistence, live in
+# Reservation::normalise_router_def and Reservation::add_router - this method's job is the
+# permission/profile-gate decision, resolving the two inputs neither of those layers is allowed
+# to guess at itself (the router's allowed 'auth' list, and the initial access level to assign),
+# and marshalling the request.
+sub addContainerRouter ($self, $args) {
+   my $reservation = $self->reservation( $args->{'id'} );
+   unless($reservation) {
+      die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
+   }
+
+   unless( $self->has_permission('addContainerRouter') && $self->can_on( $reservation, 'develop' ) ) {
+      die Exception->new( 'msg' => "You need the 'addContainerRouter' permission to add a router to this devtainer" );
+   }
+   unless( $self->_canAddRoutersToReservation($reservation) ) {
+      die Exception->new( 'msg' => "This devtainer's profile does not allow adding routers" );
+   }
+
+   my $routerDef = _decode_router_arg( $args->{'router'} );
+   $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
+   my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
+
+   $reservation->add_router( $routerDef, $accessLevel );
+
+   return $self->createClientReservation($reservation);
+}
+
+# Removes router $args->{'name'} from a live reservation. Gated on removeContainerRouter +
+# can_on(develop) only - no profile-level opt-in; removal is uniform across admin-authored and
+# type=user routers alike. The one remaining per-router exception (type ide/ssh, non-bypassable
+# even for admin) is enforced inside Reservation::remove_router itself, not here.
+sub removeContainerRouter ($self, $args) {
+   my $reservation = $self->reservation( $args->{'id'} );
+   unless($reservation) {
+      die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
+   }
+
+   unless( $self->has_permission('removeContainerRouter') && $self->can_on( $reservation, 'develop' ) ) {
+      die Exception->new( 'msg' => "You need the 'removeContainerRouter' permission to remove a router from this devtainer" );
+   }
+
+   $reservation->remove_router( $args->{'name'} );
+
+   return $self->createClientReservation($reservation);
+}
+
+# Atomically replaces router $args->{'name'} with $args->{'router'} (a convenience wrapper -
+# same-name remove+add under one lock, carrying meta.access forward). Needs both permissions -
+# the add half and the remove half are each exactly as gated as their standalone counterparts
+# above, so replace needs no permission or profile-gate of its own beyond the union of the two.
+sub replaceContainerRouter ($self, $args) {
+   my $reservation = $self->reservation( $args->{'id'} );
+   unless($reservation) {
+      die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
+   }
+
+   unless(
+      $self->has_permission('addContainerRouter') && $self->has_permission('removeContainerRouter') &&
+      $self->can_on( $reservation, 'develop' )
+   ) {
+      die Exception->new( 'msg' => "You need both the 'addContainerRouter' and 'removeContainerRouter' permissions to replace a router on this devtainer" );
+   }
+   unless( $self->_canAddRoutersToReservation($reservation) ) {
+      die Exception->new( 'msg' => "This devtainer's profile does not allow adding (and so replacing) routers" );
+   }
+
+   my $routerDef = _decode_router_arg( $args->{'router'} );
+   $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
+   my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
+
+   $reservation->replace_router( $args->{'name'}, $routerDef, $accessLevel );
+
    return $self->createClientReservation($reservation);
 }
 

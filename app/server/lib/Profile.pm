@@ -258,6 +258,7 @@ sub validate ($self) {
          metadata
          lxcfs=b
          ssh=b
+         userRouters=b
          security=%
          gitURLs=@
          IDEs=@
@@ -625,6 +626,14 @@ sub hooks ($self) {
 
 sub ssh ($self) {
    return $self->{'ssh'};
+}
+
+# Does this profile allow a permission-holding developer to add a brand-new router to a live
+# reservation at all? (docs/adr/0008-router-mutation.md) - the one profile-level gate that
+# survived review; there is no equivalent per-router flag for *removal*, which needs only the
+# addContainerRouter/removeContainerRouter permission + developer standing.
+sub userRouters ($self) {
+   return $self->{'userRouters'};
 }
 
 # Test if Profile property $type contains (or encompasses) value $value.
