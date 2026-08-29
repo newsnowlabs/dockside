@@ -1,6 +1,7 @@
 import { createRouter, createMemoryHistory } from 'vue-router';
 import { mount } from '@vue/test-utils';
 import createStore from '@/store';
+import vuetify from '@/plugins/vuetify';
 
 // Mounts `Component` with a fresh store + router wired up, so components
 // that reach for this.$store/this.$route/this.$router work without per-test
@@ -11,18 +12,15 @@ import createStore from '@/store';
 // module). `stubs` is a convenience alias for `global.stubs` (@vue/test-utils
 // v2 moved plain top-level `stubs` under `global`).
 //
-// Deliberately doesn't install BootstrapVue/IconsPlugin as real plugins here
-// (unlike the real app - see index.js): bootstrap-vue's install(Vue, config)
-// expects a legacy global Vue constructor with a `.prototype` and throws when
-// handed the compat-wrapped app instance app.use() actually passes under
-// Vue 3 (confirmed live - a real, if currently-cosmetic, mismatch the real
-// app also hits, just as a console.warn instead of a throw - see
-// ChoiceInput.vue's neighbouring components for the broader story). Since
-// these are smoke tests asserting rendered text, not bootstrap-vue-specific
-// behavior, letting `b-*` tags render as Vue's default "unresolved
-// component" fallback (a warning, not a crash) is an acceptable trade to
-// keep the harness itself simple; revisit once bootstrap-vue is gone
-// (Stage 3) and this whole question is moot.
+// Installs the real Vuetify plugin (unlike bootstrap-vue before it - see the
+// old version of this comment in git history): Vuetify's own components
+// throw outright without it ("[Vuetify] Could not find defaults instance",
+// confirmed live the moment UserDetail.vue/ProfileDetail.vue's converted
+// forms started using real v-btn/v-text-field/etc. in Stage 3), not the
+// bootstrap-vue-install-onto-a-legacy-Vue-constructor mismatch this comment
+// used to describe. Vuetify is genuinely Vue-3-native and installs the same
+// way here as in the real app (index.js) - no special-casing needed, unlike
+// that mismatch ever required.
 export function mountApp(Component, { storeSetup, routerOptions, props, stubs, global, ...mountOptions } = {}) {
    const store = createStore();
    if (storeSetup) storeSetup(store);
@@ -34,7 +32,7 @@ export function mountApp(Component, { storeSetup, routerOptions, props, stubs, g
    return mount(Component, {
       props,
       global: {
-         plugins: [store, router],
+         plugins: [store, router, vuetify],
          stubs,
          ...global,
       },

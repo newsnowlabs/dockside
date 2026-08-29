@@ -1,15 +1,23 @@
 <template>
-   <b-col v-if="filteredContainers.length > 0" md="9" lg="10" offset-md="3" offset-lg="2" class="main">
-      <a v-if="isSelected" v-on:click="goBackOrHome(true)" class="view-containers" href="javascript:">&lt; Back</a>
-      <Welcome v-if="!isSelected"/>
+   <!-- No more b-col md="9" offset-md="3" here: that Bootstrap grid offset went
+        dead the moment bootstrap's own CSS was removed earlier in Stage 3 (its
+        classes kept getting added to the DOM by bootstrap-vue, matching
+        nothing) - v-main (App.vue) already does 100% of the actual offsetting,
+        registered with Vuetify's own layout system against the sidebar's
+        width, so this is a plain content container now, not a grid column.
+        The content gutter itself lives on .page-content, the wrapper App.vue
+        renders this into (shared with AdminMain.vue) - not duplicated here. -->
+   <div class="main">
+      <template v-if="filteredContainers.length > 0">
+         <a v-if="isSelected" v-on:click="goBackOrHome(true)" class="view-containers" href="javascript:">&lt; Back</a>
+         <Welcome v-if="!isSelected"/>
 
-      <div>
-         <Container v-for="container in filteredContainers" v-bind:key="container.id" v-bind:container="container" class="list-item"></Container>
-      </div>
-   </b-col>
-   <b-col v-else md="9" lg="10" offset-md="3" offset-lg="2" class="main">
-      <Welcome/>
-   </b-col>
+         <div>
+            <Container v-for="container in filteredContainers" v-bind:key="container.id" v-bind:container="container" class="list-item"></Container>
+         </div>
+      </template>
+      <Welcome v-else/>
+   </div>
 </template>
 
 <script>
@@ -68,16 +76,3 @@ export default defineComponent({
   },
 });
 </script>
-
-<style lang="scss" scoped>
-   .main {
-      padding: 20px;
-   }
-
-   @media (min-width: 768px) {
-      .main {
-         padding-right: 40px;
-         padding-left: 40px;
-      }
-   }
-</style>

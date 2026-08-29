@@ -20,20 +20,6 @@
             />
          </div>
       </div>
-      <div class="permissions-legend">
-         <template v-if="allowInherit">
-            <span class="legend-item legend-inherited-granted">Light green = inherited grant</span>
-            <span class="legend-item legend-inherited-denied">Light red = inherited deny</span>
-            <span class="legend-item legend-granted">Green ✓ = explicitly granted</span>
-            <span class="legend-item legend-denied">Red ✗ = explicitly denied</span>
-         </template>
-         <template v-else>
-            <span v-if="permDefault === '1'" class="legend-item legend-inherited-granted">Light green = granted by default</span>
-            <span v-else class="legend-item legend-inherited-denied">Light red = not granted by default</span>
-            <span class="legend-item legend-granted">Green ✓ = explicitly granted</span>
-            <span class="legend-item legend-denied">Red ✗ = explicitly denied</span>
-         </template>
-      </div>
    </div>
 </template>
 
@@ -134,19 +120,5 @@ export default defineComponent({
    .permissions-group-tags {
       display: flex;
       flex-wrap: wrap;
-   }
-
-   .permissions-legend {
-      margin-top: 8px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      font-size: 0.75rem;
-      color: #6c757d;
-
-      .legend-inherited-granted { color: #4a8c5c; }
-      .legend-inherited-denied  { color: #a94442; }
-      .legend-granted           { color: #155724; }
-      .legend-denied            { color: #721c24; }
    }
 </style>

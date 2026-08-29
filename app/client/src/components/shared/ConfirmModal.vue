@@ -1,34 +1,41 @@
 <template>
-   <b-modal
-      :id="modalId"
-      :title="title"
-      :ok-title="confirmLabel"
-      ok-variant="danger"
-      cancel-variant="outline-secondary"
-      @ok="$emit('confirm')"
-   >
-      <p>{{ message }}</p>
-   </b-modal>
+   <v-dialog v-model="isOpen" max-width="500">
+      <v-card>
+         <v-card-title>{{ title }}</v-card-title>
+         <v-card-text>{{ message }}</v-card-text>
+         <v-card-actions>
+            <v-spacer></v-spacer>
+            <v-btn variant="outlined" @click="isOpen = false">Cancel</v-btn>
+            <v-btn color="error" variant="flat" @click="onConfirm">{{ confirmLabel }}</v-btn>
+         </v-card-actions>
+      </v-card>
+   </v-dialog>
 </template>
 
 <script>
 import { defineComponent } from 'vue';
 
 /**
- * ConfirmModal — thin wrapper around b-modal for delete/destructive confirmations.
- * Show it programmatically with this.$bvModal.show(id).
- * Replace this component later without touching any callers.
+ * ConfirmModal — thin wrapper around v-dialog for delete/destructive confirmations.
+ * Show it by setting the caller's own v-model boolean to true (Stage 3 of
+ * docs/plans/vue2-vue3-migration.md: replaces bootstrap-vue's imperative,
+ * id-based this.$bvModal.show(id) API, which has no Vuetify equivalent -
+ * v-dialog is purely v-model-driven).
  *
- * Emits: confirm
+ * Real modelValue/update:modelValue here, not the value/input convention
+ * Stage 2 forced onto our other custom form components - safe now that
+ * index.js disables @vue/compat's COMPONENT_V_MODEL translation globally
+ * (see that file's comment for why).
+ *
+ * Emits: confirm (caller is responsible for closing - see onConfirm below)
  */
 export default defineComponent({
-  emits: ['confirm'],
   name: 'ConfirmModal',
 
   props: {
-     id: {
-        type: String,
-        required: true,
+     modelValue: {
+        type: Boolean,
+        default: false,
      },
      title: {
         type: String,
@@ -44,9 +51,19 @@ export default defineComponent({
      },
   },
 
+  emits: ['update:modelValue', 'confirm'],
+
   computed: {
-     modalId() {
-        return `confirm-modal-${this.id}`;
+     isOpen: {
+        get() { return this.modelValue; },
+        set(v) { this.$emit('update:modelValue', v); },
+     },
+  },
+
+  methods: {
+     onConfirm() {
+        this.$emit('confirm');
+        this.isOpen = false;
      },
   },
 });

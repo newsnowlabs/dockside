@@ -5,9 +5,9 @@
            Show only this message — never the editable form, action buttons,
            SSH editor or delete modal — so a bad username can't masquerade as
            a record. -->
-      <div v-if="userNotFound" class="user-not-found">
+      <v-alert v-if="userNotFound" type="error" variant="tonal">
          User '{{ username }}' not found.
-      </div>
+      </v-alert>
 
       <!-- Valid record, the create ('new') flow, or the self-edit account view.
            While the list is still loading for an existing username (not new, not
@@ -21,103 +21,115 @@
             {{ isNew ? 'New user' : (selfEdit ? 'My account' : username) }}
          </h5>
          <div class="detail-actions" v-if="!isEditMode && !isNew">
-            <b-button variant="outline-primary" size="sm" @click="startEdit">Edit</b-button>
-            <b-button
+            <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
+            <v-btn
                v-if="!selfEdit && canDelete"
-               variant="outline-danger"
-               size="sm"
-               @click="$bvModal.show('confirm-modal-user-' + username)"
-            >Delete</b-button>
+               variant="outlined" color="error" size="small"
+               @click="showDeleteConfirm = true"
+            >Delete</v-btn>
          </div>
       </div>
 
-      <b-form @submit.prevent="save">
+      <form @submit.prevent="save">
 
          <!-- username — only editable when creating a new user -->
-         <b-form-group label="Username" label-cols="3" v-if="!selfEdit">
-            <b-form-input
-               v-model="form.username"
-               :readonly="!isNew"
-               :plaintext="!isNew"
-               :state="usernameState"
-               placeholder="alphanumeric, hyphens, underscores"
-               trim
-            />
-            <b-form-invalid-feedback>
-               Username must contain only letters, digits, hyphens and underscores.
-            </b-form-invalid-feedback>
-         </b-form-group>
+         <v-text-field
+            v-if="!selfEdit"
+            v-model="form.username"
+            label="Username"
+            :readonly="!isNew"
+            :variant="isNew ? 'outlined' : 'plain'"
+            :error="usernameState === false"
+            :error-messages="usernameState === false ? ['Username must contain only letters, digits, hyphens and underscores.'] : []"
+            placeholder="alphanumeric, hyphens, underscores"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- name -->
-         <b-form-group label="Name" label-cols="3">
-            <b-form-input
-               v-model="form.name"
-               :readonly="!isEditMode && !isNew"
-               :plaintext="!isEditMode && !isNew"
-               placeholder="Display name"
-               trim
-            />
-         </b-form-group>
+         <v-text-field
+            v-model="form.name"
+            label="Name"
+            :readonly="!isEditMode && !isNew"
+            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            placeholder="Display name"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- email -->
-         <b-form-group label="Email" label-cols="3">
-            <b-form-input
-               v-model="form.email"
-               type="email"
-               :readonly="!isEditMode && !isNew"
-               :plaintext="!isEditMode && !isNew"
-               placeholder="user@example.com"
-               trim
-            />
-         </b-form-group>
+         <v-text-field
+            v-model="form.email"
+            type="email"
+            label="Email"
+            :readonly="!isEditMode && !isNew"
+            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            placeholder="user@example.com"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- role — not shown in selfEdit mode -->
-         <b-form-group label="Role" label-cols="3" v-if="!selfEdit">
-            <b-form-select
-               v-model="form.role"
-               :disabled="!isEditMode && !isNew"
-               :options="roleOptions"
-            />
-         </b-form-group>
+         <v-select
+            v-if="!selfEdit"
+            v-model="form.role"
+            label="Role"
+            :disabled="!isEditMode && !isNew"
+            :items="roleOptions"
+            item-title="text"
+            item-value="value"
+            density="compact"
+            variant="outlined"
+            class="mb-2"
+         />
 
          <!-- password — only shown for admin user management -->
-         <b-form-group label="Password" label-cols="3" v-if="!selfEdit">
-            <b-form-input
-               v-model="form.password"
-               type="password"
-               :readonly="!isEditMode && !isNew"
-               :plaintext="!isEditMode && !isNew"
-               :placeholder="isNew ? 'Leave blank for no password' : 'Leave blank to keep unchanged'"
-               autocomplete="new-password"
-            />
-         </b-form-group>
+         <v-text-field
+            v-if="!selfEdit"
+            v-model="form.password"
+            type="password"
+            label="Password"
+            :readonly="!isEditMode && !isNew"
+            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            :placeholder="isNew ? 'Leave blank for no password' : 'Leave blank to keep unchanged'"
+            autocomplete="new-password"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- GitHub token -->
-         <b-form-group label="GitHub token" label-cols="3">
-            <!-- Edit / new mode: show input with show/hide toggle -->
-            <b-input-group v-if="isEditMode || isNew">
-               <b-form-input
-                  v-model="form.gh_token"
-                  :type="showToken ? 'text' : 'password'"
-                  :placeholder="form.gh_token_is_set ? 'Enter new token to replace existing, or leave blank to keep' : 'ghp_…'"
-                  autocomplete="off"
-               />
-               <b-input-group-append>
-                  <b-button variant="outline-secondary" size="sm" @click="showToken = !showToken">
-                     {{ showToken ? 'Hide' : 'Reveal' }}
-                  </b-button>
-               </b-input-group-append>
-            </b-input-group>
-            <!-- View mode: disabled input; placeholder reflects token status -->
-            <b-form-input
-               v-else
-               disabled
-               :placeholder="form.gh_token_masked || ''"
-            />
-         </b-form-group>
+         <!-- Edit / new mode: show input with show/hide toggle -->
+         <v-text-field
+            v-if="isEditMode || isNew"
+            v-model="form.gh_token"
+            :type="showToken ? 'text' : 'password'"
+            label="GitHub token"
+            :placeholder="form.gh_token_is_set ? 'Enter new token to replace existing, or leave blank to keep' : 'ghp_…'"
+            autocomplete="off"
+            density="compact"
+            variant="outlined"
+            class="mb-2"
+         >
+            <template #append-inner>
+               <v-btn variant="text" size="small" @click.stop="showToken = !showToken">
+                  {{ showToken ? 'Hide' : 'Reveal' }}
+               </v-btn>
+            </template>
+         </v-text-field>
+         <!-- View mode: disabled input; placeholder reflects token status -->
+         <v-text-field
+            v-else
+            label="GitHub token"
+            disabled
+            variant="plain"
+            :placeholder="form.gh_token_masked || ''"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- Permissions — not shown in selfEdit mode -->
-         <b-form-group label="Permissions" label-cols="3" v-if="!selfEdit">
+         <div class="form-row" v-if="!selfEdit">
+            <div class="form-row-label">Permissions</div>
             <PermissionsEditor
                :permissions="form.permissions"
                :role-permissions="rolePermissions"
@@ -126,43 +138,45 @@
                :readonly="!isEditMode && !isNew"
                @update:permissions="form.permissions = $event"
             />
-         </b-form-group>
+         </div>
 
          <!-- Resources — not shown in selfEdit mode -->
-         <b-form-group label="Resources" label-cols="3" v-if="!selfEdit">
+         <div class="form-row" v-if="!selfEdit">
+            <div class="form-row-label">Resources</div>
             <ResourcesEditor
                :resources="form.resources"
                :readonly="!isEditMode && !isNew"
                @update:resources="form.resources = $event"
             />
-         </b-form-group>
+         </div>
 
          <!-- SSH keys -->
-         <b-form-group label="SSH keys" label-cols="3">
+         <div class="form-row">
+            <div class="form-row-label">SSH keys</div>
             <SshEditor
                :ssh="form.ssh"
                :readonly="!isEditMode && !isNew"
                @update:ssh="form.ssh = $event"
             />
-         </b-form-group>
+         </div>
 
          <!-- Save / Cancel buttons -->
          <div v-if="isEditMode || isNew" class="detail-form-actions">
-            <b-button type="submit" variant="primary" size="sm" :disabled="saving">
+            <v-btn type="submit" color="primary" size="small" :disabled="saving">
                {{ saving ? 'Saving…' : 'Save' }}
-            </b-button>
-            <b-button variant="outline-secondary" size="sm" :disabled="saving" @click="cancel">
+            </v-btn>
+            <v-btn variant="outlined" size="small" :disabled="saving" @click="cancel">
                Cancel
-            </b-button>
-            <span v-if="saveError" class="text-danger ml-2 save-error">{{ saveError }}</span>
+            </v-btn>
+            <span v-if="saveError" class="save-error">{{ saveError }}</span>
          </div>
 
-      </b-form>
+      </form>
 
       <!-- Delete confirmation -->
       <ConfirmModal
          v-if="!selfEdit && !isNew"
-         :id="'user-' + username"
+         v-model="showDeleteConfirm"
          :title="'Delete user ' + username"
          :message="'Are you sure you want to delete user \'' + username + '\'? This cannot be undone.'"
          @confirm="deleteUser"
@@ -227,13 +241,14 @@ export default defineComponent({
         }
      }
      return {
-        form:          initial,
-        showToken:     false,
-        saving:        false,
-        saveError:     null,
-        localEditMode: false,  // view/edit toggle used for selfEdit
-        savedForm:     null,   // snapshot of form taken when entering edit mode
-        sshLoaded:     false,  // true once SSH data has been fetched from server
+        form:              initial,
+        showToken:         false,
+        saving:            false,
+        saveError:         null,
+        localEditMode:     false,  // view/edit toggle used for selfEdit
+        savedForm:         null,   // snapshot of form taken when entering edit mode
+        sshLoaded:         false,  // true once SSH data has been fetched from server
+        showDeleteConfirm: false,
      };
   },
 
@@ -474,6 +489,19 @@ export default defineComponent({
       gap: 6px;
    }
 
+   .form-row {
+      margin-bottom: 16px;
+   }
+
+   .form-row-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #495057;
+      margin-bottom: 4px;
+   }
+
    .detail-form-actions {
       display: flex;
       align-items: center;
@@ -485,15 +513,7 @@ export default defineComponent({
 
    .save-error {
       font-size: 0.85rem;
-   }
-
-   .user-not-found {
-      margin-top: 8px;
-      padding: 16px;
-      background: #f8f9fa;
-      border: 1px solid #dee2e6;
-      border-radius: 4px;
-      color: #6c757d;
-      font-size: 0.95rem;
+      color: rgb(var(--v-theme-error));
+      margin-left: 8px;
    }
 </style>

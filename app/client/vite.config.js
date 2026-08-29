@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
+import vuetify, { transformAssetUrls } from 'vite-plugin-vuetify';
 import path from 'path';
 
 // No index.html: `app/server/lib/App.pm` serves the SPA shell itself and
@@ -27,19 +28,36 @@ export default defineConfig({
       template: {
          compilerOptions: {
             compatConfig: { MODE: 2 },
-            // Vue 3's compiler default ('condense') strips inter-element
-            // template whitespace containing a newline entirely, rather than
+            // Stage 2 landed on 'preserve' here as a stopgap: Vue 3's
+            // compiler default ('condense') strips inter-element template
+            // whitespace containing a newline entirely, rather than
             // collapsing it to one space the way the old webpack/vue-loader
-            // pipeline effectively did - this app's markup relies on exactly
-            // that whitespace for visual gaps (e.g. a run of <b-button>s,
-            // one per line, with no explicit margin classes between them,
-            // confirmed live: they rendered edge-to-edge with 'condense').
-            // 'preserve' restores the old rendered spacing without touching
-            // any of the affected templates directly.
-            whitespace: 'preserve',
+            // pipeline effectively did, and bootstrap-vue-era markup relied
+            // on exactly that whitespace for visual gaps (a run of
+            // <b-button>s, one per line, with no explicit margin classes
+            // between them). Stage 3 (docs/plans/vue2-vue3-migration.md,
+            // dockside-admin repo) replaced every such spot with a real
+            // flex+gap wrapper as each file converted (see e.g. Container.vue's
+            // .action-buttons, Header.vue's .nav-links) rather than carrying
+            // the workaround forward - back to Vue 3's own default now that
+            // audit is done; whitespace-only text nodes between elements are
+            // condensed/removed the normal way again.
          },
+         // Lets Vuetify's own asset-handling (e.g. <v-img src="...">) resolve
+         // relative src/srcset paths the same way plain <img> tags do here -
+         // see vite-plugin-vuetify's README ("Image loading").
+         transformAssetUrls,
       },
-   })],
+   }),
+   // Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo):
+   // Vuetify 3 replacing bootstrap-vue app-wide. autoImport scans each SFC's
+   // template for Vuetify component/directive names actually used and injects
+   // only those imports - no need to hand-import every v-* component. This is
+   // a compile-time source transform (adds import statements before Rollup
+   // ever runs), so it's unaffected by this app's unusual single-file output
+   // shape (format: 'iife', cssCodeSplit: false, inlineDynamicImports below) -
+   // those are output-bundling settings, not import resolution.
+   vuetify({ autoImport: true })],
    resolve: {
       // Source imports `.vue` files without an extension throughout (e.g.
       // `import Header from '@/components/Header'`), matching the old webpack

@@ -4,12 +4,15 @@
       <!-- Authorized public keys (publicKeys) -->
       <div class="ssh-section">
          <div class="ssh-section-title">Authorized public keys</div>
-         <textarea
+         <v-textarea
             v-model="publicKeysText"
-            class="form-control form-control-sm ssh-pubkeys-textarea"
             :readonly="readonly"
             placeholder="One public key per line (ssh-rsa AAAA… / ssh-ed25519 AAAA…)"
             rows="4"
+            density="compact"
+            variant="outlined"
+            hide-details
+            class="ssh-pubkeys-textarea"
             @change="emitUpdate"
          />
       </div>
@@ -17,7 +20,7 @@
       <!-- Keypairs (keypairs) -->
       <div class="ssh-section">
          <div class="ssh-section-title">SSH keypairs</div>
-         <table v-if="keypairNames.length > 0" class="table table-sm ssh-keypairs-table">
+         <table v-if="keypairNames.length > 0" class="ssh-keypairs-table">
             <thead>
                <tr>
                   <th>Name</th>
@@ -32,70 +35,65 @@
                      <code class="keypair-pubkey-text">{{ publicKeyFor(name) }}</code>
                   </td>
                   <td v-if="!readonly">
-                     <b-button
-                        variant="outline-danger"
-                        size="sm"
-                        @click="deleteKeypair(name)"
-                     >Delete</b-button>
+                     <v-btn variant="text" size="small" color="error" @click="deleteKeypair(name)">Delete</v-btn>
                   </td>
                </tr>
             </tbody>
          </table>
          <div v-else class="ssh-empty">No keypairs configured.</div>
 
-         <b-button
+         <v-btn
             v-if="!readonly"
-            variant="outline-primary"
-            size="sm"
+            variant="outlined"
+            size="small"
             class="mt-2"
             @click="showAddModal = true"
-         >+ Add keypair</b-button>
+         >+ Add keypair</v-btn>
       </div>
 
-      <!-- Add keypair modal -->
-      <b-modal
-         v-model="showAddModal"
-         title="Add SSH keypair"
-         ok-title="Add"
-         ok-variant="primary"
-         :ok-disabled="!canAddKeypair"
-         @ok="commitAddKeypair"
-         @hidden="resetAddForm"
-      >
-         <b-form-group label="Keypair name" label-for="kp-name">
-            <b-form-input
-               id="kp-name"
-               v-model="newKpName"
-               placeholder="e.g. deploy-key"
-               trim
-               :state="newKpNameState"
-            />
-            <b-form-invalid-feedback>{{ newKpNameError }}</b-form-invalid-feedback>
-         </b-form-group>
-
-         <b-form-group label="Public key" label-for="kp-public">
-            <b-form-textarea
-               id="kp-public"
-               v-model="newKpPublic"
-               placeholder="ssh-rsa AAAA… or ssh-ed25519 AAAA…"
-               rows="3"
-               trim
-            />
-         </b-form-group>
-
-         <b-form-group label="Private key" label-for="kp-private">
-            <b-form-textarea
-               id="kp-private"
-               v-model="newKpPrivate"
-               placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-               rows="5"
-               trim
-            />
-            <b-form-text class="text-muted">
-               The private key will be stored securely and never shown again.
-            </b-form-text>
-         </b-form-group>
-      </b-modal>
+      <!-- Add keypair dialog -->
+      <v-dialog v-model="showAddModal" max-width="500" @update:model-value="v => { if (!v) resetAddForm(); }">
+         <v-card>
+            <v-card-title>Add SSH keypair</v-card-title>
+            <v-card-text>
+               <v-text-field
+                  v-model="newKpName"
+                  label="Keypair name"
+                  placeholder="e.g. deploy-key"
+                  density="compact"
+                  variant="outlined"
+                  :error="newKpNameState === false"
+                  :error-messages="newKpNameState === false ? [newKpNameError] : []"
+                  class="mb-2"
+               />
+               <v-textarea
+                  v-model="newKpPublic"
+                  label="Public key"
+                  placeholder="ssh-rsa AAAA… or ssh-ed25519 AAAA…"
+                  rows="3"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  class="mb-2"
+               />
+               <v-textarea
+                  v-model="newKpPrivate"
+                  label="Private key"
+                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                  rows="5"
+                  density="compact"
+                  variant="outlined"
+                  hint="The private key will be stored securely and never shown again."
+                  persistent-hint
+               />
+            </v-card-text>
+            <v-card-actions>
+               <v-spacer></v-spacer>
+               <v-btn variant="outlined" @click="showAddModal = false">Cancel</v-btn>
+               <v-btn color="primary" variant="flat" :disabled="!canAddKeypair" @click="commitAddKeypair">Add</v-btn>
+            </v-card-actions>
+         </v-card>
+      </v-dialog>
 
    </div>
 </template>
@@ -208,12 +206,14 @@ export default defineComponent({
      },
 
      commitAddKeypair() {
+        if (!this.canAddKeypair) return;
         const keypairs = { ...(this.ssh.keypairs || {}) };
         keypairs[this.newKpName] = {
            public:  this.newKpPublic.trim(),
            private: this.newKpPrivate.trim(),
         };
         this.$emit('update:ssh', { ...this.ssh, keypairs });
+        this.showAddModal = false;
         this.resetAddForm();
      },
 
@@ -250,8 +250,16 @@ export default defineComponent({
    }
 
    .ssh-keypairs-table {
+      width: 100%;
+      border-collapse: collapse;
       font-size: 0.8rem;
       margin-bottom: 4px;
+
+      th, td {
+         text-align: left;
+         padding: 6px 8px;
+         border-bottom: 1px solid #eee;
+      }
 
       th { font-weight: 600; }
    }

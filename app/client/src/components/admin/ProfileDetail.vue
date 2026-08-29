@@ -4,9 +4,9 @@
       <!-- Unknown profile id: the list has loaded and there is no such record.
            Show only this message — never the editable form, action buttons,
            JSON editor or delete modal — so a bad id can't masquerade as a record. -->
-      <div v-if="profileNotFound" class="profile-not-found">
+      <v-alert v-if="profileNotFound" type="error" variant="tonal">
          Profile '{{ profileId }}' not found.
-      </div>
+      </v-alert>
 
       <!-- Valid record or the create ('new') flow. While the list is still loading
            for an existing id (not new, no record yet, not yet profilesLoaded) we
@@ -19,133 +19,144 @@
             <h5 class="detail-title">
                {{ isNew ? 'New profile' : (form.name || profileId) }}
             </h5>
-            <span v-if="!isNew" class="profile-active-badge" :class="form.active ? 'badge-active' : 'badge-inactive'">
+            <v-chip v-if="!isNew" size="small" :color="form.active ? 'success' : undefined">
                {{ form.active ? 'active' : 'inactive' }}
-            </span>
+            </v-chip>
          </div>
          <div class="detail-actions" v-if="!isEditMode && !isNew">
-            <b-button variant="outline-primary" size="sm" @click="startEdit">Edit</b-button>
-            <b-button
-               variant="outline-secondary"
-               size="sm"
+            <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
+            <v-btn
+               variant="outlined" size="small"
                :disabled="hasUnsavedEdits"
                :title="hasUnsavedEdits ? 'Save or cancel edits before renaming.' : 'Rename profile ID'"
                @click="startRename"
-            >Rename</b-button>
-            <b-button
-               variant="outline-danger"
-               size="sm"
-               @click="$bvModal.show('confirm-modal-profile-' + profileId)"
-            >Delete</b-button>
+            >Rename</v-btn>
+            <v-btn
+               variant="outlined" color="error" size="small"
+               @click="showDeleteConfirm = true"
+            >Delete</v-btn>
          </div>
       </div>
 
       <!-- Rename inline form -->
       <div v-if="isRenaming" class="rename-bar">
-         <label class="rename-label">New ID:</label>
-         <b-form-input
+         <v-text-field
             v-model="renameValue"
-            :state="renameState"
-            size="sm"
-            trim
+            label="New ID"
+            :error="renameState === false"
+            density="compact"
+            variant="outlined"
+            hide-details
             class="rename-input"
             @keyup.enter="commitRename"
             @keyup.escape="cancelRename"
          />
-         <b-button variant="primary" size="sm" :disabled="renameState !== true || renaming" @click="commitRename">
+         <v-btn color="primary" variant="flat" size="small" :disabled="renameState !== true || renaming" @click="commitRename">
             {{ renaming ? 'Renaming…' : 'Apply' }}
-         </b-button>
-         <b-button variant="outline-secondary" size="sm" @click="cancelRename">Cancel</b-button>
-         <span v-if="renameError" class="text-danger ml-2 save-error">{{ renameError }}</span>
+         </v-btn>
+         <v-btn variant="outlined" size="small" @click="cancelRename">Cancel</v-btn>
+         <span v-if="renameError" class="save-error">{{ renameError }}</span>
       </div>
 
-      <b-form @submit.prevent="save">
+      <form @submit.prevent="save">
 
          <!-- id — read-only once created -->
-         <b-form-group label="ID" label-cols="3" v-if="isNew">
-            <b-form-input
-               v-model="form.id"
-               :state="idState"
-               placeholder="letters, digits, dots, hyphens, underscores"
-               trim
-            />
-            <b-form-invalid-feedback>
-               ID must start with a letter or digit and contain only letters, digits, dots, hyphens and underscores.
-               Reserved names (create, update, remove, rename) are not allowed.
-            </b-form-invalid-feedback>
-         </b-form-group>
-         <b-form-group label="ID" label-cols="3" v-else>
-            <b-form-input :value="profileId" readonly plaintext />
-         </b-form-group>
+         <v-text-field
+            v-if="isNew"
+            v-model="form.id"
+            label="ID"
+            :error="idState === false"
+            :error-messages="idState === false ? [idErrorText] : []"
+            placeholder="letters, digits, dots, hyphens, underscores"
+            density="compact"
+            variant="outlined"
+            class="mb-2"
+         />
+         <v-text-field
+            v-else
+            label="ID"
+            :model-value="profileId"
+            readonly
+            variant="plain"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- name -->
-         <b-form-group label="Name" label-cols="3">
-            <b-form-input
-               v-model="form.name"
-               :readonly="!isEditMode && !isNew"
-               :plaintext="!isEditMode && !isNew"
-               placeholder="Display name"
-               trim
-            />
-         </b-form-group>
+         <v-text-field
+            v-model="form.name"
+            label="Name"
+            :readonly="!isEditMode && !isNew"
+            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            placeholder="Display name"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- description -->
-         <b-form-group label="Description" label-cols="3">
-            <b-form-input
-               v-model="form.description"
-               :readonly="!isEditMode && !isNew"
-               :plaintext="!isEditMode && !isNew"
-               placeholder="Brief description"
-               trim
-            />
-         </b-form-group>
+         <v-text-field
+            v-model="form.description"
+            label="Description"
+            :readonly="!isEditMode && !isNew"
+            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            placeholder="Brief description"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- active -->
-         <b-form-group label="Active" label-cols="3">
-            <b-form-checkbox
-               v-model="form.active"
-               :disabled="!isEditMode && !isNew"
-               switch
-            >
-               {{ form.active ? 'Active (available to users)' : 'Inactive (hidden from users)' }}
-            </b-form-checkbox>
-         </b-form-group>
+         <v-switch
+            v-model="form.active"
+            :disabled="!isEditMode && !isNew"
+            :label="form.active ? 'Active (available to users)' : 'Inactive (hidden from users)'"
+            color="primary"
+            density="compact"
+            hide-details
+            class="mb-2"
+         />
 
          <!-- version — read-only display -->
-         <b-form-group label="Version" label-cols="3" v-if="!isNew">
-            <b-form-input :value="form.version" readonly plaintext />
-         </b-form-group>
+         <v-text-field
+            v-if="!isNew"
+            label="Version"
+            :model-value="form.version"
+            readonly
+            variant="plain"
+            density="compact"
+            class="mb-2"
+         />
 
          <!-- JSON body — tree view when viewing (read-only; easier to scan), text mode
               when editing or creating (raw JSON is the natural edit surface). Bound to the
               edit state so the mode follows view↔edit; while editing the user can still
               switch modes via the editor's own control. -->
-         <b-form-group label="Profile body" label-cols="3">
+         <div class="form-row">
+            <div class="form-row-label">Profile body</div>
             <JsonEditor
                :value="profileBody"
                :readonly="!isEditMode && !isNew"
                :mode="(isEditMode || isNew) ? 'text' : 'tree'"
                @input="profileBody = $event"
             />
-         </b-form-group>
+         </div>
 
          <!-- Save / Cancel -->
          <div v-if="isEditMode || isNew" class="detail-form-actions">
-            <b-button type="submit" variant="primary" size="sm" :disabled="saving">
+            <v-btn type="submit" color="primary" size="small" :disabled="saving">
                {{ saving ? 'Saving…' : 'Save' }}
-            </b-button>
-            <b-button variant="outline-secondary" size="sm" :disabled="saving" @click="cancel">
+            </v-btn>
+            <v-btn variant="outlined" size="small" :disabled="saving" @click="cancel">
                Cancel
-            </b-button>
-            <span v-if="saveError" class="text-danger ml-2 save-error">{{ saveError }}</span>
+            </v-btn>
+            <span v-if="saveError" class="save-error">{{ saveError }}</span>
          </div>
 
-      </b-form>
+      </form>
 
       <!-- Delete confirmation -->
       <ConfirmModal
          v-if="!isNew"
-         :id="'profile-' + profileId"
+         v-model="showDeleteConfirm"
          :title="'Delete profile ' + profileId"
          :message="'Are you sure you want to delete profile \'' + profileId + '\'?'"
          @confirm="deleteProfile"
@@ -220,16 +231,17 @@ export default defineComponent({
 
   data() {
      return {
-        form:         EMPTY_FORM(),
-        profileBody:  this.profileId ? {} : { ...PROFILE_TEMPLATE_BODY },
-        saving:       false,
-        saveError:    null,
-        isRenaming:   false,
-        renameValue:  '',
-        renaming:     false,
-        renameError:  null,
-        origForm:     null, // snapshot for unsaved-edits detection
-        origBody:     null,
+        form:              EMPTY_FORM(),
+        profileBody:       this.profileId ? {} : { ...PROFILE_TEMPLATE_BODY },
+        saving:            false,
+        saveError:         null,
+        isRenaming:        false,
+        renameValue:       '',
+        renaming:          false,
+        renameError:       null,
+        origForm:          null, // snapshot for unsaved-edits detection
+        origBody:          null,
+        showDeleteConfirm: false,
      };
   },
 
@@ -248,6 +260,10 @@ export default defineComponent({
         if (!this.form.id) return null;
         return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(this.form.id) &&
                !RESERVED_NAMES.has(this.form.id) ? true : false;
+     },
+
+     idErrorText() {
+        return "ID must start with a letter or digit and contain only letters, digits, dots, hyphens and underscores. Reserved names (create, update, remove, rename) are not allowed.";
      },
 
      renameState() {
@@ -452,16 +468,6 @@ export default defineComponent({
       font-size: 1.1rem;
    }
 
-   .profile-active-badge {
-      font-size: 0.72rem;
-      font-weight: 600;
-      padding: 2px 8px;
-      border-radius: 10px;
-
-      &.badge-active   { background: #d4edda; color: #155724; }
-      &.badge-inactive { background: #e2e3e5; color: #383d41; }
-   }
-
    .detail-actions {
       display: flex;
       gap: 6px;
@@ -478,15 +484,22 @@ export default defineComponent({
       border-radius: 4px;
    }
 
-   .rename-label {
-      margin: 0;
-      font-weight: 600;
-      font-size: 0.85rem;
-      white-space: nowrap;
-   }
-
    .rename-input {
       width: 220px;
+      flex: 0 0 auto;
+   }
+
+   .form-row {
+      margin-bottom: 16px;
+   }
+
+   .form-row-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #495057;
+      margin-bottom: 4px;
    }
 
    .detail-form-actions {
@@ -500,15 +513,7 @@ export default defineComponent({
 
    .save-error {
       font-size: 0.85rem;
-   }
-
-   .profile-not-found {
-      margin-top: 8px;
-      padding: 16px;
-      background: #f8f9fa;
-      border: 1px solid #dee2e6;
-      border-radius: 4px;
-      color: #6c757d;
-      font-size: 0.95rem;
+      color: rgb(var(--v-theme-error));
+      margin-left: 8px;
    }
 </style>

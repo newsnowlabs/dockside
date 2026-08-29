@@ -2,9 +2,9 @@
    <div class="role-detail">
 
       <!-- Requested role does not exist (server 404) -->
-      <div v-if="roleNotFound" class="role-not-found">
+      <v-alert v-if="roleNotFound" type="error" variant="tonal">
          Role '{{ roleName }}' not found.
-      </div>
+      </v-alert>
 
       <template v-else-if="showForm">
 
@@ -14,36 +14,33 @@
             {{ isNew ? 'New role' : roleName }}
          </h5>
          <div class="detail-actions" v-if="!isEditMode && !isNew">
-            <b-button variant="outline-primary" size="sm" @click="startEdit">Edit</b-button>
-            <b-button
-               variant="outline-danger"
-               size="sm"
+            <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
+            <v-btn
+               variant="outlined" color="error" size="small"
                :disabled="deleteDisabled"
                :title="deleteDisabled ? 'Role is assigned to one or more users and cannot be deleted.' : ''"
-               @click="$bvModal.show('confirm-modal-role-' + roleName)"
-            >Delete</b-button>
+               @click="showDeleteConfirm = true"
+            >Delete</v-btn>
          </div>
       </div>
 
-      <b-form @submit.prevent="save">
+      <form @submit.prevent="save">
 
          <!-- name — only editable when creating -->
-         <b-form-group label="Name" label-cols="3">
-            <b-form-input
-               v-model="form.name"
-               :readonly="!isNew"
-               :plaintext="!isNew"
-               :state="nameState"
-               placeholder="alphanumeric, hyphens, underscores"
-               trim
-            />
-            <b-form-invalid-feedback>
-               Role name must contain only letters, digits, hyphens and underscores.
-            </b-form-invalid-feedback>
-         </b-form-group>
+         <v-text-field
+            v-model="form.name"
+            label="Name"
+            :readonly="!isNew"
+            :variant="isNew ? 'outlined' : 'plain'"
+            :error="nameState === false"
+            :error-messages="nameState === false ? [nameErrorText] : []"
+            placeholder="alphanumeric, hyphens, underscores"
+            density="compact"
+        />
 
          <!-- Permissions -->
-         <b-form-group label="Permissions" label-cols="3">
+         <div class="form-row">
+            <div class="form-row-label">Permissions</div>
             <PermissionsEditor
                :permissions="form.permissions"
                :allow-inherit="false"
@@ -51,34 +48,35 @@
                :readonly="!isEditMode && !isNew"
                @update:permissions="form.permissions = $event"
             />
-         </b-form-group>
+         </div>
 
          <!-- Resources -->
-         <b-form-group label="Resources" label-cols="3">
+         <div class="form-row">
+            <div class="form-row-label">Resources</div>
             <ResourcesEditor
                :resources="form.resources"
                :readonly="!isEditMode && !isNew"
                @update:resources="form.resources = $event"
             />
-         </b-form-group>
+         </div>
 
          <!-- Save / Cancel -->
          <div v-if="isEditMode || isNew" class="detail-form-actions">
-            <b-button type="submit" variant="primary" size="sm" :disabled="saving">
+            <v-btn type="submit" color="primary" size="small" :disabled="saving">
                {{ saving ? 'Saving…' : 'Save' }}
-            </b-button>
-            <b-button variant="outline-secondary" size="sm" :disabled="saving" @click="cancel">
+            </v-btn>
+            <v-btn variant="outlined" size="small" :disabled="saving" @click="cancel">
                Cancel
-            </b-button>
-            <span v-if="saveError" class="text-danger ml-2 save-error">{{ saveError }}</span>
+            </v-btn>
+            <span v-if="saveError" class="save-error">{{ saveError }}</span>
          </div>
 
-      </b-form>
+      </form>
 
       <!-- Delete confirmation -->
       <ConfirmModal
          v-if="!isNew"
-         :id="'role-' + roleName"
+         v-model="showDeleteConfirm"
          :title="'Delete role ' + roleName"
          :message="'Are you sure you want to delete role \'' + roleName + '\'? This cannot be undone.'"
          @confirm="deleteRole"
@@ -116,9 +114,10 @@ export default defineComponent({
 
   data() {
      return {
-        form:      EMPTY_FORM(),
-        saving:    false,
-        saveError: null,
+        form:              EMPTY_FORM(),
+        saving:            false,
+        saveError:         null,
+        showDeleteConfirm: false,
      };
   },
 
@@ -138,6 +137,10 @@ export default defineComponent({
      nameState() {
         if (!this.form.name) return null;
         return /^[A-Za-z0-9_-]+$/.test(this.form.name) ? true : false;
+     },
+
+     nameErrorText() {
+        return 'Role name must contain only letters, digits, hyphens and underscores.';
      },
 
      currentRoleRecord() {
@@ -263,6 +266,19 @@ export default defineComponent({
       gap: 6px;
    }
 
+   .form-row {
+      margin-bottom: 16px;
+   }
+
+   .form-row-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #495057;
+      margin-bottom: 4px;
+   }
+
    .detail-form-actions {
       display: flex;
       align-items: center;
@@ -274,14 +290,7 @@ export default defineComponent({
 
    .save-error {
       font-size: 0.85rem;
-   }
-
-   .role-not-found {
-      padding: 16px;
-      color: #842029;
-      background-color: #f8d7da;
-      border: 1px solid #f5c2c7;
-      border-radius: 4px;
-      font-size: 0.95rem;
+      color: rgb(var(--v-theme-error));
+      margin-left: 8px;
    }
 </style>

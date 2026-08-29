@@ -1,40 +1,99 @@
-$table-accent-bg: #f9f9f9;
-$started: #337ab7;
-$stopped: #f8f9fa;
+// Vuetify's own CSS + the MDI icon font are loaded via JS import in
+// src/plugins/vuetify.js (see vite-plugin-vuetify's README), not here -
+// Vuetify 3 ships precompiled CSS rather than a Sass entrypoint to @import.
+//
+// Everything that used to live here targeted bootstrap's own classes
+// (.card/.card-header, .col-3, .form-group) and went dead one file at a
+// time as Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin
+// repo) converted each of their last remaining callers to Vuetify -
+// Container.vue's card-header hover tint was the final one. The two rules
+// below are new genuinely-global overrides, the first tenants of the "future"
+// this file was kept empty for.
 
-$theme-colors: (
-   primary: $started,
-   started: $started,
-   stopped: $stopped
-);
+// A tonal-variant alert (v-alert type="warning" variant="tonal", currently
+// only SSHInfo.vue, but this is deliberately global so any future one picks
+// it up too) derives BOTH its text and its background tint from the same
+// single theme color + a fixed opacity (see VAlert's variant mixin) - for
+// Vuetify's default 'warning' swatch that comes out as orange-on-peach,
+// text and background close enough in value to be genuinely hard to read.
+// Bootstrap's old .alert-warning (what SSHInfo.vue looked like before this
+// migration) used two independently-chosen colors instead - a pale
+// background, a dark, unrelated text color - reproducing that same pairing
+// here rather than trying to coax it out of Vuetify's one-color formula.
+// Scoped to text-warning specifically (not .text-error, used elsewhere for
+// not-found banners) - this is a contrast fix for warning alerts, not a
+// restyle of every tonal alert in the app.
+.v-alert--variant-tonal.text-warning {
+   background-color: #fff3cd;
+   // !important: needed to beat Vuetify's own .text-warning utility class,
+   // which sets color with !important itself (confirmed in its compiled
+   // CSS) specifically so utility classes always win - ordinary selector
+   // specificity has no way to outrank that from outside Vuetify's own
+   // stylesheet.
+   color: #856404 !important;
 
-@import 'bootstrap/scss/bootstrap';
-@import 'bootstrap-vue/src/index.scss';
-
-.card.card--hoverable {
-   &.bg-started {
-      & .card-header:hover {
-         cursor: pointer;
-         background-color: lighten($started, 5%) !important;
-      }
-   }
-   &.bg-stopped {
-      & .card-header:hover {
-         cursor: pointer;
-         background-color: darken($stopped, 5%) !important;
-      }
+   // The tint above is applied directly to the alert's own background,
+   // not through Vuetify's normal mechanism (an absolutely-positioned
+   // __underlay painted at low opacity) - leaving the underlay in place
+   // would layer a second, redundant orange wash on top and shift the hue.
+   .v-alert__underlay {
+      display: none;
    }
 }
 
-// Admin form layout: narrow label column and tighter spacing.
-// Scoped to .admin-main to avoid overriding Bootstrap grid elsewhere.
-.admin-main {
-   .col-3 {
-      flex: 0 0 15% !important;
-      max-width: 15% !important;
-   }
-
-   .form-group {
-      margin-bottom: 0.5rem;
-   }
+// Per-item marker for every sidebar list (devtainer list, launch-profile
+// picker, admin Users/Roles/Profiles) - "a status dot per item instead of a
+// bullet" per the design system's own Sidebar-section-header spec (drafted
+// earlier in Stage 3 of docs/plans/vue2-vue3-migration.md, dockside-admin
+// repo). Genuinely global rather than duplicated in Sidebar.vue and
+// AdminSidebar.vue separately: the two components' lists needed the same
+// dot, and AdminSidebar's own Profiles list was already drawing one, just
+// as a unicode "●" glyph rather than this shape - inconsistent geometry
+// between lists that were supposed to match. Defaults to a neutral grey,
+// since most lists (users, roles, launch profiles) have no per-item state
+// to show; components with a real one (devtainer status, profile
+// active/inactive) add a modifier class over this shared shape.
+.sidebar-dot {
+   display: inline-block;
+   width: 7px;
+   height: 7px;
+   border-radius: 50%;
+   flex: none;
+   background: #aaa;
+   // Vuetify's #prepend slot only reserves its usual gap automatically for
+   // recognised prepend content (v-icon, v-avatar, ...) - a bare <span>
+   // this small doesn't get one, so the dot sat touching the title text.
+   margin-right: 10px;
 }
+
+// Restores the inline-code highlight bootstrap's own base CSS used to give
+// every bare <code> tag (its $code-color, #e83e8c) - lost app-wide the
+// moment bootstrap's CSS was dropped in Stage 3's Setup, though only
+// SSHInfo.vue's prose actually uses bare <code> today. Deliberately not
+// `pre code`: the <pre> blocks are real copy-paste command output, styled
+// on their own terms (see SSHInfo.vue's .code-block) - this is only for
+// inline code called out mid-sentence.
+code {
+   color: #e83e8c;
+}
+
+// Restores two browser-default typographic behaviors Vuetify's own base
+// reset (`* { margin: 0; padding: 0; }`) strips app-wide: a <ul>/<ol>'s
+// indent (confirmed live - Welcome.vue's bullets sat flush against the
+// list's own left edge, no gap from their marker) and a <p>'s spacing
+// from its neighbours (paragraphs ran together with no visible break).
+// Neither is Welcome.vue-specific - SSHInfo.vue's lists lost the same
+// indent - so fixed once, globally, for prose content generally rather
+// than patched per component. Confirmed safe for Vuetify's own components:
+// v-list (and everything built on it) renders a plain <div>, not a <ul>
+// (see makeTagProps' default tag), so this can't touch sidebar/menu/nav
+// styling.
+ul, ol {
+   padding-left: 1.5em;
+   margin-bottom: 1em;
+}
+
+p {
+   margin-bottom: 1em;
+}
+

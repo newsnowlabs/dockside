@@ -1,46 +1,64 @@
 <template>
-   <form class="w-100">
-      <div class="row" v-bind:id="container.name">
-         <b-card
-            no-body
-            :bg-variant="container.status == 1 ? 'started' : 'stopped'"
-            :border-variant="container.status == 1 ? 'started' : 'black'"
-            :class="{ 'card--hoverable': !isSelected }"
-            class="w-100">
-            <b-card-header
-               :header-text-variant="container.status == 1 ? 'white' : 'black'"
+   <form>
+      <div v-bind:id="container.name" class="devtainer-container">
+         <v-card :class="{ 'devtainer-selected': isSelected }">
+            <v-card-title
+               class="devtainer-head"
+               :class="{ clickable: !isSelected }"
                v-on:click="!isSelected && goToContainer(container.name, 'view')"
             >
-               <h3 v-if="!isPrelaunchMode">
-                  <span>{{ container.name }}</span>
-                  <span style="float:right">by {{ userName }} ({{ container.meta.owner }}) <span v-if="parseInt(container.meta.private)">[PRIVATE]</span></span>
-               </h3>
-               <h3 v-else-if="isPrelaunchMode && !hasProfiles">
-                  <span><input type="text" class="form-control" required :disabled="!hasProfiles" value="NO PROFILES AVAILABLE"></span>
-               </h3>
-               <h3 v-else>
-                  <span><input type="text" v-bind:class="validName ? [] : ['red']" class="form-control" required v-model="form.name" placeholder="Devtainer name" :disabled="!hasProfiles"></span>
-                  <span class="error-info" v-if="!validName">Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter</span>
-               </h3>
-            </b-card-header>
+               <template v-if="!isPrelaunchMode">
+                  <span class="devtainer-name">{{ container.name }}</span>
+                  <v-chip size="small" variant="tonal" :color="container.status == 1 ? 'started' : undefined" class="status-chip">
+                     {{ container.status == 1 ? 'Started' : 'Stopped' }}
+                  </v-chip>
+                  <span class="devtainer-owner">by {{ userName }} ({{ container.meta.owner }})<template v-if="parseInt(container.meta.private)"> · PRIVATE</template></span>
+               </template>
+               <template v-else-if="isPrelaunchMode && !hasProfiles">
+                  <v-text-field
+                     model-value="NO PROFILES AVAILABLE" disabled
+                     density="compact" variant="outlined" hide-details
+                     class="devtainer-name-field"
+                  />
+               </template>
+               <template v-else>
+                  <v-text-field
+                     v-model="form.name"
+                     placeholder="Devtainer name"
+                     :disabled="!hasProfiles"
+                     :error="!validName"
+                     :error-messages="!validName ? [nameErrorText] : []"
+                     density="compact" variant="outlined" hide-details="auto"
+                     class="devtainer-name-field"
+                  />
+               </template>
+            </v-card-title>
 
-            <b-card-body body-bg-variant="white" v-if="!isPrelaunchMode || hasProfiles">
-               <div class="table-responsive">
+            <v-card-text v-if="!isPrelaunchMode || hasProfiles">
+               <div class="devtainer-description">
                   <span v-if="!isEditMode && !isPrelaunchMode"><em>{{ container.meta.description }}</em></span>
-                  <span v-else>
-                     <input type="text" class="form-control" required v-model="form.description" placeholder="Devtainer description" :disabled="!hasProfiles">
-                  </span>
+                  <v-text-field v-else
+                     v-model="form.description"
+                     placeholder="Devtainer description"
+                     :disabled="!hasProfiles"
+                     density="compact" variant="outlined" hide-details
+                  />
                </div>
-               <div class="table-responsive">
-                  <table class="table table-striped table-sm">
+               <div class="table-wrap">
+                  <table class="details-table">
                      <tbody>
                         <tr>
                            <th width="15%">Profile</th>
                            <td v-if="!isPrelaunchMode">{{ container.profileObject.name }}</td>
                            <td v-else>
-                              <select class="form-control" v-model="form.profile" :disabled="profileNames.length <= 1">
-                                 <option v-for="(profileName) in profileNames" v-bind:key="profileName" v-bind:value="profileName">{{ profiles[profileName].name || profileName }}</option>
-                              </select>
+                              <v-select
+                                 v-model="form.profile"
+                                 :items="profileNames"
+                                 :item-title="name => profiles[name].name || name"
+                                 :item-value="name => name"
+                                 :disabled="profileNames.length <= 1"
+                                 density="compact" variant="outlined" hide-details
+                              />
                            </td>
                         </tr>
                         <tr v-if="container.permissions.auth.developer && isSelected">
@@ -134,13 +152,17 @@
                               </td>
                            </tr>
                         </template>
-                        <tr v-for="(router, index) in routers" v-bind:key="index" v-bind:class="{'list-item':true}">
+                        <tr v-for="(router, index) in routers" v-bind:key="index">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
-                           <td v-if="!isEditMode && !isPrelaunchMode">
-                              <b-button v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="sm" variant="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</b-button>
-                              <b-button v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="sm" variant="outline-secondary" v-on:click="copyUri(router)">Copy</b-button>
-                              <b-button v-if="router.type === 'ssh' && container.status >= 0" size="sm" variant="outline-secondary" type="button" v-b-modal="'sshinfo-modal'" v-b-tooltip title="Configure SSH for Dockside">Setup</b-button>
-                              ({{ container.meta.access[router.name] }} access)
+                           <td v-if="!isEditMode && !isPrelaunchMode" class="router-actions">
+                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" color="primary" variant="flat" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</v-btn>
+                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" variant="outlined" v-on:click="copyUri(router)">Copy</v-btn>
+                              <v-tooltip v-if="router.type === 'ssh' && container.status >= 0" text="Configure SSH for Dockside">
+                                 <template #activator="{ props: tooltipProps }">
+                                    <v-btn v-bind="tooltipProps" size="small" variant="outlined" type="button" v-on:click="openSshInfoModal">Setup</v-btn>
+                                 </template>
+                              </v-tooltip>
+                              <span>({{ container.meta.access[router.name] }} access)</span>
                            </td>
                            <td v-else>
                               <ChoiceInput
@@ -156,9 +178,7 @@
                            <th>Keep private from other admins</th>
                            <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.private == 1 ? 'Private' : 'Visible' }}</td>
                            <td v-else>
-                              <label>
-                                 <input type="checkbox" v-model="form.private">Private
-                              </label>
+                              <v-checkbox v-model="form.private" label="Private" density="compact" hide-details />
                            </td>
                         </tr>
                         <!-- FIXME: Only owner or admin should be able to specify developers -->
@@ -201,21 +221,19 @@
                            <th>Launch progress</th>
                            <td>
                               <div class="stage-line">
-                                 <b-badge :variant="launchStageVariant">{{ launchStageLabel }}</b-badge>
-                                 <span v-if="launchStage === 'pulling' && launchLayers.length" class="ml-2 text-muted">
+                                 <v-chip size="small" variant="tonal" :color="launchStageVariant">{{ launchStageLabel }}</v-chip>
+                                 <span v-if="launchStage === 'pulling' && launchLayers.length" class="layer-count">
                                     {{ completedLayerCount }}/{{ launchLayers.length }} layers
                                  </span>
                               </div>
-                              <div v-if="launchStage === 'failed'" class="text-danger launch-error">
+                              <div v-if="launchStage === 'failed'" class="launch-error">
                                  {{ container.createStatus.error }}
                               </div>
                               <div v-if="(launchStage === 'pulling' || launchStage === 'failed') && launchLayers.length" class="layer-list">
                                  <div v-for="layer in launchLayers" v-bind:key="layer.id" class="layer-row">
                                     <span class="layer-id">{{ layer.shortId }}</span>
-                                    <b-progress :max="100" height="0.6rem" class="flex-grow-1 mx-2">
-                                       <b-progress-bar :value="layer.percent" :variant="layer.variant" />
-                                    </b-progress>
-                                    <span class="layer-status text-muted">{{ layer.status }}</span>
+                                    <span class="layer-bar"><span :style="{ width: layer.percent + '%' }"></span></span>
+                                    <span class="layer-status">{{ layer.status }}</span>
                                  </div>
                               </div>
                            </td>
@@ -225,14 +243,10 @@
                            <td>
                               <div v-for="issue in launchHookIssues" v-bind:key="issue.name" class="hook-issue-row">
                                  <div class="stage-line">
-                                    <b-badge variant="danger">{{ issue.name }}: {{ issue.state }}</b-badge>
-                                    <b-button
-                                       v-if="issue.logPath"
-                                       size="sm" variant="link" class="ml-2 p-0"
-                                       v-on:click="toggleHookLog(issue.name)"
-                                       >{{ hookLogs[issue.name] !== undefined ? 'Hide log' : 'Show log' }}</b-button>
+                                    <v-chip size="small" variant="tonal" color="error">{{ issue.name }}: {{ issue.state }}</v-chip>
+                                    <a v-if="issue.logPath" href="javascript:" class="hook-log-toggle" v-on:click="toggleHookLog(issue.name)">{{ hookLogs[issue.name] !== undefined ? 'Hide log' : 'Show log' }}</a>
                                  </div>
-                                 <pre v-if="hookLogs[issue.name] === 'loading'" class="hook-log text-muted">Loading…</pre>
+                                 <pre v-if="hookLogs[issue.name] === 'loading'" class="hook-log hook-log--muted">Loading…</pre>
                                  <pre v-else-if="Array.isArray(hookLogs[issue.name])" class="hook-log">{{
                                     hookLogs[issue.name].length ? hookLogs[issue.name].join('\n') : '(no output captured)'
                                  }}</pre>
@@ -241,76 +255,76 @@
                         </tr>
                         <tr>
                            <th></th>
-                           <td>
-                              <b-button size="sm" variant="outline-primary"
+                           <td class="action-buttons">
+                              <v-btn size="small" variant="outlined" color="primary"
                                  v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
                                  v-on:click="edit()"
-                                 >Edit</b-button>
+                                 >Edit</v-btn>
 
-                              <b-button size="sm" variant="primary"
+                              <v-btn size="small" color="primary" variant="flat"
                                  v-show="container.permissions.actions.startContainer && !isEditMode && !isPrelaunchMode && container.status >= -1 && container.status <= 0"
                                  v-on:click="action('start')"
                                  :data-id="container.id"
-                                 >Start</b-button>
+                                 >Start</v-btn>
 
-                              <b-button size="sm" variant="outline-danger"
+                              <v-btn size="small" variant="outlined" color="error"
                                  v-show="container.permissions.actions.stopContainer && !isEditMode && !isPrelaunchMode && container.status == 1"
-                                 v-on:click="action('stop')" 
+                                 v-on:click="action('stop')"
                                  :data-id="container.id"
-                                 >Stop</b-button>
+                                 >Stop</v-btn>
 
-                              <b-button size="sm" variant="outline-danger"
+                              <v-btn size="small" variant="outlined" color="error"
                                  v-show="canRemove"
                                  v-on:click="confirmRemove"
                                  :data-id="container.id"
-                                 >Remove</b-button>
+                                 >Remove</v-btn>
 
-                              <b-button size="sm" variant="outline-primary"
+                              <v-btn size="small" variant="outlined" color="primary"
                                  v-show="container.permissions.actions.getContainerLogs && !isEditMode && !isPrelaunchMode && container.status >= 0"
                                  v-on:click="showLogs()"
                                  :data-id="container.id"
-                                 >Logs</b-button>
+                                 >Logs</v-btn>
 
-                              <b-button size="sm" variant="outline-success"
+                              <v-btn size="small" variant="outlined" color="success"
                                  v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
                                  v-on:click="copy(makeLaunchCommand())"
                                  :data-id="container.id"
-                                 >Copy Launch Command</b-button>
+                                 >Copy Launch Command</v-btn>
 
-                              <b-button size="sm" variant="outline-success"
+                              <v-btn size="small" variant="outlined" color="success"
                                  v-show="container.permissions.auth.developer && isPrelaunchMode"
                                  v-on:click="saveOrLaunch"
                                  :data-id="container.id"
-                                 >Launch</b-button>
+                                 >Launch</v-btn>
 
-                              <b-button size="sm" variant="outline-success"
+                              <v-btn size="small" variant="outlined" color="success"
                                  v-show="container.permissions.auth.developer && isPrelaunchMode"
                                  v-on:click="copy(makeLaunchCommand())"
                                  :data-id="container.id"
-                                 >Copy Launch Command</b-button>
+                                 >Copy Launch Command</v-btn>
 
-                              <b-button size="sm" variant="outline-success"
+                              <v-btn size="small" variant="outlined" color="success"
                                  v-show="container.permissions.auth.developer && isEditMode"
                                  v-on:click="saveOrLaunch"
                                  :data-id="container.id"
-                                 >Save</b-button>
+                                 >Save</v-btn>
 
-                              <b-button size="sm" variant="outline-danger"
+                              <v-btn size="small" variant="outlined" color="error"
                                  v-show="container.permissions.auth.developer && (isEditMode || isPrelaunchMode)"
                                  v-on:click="cancel"
                                  :data-id="container.id"
-                                 >Cancel</b-button>
+                                 >Cancel</v-btn>
                            </td>
                         </tr>
                      </tbody>
                   </table>
                </div>
-            </b-card-body>
-         </b-card>
+            </v-card-text>
+         </v-card>
 
          <ConfirmModal
             v-show="canRemove"
-            :id="removeConfirmId"
+            v-model="showRemoveConfirm"
             :title="'Remove devtainer ' + container.name"
             :message="'Are you sure you want to remove devtainer \'' + container.name + '\'? This cannot be undone.'"
             confirm-label="Remove"
@@ -352,7 +366,8 @@ export default defineComponent({
         },
         // name => tail lines ([] once fetched with nothing to show, undefined until first
         // fetch, 'loading' while a fetch is in flight) - see toggleHookLog/launchHookIssues.
-        hookLogs: {}
+        hookLogs: {},
+        showRemoveConfirm: false,
      };
   },
 
@@ -386,6 +401,13 @@ export default defineComponent({
         const entry = this.$store.state.account.viewers.find(v => v.username === owner);
         return (entry && entry.name) || owner;
      },
+     // Static validation message for form.name - v-text-field's error-messages
+     // needs an array of strings, not a slot, unlike bootstrap-vue's
+     // b-form-invalid-feedback this replaces (see RoleDetail.vue's own
+     // nameErrorText for the same pattern).
+     nameErrorText() {
+        return "Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter";
+     },
      // container.status already encodes "launch in flight" (-2) / "create failed" (-4) -
      // see Reservation.pm's own comment deriving status from createStatus. createStatus
      // itself persists on the reservation forever once set (stage stays 'done'/'failed'),
@@ -407,14 +429,17 @@ export default defineComponent({
            failed: 'Failed'
         }[this.launchStage] || this.launchStage;
      },
+     // Vuetify color names (its built-in semantic colors, not bootstrap-vue's
+     // badge variants this used to feed - 'danger' becomes 'error', the rest
+     // already match).
      launchStageVariant() {
         return {
            pulling: 'info',
            creating: 'info',
            starting: 'info',
            done: 'success',
-           failed: 'danger'
-        }[this.launchStage] || 'secondary';
+           failed: 'error'
+        }[this.launchStage] || undefined;
      },
      // Docker's pull-progress stream reports layer status/current/total per digest id;
      // most statuses (Waiting, Already exists, Pull complete, ...) don't carry a
@@ -424,27 +449,24 @@ export default defineComponent({
      // drives the frozen-in-place list shown alongside the error message.
      launchLayers() {
         const layers = (this.container.createStatus && this.container.createStatus.layers) || {};
-        const STATUS_META = {
-           'Pulling fs layer':   { variant: 'secondary', percent: 0 },
-           'Waiting':            { variant: 'secondary', percent: 0 },
-           'Downloading':        { variant: 'info' },
-           'Verifying Checksum': { variant: 'info', percent: 100 },
-           'Download complete':  { variant: 'info', percent: 100 },
-           'Extracting':         { variant: 'primary' },
-           'Pull complete':      { variant: 'success', percent: 100 },
-           'Already exists':     { variant: 'success', percent: 100 }
+        const PERCENT_META = {
+           'Pulling fs layer':   0,
+           'Waiting':            0,
+           'Verifying Checksum': 100,
+           'Download complete':  100,
+           'Pull complete':      100,
+           'Already exists':     100
         };
         return Object.keys(layers).map(id => {
            const layer = layers[id];
-           const meta = STATUS_META[layer.status] || {};
-           const percent = meta.percent !== undefined ? meta.percent :
+           const fixedPercent = PERCENT_META[layer.status];
+           const percent = fixedPercent !== undefined ? fixedPercent :
               (layer.total ? Math.round((layer.current / layer.total) * 100) : 0);
            return {
               id,
               shortId: id.substring(0, 12),
               status: layer.status,
-              percent,
-              variant: meta.variant || 'secondary'
+              percent
            };
         });
      },
@@ -522,15 +544,19 @@ export default defineComponent({
            !this.isEditMode && !this.isPrelaunchMode &&
            this.container.status >= -1 && this.container.status <= 0;
      },
-     removeConfirmId() {
-        return `reservation-remove-${this.container.id}`;
-     }
   },
 
   methods: {
      ...mapActions([
         'updateSelectedContainerMode'
      ]),
+     // SSHInfo.vue is an App.vue-level singleton, not a parent/child of this
+     // component, so opening it goes through the shared store flag - see
+     // store/index.js's sshInfoModalOpen comment. Replaces bootstrap-vue's
+     // v-b-modal="'sshinfo-modal'" open-by-id directive.
+     openSshInfoModal() {
+        this.$store.commit('setSshInfoModalOpen', true);
+     },
      ideLabel(IDE) {
         if(IDE !== 'none') {
            return IDE;
@@ -628,14 +654,14 @@ export default defineComponent({
         return this.IDEs.map(IDE => ({ value: IDE, label: this.ideLabel(IDE) }));
      },
      confirmRemove() {
-        this.$bvModal.show(`confirm-modal-${this.removeConfirmId}`);
+        this.showRemoveConfirm = true;
      },
      makeUri(router) {
         const protocol = router.https ? 'https' : 'http';
         const prefix = router.prefixes[0] ? router.prefixes[0] : 'www';
         const containerName = this.container.name;
         const host = window.dockside.host;
-        
+
         if (router.type === 'ssh') {
            const unixuser = this.container.data.unixuser;
            const hostname = host.split(':')[0];
@@ -644,7 +670,7 @@ export default defineComponent({
            const IDE = this.container.data.runningIDE || '';
            const homeDir = this.container.data.homeDir || `/home/${this.container.data.unixuser}`;
            let path;
-           
+
            if (IDE.match(/^openvscode/)) {
               path = '/?folder=' + homeDir;
            }
@@ -879,50 +905,99 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
-   .table th {
-      vertical-align: middle;
+   // Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): this
+   // whole block used to target bootstrap's .table/.form-control/.btn-sm/.red
+   // classes, all of which went dead the moment bootstrap's CSS import was
+   // dropped in Setup - see that plan's SCSS/theme section. Rewritten to
+   // target this file's own scoped classes on the Vuetify markup above,
+   // following the design system's key/value details-table pattern (same
+   // shape SshEditor.vue's keypairs table uses, styled independently per
+   // component rather than through a shared table class).
+
+   // Both rely on flex+gap for spacing between adjacent v-btns, not
+   // template whitespace - see vite.config.js's compilerOptions.whitespace
+   // comment (Stage 3 of docs/plans/vue2-vue3-migration.md, flipped back to
+   // Vue 3's 'condense' default once every such spot in the app was audited).
+   .router-actions, .action-buttons {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
    }
 
-   .list-item {
-      margin-top: 10px;
-      margin-bottom: 30px;
+   .devtainer-head {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 12px 16px;
+
+      &.clickable {
+         cursor: pointer;
+
+         &:hover {
+            background-color: rgba(0, 0, 0, 0.03);
+         }
+      }
    }
 
-   .hidden {
-      display: none;
+   .devtainer-name {
+      font-size: 1.1rem;
+      font-weight: 600;
    }
 
-   h3 {
-      font-size: 1rem;
-      margin-bottom: 0;
+   .status-chip {
+      font-size: 0.7rem;
    }
 
-   .btn-sm {
-      font-size: 0.75rem;
-      padding: 0.1em 0.3em;
+   .devtainer-owner {
+      margin-left: auto;
+      font-size: 0.8rem;
+      color: #6c757d;
    }
 
-   .form-control {
-      font-size: 0.9rem;
+   .devtainer-name-field {
+      max-width: 320px;
    }
 
-   .red {
-      background-color: #F08080;
+   .devtainer-description {
+      margin-bottom: 10px;
    }
 
-   .error-info {
-      font-size: 12px;
-      color: red;
+   .table-wrap {
+      overflow-x: auto;
+   }
+
+   .details-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+
+      th, td {
+         text-align: left;
+         padding: 6px 8px;
+         border-bottom: 1px solid #eee;
+         vertical-align: middle;
+      }
+
+      th { font-weight: 600; }
    }
 
    .stage-line {
       display: flex;
       align-items: center;
+      gap: 8px;
       margin-bottom: 0.35rem;
+   }
+
+   .layer-count {
+      font-size: 0.8rem;
+      color: #6c757d;
    }
 
    .launch-error {
       font-size: 0.85rem;
+      color: rgb(var(--v-theme-error));
       margin-bottom: 0.35rem;
    }
 
@@ -944,10 +1019,27 @@ export default defineComponent({
       flex-shrink: 0;
    }
 
+   .layer-bar {
+      flex-grow: 1;
+      height: 0.5rem;
+      margin: 0 0.5rem;
+      border-radius: 100px;
+      background: #e4e8ee;
+      overflow: hidden;
+
+      > span {
+         display: block;
+         height: 100%;
+         border-radius: 100px;
+         background: rgb(var(--v-theme-primary));
+      }
+   }
+
    .layer-status {
       width: 9em;
       flex-shrink: 0;
       text-align: right;
+      color: #6c757d;
    }
 
    .hook-issue-row {
@@ -956,6 +1048,10 @@ export default defineComponent({
       &:last-child {
          margin-bottom: 0;
       }
+   }
+
+   .hook-log-toggle {
+      font-size: 0.8rem;
    }
 
    .hook-log {
@@ -967,5 +1063,9 @@ export default defineComponent({
       margin: 0.35rem 0 0;
       white-space: pre-wrap;
       word-break: break-all;
+   }
+
+   .hook-log--muted {
+      color: #6c757d;
    }
 </style>

@@ -20,9 +20,8 @@
          <span class="legend-green">green = allowed</span> ·
          <span class="legend-red">red = denied</span>
          <template v-if="!readonly"> ·
-            click tag to toggle granted/denied ·
-            type <em>value (Denied)</em> to deny ·
-            × to remove
+            click a tag to toggle allowed/denied ·
+            click × to remove
          </template>
       </div>
    </div>

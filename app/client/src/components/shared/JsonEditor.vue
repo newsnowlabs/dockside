@@ -10,14 +10,9 @@
       />
       <div v-if="!readonly" class="json-editor-toolbar">
          <span class="json-editor-mode-label">Mode:</span>
-         <b-button-group size="sm">
-            <b-button
-               v-for="m in ['tree', 'text']"
-               :key="m"
-               :variant="currentMode === m ? 'secondary' : 'outline-secondary'"
-               @click="currentMode = m"
-            >{{ m }}</b-button>
-         </b-button-group>
+         <v-btn-toggle v-model="currentMode" density="compact" mandatory color="secondary">
+            <v-btn v-for="m in ['tree', 'text']" :key="m" :value="m" size="small">{{ m }}</v-btn>
+         </v-btn-toggle>
       </div>
    </div>
 </template>
@@ -31,20 +26,21 @@
     *         readonly (Boolean)          default false — shows read-only tree view
     * Emits:  input(newValue)
     *
-    * Deliberately still value/input, not modelValue/update:modelValue, despite
-    * running under Vue 3 + @vue/compat: the app's global compilerOptions.
-    * compatConfig (MODE 2, see vite.config.js) makes the *compiler* rewrite
-    * ANY 'modelValue'-named prop key back to 'value' wherever it's bound to a
-    * component - confirmed directly (an explicit :modelValue="..." binding
-    * here arrived in this component's $attrs as {value: ...}, never reaching
-    * the modelValue prop at all, whether via v-model shorthand or an explicit
-    * :modelValue/@update:modelValue binding). That single global compatConfig
-    * has no per-component escape hatch that showed up under investigation, so
-    * every one of *our own* components stays on the old value/input contract
-    * until Stage 4's cutover away from compat mode - matching json-editor-vue
-    * itself, which independently lands on 'value'/'input' too here (it picks
-    * its prop/event names via vue-demi's own isVue3 check, which also
-    * resolves false in this same compat environment).
+    * Deliberately still value/input, not modelValue/update:modelValue: Stage 2
+    * found @vue/compat MODE 2's *runtime* v-model translation rewrites any
+    * modelValue/update:modelValue vnode-prop pair down to value/input before
+    * a component ever sees it (confirmed directly - an explicit
+    * :modelValue="..." binding here arrived in $attrs as {value: ...}, never
+    * reaching a declared modelValue prop). Stage 3 disabled that translation
+    * globally (configureCompat's COMPONENT_V_MODEL: false, see index.js) once
+    * it turned out to silently break Vuetify's own v-model-driven components
+    * too - so a caller *could* now bind this via modelValue/v-model instead -
+    * but callers here still use the explicit :value/@input shape from before
+    * that fix, so this component's own contract is untouched; not worth
+    * modernizing on its own without a reason to touch every caller. Matches
+    * json-editor-vue itself, which independently lands on 'value'/'input'
+    * regardless (it picks its own prop/event names via vue-demi's isVue3
+    * check, unrelated to our compat config).
     */
    import JsonEditorVue from 'json-editor-vue';
 

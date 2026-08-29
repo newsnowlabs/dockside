@@ -1,22 +1,44 @@
 <template>
-   <div>
-      <b-container fluid>
-         <Header></Header>
-         <b-row>
+   <!-- v-app is Vuetify 3's required root wrapper, not decorative: components
+        that render into an overlay (v-dialog, v-menu, v-tooltip, ...) look
+        for the layout context v-app provides and otherwise never mount their
+        content at all - confirmed live (Stage 3 of
+        docs/plans/vue2-vue3-migration.md): a bare v-dialog under a plain
+        <div> root updated its v-model correctly but produced zero DOM output,
+        no error, no warning. -->
+   <v-app>
+      <!-- drawerOpen is lifted here rather than owned by Sidebar/AdminSidebar
+           themselves: Header's hamburger (which toggles it) and whichever
+           sidebar is currently mounted are siblings, not parent/child, so
+           App.vue is the nearest common owner. Vuetify's layout system
+           (v-app-bar/v-navigation-drawer/v-main/v-footer, all registered via
+           their own `app`/default layout participation) handles all the
+           spacing math that used to be manual CSS here (body padding-top,
+           Footer's absolute positioning + mobile BottomNav clearance calc). -->
+      <Header @toggle-nav="drawerOpen = !drawerOpen"></Header>
+
+      <template v-if="isAdminRoute || isAccountRoute">
+         <AdminSidebar v-if="isAdminRoute" v-model="drawerOpen"></AdminSidebar>
+      </template>
+      <template v-else>
+         <Sidebar v-model="drawerOpen"></Sidebar>
+      </template>
+
+      <v-main>
+         <div class="page-content">
             <template v-if="isAdminRoute || isAccountRoute">
-               <AdminSidebar v-if="isAdminRoute"></AdminSidebar>
                <AdminMain></AdminMain>
             </template>
             <template v-else>
-               <Sidebar></Sidebar>
                <Main></Main>
             </template>
-            <SSHInfo></SSHInfo>
-         </b-row>
-      </b-container>
+         </div>
+      </v-main>
+
+      <SSHInfo></SSHInfo>
       <BottomNav></BottomNav>
       <Footer></Footer>
-   </div>
+   </v-app>
 </template>
 
 <script>
@@ -47,6 +69,25 @@ export default defineComponent({
   },
 
   mixins: [routePermissions],
+
+  data() {
+     return {
+        // v-navigation-drawer only self-initialises to "visible" under
+        // :permanent when its modelValue is left undefined at setup (see its
+        // own source: `if (props.modelValue == null && !isTemporary.value)
+        // isActive.value = props.permanent || !mobile.value`) - binding an
+        // explicit, always-concrete controlled boolean here (needed so
+        // Header's hamburger and the sidebar can share state as siblings)
+        // means that branch never runs, so an initial `false` sticks even
+        // once :permanent resolves true. Confirmed live: $vuetify.display.
+        // mdAndUp read true on the mounted sidebar, yet the drawer still
+        // rendered closed/off-screen (no v-navigation-drawer--permanent
+        // class), because nothing had ever set the controlled value to true
+        // in the first place. Seeding it from the viewport directly, rather
+        // than a flat `false`, sidesteps needing that self-init branch at all.
+        drawerOpen: window.matchMedia('(min-width: 960px)').matches,
+     };
+  },
 
   computed: {
      user() {
@@ -145,18 +186,39 @@ export default defineComponent({
       overflow-y: scroll;
    }
 
+   // No more manual `padding-top: 58px` for the fixed navbar height - Vuetify's
+   // layout system (v-app-bar/v-navigation-drawer/v-main/v-footer, all
+   // registered as layout participants) computes and applies this offset
+   // itself. The old active-nav-link underline rule moved too: it's now
+   // Header.vue's own .nav-btn--active and BottomNav.vue's .bottom-btn--active,
+   // scoped to those components rather than a global bootstrap-class selector.
    body {
       font-size: 0.9rem;
-      padding-top: 58px; /* Move down content because we have a fixed navbar that is 56px tall */
    }
 
-   // Active nav link: underline on dark navbar. Matches both vue-router's own
-   // router-link-active (nav-items using `to`) and BootstrapVue's `active` prop
-   // (nav-items like BottomNav's Launch, which is a click action with no route).
-   .navbar-dark .navbar-nav .nav-link.router-link-active,
-   .navbar-dark .navbar-nav .nav-link.active {
-      border-bottom: 2px solid rgba(255, 255, 255, 0.65);
-      padding-bottom: 3px;
+   // Content gutter for whichever page renders inside v-main (Main.vue or
+   // AdminMain.vue) - standardised here, on .page-content (the one shared
+   // wrapper both render into below), rather than duplicated per component:
+   // it was duplicated once already (AdminMain.vue's own copy silently lost
+   // its horizontal padding partway through Stage 3 of
+   // docs/plans/vue2-vue3-migration.md while its vertical padding survived -
+   // the admin/account pages ran edge-to-edge until that was caught), and a
+   // single copy here can't drift out of sync like that again, including
+   // for any future top-level page. Deliberately NOT on v-main itself:
+   // v-main's own padding-* is how Vuetify's layout system offsets content
+   // clear of the app-bar/drawer/footer (see its own padding-left:
+   // var(--v-layout-left) etc.) - overriding that would break the offset
+   // math, not just add a gutter.
+   .page-content {
+      padding: 20px;
+      padding-bottom: 40px;
+   }
+
+   @media (min-width: 768px) {
+      .page-content {
+         padding-left: 40px;
+         padding-right: 40px;
+      }
    }
 
    /* Define MacOS Safari scrollbar appearance */

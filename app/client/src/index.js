@@ -1,7 +1,7 @@
-import Vue, { createApp, configureCompat } from 'vue';
+import { createApp, configureCompat } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
-import { BootstrapVue, IconsPlugin } from 'bootstrap-vue';
 import createStore from '@/store';
+import vuetify from '@/plugins/vuetify';
 import './index.scss';
 import App from '@/components/App.vue';
 
@@ -10,7 +10,76 @@ import App from '@/components/App.vue';
 // *templates* compile (Options API, filters, v-model defaults, ...); this
 // configureCompat() call controls the *runtime* library's own compat
 // behavior. Must run before any other Vue API call.
-configureCompat({ MODE: 2 });
+//
+// COMPONENT_V_MODEL/COMPONENT_ASYNC/COMPONENT_FUNCTIONAL: false is a Stage 3
+// addition (bootstrap-vue -> Vuetify 3, see docs/plans/vue2-vue3-migration.md)
+// and is *runtime*, not compiler-level - not something compilerOptions.
+// compatConfig above can reach. All three are MODE 2's "guess whether this
+// component is legacy Vue 2 code and translate it if so" checks, and all
+// three turned out to guess wrong against Vuetify - a genuinely Vue-3-native
+// library with no compat markers of its own - because the check is a pure
+// shape/identity test applied to *any* component encountered at runtime,
+// with no way to tell "authored for Vue 2" apart from "just happens to match
+// the shape Vue 2 code would have":
+//   - COMPONENT_V_MODEL rewrites ANY component vnode's modelValue/
+//     update:modelValue pair down to value/onModelCompat:input at
+//     vnode-creation time. Confirmed live: v-dialog kept receiving updates
+//     from v-model correctly, but VDialog's own useProxiedModel() only ever
+//     saw the legacy value/onModelCompat:input keys, so it could never tell
+//     it was "controlled" and the dialog never opened - no error, no
+//     warning, just zero DOM output. Not scoped to our two imperative-modal
+//     call sites - left enabled, it would have hit *every* Vuetify v-model
+//     usage app-wide (v-text-field, v-select, v-switch, v-tabs,
+//     v-navigation-drawer, ...).
+//   - COMPONENT_ASYNC treats *any* bare function passed as a vnode type as a
+//     legacy Vue 2 async-component factory (`() => import(...)`) unless
+//     disabled - Vue's own deprecation message for this feature says as
+//     much: "Plain functions will be treated as functional components in
+//     non-compat build." Confirmed live: crashed immediately
+//     (`Cannot read properties of undefined (reading 'default')`) on the
+//     first Vuetify component rendered that internally uses a plain-function
+//     functional component (VCard, VField - i.e. v-text-field/v-select/
+//     v-textarea, VSwitch, VDataTable, VDataIterator all do), because
+//     convertLegacyAsyncComponent() called it with one argument instead of
+//     Vue 3's real (props, context) functional-component signature.
+//   - COMPONENT_FUNCTIONAL is the same kind of check for the *other* Vue 2
+//     functional-component shape (an options object with `functional: true`)
+//     - disabled pre-emptively alongside the other two once this pattern was
+//     clear, rather than waiting to hit it as a third separate crash.
+// None of this touches our own custom components (ChoiceInput, UserTagsInput,
+// JsonEditor, ValueTag, ResourceTagsInput, SshEditor, ConfirmModal, ...) -
+// they're all plain Options API objects, never bare functions or
+// `{functional: true}` objects, and the ones still on value/input (Stage 2)
+// are bound by their callers via explicit :value/@input, never v-model/
+// :modelValue, so COMPONENT_V_MODEL doesn't touch that binding either way.
+//
+// INSTANCE_LISTENERS: false is a fourth addition in the same family, found
+// the same way: a plain <v-btn @click="..."> silently did nothing (confirmed
+// on two independent, unrelated buttons - ConfirmModal's own Cancel, and
+// Header's hamburger, both plain v-btn/v-app-bar-nav-icon usage, nothing
+// exotic) - the click reached the DOM (a raw addEventListener('click', ...)
+// fired), but Vue's own handler never ran, meaning the listener never made it
+// onto the rendered root element in the first place. Root cause, traced
+// through @vue/compat's own shouldSkipAttr(): under MODE 2,
+// INSTANCE_LISTENERS resurrects Vue 2's separate $listeners bucket by
+// stripping *every* on*-named key out of $attrs before Vue's normal
+// automatic-attrs-fallthrough step ever runs - so an event listener can only
+// ever reach a child's root element if that child explicitly declares the
+// event in its own `emits` (as v-model's update:modelValue always does) or
+// reads $listeners itself (a defunct Vue 2 API no Vuetify component has any
+// reason to check). VBtn declares only 'group:selected' in emits, so its own
+// internal onClick ran, but any @click *we* write on it - or on anything
+// that doesn't declare 'click' as an emit - was silently dropped before
+// fallthrough, every time, app-wide. Same shape as the other three: a
+// blanket "this must be legacy Vue 2 code" assumption that's wrong for a
+// library that was never Vue 2 code to begin with.
+configureCompat({
+   MODE: 2,
+   COMPONENT_V_MODEL: false,
+   COMPONENT_ASYNC: false,
+   COMPONENT_FUNCTIONAL: false,
+   INSTANCE_LISTENERS: false,
+});
 
 // Create store before route guards so guards read live currentUser state
 // rather than the stale window.dockside.user bootstrap snapshot.
@@ -104,15 +173,11 @@ const app = createApp({
 });
 app.use(router);
 app.use(store);
-// Global Vue.use(), not app.use(), for these two: app.use(plugin) is Vue 3's
-// plain native implementation (plugin.install(app, ...) - no compat
-// translation at all, confirmed by reading it in the built bundle), so
-// bootstrap-vue's install(Vue, config) receives the raw app instance and,
-// while it doesn't throw, its icon components silently fail to resolve to
-// their real SVGs (all rendered as bootstrap-vue's own "blank" fallback
-// icon instead - confirmed live). Vue.use() on the compat *global* Vue
-// object is what actually triggers @vue/compat's legacy-plugin handling -
-// the same call the pre-migration app always made, unchanged here.
-Vue.use(BootstrapVue);
-Vue.use(IconsPlugin);
+// Real app.use(), unlike bootstrap-vue's install (see Stage 2/3 history
+// above for why that one needed the compat *global* Vue.use() instead):
+// Vuetify 3 is genuinely Vue-3-native, so its install(app, ...) receiving
+// the real app instance is exactly what it expects - no compat translation
+// involved. Confirms the app.use()-vs-Vue.use() split really was specific
+// to bootstrap-vue's legacy plugin shape, not a general rule.
+app.use(vuetify);
 app.mount('#app');
