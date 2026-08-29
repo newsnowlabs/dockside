@@ -23,9 +23,10 @@ import { defineComponent } from 'vue';
  * v-dialog is purely v-model-driven).
  *
  * Real modelValue/update:modelValue here, not the value/input convention
- * Stage 2 forced onto our other custom form components - safe now that
- * index.js disables @vue/compat's COMPONENT_V_MODEL translation globally
- * (see that file's comment for why).
+ * Stage 2 forced onto our other custom form components - this component was
+ * new in Stage 3, so it never carried that workaround forward (and it's moot
+ * now anyway: Stage 4 dropped @vue/compat entirely, see
+ * docs/plans/vue2-vue3-migration.md in the dockside-admin repo).
  *
  * Emits: confirm (caller is responsible for closing - see onConfirm below)
  */

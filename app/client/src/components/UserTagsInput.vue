@@ -31,12 +31,15 @@
 <script>
 import { defineComponent } from 'vue';
 
-// Deliberately still value/input (not modelValue/update:modelValue): the
-// app's global compatConfig MODE 2 (vite.config.js) makes the compiler
-// rewrite ANY 'modelValue'-named prop key on a component back to 'value',
-// even for an explicit :modelValue binding, not just v-model shorthand -
-// confirmed directly on JsonEditor.vue (see its own comment). Every one of
-// our own components stays on the old contract until Stage 4's cutover.
+// Deliberately still value/input (not modelValue/update:modelValue): while
+// @vue/compat's MODE 2 was in the build (Stages 2-3), its compiler-level
+// compatConfig rewrote ANY 'modelValue'-named prop key on a component back
+// to 'value', even for an explicit :modelValue binding, not just v-model
+// shorthand - confirmed directly on JsonEditor.vue (see its own comment).
+// Stage 4 removed @vue/compat entirely (docs/plans/vue2-vue3-migration.md,
+// dockside-admin repo), so that rewrite no longer happens, but this
+// component's own contract is untouched - not worth modernizing on its own
+// without a reason to touch its callers.
 export default defineComponent({
   emits: ['input'],
   name: 'UserTagsInput',

@@ -68,15 +68,13 @@ import { defineComponent } from 'vue';
 // other two branches, fixing that.
 //
 // Deliberately still value/input, not modelValue/update:modelValue, on this
-// component's OWN external contract: index.js disables @vue/compat's
-// COMPONENT_V_MODEL globally (see that file), which is what makes the
-// :model-value/@update:model-value bindings to v-select/v-text-field/
-// v-combobox below safe - they're genuinely Vue-3-native components, unlike
-// this component's own callers, which still bind it via explicit :value/
-// @input (see Container.vue) rather than v-model. Modernising ChoiceInput's
-// own prop names is a Container.vue-conversion-time decision, not this one -
-// changing them now would mean editing all 7 call sites for no behavioural
-// gain yet.
+// component's OWN external contract: the :model-value/@update:model-value
+// bindings to v-select/v-text-field/v-combobox below are plain Vue-3-native
+// v-model, nothing compat-related about them (this component's callers still
+// bind IT via explicit :value/@input - see Container.vue - rather than
+// v-model). Modernising ChoiceInput's own prop names is a
+// Container.vue-conversion-time decision, not this one - changing them now
+// would mean editing all 7 call sites for no behavioural gain.
 export default defineComponent({
   emits: ['input'],
   name: 'ChoiceInput',

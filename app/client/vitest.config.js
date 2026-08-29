@@ -1,10 +1,11 @@
 import { defineConfig, mergeConfig } from 'vitest/config';
 import viteConfig from './vite.config.js';
 
-// Reuses vite.config.js's plugin/resolve.alias/extensions (Vue 3 + @vue/compat
-// MODE 2 - see that file's own comments) so tests see the same module
-// resolution the real build does. The build.* options merge in too but are
-// inert here; vitest doesn't use Vite's production build pipeline.
+// Reuses vite.config.js's plugin/resolve.alias/extensions (see that file's
+// own comments, notably the 'vue' alias to the full compiler+runtime build)
+// so tests see the same module resolution the real build does. The build.*
+// options merge in too but are inert here; vitest doesn't use Vite's
+// production build pipeline.
 export default mergeConfig(viteConfig, defineConfig({
    test: {
       environment: 'jsdom',

@@ -6,10 +6,11 @@
         default temporary/overlay drawer, opened via Header's hamburger
         through the modelValue this component exposes to App.vue. Real
         modelValue/update:modelValue here (not the value/input convention
-        Stage 2 forced onto older components) - safe since index.js disables
-        @vue/compat's COMPONENT_V_MODEL globally, and this is a fresh
-        contract between two components converted in the same pass, not an
-        existing caller left untouched. -->
+        Stage 2 forced onto older components) - this is a fresh contract
+        between two components converted in the same pass, not an existing
+        caller left untouched, so it never needed the workaround to begin
+        with (moot anyway since Stage 4 dropped @vue/compat entirely - see
+        docs/plans/vue2-vue3-migration.md, dockside-admin repo). -->
    <v-navigation-drawer
       :model-value="modelValue"
       @update:model-value="$emit('update:modelValue', $event)"
