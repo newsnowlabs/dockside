@@ -1,5 +1,9 @@
 <template>
-   <v-bottom-navigation color="white" bg-color="#16212c" app class="d-md-none">
+   <!-- :active (not a d-md-none CSS class) drives both visibility and Vuetify's layout-space
+        reservation for a v-bottom-navigation: `active` defaults to true regardless of viewport,
+        and useLayoutItem() reserves its full height in v-main's padding calc whenever active is
+        true - a CSS class only hides it visually, leaving the reserved space behind on desktop. -->
+   <v-bottom-navigation color="white" bg-color="#16212c" app :active="!$vuetify.display.mdAndUp">
       <v-btn to="/" exact :class="{ 'bottom-btn--active': isContainerSection }">
          <v-icon icon="mdi-home"></v-icon>
          Containers
