@@ -265,32 +265,4 @@ export default defineComponent({
       display: flex;
       gap: 6px;
    }
-
-   .form-row {
-      margin-bottom: 16px;
-   }
-
-   .form-row-label {
-      font-size: 0.75rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #495057;
-      margin-bottom: 4px;
-   }
-
-   .detail-form-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 16px;
-      padding-top: 12px;
-      border-top: 1px solid #eee;
-   }
-
-   .save-error {
-      font-size: 0.85rem;
-      color: rgb(var(--v-theme-error));
-      margin-left: 8px;
-   }
 </style>
