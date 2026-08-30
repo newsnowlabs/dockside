@@ -102,9 +102,15 @@ export default defineComponent({
      stateClass() {
         if (this.value === '1') return 'value-tag--granted';
         if (this.value === '0') return 'value-tag--denied';
+        // null/null: nothing resolves anywhere (no explicit value, no role
+        // setting, no default) - a real third state, not the same as an
+        // explicit deny. Must be checked before the granted/denied inherited
+        // branches below, which only apply once something has resolved.
+        if (this.resolvedValue === null) return 'value-tag--absent';
         return this.resolvedValue === '1' ? 'value-tag--inherited-granted' : 'value-tag--inherited-denied';
      },
      badgeText() {
+        if (this.resolvedValue === null) return 'Not set';
         return this.resolvedValue === '1' ? 'Granted' : 'Denied';
      },
      // Only meaningful (and only shown) when inherited *and* there's more
@@ -175,6 +181,7 @@ export default defineComponent({
       &.value-tag--denied            { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
       &.value-tag--inherited-granted { background-color: #eaf6ed; color: #4a8c5c; border-color: #c3e6cb; }
       &.value-tag--inherited-denied  { background-color: #fdf0f1; color: #a94442; border-color: #f5c6cb; }
+      &.value-tag--absent            { background-color: #e9ecef; color: #6c757d; border-color: #dee2e6; }
    }
 
    .value-tag-source {
