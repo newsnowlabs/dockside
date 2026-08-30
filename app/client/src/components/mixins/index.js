@@ -62,6 +62,28 @@ const routePermissions = {
    }
 };
 
+const sidebarDrawerSelect = {
+   methods: {
+      // Close the drawer (mobile/temporary only), then run the given action -
+      // one shared path for "user picked something in the sidebar", used by
+      // both Sidebar.vue and AdminSidebar.vue (previously duplicated
+      // verbatim in both, down to this same comment). The mdAndUp guard
+      // matters: closing unconditionally looked harmless (surely a
+      // permanent drawer just ignores its own modelValue?) but doesn't -
+      // confirmed live, every click collapsed the md+ permanent drawer too,
+      // because Vuetify's internal "re-open when :permanent becomes true"
+      // watcher only fires on *permanent itself* changing, not on
+      // modelValue being set false while permanent stays constantly true -
+      // see App.vue's drawerOpen comment for the closely related
+      // initial-value version of this same gotcha. Relies on the consuming
+      // component emitting 'update:modelValue' for its own drawer prop.
+      onSelect(action) {
+         if (!this.$vuetify.display.mdAndUp) this.$emit('update:modelValue', false);
+         action();
+      },
+   },
+};
+
 const routing = {
    methods: {
       go: function (path) {
@@ -95,4 +117,4 @@ const routing = {
    }
 };
 
-export { filteredContainers, routing, routePermissions };
+export { filteredContainers, routing, routePermissions, sidebarDrawerSelect };

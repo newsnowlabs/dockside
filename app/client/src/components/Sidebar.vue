@@ -66,7 +66,7 @@
 import { defineComponent } from 'vue';
 
 import { mapState, mapGetters } from 'vuex';
-import { filteredContainers, routing, routePermissions } from '@/components/mixins';
+import { filteredContainers, routing, routePermissions, sidebarDrawerSelect } from '@/components/mixins';
 
 export default defineComponent({
   name: 'Sidebar',
@@ -109,20 +109,10 @@ export default defineComponent({
      statusClass(container) {
         return `status-${parseInt(container.status)}`;
      },
-     // Close the drawer (mobile/temporary only), then run the action - one
-     // path instead of the old onMobileSelect/direct-call split the two
-     // markup copies needed. The mdAndUp guard matters: closing
-     // unconditionally looked harmless (surely a permanent drawer just
-     // ignores its own modelValue?) but doesn't - confirmed live, every
-     // click collapsed the md+ permanent drawer too, because Vuetify's
-     // internal "re-open when :permanent becomes true" watcher only fires on
-     // *permanent itself* changing, not on modelValue being set false while
-     // permanent stays constantly true - see App.vue's drawerOpen comment
-     // for the closely related initial-value version of this same gotcha.
-     onSelect(action) {
-        if (!this.$vuetify.display.mdAndUp) this.$emit('update:modelValue', false);
-        action();
-     },
+     // onSelect (close the drawer, then run the action) comes from the
+     // sidebarDrawerSelect mixin (components/mixins/index.js) - shared with
+     // AdminSidebar.vue, see its own comment there for the mdAndUp guard's
+     // reasoning.
      // Deliberately not goToContainer(): that merges extraQuery onto the
      // *current* route's query, which here would carry forward the
      // previously-selected profile's already-synced field values (image,
@@ -137,7 +127,7 @@ export default defineComponent({
      }
   },
 
-  mixins: [filteredContainers, routing, routePermissions],
+  mixins: [filteredContainers, routing, routePermissions, sidebarDrawerSelect],
 });
 </script>
 

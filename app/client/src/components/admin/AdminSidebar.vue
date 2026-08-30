@@ -20,7 +20,7 @@
                <v-list-item v-bind="activatorProps" class="sb-section-heading">
                   <v-list-item-title>{{ section.label }}</v-list-item-title>
                   <template #append>
-                     <span class="sb-add" @click.stop="onSelect(section.type, 'new')">+ New</span>
+                     <span class="sb-add" @click.stop="onSelect(() => selectItem(section.type, 'new'))">+ New</span>
                   </template>
                </v-list-item>
             </template>
@@ -36,7 +36,7 @@
                   v-for="item in itemsFor(section.type)"
                   :key="item.id"
                   :active="isSelected(section.type, item.id)"
-                  @click="onSelect(section.type, item.id)"
+                  @click="onSelect(() => selectItem(section.type, item.id))"
                >
                   <template #prepend>
                      <span v-if="section.type === 'profile'"
@@ -56,6 +56,7 @@
 import { defineComponent } from 'vue';
 
 import { mapState, mapGetters } from 'vuex';
+import { sidebarDrawerSelect } from '@/components/mixins';
 
 const SECTIONS = [
    { type: 'user',    label: 'USERS',    singular: 'user'    },
@@ -65,6 +66,7 @@ const SECTIONS = [
 
 export default defineComponent({
   name: 'AdminSidebar',
+  mixins: [sidebarDrawerSelect],
   props: {
      modelValue: { type: Boolean, default: false },
   },
@@ -121,20 +123,9 @@ export default defineComponent({
         this.$router.push(`/admin/${typeToRoute[type]}/${encodeURIComponent(id)}`).catch(() => {});
      },
 
-     // Close the drawer (mobile/temporary only), then select - one path
-     // instead of the old selectItem/onMobileSelect split the two markup
-     // copies needed. The mdAndUp guard matters: closing unconditionally
-     // looked harmless (surely a permanent drawer just ignores its own
-     // modelValue?) but doesn't - confirmed live, every click collapsed the
-     // md+ permanent drawer too, because Vuetify's internal "re-open when
-     // :permanent becomes true" watcher only fires on *permanent itself*
-     // changing, not on modelValue being set false while permanent stays
-     // constantly true - see App.vue's drawerOpen comment for the closely
-     // related initial-value version of this same gotcha.
-     onSelect(type, id) {
-        if (!this.$vuetify.display.mdAndUp) this.$emit('update:modelValue', false);
-        this.selectItem(type, id);
-     },
+     // onSelect (close the drawer, then run the action) comes from the
+     // sidebarDrawerSelect mixin (components/mixins/index.js) - shared with
+     // Sidebar.vue.
   },
 });
 </script>
