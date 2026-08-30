@@ -112,10 +112,7 @@ export default defineComponent({
    .welcome-minimised a {
       // Explicit gap, not template whitespace - the source text/links span
       // several lines, and Vue 3's compiler default ('condense') collapses
-      // inter-node whitespace containing a newline unpredictably (see
-      // vite.config.js's compilerOptions.whitespace comment - this exact
-      // spot wasn't part of that audit, since at the time it was still
-      // v-card-title's shorter, single-line-clipped content).
+      // inter-node whitespace containing a newline unpredictably.
       margin-left: 6px;
    }
 

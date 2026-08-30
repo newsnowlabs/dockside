@@ -926,9 +926,8 @@ export default defineComponent({
    // component rather than through a shared table class).
 
    // Both rely on flex+gap for spacing between adjacent v-btns, not
-   // template whitespace - see vite.config.js's compilerOptions.whitespace
-   // comment (Stage 3 of docs/plans/vue2-vue3-migration.md, flipped back to
-   // Vue 3's 'condense' default once every such spot in the app was audited).
+   // template whitespace - Vue 3's compiler default ('condense') collapses
+   // inter-node whitespace containing a newline unpredictably.
    .router-actions, .action-buttons {
       display: flex;
       align-items: center;

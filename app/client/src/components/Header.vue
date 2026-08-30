@@ -109,10 +109,9 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
-   // Explicit gap, not template whitespace - see vite.config.js's
-   // compilerOptions.whitespace comment (Stage 3 of
-   // docs/plans/vue2-vue3-migration.md, flipped back to Vue 3's 'condense'
-   // default once every such spot in the app was audited).
+   // Explicit gap, not template whitespace - Vue 3's compiler default
+   // ('condense') collapses inter-node whitespace containing a newline
+   // unpredictably.
    .nav-links {
       gap: 4px;
    }
