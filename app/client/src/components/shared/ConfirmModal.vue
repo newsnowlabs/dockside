@@ -28,7 +28,11 @@ import { defineComponent } from 'vue';
  * now anyway: Stage 4 dropped @vue/compat entirely, see
  * docs/plans/vue2-vue3-migration.md in the dockside-admin repo).
  *
- * Emits: confirm (caller is responsible for closing - see onConfirm below)
+ * Emits: confirm - onConfirm() below closes the dialog itself right after
+ * emitting, unconditionally; a caller doesn't need to (and every current
+ * caller's own @confirm handler is async and can fail, so the dialog is
+ * already closed by the time that's known - any error surfaces on the page
+ * behind it, not inside this dialog).
  */
 export default defineComponent({
   name: 'ConfirmModal',
