@@ -1,0 +1,11 @@
+// Vuetify component styles compile from this Sass source (rather than the
+// precompiled CSS `vuetify/styles` ships) so `$body-font-family` reaches
+// every one of Vuetify's own component selectors that set it directly
+// (buttons, headings, list items, ...) - see vite.config.js's `styles:
+// { configFile }` option, which is what triggers the Sass compile.
+// $heading-font-family defaults to $body-font-family, so this single
+// override covers both. IBM Plex Sans itself loads via a Google Fonts
+// <link> in app/server/assets/header.html.
+@forward 'vuetify/settings' with (
+   $body-font-family: ('IBM Plex Sans', 'Segoe UI', system-ui, sans-serif),
+);

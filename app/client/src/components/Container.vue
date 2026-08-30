@@ -1024,7 +1024,7 @@ export default defineComponent({
    }
 
    .layer-id {
-      font-family: monospace;
+      font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
       width: 6em;
       flex-shrink: 0;
    }

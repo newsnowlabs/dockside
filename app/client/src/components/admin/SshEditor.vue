@@ -237,7 +237,7 @@ export default defineComponent({
    }
 
    .ssh-pubkeys-textarea {
-      font-family: monospace;
+      font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
       font-size: 0.78rem;
    }
 
@@ -257,7 +257,7 @@ export default defineComponent({
    }
 
    .keypair-name {
-      font-family: monospace;
+      font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
       font-size: 0.8rem;
       white-space: nowrap;
    }

@@ -47,7 +47,11 @@ export default defineConfig({
    // ever runs), so it's unaffected by this app's output-bundling shape
    // (cssCodeSplit, entryFileNames/chunkFileNames below) - those are
    // output-bundling settings, not import resolution.
-   vuetify({ autoImport: true })],
+   // styles.configFile compiles Vuetify's own component CSS from its Sass
+   // source instead of importing precompiled CSS, so src/settings.scss's
+   // $body-font-family override (IBM Plex Sans) reaches every Vuetify
+   // component selector that sets it directly, not just plain HTML tags.
+   vuetify({ autoImport: true, styles: { configFile: 'src/settings.scss' } })],
    resolve: {
       // Source imports `.vue` files without an extension throughout (e.g.
       // `import Header from '@/components/Header'`), matching the old webpack

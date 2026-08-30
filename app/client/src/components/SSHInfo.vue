@@ -294,6 +294,7 @@ ForwardAgent yes`;
    margin: 0;
    padding: 0.5rem 0.75rem 0.25rem;
    font-size: 0.85em;
+   font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
    background: transparent;
    border: none;
    /* Wrap rather than horizontally scroll: this is copy-paste output, not
