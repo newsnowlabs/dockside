@@ -1,3 +1,4 @@
+import { markRaw } from 'vue';
 import { createStore as createVuexStore } from 'vuex';
 import { getContainers } from '@/services/container';
 import adminModule   from '@/store/admin';
@@ -17,7 +18,14 @@ const createStore = () => createVuexStore({
    state: {
       selectedContainer: { name: undefined, mode: 'view' },
       containersFilter: 'shared',
-      containers: window.dockside.containers,
+      // markRaw on every container object: nothing anywhere reads/writes a
+      // container's own fields reactively (Container.vue copies into its
+      // own local `form` to edit, and every store mutation below replaces
+      // the whole array rather than mutating one element in place), so only
+      // this array's own top-level reference needs to be reactive - not each
+      // container's nested meta/data/permissions structure, re-proxied on
+      // every ~1s polling refresh otherwise.
+      containers: window.dockside.containers.map(c => markRaw(c)),
       welcomeTextStatus: localStorage.getItem(welcomeTextStatusLocalStorageKey) !== null ?
          parseInt(localStorage.getItem(welcomeTextStatusLocalStorageKey)) : 0,
       // Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo):
@@ -59,10 +67,10 @@ const createStore = () => createVuexStore({
          state.containersFilter = containersFilter || 'shared';
       },
       updateContainers(state, containers) {
-         state.containers = containers;
+         state.containers = containers.map(c => markRaw(c));
       },
       addContainer(state, container) {
-         state.containers = state.containers.filter(c => c.id !== container.id).concat(container);
+         state.containers = state.containers.filter(c => c.id !== container.id).concat(markRaw(container));
       },
       setSshInfoModalOpen(state, open) {
          state.sshInfoModalOpen = open;
