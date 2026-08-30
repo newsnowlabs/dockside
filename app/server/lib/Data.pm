@@ -22,10 +22,14 @@ our $PASSWD_FILE  = "$CONFIG_PATH/passwd";
 our $PROFILES_DIR = "$CONFIG_PATH/profiles";
 
 # Load in the container ID of this Dockside container and the inner-dockerd flag.
-# See entrypoint.sh for details
-our $HOSTNAME = get_config('/etc/service/nginx/data/ctr-id');
-our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
-our $VERSION = get_config('/etc/service/nginx/data/version');
+# See entrypoint.sh for details. Read from app-server's own service data dir, not nginx's -
+# ctr-id/inner-dockerd are identical copies in every service's data dir (entrypoint.sh writes
+# them per-service), but 'version' is only ever computed and written by one runscript, and
+# since the mojolicious-app-server split that's app-server/run (it's the process that actually
+# renders it into the UI), not nginx/run any more.
+our $HOSTNAME = get_config('/etc/service/app-server/data/ctr-id');
+our $INNER_DOCKERD = get_config('/etc/service/app-server/data/inner-dockerd');
+our $VERSION = get_config('/etc/service/app-server/data/version');
 our $HOSTINFO = { 'docker' => undef, 'IDEs' => undef }; # Host info cache: populated later
 
 sub parse_json ($json) {
@@ -96,6 +100,33 @@ $CONFIG_FILES = {
          $CONFIG->{'ssh'}{'port'} //= 2222;    # in-container wstunnel v6 listen port
          $CONFIG->{'ssh'}{'v10port'} //= 2223; # in-container wstunnel v10 listen port
          $CONFIG->{'ssh'}{'default'} //= 1;
+
+         # Standalone async UI app-server - loopback-only, nginx proxy_passes to it;
+         # 0 = unlimited, parity with nginx's own client_max_body_size 0.
+         $CONFIG->{'appServer'}{'port'} //= 8100;
+         $CONFIG->{'appServer'}{'workers'} //= 4;
+         $CONFIG->{'appServer'}{'maxRequestSize'} //= 0;
+         # Static root for /docs, now that nginx no longer runs App.pm in-process to fall
+         # through to nginx's own `root` directive for it. Matches that directive's own value
+         # (sites-available/default) - not a new convention, the existing one, now needing an
+         # explicit config point since nginx itself no longer serves it.
+         $CONFIG->{'appServer'}{'docsPath'} //= '/home/dockside/dockside/app/server/nginx/html';
+         # create's own restart-recovery/graceful-exit design - see
+         # docs/adr/0007-create-restart-recovery.md. reconcileIntervalSeconds is the per-worker
+         # periodic reconciler's own recheck cadence (each tick re-runs the same sweep under a
+         # single process-wide flock, so only one worker's tick actually does the work).
+         # shutdownGracePeriod must stay comfortably under Mojo::Server::Prefork's own
+         # graceful_timeout (bin/app-server raises that to 150s to match) - deliberately
+         # coordinated, not left to whatever the two defaults happened to leave.
+         $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 300;
+         $CONFIG->{'appServer'}{'shutdownGracePeriod'} //= 90;
+
+         # How long a hook-invocation log file (tmpPath/r-<id>-hook-<invocationId>.log) is kept
+         # before logrotate-daemon's age-based sweep deletes it - see
+         # app/scripts/runscripts/logrotate/data/logrotate-daemon. Independent of
+         # HOOK_HISTORY_MAX (Reservation.pm), which only bounds the JSON history *record*, not
+         # the log file an evicted record pointed at.
+         $CONFIG->{'hooks'}{'logRetentionDays'} //= 30;
       },
       'parse' => \&parse_json
    },

@@ -21,8 +21,8 @@ sub code ($self) {
 }
 
 # Optional HTTP status the API dispatcher should return for this exception.
-# App.pm's catch defaults to 401 when this is unset, so existing call sites are
-# unaffected; set it (e.g. 400, 403) where a more specific status is warranted.
+# bin/app-server's _render_error defaults to 401 when this is unset, so existing call
+# sites are unaffected; set it (e.g. 400, 403) where a more specific status is warranted.
 sub status ($self) {
    return $self->{'status'};
 }

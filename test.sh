@@ -103,6 +103,7 @@ check_perl() {
 
   # Note: upgrade and password-wrapper are bash scripts, also excluded.
   local scripts=(
+    app/server/bin/app-server
     app/server/bin/docker-event-daemon
     app/server/bin/mkpasswd
     app/server/bin/password
@@ -198,6 +199,7 @@ check_shellcheck() {
     app/scripts/runscripts/nginx/run
     app/scripts/runscripts/dockerd/run
     app/scripts/runscripts/docker-event-daemon/run
+    app/scripts/runscripts/app-server/run
     app/scripts/runscripts/bind/run
     app/scripts/runscripts/dehydrated/run
     app/scripts/runscripts/logrotate/run
@@ -205,6 +207,8 @@ check_shellcheck() {
     app/server/bin/upgrade
     app/server/bin/password-wrapper
     app/scripts/container/launch.sh
+    app/scripts/hooks/dockside-self-update.sh
+    app/server/example/images/multi-repo-demo/multi-repo-switch-and-serve.sh
     build/development/claude-code/statusline.sh
     t/integration/run_tests.sh
     t/integration/harness.sh
@@ -290,6 +294,35 @@ check_json() {
       failed=1
     fi
   done
+
+  # Example profiles are relaxed JSON with '//' comments (see e.g. 00-dockside.json) -
+  # python3 -m json.tool would reject every one of them, which is exactly why they were never
+  # in $json_files above and so went unchecked entirely until this loop was added. Validate with
+  # the *actual* function Data.pm uses to load every profile at runtime - Data::parse_json,
+  # which strips '//' comments with its own two regexes before calling
+  # from_json($text, {relaxed=>1}) - rather than reimplementing/guessing at that logic here,
+  # which would silently drift from the real parser the moment either changed.
+  if perl -I app/server/lib -MData -e 1 2>/dev/null; then
+    shopt -s nullglob
+    local profile_files=(app/server/example/config/profiles/*.json)
+    shopt -u nullglob
+    for f in "${profile_files[@]}"; do
+      if perl -I app/server/lib -MData -e '
+         local $/;
+         open(my $fh, "<", $ARGV[0]) or die "open: $!";
+         eval { Data::parse_json(<$fh>) } or die "$@";
+      ' "$f" 2>/tmp/dockside-test-json-err; then
+        echo "  OK (profile JSON): $f"
+      else
+        echo "  INVALID:   $f"
+        cat /tmp/dockside-test-json-err
+        failed=1
+      fi
+    done
+    rm -f /tmp/dockside-test-json-err
+  else
+    echo "  (Data.pm not loadable standalone, skipping example profile validation)"
+  fi
 
   # YAML
   if python3 -c "import yaml" 2>/dev/null; then

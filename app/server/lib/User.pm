@@ -70,7 +70,10 @@ my @CONTAINER_PERMISSIONS = (
    'startContainer', # Permission to start a container
    'stopContainer', # Permission to stop a container
    'removeContainer', # Permission to remove a container
-   'getContainerLogs' # Permission to retrieve container logs
+   'getContainerLogs', # Permission to retrieve container logs
+   'runContainerHooks', # Permission to run a container's profile-declared lifecycle hook
+   'addContainerRouter', # Permission to add a router to a live reservation (profile must also opt in via Profile->userRouters, unless admin)
+   'removeContainerRouter' # Permission to remove any router (except ide/ssh) from a live reservation - no profile opt-in needed
 );
 
 our $USER_PASSWD;
@@ -469,6 +472,18 @@ sub reservationPermissions ($self, $reservation) {
       $permittedActions->{$permission} = ($permittedAuth->{'developer'} && $self->has_permission($permission)) ? 1 : 0;
    }
 
+   # addContainerRouter needs one more gate the generic loop above can't express: the profile
+   # itself must opt in via userRouters (docs/adr/0008-router-mutation.md) - unless this user is
+   # admin, who bypasses the profile-level gate by default (only an explicit per-account denial
+   # of addContainerRouter, already reflected in has_permission above, blocks an admin). Give this
+   # one permission its own line rather than special-casing it inside the loop above, so every
+   # other @CONTAINER_PERMISSIONS entry keeps the plain, generic check. removeContainerRouter
+   # needs no equivalent - it has no profile-level component, so the generic loop already
+   # produced the right answer for it.
+   if( $permittedActions->{'addContainerRouter'} ) {
+      $permittedActions->{'addContainerRouter'} = $self->_canAddRoutersToReservation($reservation);
+   }
+
    return { 'auth' => $permittedAuth, 'actions' => $permittedActions };
 }
 
@@ -520,11 +535,6 @@ sub reservations ($self, $opts = {}) {
 
       # Skip containers the user isn't allowed to view.
       next unless $self->can_on( $reservation, 'view' );
-
-      # If container is not yet created, then update launch logs.
-      if($reservation->{'status'} == -2) {
-         $reservation->load_launch_logs();
-      }
 
       # If the data will be used externally (i.e. sent to the client),
       # make a copy, sanitise to remove unneeded data and annotate it with permissions data.
@@ -922,11 +932,21 @@ sub updateContainerReservation ($self, $args) {
    # Create a deep clone of the original reservation for comparison
    my $origReservation = dclone($reservation);
 
-   # Update metadata fields if they are defined in the arguments
+   # Update metadata fields if they are defined in the arguments. Tracks which ones were
+   # actually touched (split by whether each lives under meta vs data - see set()'s own
+   # per-property branches) so the eventual store only sends what this request actually
+   # changed, not this process's entire in-memory copy of every meta/data field - see
+   # Reservation::store_fields' own comment for why a blind full store() risks clobbering a
+   # fresher value some concurrent writer (another admin's own edit, or this same devtainer's
+   # own docker-event-daemon launch dispatch if it's still mid-launch) already persisted.
+   my %touchedMeta;
+   my %touchedData;
    foreach my $m (qw( access viewers developers private network description IDE )) {
       if(defined($args->{$m})) {
-         $self->set($reservation, $m, $args->{$m}) || 
+         $self->set($reservation, $m, $args->{$m}) ||
             die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
+         if( $m eq 'network' ) { $touchedData{$m} = $reservation->data($m); }
+         else { $touchedMeta{$m} = $reservation->meta($m); }
       }
    }
 
@@ -934,9 +954,13 @@ sub updateContainerReservation ($self, $args) {
    # (if container is not running runningIDE should mirror requested IDE immediately)
    if(!$reservation->is_running) {
       $reservation->data('runningIDE', $reservation->meta('IDE'));
+      $touchedData{'runningIDE'} = $reservation->data('runningIDE');
    }
 
-   $reservation->store();
+   $reservation->store_fields( {
+      ( %touchedMeta ? ( 'meta' => \%touchedMeta ) : () ),
+      ( %touchedData ? ( 'data' => \%touchedData ) : () ),
+   } );
 
    # Only reconcile Docker network attachment when the requested network changed.
    if( ($origReservation->data('network') // '') ne ($reservation->data('network') // '') ) {
@@ -965,9 +989,151 @@ sub updateContainerReservation ($self, $args) {
    return $self->createClientReservation($reservation);
 }
 
+# Decodes an $args->{'router'} value into a plain hashref, mirroring set()'s own 'access'/'options'
+# branches above - the request body is form-urlencoded like every other API call in this file
+# (App::split_args), so a structured field like a router definition arrives as one JSON-encoded
+# string value, not as nested form fields. Dies with a 400 Exception on malformed JSON, same
+# status normalise_router_def itself uses for every other input problem.
+sub _decode_router_arg ($value) {
+   die Exception->new( 'msg' => "'router' is required", 'status' => 400 )
+      unless defined($value) && $value ne '';
+   my $decoded;
+   try {
+      $decoded = decode_json($value);
+   }
+   catch {
+      die Exception->new( 'msg' => "'router' must be valid JSON", 'status' => 400 );
+   };
+   die Exception->new( 'msg' => "'router' must be a JSON Object", 'status' => 400 )
+      unless ref($decoded) eq 'HASH';
+   # 'type' is the one field a client has no legitimate reason to send - always server-assigned by
+   # Reservation::normalise_router_def, which builds its return value as a fresh whitelist of
+   # known fields rather than merging $decoded in, so a stray 'type' here is discarded downstream
+   # regardless. 'auth', unlike 'type', *is* legitimately caller-suppliable (a narrowed allow-list
+   # via --auth) - see addContainerRouter/replaceContainerRouter below, which fill in the wide
+   # default themselves when it's absent, rather than leaving that decision to
+   # Reservation::normalise_router_def (docs/adr/0008-router-mutation.md).
+   return $decoded;
+}
+
+# Shared by reservationPermissions (deriving the client-visible actions.addContainerRouter flag)
+# and addContainerRouter/replaceContainerRouter (enforcing the same rule) - docs/adr/0008-router-mutation.md's
+# profile-level opt-in for *adding* a router, bypassed by default for role='admin'. Factored into
+# one place so the two can never drift apart - the enforcement and the "can I?" signal shown to
+# any client (CLI or a future UI) must always agree.
+sub _canAddRoutersToReservation ($self, $reservation) {
+   return (
+      $self->role eq 'admin' || ( $reservation->profileObject && $reservation->profileObject->userRouters )
+   ) ? 1 : 0;
+}
+
+# The initial meta.access value a self-service add/replace gets when the caller didn't request an
+# explicit one via --access: 'owner' if this user owns $reservation, else 'developer' - the
+# narrowest access level that still includes the caller. Anyone reaching this code who isn't the
+# owner already passed can_on(develop), i.e. is a named developer, so 'developer' is the correct
+# non-owner preference, not a further-narrowed "just me" level (no such level exists in this
+# codebase's vocabulary - see Reservation's @KNOWN_ROUTER_AUTH_LEVELS). Falls back to the first
+# entry of $auth (the router's own final, default-wide or caller-narrowed, auth list) if the
+# preferred level isn't actually a member of it - e.g. a developer adding a router with
+# --auth owner can't have 'developer' as its default, so this falls back to 'owner' instead.
+#
+# This is deliberately a different mechanism from User::set()'s own 'access' branch (the
+# profile-declared-router launch-time default, "first entry of the router's auth list") - that
+# one is unavoidably actor-agnostic (only the owner exists at launch time; there's nothing to be
+# actor-aware about), so retrofitting this rule there would just always resolve to 'owner',
+# silently overriding whatever order a profile author chose. Self-service add/replace has no such
+# prior convention to preserve, so it's free to use the more precise rule.
+#
+# Reservation::Mutate makes no such actor-aware (or any other) decision itself - it only checks
+# that whatever value is resolved here is actually legal under $auth; this is the one place that
+# fallback is decided. See docs/adr/0008-router-mutation.md.
+sub _defaultRouterAccessLevel ($self, $reservation, $auth) {
+   my $preferred = ( $reservation->meta('owner') eq $self->username ) ? 'owner' : 'developer';
+   return ( grep { $_ eq $preferred } @$auth ) ? $preferred : $auth->[0];
+}
+
+# Adds a router to a live reservation (docs/adr/0008-router-mutation.md). Gated on
+# addContainerRouter + can_on(develop) (the same two-part shape as every other developer-level
+# container mutation above - see the 'access'/'private' branches of set()) and, unless this user
+# is admin, the profile's own userRouters opt-in - the one profile-level gate that survived
+# review. Shape and collision validation, and the actual persistence, live in
+# Reservation::normalise_router_def and Reservation::add_router - this method's job is the
+# permission/profile-gate decision, resolving the two inputs neither of those layers is allowed
+# to guess at itself (the router's allowed 'auth' list, and the initial access level to assign),
+# and marshalling the request.
+sub addContainerRouter ($self, $args) {
+   my $reservation = $self->reservation( $args->{'id'} );
+   unless($reservation) {
+      die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
+   }
+
+   unless( $self->has_permission('addContainerRouter') && $self->can_on( $reservation, 'develop' ) ) {
+      die Exception->new( 'msg' => "You need the 'addContainerRouter' permission to add a router to this devtainer" );
+   }
+   unless( $self->_canAddRoutersToReservation($reservation) ) {
+      die Exception->new( 'msg' => "This devtainer's profile does not allow adding routers" );
+   }
+
+   my $routerDef = _decode_router_arg( $args->{'router'} );
+   $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
+   my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
+
+   $reservation->add_router( $routerDef, $accessLevel );
+
+   return $self->createClientReservation($reservation);
+}
+
+# Removes router $args->{'name'} from a live reservation. Gated on removeContainerRouter +
+# can_on(develop) only - no profile-level opt-in; removal is uniform across admin-authored and
+# type=user routers alike. The one remaining per-router exception (type ide/ssh, non-bypassable
+# even for admin) is enforced inside Reservation::remove_router itself, not here.
+sub removeContainerRouter ($self, $args) {
+   my $reservation = $self->reservation( $args->{'id'} );
+   unless($reservation) {
+      die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
+   }
+
+   unless( $self->has_permission('removeContainerRouter') && $self->can_on( $reservation, 'develop' ) ) {
+      die Exception->new( 'msg' => "You need the 'removeContainerRouter' permission to remove a router from this devtainer" );
+   }
+
+   $reservation->remove_router( $args->{'name'} );
+
+   return $self->createClientReservation($reservation);
+}
+
+# Atomically replaces router $args->{'name'} with $args->{'router'} (a convenience wrapper -
+# same-name remove+add under one lock, carrying meta.access forward). Needs both permissions -
+# the add half and the remove half are each exactly as gated as their standalone counterparts
+# above, so replace needs no permission or profile-gate of its own beyond the union of the two.
+sub replaceContainerRouter ($self, $args) {
+   my $reservation = $self->reservation( $args->{'id'} );
+   unless($reservation) {
+      die Exception->new( 'msg' => "Reservation id '$args->{'id'}' not found" );
+   }
+
+   unless(
+      $self->has_permission('addContainerRouter') && $self->has_permission('removeContainerRouter') &&
+      $self->can_on( $reservation, 'develop' )
+   ) {
+      die Exception->new( 'msg' => "You need both the 'addContainerRouter' and 'removeContainerRouter' permissions to replace a router on this devtainer" );
+   }
+   unless( $self->_canAddRoutersToReservation($reservation) ) {
+      die Exception->new( 'msg' => "This devtainer's profile does not allow adding (and so replacing) routers" );
+   }
+
+   my $routerDef = _decode_router_arg( $args->{'router'} );
+   $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
+   my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
+
+   $reservation->replace_router( $args->{'name'}, $routerDef, $accessLevel );
+
+   return $self->createClientReservation($reservation);
+}
+
 # Stops, starts or removed a container.
 # Named in camelCase for consistency with current REST API call.
-sub controlContainer ($self, $cmd, $id, $args = {}) {
+sub controlContainer ($self, $cmd, $id, $args = {}, $cb = undef) {
    if( $id !~ m!^([0-9a-f]+)$! || $cmd !~ m!^(stop|start|remove|getLogs)$! ) {
       die Exception->new( 'msg' => "command '$cmd' with invalid argument '$id' failed" );
    }
@@ -983,17 +1149,90 @@ sub controlContainer ($self, $cmd, $id, $args = {}) {
       die Exception->new( 'msg' => "You need the 'develop' permission to execute '$cmd' on this devtainer" );
    }
 
-   # Execute the requested command.
+   # Execute the requested command. Narrow store - see Reservation::store_fields' own comment -
+   # since this container's own launch DAG (docker-event-daemon) may concurrently be writing
+   # other, unrelated fields once 'start' actually takes effect.
    if($cmd eq 'start' && !$container->is_running) {
-      $container->data('runningIDE', $container->meta('IDE'))->store();
+      $container->data('runningIDE', $container->meta('IDE'));
+      $container->store_fields( { 'data' => { 'runningIDE' => $container->data('runningIDE') } } );
    }
 
-   return $container->action($cmd, $args);
+   # $cb present (bin/app-server's native stop/start/remove routes) => async, via
+   # action, no fork, no docker CLI subprocess. $cb absent => the getLogs route, the
+   # one caller that stays on the synchronous getLogs() path deliberately - see getLogs()'s
+   # own comment for why.
+   return $container->action($cmd, $args, $cb) if $cb;
+   return $container->getLogs($args);
+}
+
+# Runs a container's profile-declared hook (named by $args->{'name'}) on demand (e.g. a user has
+# changed the 'branch'/'pr' options and wants their devtainer to switch now, without a full
+# relaunch). Named/shaped like controlContainer above. $args is forwarded opaquely to
+# run_hook_manual, which requires and validates 'name' itself - nothing here needs to know
+# its shape.
+#
+# $cb is required: bin/app-server's native hook route is this method's only caller now - the
+# old synchronous (forking) fallback, and the App.pm route that was its only caller, are both
+# gone (audited first - no other caller existed).
+sub runContainerHook ($self, $id, $args, $cb) {
+   if( $id !~ m!^([0-9a-f]+)$! ) {
+      die Exception->new( 'msg' => "hook run with invalid argument '$id' failed" );
+   }
+
+   if( !$self->has_permission('runContainerHooks') ) {
+      die Exception->new( 'msg' => "You need the 'runContainerHooks' permission to run a devtainer's hook" );
+   }
+
+   my $container = $self->reservation($id);
+
+   if( !$self->can_on( $container, 'develop' )) {
+      die Exception->new( 'msg' => "You need the 'develop' permission to run a hook on this devtainer" );
+   }
+
+   return $container->run_hook_manual($args, $cb);
+}
+
+# Reads a container's hook invocation status/log (named by $args->{'name'}), for a client to
+# poll now that runContainerHook above dispatches non-blockingly and returns almost
+# immediately. Same permission model as runContainerHook - reading a hook's own status/log
+# needs the same permissions as running it in the first place, not a separate lesser one.
+# Returns { status, output }:
+# status is hook_status($name)'s master-record entry (undef if $name has never been invoked
+# on this devtainer), output is load_hook_log($name)'s tailed log lines ([] if there is
+# nothing to show yet, for either reason).
+sub runContainerHookStatus ($self, $id, $args = {}) {
+   if( $id !~ m!^([0-9a-f]+)$! ) {
+      die Exception->new( 'msg' => "hook status read with invalid argument '$id' failed" );
+   }
+
+   if( !$self->has_permission('runContainerHooks') ) {
+      die Exception->new( 'msg' => "You need the 'runContainerHooks' permission to read a devtainer's hook status" );
+   }
+
+   my $container = $self->reservation($id);
+
+   if( !$self->can_on( $container, 'develop' )) {
+      die Exception->new( 'msg' => "You need the 'develop' permission to read a hook's status on this devtainer" );
+   }
+
+   my $name = $args->{'name'};
+   die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
+
+   return {
+      'status' => $container->hook_status($name),
+      'output' => $container->load_hook_log($name),
+   };
 }
 
 # Creates a Reservation object, stores it, and attempts to launch a container for that Reservation.
 # Named in camelCase for consistency with current REST API call.
-sub createContainerReservation ($self, $args) {
+#
+# $cb is required: bin/app-server's native create route is this method's only caller now -
+# async throughout (getGitDevContainer, then store(), then create - no fork, no
+# blocking GitHub fetch, no docker CLI subprocess). The old synchronous fallback, and the
+# App.pm route that was its only caller, are both gone (audited first - no other caller
+# existed).
+sub createContainerReservation ($self, $args, $cb) {
    # Launch new container.
    if( !$self->has_permission( 'createContainerReservation' ) ) {
       die Exception->new( 'msg' => "You need the 'createContainerReservation' permission to launch a devtainer" );
@@ -1015,7 +1254,7 @@ sub createContainerReservation ($self, $args) {
    );
 
    foreach my $m (qw( profile image runtime network unixuser access viewers developers private description gitURL IDE options )) {
-      $self->set($reservation, $m, $args->{$m}) || 
+      $self->set($reservation, $m, $args->{$m}) ||
          die Exception->new( 'msg' => "You have no permissions to set '$m' to '$args->{$m}' in this reservation" );
    }
 
@@ -1024,25 +1263,43 @@ sub createContainerReservation ($self, $args) {
    # Test if we can construct the command line; on failure, we'll throw an error.
    $reservation->cmdline();
 
-   my $dc = $reservation->getGitDevContainer();
-   if($dc) {
+   $reservation->getGitDevContainer( sub ($dc) {
+      if ($dc) {
+         if($dc->{'image'}) {
+            $reservation->data('image', $dc->{'image'});
 
-      if($dc->{'image'}) {
-         $reservation->data('image', $dc->{'image'});
-         
-         if(!$dc->{'overrideCommand'}) {
-            $reservation->data('entrypoint', '/bin/sh');
-            $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+            if(!$dc->{'overrideCommand'}) {
+               $reservation->data('entrypoint', '/bin/sh');
+               $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+            }
          }
+
+         $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
+         $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
+         $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
       }
 
-      $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
-      $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
-      $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
-   }
-
-   # Store, launch, and create a sanitised clone of the reservation object, before returning.
-   return $self->createClientReservation( $reservation->store()->launch() );
+      # Store, then create/launch asynchronously, then hand $cb a sanitised clone of the
+      # reservation object. A full (not narrowed) store() is correct here specifically: this
+      # reservation id has never been persisted before this call, so no other process can
+      # possibly be concurrently writing to it - none of Reservation::store_fields' concerns (a
+      # stale in-memory copy of some unrelated field clobbering a fresher one) apply to a
+      # record's very first write. Wrapped in try/catch because this whole callback runs outside
+      # the caller's own try/catch frame (it fires later, off the event loop, once the GitHub
+      # fetch above resolves) - an uncaught die here would be an uncaught exception inside a Mojo
+      # completion callback, not something bin/app-server's own surrounding try/catch could ever
+      # see (see docker_exec's own comment on this same hazard, Util.pm).
+      try {
+         $reservation->store()->create( sub ($createdReservation, $err) {
+            return $cb->( undef, $err ) if $err;
+            return $cb->( $self->createClientReservation($createdReservation), undef );
+         } );
+      }
+      catch {
+         $cb->( undef, $_ );
+      };
+   } );
+   return;
 }
 
 1;

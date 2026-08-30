@@ -7,12 +7,12 @@ our @EXPORT_OK = ( qw(
    flog wlog
    get_config
    trim is_true
-   call_socket_api call_socket_json_api docker_container_path_exists
+   call_socket_api_sync call_socket_api call_socket_json_api docker_container_path_exists docker_exec
    get_uri
    run run_system clean_pty run_pty
    sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
-   cache cacheReadWrite cloneHash lockFile
+   cacheReadWrite cloneHash lockFile
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    unique
    apply_args_to_record
@@ -125,7 +125,7 @@ sub is_true ($value) {
 
 sub call_socket_json_api ($socket, $path) {
 
-   my $result = call_socket_api($socket, $path);
+   my $result = call_socket_api_sync($socket, $path);
 
    unless($result) {
       die Exception->new( 'dbg' => "Unable to execute Docker API call $path" );
@@ -146,13 +146,26 @@ sub call_socket_json_api ($socket, $path) {
    return $object;
 }
 
-sub call_socket_api ($socket, $path, $opts = {}) {
+sub call_socket_api_sync ($socket, $path, $opts = {}) {
    my $ua = Mojo::UserAgent->new();
+
+   # Default (20s) is far too short for a held-open exec/start stream that can legitimately
+   # go quiet between output lines (e.g. an `npm run build` hook) - callers doing that must
+   # pass a generous inactivity_timeout explicitly; everything else keeps Mojo's own default.
+   $ua->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
+
+   # Bounds the *whole* call, active or not - unlike inactivity_timeout. When this fires,
+   # $ua->start() returns normally (does not die) with $tx->result undef and $tx->error set,
+   # rather than throwing - callers must check for that, not wrap this in a try/catch expecting
+   # an exception. This is purely client-side abandonment - the in-container process is *not*
+   # killed by it (there is no Docker API endpoint to kill a running exec at all), matching
+   # `timeout`'s own caveat in Reservation::dispatch_hook_exec.
+   $ua->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
 
    my $method = uc($opts->{'method'} // 'GET');
    my $uri = 'http+unix://' . uri_escape($socket) . $path;
 
-   flog("call_socket_api: $method $uri");
+   flog("call_socket_api_sync: $method $uri");
 
    my $result;
    try {
@@ -164,15 +177,110 @@ sub call_socket_api ($socket, $path, $opts = {}) {
       elsif($method eq 'HEAD') {
          $result = $ua->head($uri => $headers)->result;
       }
+      elsif($method eq 'POST') {
+         my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
+
+         # No 'on_read' streamed-consumption option here (unlike call_socket_api) -
+         # the only caller that ever needed it on the blocking path was the now-deleted sync
+         # docker_exec; every real streamed caller today goes through call_socket_api.
+         $result = $ua->post($uri => $headers => $body)->result;
+      }
       else {
          die Exception->new( 'dbg' => "Unsupported Docker API method '$method' for $path" );
       }
    }
    catch {
+      # Surprising: a request_timeout abort on a blocking $ua->start() does NOT leave
+      # $tx->result simply undef here - it actually throws (caught right here), unlike the
+      # same call made outside any try/catch at all. Capture the exception text via
+      # error_ref, for a caller that wants to distinguish "timed out" from "some other
+      # failure" - the generic `return undef` below already matches every other caller's
+      # existing contract, this only adds detail for one that asks for it.
+      ${ $opts->{'error_ref'} } = { 'message' => "$_" } if $opts->{'error_ref'};
       return undef;
    };
 
    return $result;
+}
+
+# Every in-flight call_socket_api's own Mojo::UserAgent, keyed by its transaction's refaddr
+# - removed the instant that call's own completion callback fires. Necessary, not optional:
+# Perl closures only capture a variable actually *referenced by name* in the closure body: the
+# completion callback below takes its own ($ua, $tx) parameters (Mojo's own convention), which
+# *shadow* the ones this function creates - so nothing keeps this function's own $ua alive once
+# it returns, unless something else holds a reference. This bites for real, not just in theory:
+# an earlier version of this without %ASYNC_UA_IN_FLIGHT failed intermittently with "Premature
+# connection close" - the request's own Mojo::UserAgent (which owns the connection) was
+# garbage-collected mid-flight the instant the enclosing scope exited, sometimes before the
+# connection had even finished being established.
+my %ASYNC_UA_IN_FLIGHT;
+
+# Non-blocking sibling of call_socket_api_sync above - never blocks the caller's own event loop.
+# Same $opts/conventions (method/json/inactivity_timeout/request_timeout/headers/http+unix://
+# transport) - this replicates call_socket_api_sync's own behavior for a non-blocking caller, it does
+# not redefine it. 'on_read' (streamed consumption) is one exception: only this async form
+# supports it - every real streamed-response caller already goes through here, and the blocking
+# form's own 'on_read' branch was dead code, removed above. $cb->($result, $error) fires exactly
+# once, whenever the call
+# settles: $result is the response object (call_socket_api_sync's own return value) whenever one
+# exists - including a non-2xx HTTP response, e.g. a 404, exactly as call_socket_api_sync's own
+# callers already handle by inspecting ->code/->is_success themselves, not by treating a non-2xx
+# as a failure - or undef with $error set to a message string for a genuine transport-level
+# failure (connection refused, or request_timeout).
+#
+# The result/error split below is not "if $tx->error then no result" - that would be wrong.
+# Three distinct cases: (1) success - $tx->error undef, $tx->result usable; (2) an HTTP-level
+# error status (e.g. 404) - $tx->error IS set (with a real ->{'code'}), but $tx->result is ALSO
+# still fully usable, same response object either way; (3) a genuine transport failure (bad
+# socket path, or request_timeout firing) - $tx->error is set with ->{'code'} undef, and calling
+# $tx->result in that case actually throws, exactly mirroring call_socket_api_sync's own documented
+# blocking-mode behavior for the same two cases. So the only correct discriminator for "was
+# anything usable returned at all" is $tx->error's own ->{'code'} being defined or not, not
+# whether ->error is set at all.
+sub call_socket_api ($socket, $path, $opts, $cb) {
+   my $ua = Mojo::UserAgent->new();
+   $ua->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
+   $ua->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
+
+   my $method = uc($opts->{'method'} // 'GET');
+   my $uri = 'http+unix://' . uri_escape($socket) . $path;
+   my $headers = {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'};
+
+   flog("call_socket_api: $method $uri");
+
+   # DELETE added for Reservation::action's 'remove' (DELETE /containers/{id}?v=true) -
+   # no body, same as GET/HEAD below - Docker's remove-container endpoint takes its options
+   # (v/force) as query params, not a body.
+   die Exception->new( 'dbg' => "call_socket_api: unsupported method '$method' for $path" )
+      unless $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE';
+
+   my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
+   my $tx = $method eq 'POST'
+      ? $ua->build_tx( POST => $uri => $headers => $body )
+      : $ua->build_tx( $method => $uri => $headers );
+
+   if( my $onRead = $opts->{'on_read'} ) {
+      $tx->res->content->unsubscribe('read')->on(read => sub ($content, $bytes) {
+         $onRead->($bytes);
+      });
+   }
+
+   $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;   # see %ASYNC_UA_IN_FLIGHT's own comment
+
+   $ua->start( $tx => sub ($ua, $tx) {
+      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+
+      my $err = $tx->error;
+      if( $err && !defined($err->{'code'}) ) {
+         # Transport-level failure - see this function's own header comment for why ->result
+         # would throw here rather than just being undef, and why that's not tested for.
+         $cb->( undef, $err->{'message'} );
+         return;
+      }
+      $cb->( $tx->result, undef );
+   } );
+
+   return $tx;   # so a caller with a long-held stream (e.g. /events) can retain/abort it later
 }
 
 # Returns ($exists, $mtime_epoch) where $mtime_epoch is a whole-second (integer) epoch
@@ -185,7 +293,7 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
       uri_escape($containerPath)
    );
 
-   my $result = call_socket_api($socket, $path, { 'method' => 'HEAD' });
+   my $result = call_socket_api_sync($socket, $path, { 'method' => 'HEAD' });
 
    unless($result) {
       die Exception->new( 'dbg' => "Unable to execute Docker API path check: $path", 'msg' => "Unable to check container path" );
@@ -233,24 +341,170 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
    return (1, $mtime);
 }
 
-sub get_uri ($uri) {
+# Runs $args->{'Cmd'} inside container $containerId via the Docker exec API directly (create,
+# then start) rather than forking the `docker` CLI - never blocks the caller's own event loop
+# (Mojo::IOLoop). $args:
+#   Cmd  => [...]   required, argv
+#   User => "..."   optional, exec as this user (matches `docker exec -u`)
+#   Env  => [...]   optional, "KEY=VALUE" strings (matches `docker exec --env`)
+# $opts:
+#   Detach             => 1   optional. Start detached (fire-and-forget) instead of the default
+#      non-detached start-and-stream: no output is ever attached or read (on_output is
+#      meaningless here and never called), and $cb fires immediately after creation -
+#      { execId, exitCode => undef, timedOut => 0 } - without waiting for the process to finish
+#      or inspecting its outcome at all. Needed for a perpetual process (e.g. the IDE launcher):
+#      the caller retains execId (via on_created, below) for its own later liveness polling
+#      instead - a non-detached dispatch of a perpetual process would hold the connection open
+#      for the container's whole life.
+#   on_created         => sub ($execId) { ... }  optional, called once the exec exists but
+#      *before* it is started - lets a caller persist the exec id (for later abort/liveness
+#      detection) right away.
+#   on_output          => sub ($stream, $bytes) { ... }  optional, called for each frame of
+#      output as it arrives (not buffered/batched) - $stream is 'stdout' or 'stderr'. Omit to
+#      discard output entirely (the caller only wants the final exit code).
+#   inactivity_timeout => seconds   optional, forwarded to call_socket_api - the exec can
+#      legitimately go quiet between output lines for longer than Mojo's 20s default.
+#   request_timeout    => seconds   optional, forwarded to call_socket_api - bounds the
+#      whole start-and-stream call regardless of activity. This is purely client-side
+#      abandonment: it does not kill the in-container process (see call_socket_api_sync's own
+#      comment) - the hook may still be running/finishing in the background after $cb fires.
+# $cb->($result, $error) fires exactly once, always, for every path including Detach: $result
+# is { execId, exitCode, timedOut } on success (exitCode undef if the start call itself timed
+# out - timedOut => 1, the in-container process's real outcome then unknowable from here - or
+# if the final inspect call failed after a successful stream, logged not fatal), or undef with
+# $error set for a create failure, a non-201 create response, or a start failure other than a
+# request_timeout. Every failure path reports via $cb rather than dying: an async caller has no
+# surrounding try/catch frame by the time any of this runs, so dying here would be an uncaught
+# exception inside a Mojo completion callback, not something any caller could catch.
+sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
+   call_socket_api( $socket, "/containers/$containerId/exec", {
+      'method' => 'POST',
+      'json'   => {
+         'AttachStdout' => JSON::true,
+         'AttachStderr' => JSON::true,
+         'Tty'          => JSON::false,
+         ( $args->{'User'} ? ( 'User' => $args->{'User'} ) : () ),
+         ( $args->{'Env'}  ? ( 'Env'  => $args->{'Env'}  ) : () ),
+         'Cmd' => $args->{'Cmd'},
+      },
+   }, sub ($createRes, $createErr) {
+      unless( $createRes ) {
+         $cb->( undef, "docker_exec: unable to create exec for containerId=$containerId: $createErr" );
+         return;
+      }
+      unless( $createRes->code == 201 ) {
+         $cb->( undef, sprintf( "docker_exec: create failed for containerId=%s: %d %s", $containerId, $createRes->code, $createRes->body ) );
+         return;
+      }
+
+      my $execId = decode_json($createRes->body)->{'Id'};
+      $opts->{'on_created'}->($execId) if $opts->{'on_created'};
+
+      if( $opts->{'Detach'} ) {
+         call_socket_api( $socket, "/exec/$execId/start", {
+            'method' => 'POST',
+            'json'   => { 'Detach' => JSON::true, 'Tty' => JSON::false },
+         }, sub ($startRes, $startErr) {
+            unless( $startRes && $startRes->code == 200 ) {
+               $cb->( undef, "docker_exec: unable to start (detached) execId=$execId" . ( $startErr ? ": $startErr" : '' ) );
+               return;
+            }
+            $cb->( { 'execId' => $execId, 'exitCode' => undef, 'timedOut' => 0 }, undef );
+         } );
+         return;
+      }
+
+      # Demultiplex Docker's own stream-multiplexed frame format directly: byte 0 is the stream
+      # type (1=stdout, 2=stderr), bytes 4-7 a big-endian payload length, that many content bytes
+      # follow. on_read may deliver a partial frame, or several frames at once, so a running
+      # buffer is kept across calls rather than assuming each call aligns with a frame boundary.
+      # A fresh $buf/$onRead closure per call, since each dispatch is independent.
+      my $onOutput = $opts->{'on_output'};
+      my $buf = '';
+      my $onRead = sub ($bytes) {
+         $buf .= $bytes;
+         while( length($buf) >= 8 ) {
+            my $type = unpack('C', substr($buf, 0, 1));
+            my $len  = unpack('N', substr($buf, 4, 4));
+            last if length($buf) < 8 + $len;
+            my $payload = substr($buf, 8, $len);
+            $buf = substr($buf, 8 + $len);
+            $onOutput->( ($type == 2) ? 'stderr' : 'stdout', $payload ) if $onOutput;
+         }
+      };
+
+      call_socket_api( $socket, "/exec/$execId/start", {
+         'method'             => 'POST',
+         'json'               => { 'Detach' => JSON::false, 'Tty' => JSON::false },
+         'inactivity_timeout' => $opts->{'inactivity_timeout'},
+         'request_timeout'    => $opts->{'request_timeout'},
+         'on_read'            => $onRead,
+      }, sub ($startRes, $startErr) {
+         unless( $startRes ) {
+            if( ($startErr // '') =~ /timeout/i ) {
+               flog("docker_exec: execId=$execId timed out waiting for it to finish (client-side only - the in-container process is not killed by this)");
+               $cb->( { 'execId' => $execId, 'exitCode' => undef, 'timedOut' => 1 }, undef );
+               return;
+            }
+            $cb->( undef, "docker_exec: unable to start execId=$execId" . ( $startErr ? ": $startErr" : '' ) );
+            return;
+         }
+
+         call_socket_api( $socket, "/exec/$execId/json", {}, sub ($inspectRes, $inspectErr) {
+            my $exitCode;
+            if( $inspectRes && $inspectRes->is_success ) {
+               $exitCode = decode_json($inspectRes->body)->{'ExitCode'};
+            }
+            else {
+               flog("docker_exec: post-run inspect of execId=$execId failed; exitCode unavailable");
+            }
+            $cb->( { 'execId' => $execId, 'exitCode' => $exitCode, 'timedOut' => 0 }, undef );
+         } );
+      } );
+   } );
+}
+
+# Just GET a URI, non-blocking - $cb->($result) fires with the response object, or undef on
+# any failure (connection error, timeout, ...). Used by Reservation::getGitDevContainer;
+# kept as its own function here, not inlined, in case another caller needs the same non-blocking
+# fetch later. Manual build_tx/start (not the ->get($uri => $cb) shorthand) and
+# %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api above - the same
+# "Premature connection close" GC hazard applies here (this function's own $ua is otherwise
+# unreferenced the instant it returns), same fix.
+sub get_uri ($uri, $cb) {
    my $ua = Mojo::UserAgent->new();
 
    flog("get_uri: $uri");
 
-   my $result;
-   try {
-      $result = $ua->get($uri)->result;
-   }
-   catch {
-      return undef;
-   };
+   my $tx = $ua->build_tx( GET => $uri );
+   $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;
 
-   return $result;
+   $ua->start( $tx => sub ($ua, $tx) {
+      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+
+      my $err = $tx->error;
+      if( $err && !defined($err->{'code'}) ) {
+         $cb->(undef);
+         return;
+      }
+      $cb->( $tx->result );
+   } );
+
+   return;
 }
 
 sub run ($cmd, $unsafe = undef) {
-   # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
+   # Locally reset SIG{CHLD} to 'DEFAULT' so this process (not an inherited handler)
+   # reaps $cmd's own exit status - a handler installed further up would otherwise race
+   # this subprocess's own wait, intermittently losing its exit code. Host-agnostic
+   # rationale, not nginx-specific: this code runs both embedded in nginx (via
+   # ngx_http_perl_module - nginx's own SIGCHLD handling is the original motivation
+   # here, see the links below) and standalone inside bin/app-server (a plain
+   # Mojolicious process, no nginx-specific quirk to guard against, but harmless/still
+   # correct to reset regardless). No fork sites remain in this codebase whose own
+   # handler installation this needs to defend against either way (Reservation::launch's
+   # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
+   # is gone.
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
@@ -275,7 +529,17 @@ sub run ($cmd, $unsafe = undef) {
 }
 
 sub run_system (@cmd) {
-   # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
+   # Locally reset SIG{CHLD} to 'DEFAULT' so this process (not an inherited handler)
+   # reaps $cmd's own exit status - a handler installed further up would otherwise race
+   # this subprocess's own wait, intermittently losing its exit code. Host-agnostic
+   # rationale, not nginx-specific: this code runs both embedded in nginx (via
+   # ngx_http_perl_module - nginx's own SIGCHLD handling is the original motivation
+   # here, see the links below) and standalone inside bin/app-server (a plain
+   # Mojolicious process, no nginx-specific quirk to guard against, but harmless/still
+   # correct to reset regardless). No fork sites remain in this codebase whose own
+   # handler installation this needs to defend against either way (Reservation::launch's
+   # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
+   # is gone.
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
@@ -349,7 +613,17 @@ sub run_pty ($cmd, $logfile) {
       $fh->flush();
    };
 
-   # Magically prevent nginx from reaping the subprocess running $cmd, before we do.
+   # Locally reset SIG{CHLD} to 'DEFAULT' so this process (not an inherited handler)
+   # reaps $cmd's own exit status - a handler installed further up would otherwise race
+   # this subprocess's own wait, intermittently losing its exit code. Host-agnostic
+   # rationale, not nginx-specific: this code runs both embedded in nginx (via
+   # ngx_http_perl_module - nginx's own SIGCHLD handling is the original motivation
+   # here, see the links below) and standalone inside bin/app-server (a plain
+   # Mojolicious process, no nginx-specific quirk to guard against, but harmless/still
+   # correct to reset regardless). No fork sites remain in this codebase whose own
+   # handler installation this needs to defend against either way (Reservation::launch's
+   # own $SIG{'CHLD'}=sub{...} - the other historical source of an inherited handler -
+   # is gone.
    # See https://www.perlmonks.org/?node_id=1032725
    # https://stackoverflow.com/questions/5606668/no-child-processes-error-in-perl
    local $SIG{'CHLD'} = 'DEFAULT';
@@ -457,22 +731,6 @@ sub lockFile ($lockfile) {
    return $LK;
 }
 
-sub cacheEvery ($file, $cacheTime, $sub = undef, @args) {
-   my $FILEPATH = $file;
-
-   my $lastModified = (stat($FILEPATH))[9];
-
-   flog(sprintf("Util::cache: file=$FILEPATH; cacheTime=$cacheTime; sub=%s; lm=%s, age=%d",
-      $sub ? 'Yes' : 'No',
-      $lastModified, time - $lastModified));
-
-   if($sub && (!defined($lastModified) || (defined($lastModified) && (time - $lastModified) >= $cacheTime))) {
-      return cacheReadWrite($FILEPATH, $sub, @args);
-   }
-
-   return cacheReadWrite($FILEPATH);
-}
-
 # Recursively copy across differing values from source hashref to destination hashref
 sub cloneHash ($from, $to) {
    while( my($k, $v) = each %{$from}) {
@@ -482,12 +740,22 @@ sub cloneHash ($from, $to) {
             next;
          }
 
-         if( 
-            (!exists($to->{$k}) && exists($from->{$k})) ||
-            ($to->{$k} ne $from->{$k})
-            ) {
-            $to->{$k} = $from->{$k};
-         }
+         # Always copy - do not gate this on a "only if different" check. That check used to
+         # read `($to->{$k} ne $from->{$k})` - `ne` is a *string* comparison, and merely
+         # evaluating it stringifies both operands as a side effect of how Perl's
+         # string-comparison operators work, regardless of whether the value started life as
+         # a clean integer. A scalar that has been through this even once carries Perl's
+         # string flag from then on, so JSON::XS later encodes it as a quoted JSON string
+         # ("0") rather than a bare number (0) - a real, non-obvious bug found while building
+         # the hook-status endpoint: any numeric field written via store()/update() (the only
+         # caller of this function) and later
+         # read by a type-sensitive JSON consumer (e.g. Python's `if x:`, where the *string*
+         # "0" is truthy unlike the *number* 0) was exposed to this, not just hook fields.
+         # Dropping the check is safe, not just a workaround: this function's only caller,
+         # Reservation::Mutate::update(), already unconditionally returns 1 (always rewrites
+         # the reservation db) regardless of what this check decided - so the check was never
+         # skipping a real write, only a redundant, already-inert equality test.
+         $to->{$k} = $from->{$k};
       }
    }
 }
@@ -499,6 +767,9 @@ sub get_cookie ($cookie, $name) {
 }
 
 sub encrypt_password ($p, $salt = undef) {
+   # ~5-9ms pure CPU per call (deliberately slow, a security property, not a bug) - the one thing
+   # app-server's async I/O can't help by nature; if ever worth fixing, Mojo::IOLoop::Subprocess
+   # is the natural mechanism, not a bespoke worker pool. Not urgent: login/password-set only.
 
    my @letters = ( 'A' .. 'Z', 'a' .. 'z', '0' .. '9', '/', '.' );
 

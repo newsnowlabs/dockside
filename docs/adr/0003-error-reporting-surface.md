@@ -53,3 +53,13 @@ and the sanitisation/abbreviation that backs it — not the invention of the
   detail and secrets.
 - **Sanitise but still return `dbg`** — rejected: even sanitised, `dbg` exposes
   internal structure and command lines the client does not need.
+
+## Addendum (2026-08-16): handler relocated, decision unchanged
+
+"A central handler in `App.pm`" (Context, above) no longer describes where this lives:
+[ADR-0006](0006-standalone-app-server.md) moves the UI/API server off nginx onto a
+standalone process, and `App.pm` no longer handles requests at all. The sole
+error-response path for the whole server is now `_render_error` in `bin/app-server` — same
+`Exception` shape, same `sanitize_sensitive_text` treatment of both `msg` and `dbg`, same
+"never return `dbg`" rule, just relocated with the code that used to carry it. Nothing about
+the decision itself changed.

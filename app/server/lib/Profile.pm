@@ -12,6 +12,7 @@ package Profile;
 use v5.36;
 
 use JSON;
+use Scalar::Util qw(looks_like_number);
 use Storable qw(dclone);
 use Data qw($CONFIG $HOSTNAME $HOSTINFO);
 use Util qw(flog TO_JSON);
@@ -274,6 +275,7 @@ sub validate ($self) {
          description=s
          active=b!
          mountIDE=b
+         docksideLaunchVersion=n
          routers=@
          runtimes=@
          networks=@
@@ -288,11 +290,13 @@ sub validate ($self) {
          metadata
          lxcfs=b
          ssh=b
+         userRouters=b
          ide=b
          security=%
          gitURLs=@
          IDEs=@
          options=@
+         hooks=%
       )
    );
 
@@ -367,6 +371,11 @@ sub do_validate ($self, $type, $data, @propcodes) {
          next;
       }
 
+      if( $props->{$prop}->{'n'} && ( ref($data->{$prop}) || !looks_like_number($data->{$prop}) ) ) {
+         $self->errors( $type, sprintf( 'property "%s" must be JSON type Number, not %s', $prop, $data->{$prop} ) );
+         next;
+      }
+
       if( $props->{$prop}->{'s'} && ref($data->{$prop}) ) {
          $self->errors( $type, sprintf( 'property "%s" must be JSON type String', $prop ) );
          next;
@@ -394,6 +403,15 @@ sub do_validate ($self, $type, $data, @propcodes) {
       $self->$sub( "$type.$prop", $data->{$prop} );
    }
 
+}
+
+# The generic =n code (see do_validate) only rules out a non-number; a version number (see
+# Profile::ide_launch_version) is narrower still - a non-negative integer - so this refines it
+# beyond what the generic check alone allows (e.g. a negative or fractional value).
+sub validate_profile_docksideLaunchVersion ($self, $type, $data) {
+   unless( $data =~ /^\d+$/ ) {
+      return $self->errors( $type, "must be a non-negative integer" );
+   }
 }
 
 sub validate_profile_IDEs ($self, $type, $data) {
@@ -436,6 +454,87 @@ sub validate_profile_options ($self, $type, $data) {
          unless( ref($opt->{'values'}) eq 'ARRAY' && @{$opt->{'values'}} ) {
             $self->errors( "$type\[$i\].values", "must be a non-empty Array when type is 'select' or 'combo'" );
          }
+      }
+   }
+}
+
+# Reserved lifecycle hook names, namespaced under 'lifecycle:' so they can never
+# collide with a custom hook name (custom names forbid ':' entirely - see
+# $CUSTOM_HOOK_NAME_RE below). 'lifecycle:launch' and 'lifecycle:start' are
+# implemented today - both run once launch-time git/ssh/gh setup completes,
+# 'lifecycle:launch' only on this devtainer's true first launch and 'lifecycle:start'
+# on every launch including that one (see Reservation::exec), and both are
+# re-runnable on demand if their own 'hooks' entry sets 'manual' true - see
+# Reservation::run_hook_manual. The remaining names are reserved for
+# docs/roadmap.md's broader (unimplemented) lifecycle-hooks ambition
+# (stop/rename/periodic), so the schema doesn't need to change shape again when
+# those land. Being schema-valid here is independent of being dispatchable:
+# run_hook_manual rejects every reserved name except 'lifecycle:launch'/
+# 'lifecycle:start' with a "not yet implemented" error regardless of this
+# allow-list or 'manual'.
+my @RESERVED_LIFECYCLE_HOOKS = map { "lifecycle:$_" } qw( launch start stop rename periodic );
+
+# Custom (non-lifecycle) hook names are free-form: lowercase, start with a letter,
+# hyphens allowed but not leading/trailing/doubled - mirrors the devtainer-name slug
+# rule (Reservation.pm's validate(), '/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/'). Never
+# matches a 'lifecycle:' name, since colons aren't a valid slug character.
+my $CUSTOM_HOOK_NAME_RE = qr/^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/;
+
+# 'launch:*' is a second reserved namespace, but unlike 'lifecycle:*' it is never
+# profile-declarable at all - these names (launch:prep/launch:git/launch:ide) are DED's own
+# internal launch-dispatch bookkeeping, written directly into data('hooks') by DED itself, with
+# no profile-supplied script involved. The custom-name regex above already rejects any colon, so
+# a profile declaring 'hooks.launch:prep' would fail validation regardless - this exists purely
+# to give that specific, common-to-guess collision a clear, accurate error instead of the
+# generic "invalid hook name" message.
+my $RESERVED_LAUNCH_NAME_RE = qr/^launch:/;
+
+# Each hooks.<name> entry is an Object. 'script' is mandatory - the absolute in-image path to
+# run. 'manual' - may this hook also be run on demand via 'dockside hook run', in addition to
+# its automatic invocation? - is meaningful only on a reserved 'lifecycle:*' entry; custom
+# hooks are always manually invocable already (they never auto-fire), so setting 'manual' on
+# one would be meaningless and is rejected as a likely mistake. Neither 'manual' nor 'script'
+# says anything about whether the *lifecycle event itself* is implemented yet - see
+# Reservation::run_hook_manual's separate "is this actually implemented" gate.
+sub validate_profile_hooks ($self, $type, $data) {
+   unless( ref($data) eq 'HASH' ) {
+      return $self->errors( $type, "must be a JSON Object" );
+   }
+
+   my %reserved = map { $_ => 1 } @RESERVED_LIFECYCLE_HOOKS;
+
+   foreach my $name ( sort keys %$data ) {
+      if( $name =~ $RESERVED_LAUNCH_NAME_RE ) {
+         $self->errors( "$type.$name", "'launch:*' names are reserved for Dockside's own " .
+            "internal launch dispatch and can never be declared in a profile" );
+         next;
+      }
+
+      unless( $reserved{$name} || $name =~ $CUSTOM_HOOK_NAME_RE ) {
+         $self->errors( "$type.$name", sprintf(
+            "invalid hook name - must be a reserved lifecycle hook (%s) or a custom name " .
+            "(lowercase, starting with a letter, hyphens allowed but not leading/trailing/doubled)",
+            join( ', ', @RESERVED_LIFECYCLE_HOOKS )
+         ) );
+         next;
+      }
+
+      my $entry = $data->{$name};
+
+      unless( ref($entry) eq 'HASH' ) {
+         $self->errors( "$type.$name", "must be a JSON Object with a 'script' property" );
+         next;
+      }
+
+      $self->do_validate( "$type.$name", $entry, qw( script=s! manual=b ) );
+
+      my $script = $entry->{'script'};
+      if( defined($script) && length($script) && $script !~ m!^/! ) {
+         $self->errors( "$type.$name.script", "must be an absolute path to an executable in the image" );
+      }
+
+      if( !$reserved{$name} && exists $entry->{'manual'} ) {
+         $self->errors( "$type.$name.manual", "must not be set on a custom (non-lifecycle) hook - custom hooks are always manually invocable" );
       }
    }
 }
@@ -571,8 +670,20 @@ sub options ($self) {
    return $self->{'options'} // [];
 }
 
+sub hooks ($self) {
+   return $self->{'hooks'} // {};
+}
+
 sub ssh ($self) {
    return $self->{'ssh'};
+}
+
+# Does this profile allow a permission-holding developer to add a brand-new router to a live
+# reservation at all? (docs/adr/0008-router-mutation.md) - the one profile-level gate that
+# survived review; there is no equivalent per-router flag for *removal*, which needs only the
+# addContainerRouter/removeContainerRouter permission + developer standing.
+sub userRouters ($self) {
+   return $self->{'userRouters'};
 }
 
 # N.B. distinct from Reservation's own '{ide}' key (the launch-command config copied
@@ -735,6 +846,21 @@ sub should_mount_ide ($self) {
    return 1 unless exists($self->{'mountIDE'}) && $self->{'mountIDE'} == 0;
 
    return 0;
+}
+
+# A mountIDE:false devtainer supplies its own /opt/dockside (self-installed from its own image
+# on launch), unlike mountIDE:true, which bind-mounts the outer Dockside's own IDE volume and so
+# always runs the exact same launch.sh the outer does. Only the mountIDE:false case can ever run
+# a launch.sh of a different generation than the outer's own - docksideLaunchVersion lets such a
+# profile declare which launch.sh interface its devtainer actually speaks, so docker-event-daemon
+# can dispatch accordingly instead of assuming its own current interface. Ignored when mountIDE
+# is true: that case is always in sync by construction, so no version is meaningful there.
+#
+# Version 0 is the interface predating the launch:prep/launch:git split (a single monolithic
+# launch_ide covering user/sshd/git/IDE setup); version 1 (the default) is the current split
+# launch:prep -> {launch:git, launch:ide} interface docker-event-daemon otherwise assumes.
+sub ide_launch_version ($self) {
+   return $self->{'docksideLaunchVersion'} // 1;
 }
 
 sub run_docker_init ($self) {

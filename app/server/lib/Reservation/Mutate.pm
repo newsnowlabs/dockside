@@ -4,9 +4,9 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map);
+our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
 
-use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash);
+use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync);
 use Exception;
 use Data qw($CONFIG);
 use JSON;
@@ -150,9 +150,373 @@ sub load_clean_map ($class, @containerIds) {
 
          # Only rewrite the reservation db if there were actual updates.
          return $Updates;
-         
+
       }
    );
+}
+
+# record_hook_history:
+#
+# Atomically append $entry to reservation $id's data.hooks.history array, evicting oldest-first
+# down to at most $cap rows once appending would exceed it - but only rows in a terminal state
+# ($_->{'exitCode'} defined), never a still-running one (item B's storage-model rule: an
+# unrelated, more-frequent *other* hook name's invocations must never push a genuinely
+# still-running row out from under it, so the array can transiently exceed $cap while enough
+# invocations are genuinely in flight at once - expected, not a bug).
+#
+# Deliberately its own atomic mutator, bypassing Reservation::store()'s usual whole-record
+# update() - update()'s cloneHash-based merge (Util.pm) recurses safely into nested *hashes*
+# (data.hooks.status, keyed by hook name, merges key-by-key across concurrent dispatches
+# updating different names, each blind to the other's simultaneous write), but an *array*
+# value is only ever compared by reference and replaced wholesale - two concurrent appends
+# via that path would race, and the loser's row would simply be lost. This function instead
+# re-reads the reservation fresh under mutate()'s own exclusive lock, appends, evicts, and
+# writes back - safe under genuine concurrency, unlike a read-append-store() round trip
+# through a possibly-stale in-memory copy of the whole array.
+sub record_hook_history ($id, $entry, $cap) {
+   return mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $data = $reservation->{'data'} //= {};
+         my $hooks = $data->{'hooks'} //= {};
+         my $history = $hooks->{'history'} //= [];
+
+         push(@$history, $entry);
+
+         while( @$history > $cap ) {
+            my $evictIndex;
+            for my $i ( 0 .. $#$history ) {
+               if( defined $history->[$i]{'exitCode'} ) {
+                  $evictIndex = $i;
+                  last;
+               }
+            }
+            last unless defined $evictIndex;
+            splice(@$history, $evictIndex, 1);
+         }
+
+         return 1;
+      }
+   );
+}
+
+# increment_data_field:
+#
+# Atomically increments $reservation.data.$key by 1 and returns the new value. Same rationale
+# and pattern as record_hook_history just above (its own comment explains the general
+# principle in full) - the read and the write both happen inside mutate()'s own exclusive lock,
+# against a freshly re-read reservation, never against this process's own in-memory copy.
+#
+# Deliberately not just "narrow the eventual store() payload down to {data => {$key => N}}":
+# narrowing what gets *sent* (see Reservation::store_fields) only protects fields a writer
+# isn't trying to change, by leaving them absent from its payload entirely - it does nothing
+# for a field the writer *is* trying to change, whose new value is computed by reading the
+# field's own prior value first (an increment, unlike an authoritative "set to X"). Two
+# increments computed from the same stale read would still silently lose one, no matter how
+# narrowly the write is scoped - only recomputing from a fresh value, under the same lock as
+# the write, closes that. (Today's calling code only ever attempts one increment per launch
+# cycle, per stage's own idempotency guard, so this isn't defending against a currently-known
+# concurrent second incrementer - it's closing the same class of gap record_hook_history
+# already closes for the history array, on the same principle, so a future caller doesn't
+# reopen it.)
+sub increment_data_field ($id, $key) {
+   my $newValue;
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $data = $reservation->{'data'} //= {};
+         $newValue = ( $data->{$key} // 0 ) + 1;
+         $data->{$key} = $newValue;
+         return 1;
+      }
+   );
+   return $newValue;
+}
+
+################################################################################
+# ROUTER MUTATION (add / remove / replace)
+#
+# docs/adr/0008-router-mutation.md - these run the whole read-validate-mutate-write cycle inside
+# mutate()'s own flock, against the freshly-reread on-disk record, not whatever the caller's
+# in-memory Reservation object last saw - closing the same class of lost-update race
+# store_fields()'s own comment warns about for a blind whole-array overwrite (cloneHash only
+# merges HASH-vs-HASH pairs; 'routers' is an array, a pure leaf-overwrite). Called only via
+# Reservation.pm's own add_router/remove_router/replace_router methods (never directly), which
+# also keep this process's in-memory copy in sync afterward - see those methods' own comments.
+# Permission/profile-gate checks happen in User.pm before any of these are ever called; nothing
+# here re-checks them - only the array mutation itself, plus the one hard, non-bypassable
+# ide/ssh removal block, needs the lock's protection. This module also makes no *access-level
+# policy* decision of its own: add_router/replace_router take the initial meta.access value as an
+# already-resolved $accessLevel argument (User.pm decides what that should be - its own
+# owner/developer default, or an explicit caller override) and only check it's legal under the
+# router's final auth list - see _check_router_access_level below.
+
+# Confirms $accessLevel is actually legal under $auth (the router's final, default-wide or
+# caller-narrowed, auth list) and dies with a clear Exception if not. This module makes no policy
+# decision about *what* the level should be - that's resolved entirely by User.pm (its own
+# owner/developer default, or an explicit caller override - docs/adr/0008-router-mutation.md) and
+# handed down as $accessLevel already-chosen; this is a pure data-integrity check, the same kind
+# add_router/replace_router already do for shape/collision problems.
+sub _check_router_access_level ($accessLevel, $auth) {
+   die Exception->new(
+      'msg'    => "access level '$accessLevel' is not among this router's allowed access levels: " . join(', ', @$auth),
+      'status' => 400
+   ) unless grep { $_ eq $accessLevel } @$auth;
+}
+
+# Adds a router to reservation $id. Validates/normalises $routerDef via
+# Reservation::normalise_router_def against the fresh on-disk router list (dies with an Exception
+# on any collision or shape problem), then sets meta.access[name] to $accessLevel - already
+# resolved by User.pm, only checked here for legality against the router's final auth list (see
+# _check_router_access_level above) - in the same transaction. That's needed regardless of who
+# resolves the value: without it, cloneWithConstraints (Reservation.pm's own client-sanitising
+# clone) silently drops the new router from every client payload, since (unlike the live-routing
+# default in Reservation::routers()) it has no fallback for a missing meta.access entry. Rejects
+# outright in gatewayMode (deprecated, not worth this feature's complexity budget there) before
+# ever taking the lock, since that's a static, non-racy config fact. Returns
+# ($normalised, $accessLevel) - Reservation.pm's own add_router needs both to keep its in-memory
+# copy in sync (the second is just $accessLevel echoed back, kept for shape-parity with
+# replace_router below, whose second return value can genuinely differ from what was passed in).
+sub add_router ($id, $routerDef, $accessLevel) {
+   die Exception->new(
+      'msg'    => "adding a router is not supported while this Dockside instance runs in gatewayMode",
+      'status' => 400
+   ) if $CONFIG->{'gatewayMode'};
+
+   my $normalised;
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id}
+            or die Exception->new( 'msg' => "Reservation '$id' not found", 'status' => 400 );
+         my $routers = $reservation->{'profileObject'}{'routers'} //= [];
+         $normalised = Reservation::normalise_router_def( $routerDef, $routers );
+         _check_router_access_level( $accessLevel, $normalised->{'auth'} );
+         push( @$routers, $normalised );
+         $reservation->{'meta'}{'access'}{ $normalised->{'name'} } = $accessLevel;
+         return 1;
+      }
+   );
+   return ( $normalised, $accessLevel );
+}
+
+# Removes router $name from reservation $id. Dies if $name doesn't exist, or is type ide/ssh -
+# the one hard, non-bypassable rule left; every other router (admin-authored or type=user alike)
+# is removable once User.pm's own permission + can_on(develop) gate passed.
+# Also deletes the now-orphaned meta.access[$name] entry, so a later router reusing this name
+# starts from add_router's own fresh default rather than inheriting stale access.
+sub remove_router ($id, $name) {
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id}
+            or die Exception->new( 'msg' => "Reservation '$id' not found", 'status' => 400 );
+         my $routers = $reservation->{'profileObject'}{'routers'} // [];
+         my ($target) = grep { $_->{'name'} eq $name } @$routers;
+         die Exception->new( 'msg' => "router '$name' not found", 'status' => 400 ) unless $target;
+         die Exception->new(
+            'msg'    => "router '$name' has type '" . ( $target->{'type'} // '' ) . "' and can never be removed",
+            'status' => 400
+         ) if ( $target->{'type'} // '' ) =~ /^(?:ide|ssh)$/;
+
+         $reservation->{'profileObject'}{'routers'} = [ grep { $_->{'name'} ne $name } @$routers ];
+         delete $reservation->{'meta'}{'access'}{$name};
+         return 1;
+      }
+   );
+   return 1;
+}
+
+# Atomically replaces router $name with $routerDef - same-name remove+add under one lock, so a
+# rename-in-place never has a window where the router is simply gone. Carries meta.access[$name]
+# forward when $routerDef's (possibly caller-supplied) name is unchanged *and* that carried value
+# is still legal under the new (possibly caller-narrowed) auth list; otherwise falls back to
+# $accessLevel - already resolved by User.pm exactly as add_router's own $accessLevel is, not
+# decided here. Returns ($normalised, $accessLevel) - the caller (Reservation.pm's own
+# replace_router) needs both to keep its in-memory copy in sync. Same hard ide/ssh block as
+# remove_router; collision-checked against the router list with the old entry already excluded,
+# so replacing a router with an unchanged definition of the same name never spuriously collides
+# with itself.
+sub replace_router ($id, $name, $routerDef, $accessLevel) {
+   my ( $normalised, $resolvedAccessLevel );
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id}
+            or die Exception->new( 'msg' => "Reservation '$id' not found", 'status' => 400 );
+         my $routers = $reservation->{'profileObject'}{'routers'} // [];
+         my ($target) = grep { $_->{'name'} eq $name } @$routers;
+         die Exception->new( 'msg' => "router '$name' not found", 'status' => 400 ) unless $target;
+         die Exception->new(
+            'msg'    => "router '$name' has type '" . ( $target->{'type'} // '' ) . "' and can never be removed/replaced",
+            'status' => 400
+         ) if ( $target->{'type'} // '' ) =~ /^(?:ide|ssh)$/;
+
+         my @remaining = grep { $_->{'name'} ne $name } @$routers;
+         $normalised = Reservation::normalise_router_def( $routerDef, \@remaining );
+         push( @remaining, $normalised );
+         $reservation->{'profileObject'}{'routers'} = \@remaining;
+
+         # Carry the old level forward only if it's still legal under the (possibly caller-
+         # narrowed) new auth list - e.g. replacing a 'public' router with one whose auth has been
+         # narrowed to ['owner'] must not silently keep 'public' just because the name matched.
+         # Otherwise fall back to $accessLevel, which is still checked for legality either way.
+         my $carried = $reservation->{'meta'}{'access'}{$name};
+         $resolvedAccessLevel = ( $normalised->{'name'} eq $name && defined($carried) &&
+                                   grep { $_ eq $carried } @{ $normalised->{'auth'} } )
+            ? $carried
+            : $accessLevel;
+         _check_router_access_level( $resolvedAccessLevel, $normalised->{'auth'} );
+         delete $reservation->{'meta'}{'access'}{$name} unless $normalised->{'name'} eq $name;
+         $reservation->{'meta'}{'access'}{ $normalised->{'name'} } = $resolvedAccessLevel;
+
+         return 1;
+      }
+   );
+   return ( $normalised, $resolvedAccessLevel );
+}
+
+# Shared by hook_claim_if_not_running and launch_reset_stages_if_idle below - both need the
+# identical "is this status entry genuinely still running" decision, now performed inside
+# mutate()'s lock rather than hook_is_running's unlocked, single-process form. Mirrors
+# hook_is_running's own liveness/self-heal reasoning exactly (execId is the only signal, same
+# fallback to 'aborted' if it's inconclusive). The execId probe is a real HTTP round-trip to
+# dockerd, so a caller with an existing 'running' entry does hold the reservations-db file lock
+# for its duration - only on that path, never on the common "nothing recorded" path, which this
+# returns from after a single hash lookup.
+#
+# Returns ($isLive, $healedEntry): $isLive true means genuinely still running - the caller must
+# not touch this slot. $healedEntry is a resolved entry (done/failed/aborted), for the caller to
+# persist and record_hook_history, if $existing was stale and needed self-healing; undef if
+# $existing was already terminal, absent, or genuinely live (nothing to heal either way).
+sub _hook_entry_liveness ($existing) {
+   return ( 0, undef ) unless $existing && ( $existing->{'state'} // '' ) eq 'running';
+
+   if ( !defined( $existing->{'execId'} ) ) {
+      return ( 1, undef );   # newly-started elsewhere, the signal doesn't exist yet - genuinely live
+   }
+
+   my $res = call_socket_api_sync( $CONFIG->{'docker'}{'socket'}, "/exec/$existing->{'execId'}/json", {} );
+   if ( $res && $res->is_success ) {
+      my $info = decode_json( $res->body );
+      return ( 1, undef ) if $info->{'Running'};   # genuinely still running
+
+      if ( defined $info->{'ExitCode'} ) {
+         return ( 0, { %$existing,
+            'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
+            'exitCode' => $info->{'ExitCode'},
+         } );
+      }
+   }
+   return ( 0, { %$existing, 'state' => 'aborted' } );   # signal not conclusive - self-heal
+}
+
+# Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely
+# running, marks it running (with $logPath) and returns true (the caller should proceed to
+# dispatch); if it genuinely is, returns false (the caller should report busy / skip) - all
+# inside one mutate() call, so two concurrent callers (different app-server workers
+# dispatching run_hook_manual, or an app-server worker racing docker-event-daemon's own
+# launch-DAG auto-dispatch of lifecycle:launch/lifecycle:start) can never both see "not
+# running" and both proceed, the way Reservation::hook_is_running + hook_status_started could
+# when called as two separate, unlocked steps: a real, reproducible race, not just a
+# theoretical one - 2 of 4 genuinely concurrent `dockside hook run` calls against the same
+# devtainer both actually executed the hook script under that unlocked design, confirmed
+# against the container's own execution log, not just the API's response.
+#
+# Deliberately not built on top of hook_is_running/hook_status_started - those remain as they
+# are (a fast, unlocked, best-effort pre-check and a plain recording write respectively), still
+# used on their own by callers that only ever have a single writer for the name in question
+# (docker-event-daemon's own restart-recovery/on_tick self-heal, and the read-only hook_status()
+# endpoint) and don't need this. This is for the two call sites where a second, concurrent
+# writer for the *same* name is genuinely possible: Reservation::run_hook_manual (multiple
+# app-server workers) and docker-event-daemon's own auto-dispatch of lifecycle:launch/
+# lifecycle:start (the only two DAG stage names externally reachable via run_hook_manual
+# too, when a profile's hooks entry sets "manual": true on them).
+#
+# A self-heal here (finding a stale entry and resolving it 'done'/'failed'/'aborted' before
+# claiming the slot fresh) also needs a history-array append, exactly like hook_is_running's own
+# self-heal does via hook_status_completed - done as a separate, sequential record_hook_history
+# call *after* this mutate() returns (nesting a second mutate() call inside this one's own
+# closure would try to flock() the same file twice from this process and deadlock - mutate()'s
+# lock is not reentrant).
+#
+# Returns the claimed entry (a hashref) if this call won and should proceed to dispatch, or
+# undef if another invocation already owns $name. mutate() only ever operates on a fresh,
+# separately-loaded copy of the reservation, never the caller's own in-memory object (see
+# Reservation::Mutate::update's own comment) - a winning caller MUST sync this returned entry
+# onto its own in-memory Reservation, exactly mirroring _hook_status_store_one's existing
+# discipline, or its own subsequent hook_status_set_running_details call would merge execId
+# onto stale (pre-claim) in-memory state instead of this fresh entry.
+sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
+   my $claimedEntry;
+   my $healedEntry;
+
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+
+         my ( $isLive, $healed ) = _hook_entry_liveness( $status->{$name} );
+         return 0 if $isLive;
+         if ( $healed ) {
+            $healedEntry = $healed;
+            $status->{$name} = $healed;
+            # Falls through to claim the now-free slot below.
+         }
+
+         $status->{$name} = $claimedEntry = {
+            'name'      => $name,
+            'state'     => 'running',
+            'execId'    => undef,
+            'logPath'   => $logPath,
+            'startTime' => YYYYMMDDHHMMSS(time),
+         };
+         return 1;
+      }
+   );
+
+   record_hook_history( $id, { %$healedEntry }, $cap ) if $healedEntry;
+   return $claimedEntry;
+}
+
+# Atomically resets every name in @$stageNames to 'pending' for a fresh launch cycle - except
+# any name that's genuinely still running right now (same live-check as
+# hook_claim_if_not_running), which is left untouched rather than blindly overwritten.
+#
+# docker-event-daemon's own launch_reset_stages used to send all 5 DAG stage names
+# unconditionally, every container-start event including ordinary restarts. Fine for
+# launch:prep/launch:git/launch:ide (docker-event-daemon-exclusive - nothing else ever writes
+# them), but lifecycle:launch/lifecycle:start are also reachable via a concurrent on-demand
+# run_hook_manual invocation (same two names hook_claim_if_not_running exists for) - genuinely
+# possible for a manually-triggered lifecycle:start to be mid-flight in one process at the
+# exact moment another restart's reset fires in docker-event-daemon. Blindly overwriting that
+# entry's 'running' state to 'pending' wouldn't cause a second dispatch (nothing reads this
+# reset as a signal to dispatch anything already-applicable-false or already-dispatched-
+# elsewhere), but would corrupt the status record's own accuracy for the duration - checked the
+# same way for all 5 names here rather than special-casing which two actually need it.
+#
+# Returns the entries actually written (a hashref, name => entry) - the caller must sync these
+# onto its own in-memory Reservation, exactly as hook_claim_if_not_running's callers do (mutate()
+# only ever operates on a fresh, separately-loaded copy, never the caller's own object).
+sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
+   my $written = {};
+   my @healedEntries;
+
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+
+         for my $name (@$stageNames) {
+            my ( $isLive, $healed ) = _hook_entry_liveness( $status->{$name} );
+            next if $isLive;   # leave it running, untouched - not ours to reset
+
+            push( @healedEntries, $healed ) if $healed;
+            $status->{$name} = $written->{$name} = { 'name' => $name, 'state' => 'pending' };
+         }
+         return 1;
+      }
+   );
+
+   record_hook_history( $id, { %$_ }, $cap ) for @healedEntries;
+   return $written;
 }
 
 1;
