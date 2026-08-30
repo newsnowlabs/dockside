@@ -8,22 +8,37 @@
         inherited value's *source* too (role vs system default) wherever
         that's ambiguous - see the design doc's own writeup for why the old
         chip's colour-only "inherited (denied)" was two different real
-        situations rendered identically. -->
-   <span class="value-tag" :class="{ 'value-tag--open': open }">
-      <button type="button" class="value-tag-trigger" :class="stateClass" :disabled="readonly" @click="toggleOpen">
-         {{ label }}: {{ badgeText }}<span v-if="sourceText" class="value-tag-source"> · {{ sourceText }}</span>
-      </button>
-      <div v-if="open" class="value-tag-menu" @click.stop>
-         <button type="button" class="value-tag-opt" :class="{ active: value === '0' }" @click="choose('0')">
-            <span class="radio"></span>Deny
-         </button>
-         <button type="button" class="value-tag-opt" :class="{ active: value === '1' }" @click="choose('1')">
-            <span class="radio"></span>Grant
-         </button>
-         <button type="button" class="value-tag-opt" :class="{ active: value === null }" @click="choose(null)">
-            <span class="radio"></span>{{ inheritLabel }}
-         </button>
-      </div>
+        situations rendered identically.
+
+        The design doc's own case for "F" was reusing an existing Vuetify
+        overlay rather than hand-rolling one ("v-select renders its own
+        overlay... F is what a from-scratch version should have been built
+        as") - v-menu here, not the v-select it specifically named, since a
+        real v-select's field chrome (outlined border, ~40px min-height,
+        label spacing, combobox ARIA) is built for a standalone form field,
+        not a ~24px inline pill repeated 30-60+ times in a dense permissions
+        grid. v-menu gets the same point (Vuetify owns the overlay: position,
+        z-index, Escape-to-close, click-outside) without that overhead. -->
+   <span class="value-tag">
+      <v-menu v-model="open" :close-on-content-click="false" location="bottom start">
+         <template #activator="{ props: menuProps }">
+            <button type="button" class="value-tag-trigger" :class="stateClass" :disabled="readonly" v-bind="menuProps">
+               {{ label }}: {{ badgeText }}<span v-if="sourceText" class="value-tag-source"> · {{ sourceText }}</span>
+            </button>
+         </template>
+
+         <div class="value-tag-menu">
+            <button type="button" class="value-tag-opt" :class="{ active: value === '0' }" @click="choose('0')">
+               <span class="radio"></span>Deny
+            </button>
+            <button type="button" class="value-tag-opt" :class="{ active: value === '1' }" @click="choose('1')">
+               <span class="radio"></span>Grant
+            </button>
+            <button type="button" class="value-tag-opt" :class="{ active: value === null }" @click="choose(null)">
+               <span class="radio"></span>{{ inheritLabel }}
+            </button>
+         </div>
+      </v-menu>
    </span>
 </template>
 
@@ -133,25 +148,14 @@ export default defineComponent({
      },
   },
 
-  mounted() {
-     document.addEventListener('click', this.onDocumentClick);
-  },
-
-  beforeUnmount() {
-     document.removeEventListener('click', this.onDocumentClick);
-  },
-
   methods: {
-     toggleOpen() {
-        if (this.readonly) return;
-        this.open = !this.open;
-     },
+     // v-model="open" on <v-menu> above already handles opening on trigger
+     // click (via the activator slot's bound props), and closing on Escape
+     // or an outside click - this only needs to close it after an explicit
+     // choice, same as before.
      choose(newValue) {
         this.open = false;
         if (newValue !== this.value) this.$emit('change', newValue);
-     },
-     onDocumentClick(e) {
-        if (this.open && !this.$el.contains(e.target)) this.open = false;
      },
   },
 });
@@ -159,7 +163,6 @@ export default defineComponent({
 
 <style lang="scss" scoped>
    .value-tag {
-      position: relative;
       display: inline-block;
       margin: 2px;
    }
@@ -188,11 +191,9 @@ export default defineComponent({
       opacity: 0.75;
    }
 
+   // v-menu positions/z-indexes its own overlay wrapper now - this div only
+   // needs to describe the card's own look, not where it sits on the page.
    .value-tag-menu {
-      position: absolute;
-      top: calc(100% + 4px);
-      left: 0;
-      z-index: 20;
       min-width: 220px;
       background: white;
       border: 1px solid #dee2e6;
