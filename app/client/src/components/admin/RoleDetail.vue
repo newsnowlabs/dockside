@@ -16,7 +16,7 @@
          <div class="detail-actions" v-if="!isEditMode && !isNew">
             <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
             <v-btn
-               variant="outlined" color="error" size="small"
+               color="error" size="small"
                :disabled="deleteDisabled"
                :title="deleteDisabled ? 'Role is assigned to one or more users and cannot be deleted.' : ''"
                @click="showDeleteConfirm = true"

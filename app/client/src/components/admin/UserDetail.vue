@@ -24,7 +24,7 @@
             <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
             <v-btn
                v-if="!selfEdit && canDelete"
-               variant="outlined" color="error" size="small"
+               color="error" size="small"
                @click="showDeleteConfirm = true"
             >Delete</v-btn>
          </div>

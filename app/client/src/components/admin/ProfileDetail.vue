@@ -32,7 +32,7 @@
                @click="startRename"
             >Rename</v-btn>
             <v-btn
-               variant="outlined" color="error" size="small"
+               color="error" size="small"
                @click="showDeleteConfirm = true"
             >Delete</v-btn>
          </div>
