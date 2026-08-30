@@ -307,8 +307,20 @@ sub _render_spa_shell ($c, $User, $parentFQDN) {
       die Exception->new( 'msg' => 'Failed to initialise client-side data structures', 'dbg' => "Caught exception: $_" );
    };
    $page .= '</head>' . '<body data-spy="scroll" data-target=".sidebar">' . "\n" . "<div id='app'><router-view></router-view></div>\n";
-   my $js_v = App::_asset_version('main.js');
-   $page .= qq{<script src="/assets/main.js?v=$js_v"></script>\n} . "</body></html>\n";
+   # 'assets/main.js', not 'main.js': its on-disk path, matching where the
+   # /assets/main.js route below now actually reads it from (see that
+   # route's own comment).
+   my $js_v = App::_asset_version('assets/main.js');
+   # type="module": vite.config.js now emits main.js as a genuine ES module
+   # (rather than a self-contained IIFE) so its dynamic import() call sites
+   # (App.vue's lazy-loaded AdminMain) become real, separately-fetched chunks
+   # instead of being forced inline into one bundle (review.md #10) - a
+   # classic script tag can't parse ES-module syntax ("Unexpected token
+   # 'export'"), so this needs to say so explicitly. Behaviourally near-
+   # identical to before: module scripts execute after the document has
+   # finished parsing, same as this tag's existing placement at the very end
+   # of <body> already guaranteed for the classic-script case.
+   $page .= qq{<script type="module" src="/assets/main.js?v=$js_v"></script>\n} . "</body></html>\n";
    $c->res->headers->content_type('text/html');
    return $c->render( data => $page, status => 200 );
 }
@@ -598,7 +610,12 @@ $authed->get( '/assets/main.js' => sub ($c) {
       return $c->render( text => "Redirecting to / ...\n", status => 302 );
    }
    $c->res->headers->cache_control('public, max-age=31536000, immutable');
-   $c->reply->file("$CONFIG->{'clientDistPath'}/main.js");
+   # dist/assets/main.js, not dist/main.js: vite.config.js now emits main.js
+   # under assets/ too (see that file's own comment) so its on-disk location
+   # matches this /assets/main.js URL - needed for its own dynamic import()
+   # chunk paths (AdminMain, review.md #10) to resolve correctly in the
+   # browser.
+   $c->reply->file("$CONFIG->{'clientDistPath'}/assets/main.js");
 } );
 
 # Vuetify + MDI font (Stage 3 of docs/plans/vue2-vue3-migration.md, dockside-admin

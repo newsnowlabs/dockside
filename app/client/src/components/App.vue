@@ -42,7 +42,7 @@
 </template>
 
 <script>
-import { defineComponent } from 'vue';
+import { defineComponent, defineAsyncComponent } from 'vue';
 
 import { routePermissions } from '@/components/mixins';
 import Header       from '@/components/Header';
@@ -52,7 +52,16 @@ import Main         from '@/components/Main';
 import SSHInfo      from '@/components/SSHInfo';
 import BottomNav    from '@/components/BottomNav';
 import AdminSidebar from '@/components/admin/AdminSidebar';
-import AdminMain    from '@/components/admin/AdminMain';
+
+// Lazy rather than a static import: AdminMain pulls in UserDetail/RoleDetail/
+// ProfileDetail, which in turn pull in PermissionsEditor/ResourcesEditor/
+// SshEditor/JsonEditor - the entire admin-panel surface. A static import here
+// puts all of that in every visitor's initial main.js, including non-admin
+// users who can never reach /admin (review.md #10). defineAsyncComponent's
+// loader only runs the first time the component actually renders, and it's
+// only rendered under v-if="isAdminRoute || isAccountRoute" below, so the
+// chunk is fetched on first /admin or /account navigation, never before.
+const AdminMain = defineAsyncComponent(() => import('@/components/admin/AdminMain'));
 
 export default defineComponent({
   name: 'App',
