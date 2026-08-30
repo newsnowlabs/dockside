@@ -1,15 +1,17 @@
 <template>
-   <b-col md="9" lg="10" offset-md="3" offset-lg="2" class="admin-main">
+   <!-- No more b-col md="9" offset-md="3" here - see Main.vue's own comment;
+        same dead-Bootstrap-grid-offset cleanup, v-main already does the work.
+        The content gutter itself lives on .page-content, the wrapper App.vue
+        renders this into (shared with Main.vue) - not duplicated here. -->
+   <div class="admin-main">
 
-      <div v-if="error && !isAccountRoute" class="alert alert-danger mb-3">
+      <v-alert v-if="error && !isAccountRoute" type="error" variant="tonal" closable class="mb-3" @click:close="clearError">
          {{ error }}
-         <b-button variant="link" size="sm" class="float-right p-0" @click="clearError">✕</b-button>
-      </div>
+      </v-alert>
 
-      <div v-if="accountError && isAccountRoute" class="alert alert-danger mb-3">
+      <v-alert v-if="accountError && isAccountRoute" type="error" variant="tonal" closable class="mb-3" @click:close="clearAccountError">
          {{ accountError }}
-         <b-button variant="link" size="sm" class="float-right p-0" @click="clearAccountError">✕</b-button>
-      </div>
+      </v-alert>
 
       <!-- User detail -->
       <UserDetail
@@ -46,59 +48,56 @@
          <p>Select an item from the sidebar, or click <em>+ New …</em> to create one.</p>
       </div>
 
-   </b-col>
+   </div>
 </template>
 
 <script>
-   import { mapState } from 'vuex';
-   import UserDetail    from '@/components/admin/UserDetail';
-   import RoleDetail    from '@/components/admin/RoleDetail';
-   import ProfileDetail from '@/components/admin/ProfileDetail';
+import { defineComponent } from 'vue';
 
-   // AdminMain is the right-hand content pane for all /admin/* and /account routes.
-   // It renders the appropriate detail component based on admin.selected (set by
-   // App.vue's updateStateFromRoute and AdminSidebar's selectItem), or the account
-   // self-edit form when on /account, or a placeholder when nothing is selected.
-   export default {
-      name: 'AdminMain',
-      components: { UserDetail, RoleDetail, ProfileDetail },
+import { mapState } from 'vuex';
+import UserDetail    from '@/components/admin/UserDetail';
+import RoleDetail    from '@/components/admin/RoleDetail';
+import ProfileDetail from '@/components/admin/ProfileDetail';
 
-      computed: {
-         ...mapState('admin', ['selected', 'error']),
+// AdminMain is the right-hand content pane for all /admin/* and /account routes.
+// It renders the appropriate detail component based on admin.selected (set by
+// App.vue's updateStateFromRoute and AdminSidebar's selectItem), or the account
+// self-edit form when on /account, or a placeholder when nothing is selected.
+export default defineComponent({
+  name: 'AdminMain',
+  components: { UserDetail, RoleDetail, ProfileDetail },
 
-         accountError() {
-            return this.$store.state.account.accountError;
-         },
+  computed: {
+     ...mapState('admin', ['selected', 'error']),
 
-         isAccountRoute() {
-            // Match by route name (see App.vue): '/account/' also resolves here under
-            // Vue Router's non-strict matching, and a path === '/account' check would
-            // wrongly treat it as a non-account route.
-            return this.$route.name === 'account';
-         },
+     accountError() {
+        return this.$store.state.account.accountError;
+     },
 
-         currentUsername() {
-            return this.$store.state.account.currentUser.username;
-         },
-      },
+     isAccountRoute() {
+        // Match by route name (see App.vue): '/account/' also resolves here under
+        // Vue Router's non-strict matching, and a path === '/account' check would
+        // wrongly treat it as a non-account route.
+        return this.$route.name === 'account';
+     },
 
-      methods: {
-         clearError() {
-            this.$store.commit('admin/setError', null);
-         },
-         clearAccountError() {
-            this.$store.commit('account/setAccountError', null);
-         },
-      },
-   };
+     currentUsername() {
+        return this.$store.state.account.currentUser.username;
+     },
+  },
+
+  methods: {
+     clearError() {
+        this.$store.commit('admin/setError', null);
+     },
+     clearAccountError() {
+        this.$store.commit('account/setAccountError', null);
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>
-   .admin-main {
-      padding-top: 20px;
-      padding-bottom: 40px;
-   }
-
    .admin-placeholder {
       color: #888;
       font-style: italic;

@@ -1,11 +1,14 @@
-import Vuex from 'vuex';
+import { createStore as createVuexStore } from 'vuex';
 import { getContainers } from '@/services/container';
 import adminModule   from '@/store/admin';
 import accountModule from '@/store/account';
 
 const welcomeTextStatusLocalStorageKey = '/dockside/welcomeTextStatus';
 
-const createStore = () => new Vuex.Store({
+// Aliased to createVuexStore on import: this factory is itself also named
+// createStore (and exported as the default below) - importing Vuex's own
+// createStore under the same name would shadow it and self-recurse.
+const createStore = () => createVuexStore({
    strict: process.env.NODE_ENV !== 'production',
    modules: {
       admin:   adminModule,
@@ -16,7 +19,15 @@ const createStore = () => new Vuex.Store({
       containersFilter: 'shared',
       containers: window.dockside.containers,
       welcomeTextStatus: localStorage.getItem(welcomeTextStatusLocalStorageKey) !== null ?
-         parseInt(localStorage.getItem(welcomeTextStatusLocalStorageKey)) : 0
+         parseInt(localStorage.getItem(welcomeTextStatusLocalStorageKey)) : 0,
+      // Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo):
+      // replaces bootstrap-vue's v-b-modal="'sshinfo-modal'" open-by-id
+      // directive, which needed no shared parent because $bvModal was a
+      // global bus. Container.vue's Setup button and SSHInfo.vue (mounted as
+      // an App.vue-level singleton) are siblings with no parent/child
+      // relationship, so v-dialog's plain v-model has nowhere shared to
+      // live except here.
+      sshInfoModalOpen: false,
    },
    getters: {
       welcomeTextStatus: state => state.welcomeTextStatus,
@@ -52,6 +63,9 @@ const createStore = () => new Vuex.Store({
       },
       addContainer(state, container) {
          state.containers = state.containers.filter(c => c.id !== container.id).concat(container);
+      },
+      setSshInfoModalOpen(state, open) {
+         state.sshInfoModalOpen = open;
       }
    },
    actions: {

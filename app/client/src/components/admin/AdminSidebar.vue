@@ -1,248 +1,179 @@
 <template>
-   <div class="sidebar-wrapper">
-      <b-col md="3" lg="2" class="sidebar admin-sidebar d-none d-md-block">
-         <b-nav vertical class="nav-sidebar">
-
-            <template v-for="section in visibleSections">
-               <!-- Section heading (click to collapse) -->
-               <b-nav-text
-                  :key="section.type + '-heading'"
-                  class="heading"
-                  @click="toggleSection(section.type)"
-               >
-                  {{ section.label }}
-                  <span class="section-toggle">{{ collapsed[section.type] ? '▸' : '▾' }}</span>
-               </b-nav-text>
-
-               <b-collapse
-                  :key="section.type + '-collapse'"
-                  :visible="!collapsed[section.type]"
-               >
-                  <!-- Loading placeholder -->
-                  <b-nav-item v-if="loading" disabled class="loading-item">
-                     Loading…
-                  </b-nav-item>
-
-                  <!-- Items -->
-                  <template v-else>
-                     <b-nav-item
-                        v-for="item in itemsFor(section.type)"
-                        :key="item.id"
-                        :class="{ selected: isSelected(section.type, item.id) }"
-                        @click="selectItem(section.type, item.id)"
-                     >
-                        <span v-if="section.type === 'profile'" class="profile-dot" :class="item.active ? 'dot-active' : 'dot-inactive'" title="active/inactive">●</span>
-                        {{ item.label }}
-                     </b-nav-item>
-
-                     <!-- New item link -->
-                     <b-nav-item
-                        :key="section.type + '-new'"
-                        class="new-item"
-                        @click="selectItem(section.type, 'new')"
-                     >+ New {{ section.singular }}</b-nav-item>
+   <!-- Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): one
+        v-navigation-drawer replaces the old desktop b-col + mobile b-sidebar
+        pair (see Sidebar.vue's own comment for the same pattern and the
+        modelValue/COMPONENT_V_MODEL reasoning). Each section is a
+        v-list-group - Vuetify's own collapsible-header primitive - rather
+        than the old manual b-collapse + hand-rolled ▸/▾ toggle. Its default
+        per-nesting-level indent is turned off app-wide (plugins/vuetify.js's
+        VListGroup default, not a `fluid` prop here) - see that file's own
+        comment for why. -->
+   <v-navigation-drawer
+      :model-value="modelValue"
+      @update:model-value="$emit('update:modelValue', $event)"
+      :permanent="$vuetify.display.mdAndUp"
+      width="260"
+   >
+      <v-list nav density="compact" v-model:opened="openSections">
+         <v-list-group v-for="section in visibleSections" :key="section.type" :value="section.type">
+            <template #activator="{ props: activatorProps }">
+               <v-list-item v-bind="activatorProps" class="sb-section-heading">
+                  <v-list-item-title>{{ section.label }}</v-list-item-title>
+                  <template #append>
+                     <span class="sb-add" @click.stop="onSelect(section.type, 'new')">+ New</span>
                   </template>
-               </b-collapse>
+               </v-list-item>
             </template>
 
-         </b-nav>
-      </b-col>
+            <!-- Loading placeholder -->
+            <v-list-item v-if="loading" disabled class="loading-item">
+               <v-list-item-title>Loading…</v-list-item-title>
+            </v-list-item>
 
-      <!-- Mobile off-canvas drawer: same content as the desktop column above, opened
-           via Header's hamburger (b-navbar-toggle target="mobile-nav-sidebar"). Keep
-           both copies in sync if the section markup changes. -->
-      <b-sidebar id="mobile-nav-sidebar" v-model="mobileNavOpen" title="Admin" backdrop shadow class="d-md-none">
-         <b-nav vertical class="nav-sidebar">
-
-            <template v-for="section in visibleSections">
-               <b-nav-text
-                  :key="section.type + '-heading'"
-                  class="heading"
-                  @click="toggleSection(section.type)"
+            <!-- Items -->
+            <template v-else>
+               <v-list-item
+                  v-for="item in itemsFor(section.type)"
+                  :key="item.id"
+                  :active="isSelected(section.type, item.id)"
+                  @click="onSelect(section.type, item.id)"
                >
-                  {{ section.label }}
-                  <span class="section-toggle">{{ collapsed[section.type] ? '▸' : '▾' }}</span>
-               </b-nav-text>
-
-               <b-collapse
-                  :key="section.type + '-collapse'"
-                  :visible="!collapsed[section.type]"
-               >
-                  <b-nav-item v-if="loading" disabled class="loading-item">
-                     Loading…
-                  </b-nav-item>
-
-                  <template v-else>
-                     <b-nav-item
-                        v-for="item in itemsFor(section.type)"
-                        :key="item.id"
-                        :class="{ selected: isSelected(section.type, item.id) }"
-                        @click="onMobileSelect(section.type, item.id)"
-                     >
-                        <span v-if="section.type === 'profile'" class="profile-dot" :class="item.active ? 'dot-active' : 'dot-inactive'" title="active/inactive">●</span>
-                        {{ item.label }}
-                     </b-nav-item>
-
-                     <b-nav-item
-                        :key="section.type + '-new'"
-                        class="new-item"
-                        @click="onMobileSelect(section.type, 'new')"
-                     >+ New {{ section.singular }}</b-nav-item>
+                  <template #prepend>
+                     <span v-if="section.type === 'profile'"
+                        class="sidebar-dot" :class="item.active ? 'dot-active' : 'dot-inactive'" title="active/inactive"
+                     ></span>
+                     <span v-else class="sidebar-dot"></span>
                   </template>
-               </b-collapse>
+                  <v-list-item-title>{{ item.label }}</v-list-item-title>
+               </v-list-item>
             </template>
-
-         </b-nav>
-      </b-sidebar>
-   </div>
+         </v-list-group>
+      </v-list>
+   </v-navigation-drawer>
 </template>
 
 <script>
-   import { mapState, mapGetters } from 'vuex';
+import { defineComponent } from 'vue';
 
-   const SECTIONS = [
-      { type: 'user',    label: 'USERS',    singular: 'user'    },
-      { type: 'role',    label: 'ROLES',    singular: 'role'    },
-      { type: 'profile', label: 'PROFILES', singular: 'profile' },
-   ];
+import { mapState, mapGetters } from 'vuex';
 
-   export default {
-      name: 'AdminSidebar',
+const SECTIONS = [
+   { type: 'user',    label: 'USERS',    singular: 'user'    },
+   { type: 'role',    label: 'ROLES',    singular: 'role'    },
+   { type: 'profile', label: 'PROFILES', singular: 'profile' },
+];
 
-      data() {
-         return {
-            collapsed: { user: false, role: false, profile: false },
-            mobileNavOpen: false,
-         };
-      },
+export default defineComponent({
+  name: 'AdminSidebar',
+  props: {
+     modelValue: { type: Boolean, default: false },
+  },
+  emits: ['update:modelValue'],
 
-      computed: {
-         ...mapState('admin', ['users', 'roles', 'profiles', 'selected', 'loading']),
+  data() {
+     return {
+        // All sections start open (v-list-group defaults closed otherwise) -
+        // harmless for a section visibleSections later filters out, v-list
+        // just ignores an opened-array entry it has no matching group for.
+        openSections: ['user', 'role', 'profile'],
+     };
+  },
 
-         ...mapGetters('admin', ['isEditMode']),
+  computed: {
+     ...mapState('admin', ['users', 'roles', 'profiles', 'selected', 'loading']),
 
-         // Filter the SECTIONS list down to only those the current user has
-         // permission to manage.  A user with only manageProfiles sees no Users
-         // or Roles sections; a user with only manageUsers sees no Profiles section.
-         visibleSections() {
-            const p = this.$store.state.account.currentUser.permissions.actions;
-            return SECTIONS.filter(s => {
-               if (s.type === 'user' || s.type === 'role') return !!p.manageUsers;
-               if (s.type === 'profile')                   return !!p.manageProfiles;
-               return true;
-            });
-         },
-      },
+     ...mapGetters('admin', ['isEditMode']),
 
-      methods: {
-         // Map a section type to the list items it should show in the sidebar.
-         // Profile items carry an 'active' flag to drive the coloured dot indicator.
-         itemsFor(type) {
-            if (type === 'user')    return this.users.map(u => ({ id: u.username, label: u.username }));
-            if (type === 'role')    return this.roles.map(r => ({ id: r.name,     label: r.name }));
-            if (type === 'profile') return this.profiles.map(p => ({ id: p.id, label: p.name || p.id, active: p.active }));
-            return [];
-         },
+     // Filter the SECTIONS list down to only those the current user has
+     // permission to manage.  A user with only manageProfiles sees no Users
+     // or Roles sections; a user with only manageUsers sees no Profiles section.
+     visibleSections() {
+        const p = this.$store.state.account.currentUser.permissions.actions;
+        return SECTIONS.filter(s => {
+           if (s.type === 'user' || s.type === 'role') return !!p.manageUsers;
+           if (s.type === 'profile')                   return !!p.manageProfiles;
+           return true;
+        });
+     },
+  },
 
-         isSelected(type, id) {
-            return this.selected.type === type && this.selected.id === id;
-         },
+  methods: {
+     // Map a section type to the list items it should show in the sidebar.
+     // Profile items carry an 'active' flag to drive the coloured dot indicator.
+     itemsFor(type) {
+        if (type === 'user')    return this.users.map(u => ({ id: u.username, label: u.username }));
+        if (type === 'role')    return this.roles.map(r => ({ id: r.name,     label: r.name }));
+        if (type === 'profile') return this.profiles.map(p => ({ id: p.id, label: p.name || p.id, active: p.active }));
+        return [];
+     },
 
-         // Select an item: commit the selection to Vuex AND push the corresponding
-         // route so the URL is bookmarkable and the browser back button works.
-         // App.vue's $route watcher will also call setSelected via updateStateFromRoute,
-         // but that is idempotent (same value, mode: 'view') so the duplicate is harmless.
-         selectItem(type, id) {
-            this.$store.commit('admin/setSelected', { type, id, mode: 'view' });
-            const typeToRoute = { user: 'users', role: 'roles', profile: 'profiles' };
-            this.$router.push(`/admin/${typeToRoute[type]}/${encodeURIComponent(id)}`).catch(() => {});
-         },
+     isSelected(type, id) {
+        return this.selected.type === type && this.selected.id === id;
+     },
 
-         toggleSection(type) {
-            this.$set(this.collapsed, type, !this.collapsed[type]);
-         },
+     // Select an item: commit the selection to Vuex AND push the corresponding
+     // route so the URL is bookmarkable and the browser back button works.
+     // App.vue's $route watcher will also call setSelected via updateStateFromRoute,
+     // but that is idempotent (same value, mode: 'view') so the duplicate is harmless.
+     selectItem(type, id) {
+        this.$store.commit('admin/setSelected', { type, id, mode: 'view' });
+        const typeToRoute = { user: 'users', role: 'roles', profile: 'profiles' };
+        this.$router.push(`/admin/${typeToRoute[type]}/${encodeURIComponent(id)}`).catch(() => {});
+     },
 
-         // Same as selectItem, but also closes the mobile drawer first.
-         onMobileSelect(type, id) {
-            this.mobileNavOpen = false;
-            this.selectItem(type, id);
-         },
-      },
-   };
+     // Close the drawer (mobile/temporary only), then select - one path
+     // instead of the old selectItem/onMobileSelect split the two markup
+     // copies needed. The mdAndUp guard matters: closing unconditionally
+     // looked harmless (surely a permanent drawer just ignores its own
+     // modelValue?) but doesn't - confirmed live, every click collapsed the
+     // md+ permanent drawer too, because Vuetify's internal "re-open when
+     // :permanent becomes true" watcher only fires on *permanent itself*
+     // changing, not on modelValue being set false while permanent stays
+     // constantly true - see App.vue's drawerOpen comment for the closely
+     // related initial-value version of this same gotcha.
+     onSelect(type, id) {
+        if (!this.$vuetify.display.mdAndUp) this.$emit('update:modelValue', false);
+        this.selectItem(type, id);
+     },
+  },
+});
 </script>
 
 <style lang="scss" scoped>
-   // Vue 2 SFCs need a single root element, but a b-row expects its direct
-   // children to be grid columns. display:contents makes this wrapper
-   // layout-transparent so .admin-sidebar still behaves as a direct row child.
-   .sidebar-wrapper {
-      display: contents;
-   }
-
-   .admin-sidebar {
-      @media (min-width: 768px) {
-         position: fixed;
-         top: 56px;
-         bottom: 0;
-         padding: 20px 0;
-         overflow-y: auto;
-         background-color: #f5f5f5;
-         border-right: 1px solid #eee;
-      }
-   }
-
-   .nav-item {
-      a {
-         padding-right: 20px;
-         padding-left: 20px;
-         white-space: nowrap;
-         overflow: hidden;
-         text-overflow: ellipsis;
-      }
-
-      &.selected a {
-         font-weight: bold;
-      }
-
-      &.new-item a {
-         color: #5c9bd1;
-         font-style: italic;
-      }
-
-      &.loading-item a {
-         color: #aaa;
-         font-style: italic;
-      }
-   }
-
-   .navbar-text.heading {
-      font-weight: bold;
-      padding-left: 20px;
-      padding-right: 20px;
-      cursor: pointer;
-      user-select: none;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+   .sb-section-heading {
       margin-top: 8px;
 
-      &:hover {
-         color: #337ab7;
+      :deep(.v-list-item-title) {
+         font-size: 11px;
+         font-weight: 700;
+         letter-spacing: 0.07em;
+         text-transform: uppercase;
       }
    }
 
-   .section-toggle {
-      font-size: 0.7rem;
-      color: #999;
-      margin-left: 4px;
+   .sb-add {
+      font-size: 11.5px;
+      font-weight: 600;
+      color: rgb(var(--v-theme-primary));
+
+      &:hover {
+         text-decoration: underline;
+      }
    }
 
-   .profile-dot {
-      font-size: 0.6rem;
-      margin-right: 3px;
-      vertical-align: middle;
+   // Same .sidebar-dot shape (index.scss) every other sidebar list uses -
+   // was previously its own unicode "●" glyph here, a slightly different
+   // shape/size than the CSS-drawn circle Users/Roles/devtainers now share.
+   .dot-active   { background: #28a745; }
+   .dot-inactive { background: #aaa;    }
 
-      &.dot-active   { color: #28a745; }
-      &.dot-inactive { color: #aaa;    }
+   .new-item :deep(.v-list-item-title) {
+      color: #5c9bd1;
+      font-style: italic;
+   }
+
+   .loading-item :deep(.v-list-item-title) {
+      color: #aaa;
+      font-style: italic;
    }
 </style>

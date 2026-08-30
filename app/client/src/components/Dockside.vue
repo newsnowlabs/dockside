@@ -18,12 +18,15 @@
 </template>
 
 <script>
-   export default {
-      name: 'Dockside',
-      props: {
-         colour: String
-      }
-   };
+import { defineComponent } from 'vue';
+
+export default defineComponent({
+  name: 'Dockside',
+
+  props: {
+     colour: String
+  },
+});
 </script>
 
 <style lang="scss" scoped>

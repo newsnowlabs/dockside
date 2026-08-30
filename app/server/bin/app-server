@@ -601,6 +601,22 @@ $authed->get( '/assets/main.js' => sub ($c) {
    $c->reply->file("$CONFIG->{'clientDistPath'}/main.js");
 } );
 
+# Vuetify + MDI font (Stage 3 of docs/plans/vue2-vue3-migration.md, dockside-admin
+# repo): unlike main.js/main.css above, Vite emits these under dist/assets/ with a
+# content hash in the filename (assetFileNames in vite.config.js), so there's no
+# fixed name to hardcode a route for the way main.js/main.css get one - without
+# this, a request for one fell through to the SPA catch-all below, which served
+# index.html (or the catch-all's own not-logged-in redirect) back with a 200
+# instead of the font, so the browser tried to parse HTML as a font and silently
+# failed - every MDI icon rendered as a missing-glyph box, the only symptom a
+# font-decode console warning, no request-level error. Ungated like main.css
+# (not main.js): fonts are referenced from main.css's own @font-face rules,
+# which are servable pre-auth, so the fonts they reference need to be too.
+$authed->get( '/assets/:file' => [ file => qr/[\w\-]+\.(?:woff2?|ttf|eot)/ ] => sub ($c) {
+   $c->res->headers->cache_control('public, max-age=31536000, immutable');
+   $c->reply->file("$CONFIG->{'clientDistPath'}/assets/" . $c->stash('file'));
+} );
+
 # The SPA shell ('/', '/container/*', '/admin/*', '/account/*' - via this file's own
 # $c-native _render_spa_shell below) and the login page/form it falls back to when not
 # logged in. No method restriction - a POST here while logged in (unusual, but not
