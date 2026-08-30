@@ -3,6 +3,24 @@
 // @vue/compat from the build entirely, so there's no compat runtime left to
 // configure, in tests or in index.js.
 
+// jsdom doesn't implement window.matchMedia at all - both App.vue's
+// drawerOpen seed and plugins/vuetify.js's initialTheme() call it directly
+// (module/data()-init time, before any component mounts), so every test
+// that imports a Vuetify-using component needs this defined before that
+// happens. matches: false picks light/desktop-width defaults, same as a
+// real browser with no dark-mode/narrow-viewport preference set.
+window.matchMedia = window.matchMedia || function (query) {
+   return {
+      matches: false,
+      media: query,
+      addListener() {},
+      removeListener() {},
+      addEventListener() {},
+      removeEventListener() {},
+      dispatchEvent() { return false; },
+   };
+};
+
 // Vitest setup (see vitest.config.js's setupFiles): stubs the window.dockside
 // bootstrap object that the store modules read at construction time (see
 // store/index.js's `containers: window.dockside.containers` and

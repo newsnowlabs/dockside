@@ -1,5 +1,5 @@
 <template>
-   <v-footer color="#16212c" app class="app-footer">
+   <v-footer color="surface-alt" app class="app-footer">
       <div class="footer-links">
          <span class="footer-item first">Dockside {{ version }}</span>
          <span class="sep d-none d-md-inline">|</span>
@@ -41,16 +41,16 @@ export default defineComponent({
       align-items: center;
       gap: 0.4rem;
       width: 100%;
-      color: white;
+      color: rgb(var(--v-theme-ink));
       font-size: 0.85rem;
    }
 
    .footer-item {
-      color: white;
+      color: rgb(var(--v-theme-ink));
       text-decoration: none;
 
       &:hover {
-         color: #bbb;
+         color: rgb(var(--v-theme-accent));
       }
    }
 
@@ -59,6 +59,6 @@ export default defineComponent({
    }
 
    .sep {
-      color: rgba(255, 255, 255, 0.4);
+      color: rgb(var(--v-theme-ink-soft));
    }
 </style>

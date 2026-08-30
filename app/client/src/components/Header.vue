@@ -31,17 +31,34 @@
             <v-icon start :icon="mdiAccountCircle"></v-icon> {{ displayName }}
          </v-btn>
       </div>
+
+      <!-- Outside .nav-links (d-md-flex-gated): visible at every viewport
+           width, mobile included, unlike the rest of the desktop nav (mobile
+           uses BottomNav.vue for primary navigation instead). -->
+      <v-btn variant="text" icon @click="cycleThemeMode" :title="themeModeTitle" :aria-label="themeModeTitle">
+         <v-icon :icon="themeModeIcon"></v-icon>
+      </v-btn>
    </v-app-bar>
 </template>
 
 <script>
 import { defineComponent } from 'vue';
+import { mdiWeatherSunny, mdiWeatherNight, mdiBrightnessAuto } from '@mdi/js';
 
 import { mapGetters } from 'vuex';
 import { routing, routePermissions, navIcons } from '@/components/mixins';
 import Dockside from '@/components/Dockside';
+import { currentThemeMode, cycleThemeMode } from '@/plugins/vuetify';
 
 const CONTAINERS_FILTER_ITEMS = [{title: 'Shared', value: 'shared'}, {title: 'All', value: 'all'}];
+
+// One icon + title per mode currentThemeMode() can report - cycled by
+// cycleThemeMode() (plugins/vuetify.js), light -> dark -> system -> light ...
+const THEME_MODE_DISPLAY = {
+   light:  { icon: mdiWeatherSunny,  title: 'Theme: Light (click for Dark)' },
+   dark:   { icon: mdiWeatherNight,  title: 'Theme: Dark (click for System)' },
+   system: { icon: mdiBrightnessAuto, title: 'Theme: System (click for Light)' },
+};
 
 export default defineComponent({
   name: 'Header',
@@ -55,6 +72,12 @@ export default defineComponent({
      ...mapGetters(['isSelected', 'isPrelaunchMode']),
      containersFilterItems() {
         return CONTAINERS_FILTER_ITEMS;
+     },
+     themeModeIcon() {
+        return THEME_MODE_DISPLAY[currentThemeMode()].icon;
+     },
+     themeModeTitle() {
+        return THEME_MODE_DISPLAY[currentThemeMode()].title;
      },
      user() {
         return this.$store.state.account.currentUser;
@@ -101,7 +124,11 @@ export default defineComponent({
   methods: {
      refresh() {
         this.$store.dispatch('updateContainers', 1);
-     }
+     },
+     // Templates only see `this`-bound methods, not the enclosing module's
+     // plain imports - this just forwards to plugins/vuetify.js's own
+     // cycleThemeMode, which owns the actual mode/localStorage/theme state.
+     cycleThemeMode,
   },
 
   mixins: [routing, routePermissions, navIcons],
