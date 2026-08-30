@@ -323,8 +323,7 @@
          </v-card>
 
          <ConfirmModal
-            v-show="canRemove"
-            v-model="showRemoveConfirm"
+            v-model="removeConfirmOpen"
             :title="'Remove devtainer ' + container.name"
             :message="'Are you sure you want to remove devtainer \'' + container.name + '\'? This cannot be undone.'"
             confirm-label="Remove"
@@ -543,6 +542,18 @@ export default defineComponent({
         return this.container.permissions.actions.removeContainer &&
            !this.isEditMode && !this.isPrelaunchMode &&
            this.container.status >= -1 && this.container.status <= 0;
+     },
+     // Folds canRemove into the v-model itself, rather than a separate v-show on
+     // <ConfirmModal>: ConfirmModal's root is a v-dialog, which Vuetify renders as a
+     // Fragment, and Vue never applies directives (v-show included) to a Fragment root -
+     // so a plain v-show="canRemove" alongside v-model="showRemoveConfirm" would silently
+     // do nothing, leaving the dialog open if canRemove flips false (e.g. via the ~1s
+     // poll in refresh()) while the remove-confirmation dialog is already showing. Routing
+     // the same condition through the modelValue itself works because that's a real prop,
+     // not a directive, so it reaches v-dialog normally.
+     removeConfirmOpen: {
+        get() { return this.showRemoveConfirm && this.canRemove; },
+        set(v) { this.showRemoveConfirm = v; },
      },
   },
 
