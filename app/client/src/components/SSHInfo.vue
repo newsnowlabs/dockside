@@ -43,14 +43,14 @@
                   <div class="code-block">
                      <pre>{{ setupScript }}</pre>
                      <div class="code-block-toolbar">
-                        <v-btn size="small" variant="outlined" @click="copy(setupScript)">Copy</v-btn>
+                        <v-btn size="small" :variant="isCopied('setupScript') ? 'tonal' : 'outlined'" :color="isCopied('setupScript') ? 'accent-strong' : undefined" @click="copyWithFeedback('setupScript', setupScript)">Copy</v-btn>
                      </div>
                   </div>
                   <p>Add to <code>~/.ssh/config</code>:</p>
                   <div class="code-block">
                      <pre>{{ textB }}</pre>
                      <div class="code-block-toolbar">
-                        <v-btn size="small" variant="outlined" @click="copy(textB)">Copy</v-btn>
+                        <v-btn size="small" :variant="isCopied('textB') ? 'tonal' : 'outlined'" :color="isCopied('textB') ? 'accent-strong' : undefined" @click="copyWithFeedback('textB', textB)">Copy</v-btn>
                      </div>
                   </div>
                   <ul class="small text-muted mt-1">
@@ -73,14 +73,14 @@
                   <div class="code-block">
                      <pre>{{ loginCommand }}</pre>
                      <div class="code-block-toolbar">
-                        <v-btn size="small" variant="outlined" @click="copy(loginCommand)">Copy</v-btn>
+                        <v-btn size="small" :variant="isCopied('loginCommand') ? 'tonal' : 'outlined'" :color="isCopied('loginCommand') ? 'accent-strong' : undefined" @click="copyWithFeedback('loginCommand', loginCommand)">Copy</v-btn>
                      </div>
                   </div>
                   <p>Add to <code>~/.ssh/config</code>:</p>
                   <div class="code-block">
                      <pre>{{ textC }}</pre>
                      <div class="code-block-toolbar">
-                        <v-btn size="small" variant="outlined" @click="copy(textC)">Copy</v-btn>
+                        <v-btn size="small" :variant="isCopied('textC') ? 'tonal' : 'outlined'" :color="isCopied('textC') ? 'accent-strong' : undefined" @click="copyWithFeedback('textC', textC)">Copy</v-btn>
                      </div>
                   </div>
                   <ul class="small text-muted mt-1">
@@ -117,7 +117,7 @@
                   <div class="code-block">
                      <pre>{{ textA }}</pre>
                      <div class="code-block-toolbar">
-                        <v-btn size="small" variant="outlined" @click="copy(textA)">Copy</v-btn>
+                        <v-btn size="small" :variant="isCopied('textA') ? 'tonal' : 'outlined'" :color="isCopied('textA') ? 'accent-strong' : undefined" @click="copyWithFeedback('textA', textA)">Copy</v-btn>
                      </div>
                   </div>
                   <ul class="small text-muted mt-1">
@@ -143,11 +143,12 @@
 import { defineComponent } from 'vue';
 import { mapState } from 'vuex';
 
-import copyToClipboard from '@/utilities/copy-to-clipboard';
+import { copyable } from '@/components/mixins';
 import { getAuthCookies } from '@/services/container';
 
 export default defineComponent({
   name: 'SSHInfo',
+  mixins: [copyable],
 
   data() {
      return {
@@ -234,9 +235,6 @@ ForwardAgent yes`;
   methods: {
      closeModal() {
         this.showModal = false;
-     },
-     copy(value) {
-        copyToClipboard(value);
      },
      getCookies() {
         getAuthCookies()

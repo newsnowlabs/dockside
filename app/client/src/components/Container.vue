@@ -156,7 +156,7 @@
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode" class="router-actions">
                               <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" color="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</v-btn>
-                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" variant="outlined" v-on:click="copyUri(router)">Copy</v-btn>
+                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" :variant="isCopied(router.name) ? 'tonal' : 'outlined'" :color="isCopied(router.name) ? 'accent-strong' : undefined" v-on:click="copyUri(router)">Copy</v-btn>
                               <v-tooltip v-if="router.type === 'ssh' && container.status >= 0" text="Configure SSH for Dockside">
                                  <template #activator="{ props: tooltipProps }">
                                     <v-btn v-bind="tooltipProps" size="small" variant="outlined" type="button" v-on:click="openSshInfoModal">Setup</v-btn>
@@ -285,9 +285,9 @@
                                  :data-id="container.id"
                                  >Logs</v-btn>
 
-                              <v-btn size="small" variant="outlined" color="success"
+                              <v-btn size="small" :variant="isCopied('launchCommand') ? 'tonal' : 'outlined'" :color="isCopied('launchCommand') ? 'accent-strong' : 'success'"
                                  v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
-                                 v-on:click="copy(makeLaunchCommand())"
+                                 v-on:click="copyWithFeedback('launchCommand', makeLaunchCommand())"
                                  :data-id="container.id"
                                  >Copy Launch Command</v-btn>
 
@@ -297,9 +297,9 @@
                                  :data-id="container.id"
                                  >Launch</v-btn>
 
-                              <v-btn size="small" variant="outlined" color="success"
+                              <v-btn size="small" :variant="isCopied('launchCommand') ? 'tonal' : 'outlined'" :color="isCopied('launchCommand') ? 'accent-strong' : 'success'"
                                  v-show="container.permissions.auth.developer && isPrelaunchMode"
-                                 v-on:click="copy(makeLaunchCommand())"
+                                 v-on:click="copyWithFeedback('launchCommand', makeLaunchCommand())"
                                  :data-id="container.id"
                                  >Copy Launch Command</v-btn>
 
@@ -339,8 +339,7 @@ import { defineComponent } from 'vue';
 import { mapState } from 'vuex';
 import { mapGetters } from 'vuex';
 import { mapActions } from 'vuex';
-import { routing } from '@/components/mixins';
-import copyToClipboard from '@/utilities/copy-to-clipboard';
+import { routing, copyable } from '@/components/mixins';
 import UserTagsInput from '@/components/UserTagsInput';
 import ConfirmModal from '@/components/shared/ConfirmModal';
 import { putContainer, controlContainer, getReservationLogsUri, getHookStatus, formToQuery } from '@/services/container';
@@ -643,9 +642,6 @@ export default defineComponent({
            return undefined;
         }
      },
-     copy(value) {
-        copyToClipboard(value);
-     },
      accessOptions(router) {
         // Fixed display order + friendly labels for the access levels a router may
         // permit; only levels the router actually lists in 'auth' are offered.
@@ -696,7 +692,7 @@ export default defineComponent({
      },
      copyUri(router) {
         if (router.type !== 'ssh') {
-           return copyToClipboard(this.makeUri(router));
+           return this.copyWithFeedback(router.name, this.makeUri(router));
         }
 
         const prefix = router.prefixes[0] ? router.prefixes[0] : 'www';
@@ -705,7 +701,7 @@ export default defineComponent({
         const unixuser = this.container.data.unixuser;
         const hostname = host.split(':')[0];
 
-        return copyToClipboard(`ssh ${unixuser}@${prefix}-${containerName}${hostname}`);
+        return this.copyWithFeedback(router.name, `ssh ${unixuser}@${prefix}-${containerName}${hostname}`);
      },
      makeUriTarget(router) {
         return [(router.prefixes[0] ? router.prefixes[0] : 'www'), '-', this.container.name, window.dockside.host].join('');
@@ -845,7 +841,7 @@ export default defineComponent({
      }
   },
 
-  mixins: [routing],
+  mixins: [routing, copyable],
 
   beforeUnmount() {
      clearTimeout(this.querySyncTimeout);

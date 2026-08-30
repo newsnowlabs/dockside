@@ -1,4 +1,5 @@
 import { mdiHome, mdiPlusCircle, mdiCog, mdiAccountCircle } from '@mdi/js';
+import copyToClipboard from '@/utilities/copy-to-clipboard';
 
 // Header.vue and BottomNav.vue both render the same 4 nav icons (see
 // plugins/vuetify.js's own comment on why these are real @mdi/js imports,
@@ -132,4 +133,37 @@ const routing = {
    }
 };
 
-export { filteredContainers, navIcons, routing, routePermissions, sidebarDrawerSelect };
+const COPY_FEEDBACK_MS = 1500;
+
+// "Copy" buttons that briefly flash an accent-strong tonal fill after a
+// successful copy - color/variant only, never the label text, so a button
+// text width never changes and a tightly-packed row (SSHInfo's toolbars,
+// Container's per-router action row) never rewraps because of it.
+// copiedKey holds whichever key was last copied, not a single boolean, so
+// a component with several independent copy buttons (SSHInfo.vue has
+// five) doesn't have one button's feedback light up every button's
+// template; each call also clears any previous pending reset, so copying
+// a second value doesn't cut short by an earlier timer.
+const copyable = {
+   data() {
+      return { copiedKey: null };
+   },
+   beforeUnmount() {
+      clearTimeout(this._copyFeedbackTimeout);
+   },
+   methods: {
+      async copyWithFeedback(key, value) {
+         await copyToClipboard(value);
+         clearTimeout(this._copyFeedbackTimeout);
+         this.copiedKey = key;
+         this._copyFeedbackTimeout = setTimeout(() => {
+            this.copiedKey = null;
+         }, COPY_FEEDBACK_MS);
+      },
+      isCopied(key) {
+         return this.copiedKey === key;
+      },
+   },
+};
+
+export { filteredContainers, navIcons, routing, routePermissions, sidebarDrawerSelect, copyable };
