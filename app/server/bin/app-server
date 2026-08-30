@@ -612,7 +612,17 @@ $authed->get( '/assets/main.js' => sub ($c) {
 # font-decode console warning, no request-level error. Ungated like main.css
 # (not main.js): fonts are referenced from main.css's own @font-face rules,
 # which are servable pre-auth, so the fonts they reference need to be too.
-$authed->get( '/assets/:file' => [ file => qr/[\w\-]+\.(?:woff2?|ttf|eot)/ ] => sub ($c) {
+#
+# The filename match itself is deliberately generic (any [name]-[hash].ext shape),
+# not a hardcoded font-extension whitelist (woff2/ttf/eot) - vite.config.js's
+# assetFileNames puts *anything* that isn't style.css under dist/assets/ with no
+# type restriction, so a whitelist here would just move the same silent-200-of-
+# index.html failure mode onto the next asset type Vite emits there (an image,
+# a source map, ...) instead of fixing it once. [\w\-]+\.\w+ still can't match a
+# '/' or a '..' segment, so this stays scoped to a single flat filename under
+# dist/assets/ - same safety property the old whitelist had, just not tied to
+# specific extensions.
+$authed->get( '/assets/:file' => [ file => qr/[\w\-]+\.\w+/ ] => sub ($c) {
    $c->res->headers->cache_control('public, max-age=31536000, immutable');
    $c->reply->file("$CONFIG->{'clientDistPath'}/assets/" . $c->stash('file'));
 } );
