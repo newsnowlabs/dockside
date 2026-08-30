@@ -98,6 +98,30 @@ PYTHONUNBUFFERED=1 \
 ```
 Run modules individually with `--only NN` for targeted testing.
 
+## Writing code and commit comments
+
+Code comments and commit messages must **strictly** describe the current code's behaviour as
+if the current code had been the intended end-state all along — never as a diff against, or a
+retelling of the journey from, what came before. Strictly avoid narrative about: previous/prior
+behaviour ("used to do X", "the old version had Y", "no longer Z"); the process that produced
+the change ("refactored to...", "switched from...to...", "fixed a bug where..."); or things
+tested/verified along the way ("confirmed live", "tested via...", "verified that..."). None of
+that describes what the code *is* — it describes how it got there, and it rots the moment the
+prior state is no longer live in anyone's head.
+
+The **only** exception: documenting a specific edge case the current code depends on, where
+*without* that documentation there's a real risk a future change silently regresses it — e.g. a
+non-obvious runtime/browser quirk, an ordering requirement, or an external contract the code
+must keep satisfying. Even then, phrase it as a property of the current code ("X must happen
+before Y, because Z" / "must stay a `<foo>` because the caller assumes..."), not as an account of
+the bug that revealed it or how it was fixed.
+
+This applies everywhere — inline code comments, doc comments, and commit messages alike. See
+"Commit messages" below for the specific, narrower case of branch-provenance/lineage narrative.
+
+Scope: this repo only — other repos have their own conventions; don't apply this rule there,
+and don't edit their docs when sweeping this one.
+
 ## Commit authorship
 
 Every commit's **Author** must be the real human contributor — never
