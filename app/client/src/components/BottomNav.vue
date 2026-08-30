@@ -3,7 +3,7 @@
         reservation for a v-bottom-navigation: `active` defaults to true regardless of viewport,
         and useLayoutItem() reserves its full height in v-main's padding calc whenever active is
         true - a CSS class only hides it visually, leaving the reserved space behind on desktop. -->
-   <v-bottom-navigation color="white" bg-color="#16212c" app :active="!$vuetify.display.mdAndUp">
+   <v-bottom-navigation color="white" bg-color="chrome" app :active="!$vuetify.display.mdAndUp">
       <v-btn to="/" exact :class="{ 'bottom-btn--active': isContainerSection }">
          <v-icon :icon="mdiHome"></v-icon>
          Containers

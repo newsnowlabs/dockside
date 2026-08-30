@@ -99,7 +99,7 @@ export default defineComponent({
 
 <style lang="scss" scoped>
    .admin-placeholder {
-      color: #888;
+      color: rgb(var(--v-theme-ink-soft));
       font-style: italic;
       padding: 40px 0;
       text-align: center;

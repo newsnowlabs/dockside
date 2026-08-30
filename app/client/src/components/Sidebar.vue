@@ -141,7 +141,7 @@ export default defineComponent({
       font-weight: 700;
       letter-spacing: 0.06em;
       text-transform: uppercase;
-      color: #999;
+      color: rgb(var(--v-theme-ink-soft));
    }
 
    // Status colour moved from the list-item's text (its old home) onto its
@@ -154,9 +154,14 @@ export default defineComponent({
    // (see plugins/vuetify.js) - the same blue Container.vue's own "Started"
    // chip uses, rather than inventing a second "running" colour.
    .status-1  { background: rgb(var(--v-theme-started)); }
-   .status-0  { background: #888; }
-   .status--1 { background: #c88; }
-   .status--2 { background: #ccc; }
-   .status--3 { background: #ccc; }
-   .status--4 { background: #c44; }
+   // 0/-1/-2/-3 (exited / created-not-started / launch-in-flight / destroyed
+   // - see Reservation.pm's own status derivation) are all "not running,
+   // not failed" - one shared neutral dot rather than 4 shades the design
+   // system has no dedicated token for. -4 (create failed) is the one
+   // genuine error state among them, so it alone gets the danger token.
+   .status-0  { background: rgb(var(--v-theme-neutral)); }
+   .status--1 { background: rgb(var(--v-theme-neutral)); }
+   .status--2 { background: rgb(var(--v-theme-neutral)); }
+   .status--3 { background: rgb(var(--v-theme-neutral)); }
+   .status--4 { background: rgb(var(--v-theme-danger)); }
 </style>

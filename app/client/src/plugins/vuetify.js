@@ -56,25 +56,37 @@ function themeColors({ ink, inkSoft, ground, surface, surfaceAlt, border, accent
    };
 }
 
-const LIGHT_COLORS = themeColors({
-   ink: '#16212c', inkSoft: '#4b5a6a', ground: '#f4f6f9',
-   surface: '#ffffff', surfaceAlt: '#edf1f5', border: '#dde3ea',
-   accent: '#2e6da4', accentStrong: '#1f5687', accentSoft: '#dce9f4',
-   neutral: '#64748b', neutralSoft: '#e4e8ee',
-   danger: '#b3261e', dangerSoft: '#f6dedc',
-   granted: '#2f7d4f', grantedSoft: '#e1f2e7',
-   warning: '#856404', warningSoft: '#fff3cd',
-});
+// Header.vue/BottomNav.vue's app-chrome bar - deliberately the *same* hex in
+// both themes (not run through themeColors()'s light/dark pair), since the
+// doc's own rationale is this bar "carries over from the current app"
+// unchanged rather than inverting with the theme.
+const CHROME = '#16212c';
 
-const DARK_COLORS = themeColors({
-   ink: '#e7ecf2', inkSoft: '#9fb0c2', ground: '#0f151b',
-   surface: '#17212b', surfaceAlt: '#1e2a36', border: '#2b3947',
-   accent: '#6fa3d8', accentStrong: '#93bfe8', accentSoft: '#203852',
-   neutral: '#93a1b5', neutralSoft: '#26313e',
-   danger: '#e5787a', dangerSoft: '#3b2224',
-   granted: '#7cc79c', grantedSoft: '#1c3327',
-   warning: '#e0b34a', warningSoft: '#3a2f10',
-});
+const LIGHT_COLORS = {
+   ...themeColors({
+      ink: '#16212c', inkSoft: '#4b5a6a', ground: '#f4f6f9',
+      surface: '#ffffff', surfaceAlt: '#edf1f5', border: '#dde3ea',
+      accent: '#2e6da4', accentStrong: '#1f5687', accentSoft: '#dce9f4',
+      neutral: '#64748b', neutralSoft: '#e4e8ee',
+      danger: '#b3261e', dangerSoft: '#f6dedc',
+      granted: '#2f7d4f', grantedSoft: '#e1f2e7',
+      warning: '#856404', warningSoft: '#fff3cd',
+   }),
+   chrome: CHROME,
+};
+
+const DARK_COLORS = {
+   ...themeColors({
+      ink: '#e7ecf2', inkSoft: '#9fb0c2', ground: '#0f151b',
+      surface: '#17212b', surfaceAlt: '#1e2a36', border: '#2b3947',
+      accent: '#6fa3d8', accentStrong: '#93bfe8', accentSoft: '#203852',
+      neutral: '#93a1b5', neutralSoft: '#26313e',
+      danger: '#e5787a', dangerSoft: '#3b2224',
+      granted: '#7cc79c', grantedSoft: '#1c3327',
+      warning: '#e0b34a', warningSoft: '#3a2f10',
+   }),
+   chrome: CHROME,
+};
 
 // Vuetify's own theme instance already has a real 'system' mode - a
 // defaultTheme of 'system' resolves against, and live-follows,

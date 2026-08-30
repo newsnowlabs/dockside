@@ -1,5 +1,5 @@
 <template>
-   <v-app-bar color="#16212c" density="comfortable">
+   <v-app-bar color="chrome" density="comfortable">
       <v-app-bar-nav-icon class="d-md-none" @click="$emit('toggle-nav')" aria-label="Toggle navigation"></v-app-bar-nav-icon>
 
       <v-toolbar-title class="app-brand" @click="goHome(false)"><Dockside colour="white"/></v-toolbar-title>

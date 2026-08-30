@@ -136,6 +136,6 @@
 
    .json-editor-mode-label {
       font-size: 0.8rem;
-      color: #6c757d;
+      color: rgb(var(--v-theme-ink-soft));
    }
 </style>

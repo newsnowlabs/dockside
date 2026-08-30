@@ -440,14 +440,6 @@ export default defineComponent({
       padding-top: 8px;
    }
 
-   .detail-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 16px;
-      border-bottom: 1px solid #eee;
-      padding-bottom: 8px;
-   }
 
    .detail-title-wrap {
       display: flex;

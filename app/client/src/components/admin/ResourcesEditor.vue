@@ -108,7 +108,7 @@ export default defineComponent({
       width: 90px;
       flex-shrink: 0;
       font-weight: 600;
-      color: #495057;
+      color: rgb(var(--v-theme-ink-soft));
       padding-top: 6px;
       font-size: 0.8rem;
    }
@@ -121,7 +121,7 @@ export default defineComponent({
    .resources-legend {
       margin-top: 4px;
       font-size: 0.72rem;
-      color: #6c757d;
+      color: rgb(var(--v-theme-ink-soft));
    }
 
    .legend-green { color: rgb(var(--v-theme-granted)); font-weight: 600; }

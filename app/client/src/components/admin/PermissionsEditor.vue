@@ -110,7 +110,7 @@ export default defineComponent({
 
    .permissions-group-label {
       font-weight: 600;
-      color: #495057;
+      color: rgb(var(--v-theme-ink-soft));
       font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;

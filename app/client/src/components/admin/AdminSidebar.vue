@@ -159,12 +159,12 @@ export default defineComponent({
    .dot-inactive { background: rgb(var(--v-theme-neutral)); }
 
    .new-item :deep(.v-list-item-title) {
-      color: #5c9bd1;
+      color: rgb(var(--v-theme-accent));
       font-style: italic;
    }
 
    .loading-item :deep(.v-list-item-title) {
-      color: #aaa;
+      color: rgb(var(--v-theme-ink-soft));
       font-style: italic;
    }
 </style>

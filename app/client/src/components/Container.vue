@@ -959,7 +959,7 @@ export default defineComponent({
    .devtainer-owner {
       margin-left: auto;
       font-size: 0.8rem;
-      color: #6c757d;
+      color: rgb(var(--v-theme-ink-soft));
    }
 
    .devtainer-name-field {
@@ -982,7 +982,7 @@ export default defineComponent({
       th, td {
          text-align: left;
          padding: 6px 8px;
-         border-bottom: 1px solid #eee;
+         border-bottom: 1px solid rgb(var(--v-theme-border));
          vertical-align: middle;
       }
 
@@ -998,7 +998,7 @@ export default defineComponent({
 
    .layer-count {
       font-size: 0.8rem;
-      color: #6c757d;
+      color: rgb(var(--v-theme-ink-soft));
    }
 
    .launch-error {
@@ -1045,7 +1045,7 @@ export default defineComponent({
       width: 9em;
       flex-shrink: 0;
       text-align: right;
-      color: #6c757d;
+      color: rgb(var(--v-theme-ink-soft));
    }
 
    .hook-issue-row {
@@ -1072,6 +1072,6 @@ export default defineComponent({
    }
 
    .hook-log--muted {
-      color: #6c757d;
+      color: rgb(var(--v-theme-ink-soft));
    }
 </style>

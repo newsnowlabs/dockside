@@ -229,7 +229,7 @@ export default defineComponent({
 
    .ssh-section-title {
       font-weight: 600;
-      color: #495057;
+      color: rgb(var(--v-theme-ink-soft));
       font-size: 0.8rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
@@ -250,7 +250,7 @@ export default defineComponent({
       th, td {
          text-align: left;
          padding: 6px 8px;
-         border-bottom: 1px solid #eee;
+         border-bottom: 1px solid rgb(var(--v-theme-border));
       }
 
       th { font-weight: 600; }
@@ -273,7 +273,7 @@ export default defineComponent({
    }
 
    .ssh-empty {
-      color: #6c757d;
+      color: rgb(var(--v-theme-ink-soft));
       font-style: italic;
       font-size: 0.82rem;
    }
