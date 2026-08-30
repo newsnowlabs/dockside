@@ -5,7 +5,8 @@
   "main": "./src/index.js",
   "scripts": {
     "start": "vite build --watch --mode development",
-    "build": "vite build",
+    "lint": "eslint src/ --ext .js,.vue && stylelint \"src/**/*.{vue,scss,css}\"",
+    "build": "npm run lint && vite build",
     "test": "vitest run"
   },
   "author": "NewsNow Publishing Limited",
