@@ -6,7 +6,7 @@
          <v-card-actions>
             <v-spacer></v-spacer>
             <v-btn variant="outlined" @click="isOpen = false">Cancel</v-btn>
-            <v-btn color="error" variant="flat" @click="onConfirm">{{ confirmLabel }}</v-btn>
+            <v-btn color="error" @click="onConfirm">{{ confirmLabel }}</v-btn>
          </v-card-actions>
       </v-card>
    </v-dialog>

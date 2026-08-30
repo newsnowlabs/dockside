@@ -116,6 +116,46 @@ const vuetify = createVuetify({
       VListGroup: {
          fluid: true,
       },
+      // Form fields: outlined/compact was already what every field in the
+      // app set explicitly (repeated on ~25+ fields across UserDetail.vue,
+      // ProfileDetail.vue, RoleDetail.vue, SshEditor.vue, Container.vue,
+      // Header.vue) - set once here instead. density stays 'compact' (not
+      // the design doc's 'comfortable') - a deliberate, known deviation:
+      // switching would visibly grow every field in the app, not just
+      // dedupe a repeated prop. View-mode fields still override to variant
+      // 'plain' via their own per-field conditional - unaffected by this
+      // default, which only fills in for what isn't explicitly set.
+      VTextField: {
+         variant: 'outlined',
+         density: 'compact',
+      },
+      VSelect: {
+         variant: 'outlined',
+         density: 'compact',
+      },
+      VTextarea: {
+         variant: 'outlined',
+         density: 'compact',
+      },
+      VCombobox: {
+         variant: 'outlined',
+         density: 'compact',
+      },
+      VAutocomplete: {
+         variant: 'outlined',
+         density: 'compact',
+      },
+      // Vuetify's own default (no override anywhere) is variant: 'elevated'
+      // - confirmed live, e.g. UserDetail.vue's Save button rendered with a
+      // real box-shadow. Every button that cares about its own look already
+      // sets variant explicitly (Edit/Cancel: outlined, Delete: flat +
+      // color="error", nav links: text) - this only changes the ones that
+      // didn't (Save buttons, BottomNav's nav buttons, ...), matching the
+      // doc's "flat primary buttons" rather than Material's shadowed
+      // default.
+      VBtn: {
+         variant: 'flat',
+      },
    },
 });
 

@@ -23,7 +23,7 @@
       multiple chips closable-chips
       :disabled="disabled"
       :placeholder="placeholder"
-      density="compact" variant="outlined" hide-details
+      hide-details
       class="tags-input"
    />
 </template>

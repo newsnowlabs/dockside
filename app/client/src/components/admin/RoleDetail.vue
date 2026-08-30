@@ -35,7 +35,6 @@
             :error="nameState === false"
             :error-messages="nameState === false ? [nameErrorText] : []"
             placeholder="alphanumeric, hyphens, underscores"
-            density="compact"
         />
 
          <!-- Permissions -->

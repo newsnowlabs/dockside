@@ -44,14 +44,12 @@
             v-model="renameValue"
             label="New ID"
             :error="renameState === false"
-            density="compact"
-            variant="outlined"
             hide-details
             class="rename-input"
             @keyup.enter="commitRename"
             @keyup.escape="cancelRename"
          />
-         <v-btn color="primary" variant="flat" size="small" :disabled="renameState !== true || renaming" @click="commitRename">
+         <v-btn color="primary" size="small" :disabled="renameState !== true || renaming" @click="commitRename">
             {{ renaming ? 'Renaming…' : 'Apply' }}
          </v-btn>
          <v-btn variant="outlined" size="small" @click="cancelRename">Cancel</v-btn>
@@ -68,8 +66,6 @@
             :error="idState === false"
             :error-messages="idState === false ? [idErrorText] : []"
             placeholder="letters, digits, dots, hyphens, underscores"
-            density="compact"
-            variant="outlined"
             class="mb-2"
          />
          <v-text-field
@@ -78,7 +74,6 @@
             :model-value="profileId"
             readonly
             variant="plain"
-            density="compact"
             class="mb-2"
          />
 
@@ -89,7 +84,6 @@
             :readonly="!isEditMode && !isNew"
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             placeholder="Display name"
-            density="compact"
             class="mb-2"
          />
 
@@ -100,7 +94,6 @@
             :readonly="!isEditMode && !isNew"
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             placeholder="Brief description"
-            density="compact"
             class="mb-2"
          />
 
@@ -122,7 +115,6 @@
             :model-value="form.version"
             readonly
             variant="plain"
-            density="compact"
             class="mb-2"
          />
 

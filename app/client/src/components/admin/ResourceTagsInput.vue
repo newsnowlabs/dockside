@@ -21,7 +21,7 @@
       multiple chips closable-chips
       :disabled="readonly"
       :placeholder="placeholder"
-      density="compact" variant="outlined" hide-details
+      hide-details
       class="resource-tags-input"
    >
       <template #chip="{ item, props: chipProps }">

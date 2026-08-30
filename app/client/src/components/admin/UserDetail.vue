@@ -42,7 +42,6 @@
             :error="usernameState === false"
             :error-messages="usernameState === false ? ['Username must contain only letters, digits, hyphens and underscores.'] : []"
             placeholder="alphanumeric, hyphens, underscores"
-            density="compact"
             class="mb-2"
          />
 
@@ -53,7 +52,6 @@
             :readonly="!isEditMode && !isNew"
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             placeholder="Display name"
-            density="compact"
             class="mb-2"
          />
 
@@ -65,7 +63,6 @@
             :readonly="!isEditMode && !isNew"
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             placeholder="user@example.com"
-            density="compact"
             class="mb-2"
          />
 
@@ -78,8 +75,6 @@
             :items="roleOptions"
             item-title="text"
             item-value="value"
-            density="compact"
-            variant="outlined"
             class="mb-2"
          />
 
@@ -93,7 +88,6 @@
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             :placeholder="isNew ? 'Leave blank for no password' : 'Leave blank to keep unchanged'"
             autocomplete="new-password"
-            density="compact"
             class="mb-2"
          />
 
@@ -106,8 +100,6 @@
             label="GitHub token"
             :placeholder="form.gh_token_is_set ? 'Enter new token to replace existing, or leave blank to keep' : 'ghp_…'"
             autocomplete="off"
-            density="compact"
-            variant="outlined"
             class="mb-2"
          >
             <template #append-inner>
@@ -123,7 +115,6 @@
             disabled
             variant="plain"
             :placeholder="form.gh_token_masked || ''"
-            density="compact"
             class="mb-2"
          />
 

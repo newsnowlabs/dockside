@@ -10,7 +10,7 @@
          <v-select v-show="!isSelected && !isAdminRoute && !isAccountRoute"
             v-model="containersFilter"
             :items="containersFilterItems"
-            density="compact" variant="outlined" hide-details
+            hide-details
             class="containers-filter" aria-label="Filter containers"
          ></v-select>
 

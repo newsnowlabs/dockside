@@ -17,7 +17,7 @@
                <template v-else-if="isPrelaunchMode && !hasProfiles">
                   <v-text-field
                      model-value="NO PROFILES AVAILABLE" disabled
-                     density="compact" variant="outlined" hide-details
+                     hide-details
                      class="devtainer-name-field"
                   />
                </template>
@@ -28,7 +28,7 @@
                      :disabled="!hasProfiles"
                      :error="!validName"
                      :error-messages="!validName ? [nameErrorText] : []"
-                     density="compact" variant="outlined" hide-details="auto"
+                     hide-details="auto"
                      class="devtainer-name-field"
                   />
                </template>
@@ -41,7 +41,7 @@
                      v-model="form.description"
                      placeholder="Devtainer description"
                      :disabled="!hasProfiles"
-                     density="compact" variant="outlined" hide-details
+                     hide-details
                   />
                </div>
                <div class="table-wrap">
@@ -57,7 +57,7 @@
                                  :item-title="name => profiles[name].name || name"
                                  :item-value="name => name"
                                  :disabled="profileNames.length <= 1"
-                                 density="compact" variant="outlined" hide-details
+                                 hide-details
                               />
                            </td>
                         </tr>
@@ -155,7 +155,7 @@
                         <tr v-for="(router, index) in routers" v-bind:key="index">
                            <th>&#8674;&nbsp;{{ router.name }} </th>
                            <td v-if="!isEditMode && !isPrelaunchMode" class="router-actions">
-                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" color="primary" variant="flat" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</v-btn>
+                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" color="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</v-btn>
                               <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" variant="outlined" v-on:click="copyUri(router)">Copy</v-btn>
                               <v-tooltip v-if="router.type === 'ssh' && container.status >= 0" text="Configure SSH for Dockside">
                                  <template #activator="{ props: tooltipProps }">
@@ -261,7 +261,7 @@
                                  v-on:click="edit()"
                                  >Edit</v-btn>
 
-                              <v-btn size="small" color="primary" variant="flat"
+                              <v-btn size="small" color="primary"
                                  v-show="container.permissions.actions.startContainer && !isEditMode && !isPrelaunchMode && container.status >= -1 && container.status <= 0"
                                  v-on:click="action('start')"
                                  :data-id="container.id"

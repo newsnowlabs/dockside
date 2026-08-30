@@ -9,8 +9,6 @@
             :readonly="readonly"
             placeholder="One public key per line (ssh-rsa AAAA… / ssh-ed25519 AAAA…)"
             rows="4"
-            density="compact"
-            variant="outlined"
             hide-details
             class="ssh-pubkeys-textarea"
             @change="emitUpdate"
@@ -60,8 +58,6 @@
                   v-model="newKpName"
                   label="Keypair name"
                   placeholder="e.g. deploy-key"
-                  density="compact"
-                  variant="outlined"
                   :error="newKpNameState === false"
                   :error-messages="newKpNameState === false ? [newKpNameError] : []"
                   class="mb-2"
@@ -71,8 +67,6 @@
                   label="Public key"
                   placeholder="ssh-rsa AAAA… or ssh-ed25519 AAAA…"
                   rows="3"
-                  density="compact"
-                  variant="outlined"
                   hide-details
                   class="mb-2"
                />
@@ -81,8 +75,6 @@
                   label="Private key"
                   placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                   rows="5"
-                  density="compact"
-                  variant="outlined"
                   hint="The private key will be stored securely and never shown again."
                   persistent-hint
                />
@@ -90,7 +82,7 @@
             <v-card-actions>
                <v-spacer></v-spacer>
                <v-btn variant="outlined" @click="showAddModal = false">Cancel</v-btn>
-               <v-btn color="primary" variant="flat" :disabled="!canAddKeypair" @click="commitAddKeypair">Add</v-btn>
+               <v-btn color="primary" :disabled="!canAddKeypair" @click="commitAddKeypair">Add</v-btn>
             </v-card-actions>
          </v-card>
       </v-dialog>
