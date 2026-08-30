@@ -15,20 +15,20 @@
          ></v-select>
 
          <v-btn variant="text" to="/" exact :class="{ 'nav-btn--active': isContainerSection }">
-            <v-icon start icon="mdi-home"></v-icon> Containers
+            <v-icon start :icon="mdiHome"></v-icon> Containers
          </v-btn>
 
          <v-btn variant="text" v-show="user.permissions.actions.createContainerReservation"
             :class="{ 'nav-btn--active': isPrelaunchMode }" @click="goToContainer('new', 'prelaunch')">
-            <v-icon start icon="mdi-plus-circle"></v-icon> Launch
+            <v-icon start :icon="mdiPlusCircle"></v-icon> Launch
          </v-btn>
 
          <v-btn variant="text" v-show="canAccessAdmin" to="/admin" :class="{ 'nav-btn--active': isAdminRoute }">
-            <v-icon start icon="mdi-cog"></v-icon> Admin
+            <v-icon start :icon="mdiCog"></v-icon> Admin
          </v-btn>
 
          <v-btn variant="text" to="/account" :class="{ 'nav-btn--active': isAccountRoute }" :title="'Account settings for ' + user.username">
-            <v-icon start icon="mdi-account-circle"></v-icon> {{ displayName }}
+            <v-icon start :icon="mdiAccountCircle"></v-icon> {{ displayName }}
          </v-btn>
       </div>
    </v-app-bar>
@@ -38,7 +38,7 @@
 import { defineComponent } from 'vue';
 
 import { mapGetters } from 'vuex';
-import { routing, routePermissions } from '@/components/mixins';
+import { routing, routePermissions, navIcons } from '@/components/mixins';
 import Dockside from '@/components/Dockside';
 
 export default defineComponent({
@@ -99,7 +99,7 @@ export default defineComponent({
      }
   },
 
-  mixins: [routing, routePermissions],
+  mixins: [routing, routePermissions, navIcons],
 });
 </script>
 

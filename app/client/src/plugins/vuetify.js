@@ -9,10 +9,25 @@
 // colors, same hex values, still referenced the same way (e.g. a running
 // container's badge used color="started").
 import 'vuetify/styles';
-import '@mdi/font/css/materialdesignicons.css';
+import { aliases, mdi } from 'vuetify/iconsets/mdi-svg';
 import { createVuetify } from 'vuetify';
 
 export default createVuetify({
+   // SVG icon set, not @mdi/font: only ~5 distinct mdi-* icon names are used
+   // app-wide (grep-confirmed), but @mdi/font's CSS+font-file bundle has no
+   // per-icon granularity - loading it unconditionally cost every page load
+   // a ~700KB stylesheet plus hundreds of KB to over 1MB of font assets for
+   // those 5 icons. vuetify/iconsets/mdi-svg costs nothing extra for
+   // Vuetify's own internal icons (checkboxes, dropdown chevrons, close
+   // buttons, ...) - its aliases are inlined SVG path data, not an @mdi/js
+   // import - so only the app's own explicit icon usages (Header.vue,
+   // BottomNav.vue, SSHInfo.vue) need real @mdi/js imports, each ~100-300
+   // bytes, tree-shaken to just the icons actually referenced.
+   icons: {
+      defaultSet: 'mdi',
+      aliases,
+      sets: { mdi },
+   },
    theme: {
       defaultTheme: 'light',
       themes: {

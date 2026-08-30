@@ -12,7 +12,7 @@
   "author": "NewsNow Publishing Limited",
   "license": "Apache-2.0",
   "dependencies": {
-    "@mdi/font": "^7.4.47",
+    "@mdi/js": "^7.4.47",
     "axios": "^1.18.0",
     "json-editor-vue": "^0.18.1",
     "vue": "^3.5.42",

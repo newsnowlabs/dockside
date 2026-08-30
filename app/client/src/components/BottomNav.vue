@@ -5,23 +5,23 @@
         true - a CSS class only hides it visually, leaving the reserved space behind on desktop. -->
    <v-bottom-navigation color="white" bg-color="#16212c" app :active="!$vuetify.display.mdAndUp">
       <v-btn to="/" exact :class="{ 'bottom-btn--active': isContainerSection }">
-         <v-icon icon="mdi-home"></v-icon>
+         <v-icon :icon="mdiHome"></v-icon>
          Containers
       </v-btn>
 
       <v-btn v-show="user.permissions.actions.createContainerReservation"
          :class="{ 'bottom-btn--active': isPrelaunchMode }" @click="goToContainer('new', 'prelaunch')">
-         <v-icon icon="mdi-plus-circle"></v-icon>
+         <v-icon :icon="mdiPlusCircle"></v-icon>
          Launch
       </v-btn>
 
       <v-btn v-show="canAccessAdmin" to="/admin" :class="{ 'bottom-btn--active': isAdminRoute }">
-         <v-icon icon="mdi-cog"></v-icon>
+         <v-icon :icon="mdiCog"></v-icon>
          Admin
       </v-btn>
 
       <v-btn to="/account" :class="{ 'bottom-btn--active': isAccountRoute }">
-         <v-icon icon="mdi-account-circle"></v-icon>
+         <v-icon :icon="mdiAccountCircle"></v-icon>
          Account
       </v-btn>
    </v-bottom-navigation>
@@ -31,11 +31,11 @@
 import { defineComponent } from 'vue';
 
 import { mapGetters } from 'vuex';
-import { routing, routePermissions } from '@/components/mixins';
+import { routing, routePermissions, navIcons } from '@/components/mixins';
 
 export default defineComponent({
   name: 'BottomNav',
-  mixins: [routing, routePermissions],
+  mixins: [routing, routePermissions, navIcons],
 
   computed: {
      ...mapGetters(['isPrelaunchMode']),

@@ -13,7 +13,10 @@
          <v-card-title class="d-flex align-center">
             How to set up SSH
             <v-spacer></v-spacer>
-            <v-btn icon="mdi-close" variant="text" size="small" @click="closeModal" aria-label="Close"></v-btn>
+            <!-- $close: Vuetify's own built-in icon alias, already the exact mdi-close SVG
+                 path (see vuetify/iconsets/mdi-svg's own aliases) - no separate @mdi/js
+                 import needed, unlike Header.vue/BottomNav.vue's other icons. -->
+            <v-btn icon="$close" variant="text" size="small" @click="closeModal" aria-label="Close"></v-btn>
          </v-card-title>
 
          <v-tabs v-model="tab" class="ssh-tabs">

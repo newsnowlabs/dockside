@@ -1,3 +1,18 @@
+import { mdiHome, mdiPlusCircle, mdiCog, mdiAccountCircle } from '@mdi/js';
+
+// Header.vue and BottomNav.vue both render the same 4 nav icons (see
+// plugins/vuetify.js's own comment on why these are real @mdi/js imports,
+// not @mdi/font glyph names) - shared here rather than each file repeating
+// the same import line.
+const navIcons = {
+   computed: {
+      mdiHome: () => mdiHome,
+      mdiPlusCircle: () => mdiPlusCircle,
+      mdiCog: () => mdiCog,
+      mdiAccountCircle: () => mdiAccountCircle,
+   },
+};
+
 const filteredContainers = {
    computed: {
       filteredContainers() {
@@ -117,4 +132,4 @@ const routing = {
    }
 };
 
-export { filteredContainers, routing, routePermissions, sidebarDrawerSelect };
+export { filteredContainers, navIcons, routing, routePermissions, sidebarDrawerSelect };
