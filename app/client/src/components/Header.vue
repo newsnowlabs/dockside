@@ -9,7 +9,7 @@
       <div class="d-none d-md-flex align-center nav-links">
          <v-select v-show="!isSelected && !isAdminRoute && !isAccountRoute"
             v-model="containersFilter"
-            :items="[{title: 'Shared', value: 'shared'}, {title: 'All', value: 'all'}]"
+            :items="containersFilterItems"
             density="compact" variant="outlined" hide-details
             class="containers-filter" aria-label="Filter containers"
          ></v-select>
@@ -41,6 +41,8 @@ import { mapGetters } from 'vuex';
 import { routing, routePermissions, navIcons } from '@/components/mixins';
 import Dockside from '@/components/Dockside';
 
+const CONTAINERS_FILTER_ITEMS = [{title: 'Shared', value: 'shared'}, {title: 'All', value: 'all'}];
+
 export default defineComponent({
   name: 'Header',
   emits: ['toggle-nav'],
@@ -51,6 +53,9 @@ export default defineComponent({
 
   computed: {
      ...mapGetters(['isSelected', 'isPrelaunchMode']),
+     containersFilterItems() {
+        return CONTAINERS_FILTER_ITEMS;
+     },
      user() {
         return this.$store.state.account.currentUser;
      },
