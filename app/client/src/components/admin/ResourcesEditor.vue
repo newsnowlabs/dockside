@@ -124,6 +124,6 @@ export default defineComponent({
       color: #6c757d;
    }
 
-   .legend-green { color: #155724; font-weight: 600; }
-   .legend-red   { color: #721c24; font-weight: 600; }
+   .legend-green { color: rgb(var(--v-theme-granted)); font-weight: 600; }
+   .legend-red   { color: rgb(var(--v-theme-danger));  font-weight: 600; }
 </style>

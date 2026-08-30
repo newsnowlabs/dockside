@@ -273,8 +273,8 @@ ForwardAgent yes`;
 }
 
 .code-block {
-   background: #f8f9fa;
-   border: 1px solid #dee2e6;
+   background: rgb(var(--v-theme-surface-alt));
+   border: 1px solid rgb(var(--v-theme-border));
    border-radius: 4px;
    margin-bottom: 0.75rem;
    overflow: hidden;

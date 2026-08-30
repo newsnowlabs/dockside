@@ -1034,7 +1034,7 @@ export default defineComponent({
       height: 0.5rem;
       margin: 0 0.5rem;
       border-radius: 100px;
-      background: #e4e8ee;
+      background: rgb(var(--v-theme-neutral-soft));
       overflow: hidden;
 
       > span {

@@ -155,8 +155,8 @@ export default defineComponent({
    // Same .sidebar-dot shape (index.scss) every other sidebar list uses -
    // was previously its own unicode "●" glyph here, a slightly different
    // shape/size than the CSS-drawn circle Users/Roles/devtainers now share.
-   .dot-active   { background: #28a745; }
-   .dot-inactive { background: #aaa;    }
+   .dot-active   { background: rgb(var(--v-theme-granted)); }
+   .dot-inactive { background: rgb(var(--v-theme-neutral)); }
 
    .new-item :deep(.v-list-item-title) {
       color: #5c9bd1;

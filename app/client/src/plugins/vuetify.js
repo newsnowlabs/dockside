@@ -20,7 +20,12 @@ import { createVuetify } from 'vuetify';
 // design doc calls out both explicitly: "Status uses the accent for
 // 'running,' not the more obvious green" (started), and neutral's own
 // swatch entry is labelled "Stopped / inactive status" (stopped).
-function themeColors({ ink, inkSoft, ground, surface, surfaceAlt, border, accent, accentStrong, accentSoft, neutral, neutralSoft, danger, dangerSoft, granted, grantedSoft }) {
+//
+// warning isn't part of the design doc's own palette - it exists purely to
+// give Vuetify's built-in 'warning' slot (used by index.scss's tonal-alert
+// contrast fix, and available to any future color="warning" usage) real
+// light/dark values instead of Vuetify's stock swatch.
+function themeColors({ ink, inkSoft, ground, surface, surfaceAlt, border, accent, accentStrong, accentSoft, neutral, neutralSoft, danger, dangerSoft, granted, grantedSoft, warning, warningSoft }) {
    return {
       background: ground,
       surface,
@@ -46,6 +51,8 @@ function themeColors({ ink, inkSoft, ground, surface, surfaceAlt, border, accent
       'danger-soft': dangerSoft,
       granted,
       'granted-soft': grantedSoft,
+      warning,
+      'warning-soft': warningSoft,
    };
 }
 
@@ -56,6 +63,7 @@ const LIGHT_COLORS = themeColors({
    neutral: '#64748b', neutralSoft: '#e4e8ee',
    danger: '#b3261e', dangerSoft: '#f6dedc',
    granted: '#2f7d4f', grantedSoft: '#e1f2e7',
+   warning: '#856404', warningSoft: '#fff3cd',
 });
 
 const DARK_COLORS = themeColors({
@@ -65,6 +73,7 @@ const DARK_COLORS = themeColors({
    neutral: '#93a1b5', neutralSoft: '#26313e',
    danger: '#e5787a', dangerSoft: '#3b2224',
    granted: '#7cc79c', grantedSoft: '#1c3327',
+   warning: '#e0b34a', warningSoft: '#3a2f10',
 });
 
 // Vuetify's own theme instance already has a real 'system' mode - a

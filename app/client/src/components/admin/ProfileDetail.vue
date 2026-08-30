@@ -471,8 +471,8 @@ export default defineComponent({
       gap: 8px;
       margin-bottom: 16px;
       padding: 8px 10px;
-      background: #f8f9fa;
-      border: 1px solid #dee2e6;
+      background: rgb(var(--v-theme-surface-alt));
+      border: 1px solid rgb(var(--v-theme-border));
       border-radius: 4px;
    }
 

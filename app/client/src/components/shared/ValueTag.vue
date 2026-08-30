@@ -180,11 +180,29 @@ export default defineComponent({
          cursor: default;
       }
 
-      &.value-tag--granted           { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
-      &.value-tag--denied            { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
-      &.value-tag--inherited-granted { background-color: #eaf6ed; color: #4a8c5c; border-color: #c3e6cb; }
-      &.value-tag--inherited-denied  { background-color: #fdf0f1; color: #a94442; border-color: #f5c6cb; }
-      &.value-tag--absent            { background-color: #e9ecef; color: #6c757d; border-color: #dee2e6; }
+      &.value-tag--granted,
+      &.value-tag--inherited-granted {
+         background-color: rgb(var(--v-theme-granted-soft));
+         color: rgb(var(--v-theme-granted));
+         border-color: rgb(var(--v-theme-granted));
+      }
+      &.value-tag--denied,
+      &.value-tag--inherited-denied {
+         background-color: rgb(var(--v-theme-danger-soft));
+         color: rgb(var(--v-theme-danger));
+         border-color: rgb(var(--v-theme-danger));
+      }
+      // Inherited is the same granted/denied signal as above, just muted -
+      // not a separate color.
+      &.value-tag--inherited-granted,
+      &.value-tag--inherited-denied {
+         opacity: 0.7;
+      }
+      &.value-tag--absent {
+         background-color: rgb(var(--v-theme-neutral-soft));
+         color: rgb(var(--v-theme-neutral));
+         border-color: rgb(var(--v-theme-neutral-soft));
+      }
    }
 
    .value-tag-source {
@@ -195,8 +213,8 @@ export default defineComponent({
    // needs to describe the card's own look, not where it sits on the page.
    .value-tag-menu {
       min-width: 220px;
-      background: white;
-      border: 1px solid #dee2e6;
+      background: rgb(var(--v-theme-surface));
+      border: 1px solid rgb(var(--v-theme-border));
       border-radius: 8px;
       box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
       padding: 4px;
@@ -213,15 +231,15 @@ export default defineComponent({
       border-radius: 6px;
       cursor: pointer;
       font-size: 0.78rem;
-      color: #212529;
+      color: rgb(var(--v-theme-ink));
 
-      &:hover { background: #f1f3f5; }
+      &:hover { background: rgb(var(--v-theme-surface-alt)); }
 
       .radio {
          width: 13px;
          height: 13px;
          border-radius: 50%;
-         border: 1.5px solid #ced4da;
+         border: 1.5px solid rgb(var(--v-theme-border));
          flex: none;
          position: relative;
       }
