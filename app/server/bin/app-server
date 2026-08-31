@@ -643,11 +643,17 @@ $authed->get( '/assets/main.js' => sub ($c) {
 # assetFileNames puts *anything* that isn't style.css under dist/assets/ with no
 # type restriction, so a whitelist here would just move the same silent-200-of-
 # index.html failure mode onto the next asset type Vite emits there (an image,
-# a source map, ...) instead of fixing it once. [\w\-]+\.\w+ still can't match a
-# '/' or a '..' segment, so this stays scoped to a single flat filename under
-# dist/assets/ - same safety property the old whitelist had, just not tied to
-# specific extensions.
-$authed->get( '/assets/:file' => [ file => qr/[\w\-]+\.\w+/ ] => sub ($c) {
+# a source map, ...) instead of fixing it once. Needs a repeated
+# (?:\.[\w\-]+)+, not a single \.\w+ - vite.config.js's sourcemap: true emits
+# a sibling *.js.map/*.css.map next to every JS/CSS file (e.g. main.js.map),
+# and a single trailing extension only matches as far as "main.js", leaving
+# ".map" unconsumed - Mojolicious requires the whole segment matched, so that
+# fails the route and falls through to this same index.html-as-a-file bug for
+# every source map. [\w\-]+(?:\.[\w\-]+)+ still can't match a '/' or a '..'
+# segment (a bare '..' has no leading [\w\-]+ to match), so this stays scoped
+# to a single flat filename under dist/assets/ - same safety property the old
+# whitelist had, just not tied to specific extensions.
+$authed->get( '/assets/:file' => [ file => qr/[\w\-]+(?:\.[\w\-]+)+/ ] => sub ($c) {
    $c->res->headers->cache_control('public, max-age=31536000, immutable');
    $c->reply->file("$CONFIG->{'clientDistPath'}/assets/" . $c->stash('file'));
 } );
