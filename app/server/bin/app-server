@@ -658,6 +658,18 @@ $authed->get( '/assets/:file' => [ file => qr/[\w\-]+(?:\.[\w\-]+)+/ ] => sub ($
    $c->reply->file("$CONFIG->{'clientDistPath'}/assets/" . $c->stash('file'));
 } );
 
+# Anything else under /assets/ or /ico/ - a request none of the specific
+# routes above matched (wrong method, or a filename shape none of them
+# anticipated) - gets a real 404 here rather than falling through to the
+# generic catch-all further down, which would otherwise redirect it to '/'
+# and hand back the SPA shell's HTML in its place. A caller expecting a
+# specific asset (a <script>/<link> load, a source map fetch, an <img>)
+# needs a response it can recognise as "this file doesn't exist", not a 200
+# success carrying the wrong content entirely - registered ahead of the
+# generic catch-all so it takes priority for these two prefixes specifically.
+$authed->any( '/assets/*rest' => { rest => '' } => sub ($c) { _text( $c, 404, "Not Found\n" ) } );
+$authed->any( '/ico/*rest'    => { rest => '' } => sub ($c) { _text( $c, 404, "Not Found\n" ) } );
+
 # The SPA shell ('/', '/container/*', '/admin/*', '/account/*' - via this file's own
 # $c-native _render_spa_shell below) and the login page/form it falls back to when not
 # logged in. No method restriction - a POST here while logged in (unusual, but not
@@ -1043,7 +1055,10 @@ $routes->any( '/docs/*rest' => { rest => '' } => \&_serve_static );
 # state, not a 404: a typo'd URL or a stale
 # bookmark lands on the SPA shell (or the login page, if not logged in) like
 # any other unrecognised in-app navigation, and lets Vue Router take it from
-# there client-side, rather than a bare error page.
+# there client-side, rather than a bare error page. /assets/* and /ico/* never
+# reach this: their own catch-alls above claim those two prefixes first and
+# answer a real 404 instead, since a caller there is loading a specific file,
+# not navigating - see that section's own comment.
 $routes->any( '/*whatever' => { whatever => '' } => sub ($c) {
    return _redirect( $c, 302, '/' );
 } );
