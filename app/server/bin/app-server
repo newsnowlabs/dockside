@@ -230,6 +230,22 @@ sub _text ($c, $code, $data) {
    return $c->render( data => $data, status => $code );
 }
 
+# reply->file on its own doesn't check the path exists first - Mojo::Asset::File
+# has no problem wrapping a nonexistent path, and Mojolicious::Static::serve_asset
+# happily streams it as a 200 with an empty body and a Content-Type still guessed
+# from the extension, rather than 404ing. Every route below serves a name it
+# only partially controls (a stale on-disk copy after a partial deploy, or - for
+# /assets/:file/ico/:file - any filename shape their own regex allows through),
+# so an existence check belongs here once rather than copied into each. Checked
+# before, not after, $cache_control is applied: a still-missing file must 404
+# with _text's own no-store, never with a year-long immutable success header
+# that would keep masking it after the file does show up.
+sub _reply_file ($c, $path, $cache_control = undef) {
+   return _text( $c, 404, "Not Found\n" ) unless -f $path;
+   $c->res->headers->cache_control($cache_control) if $cache_control;
+   return $c->reply->file($path);
+}
+
 sub _send_branded_page ($c, $code, $class, $body_html) {
    my $css_v = App::_asset_version('main.css');
    my $page  = App::get_header()
@@ -586,13 +602,13 @@ $routes->any( '/computeMetadata/v1/*rest' => { rest => '' } => sub ($c) {
 # (reply->file, via Mojolicious::Types), which gives "image/x-icon"/"image/png" for
 # favicon.ico/apple-touch-icon.png respectively - both correct IANA-registered types.
 for my $file (qw(favicon.ico apple-touch-icon.png)) {
-   $authed->get("/$file" => sub ($c) { $c->reply->file("$CONFIG->{'assetsPath'}/ico/$file") } );
+   $authed->get("/$file" => sub ($c) { _reply_file( $c, "$CONFIG->{'assetsPath'}/ico/$file" ) } );
 }
 $authed->get( '/ico/:file' => [ file => qr/[a-z0-9\-_]+\.png/ ] => sub ($c) {
-   $c->reply->file("$CONFIG->{'assetsPath'}/ico/" . $c->stash('file'));
+   _reply_file( $c, "$CONFIG->{'assetsPath'}/ico/" . $c->stash('file') );
 } );
 $authed->get( '/ico/:file' => [ file => qr/[a-z0-9\-_]+\.svg/ ] => sub ($c) {
-   $c->reply->file("$CONFIG->{'assetsPath'}/ico/" . $c->stash('file'));
+   _reply_file( $c, "$CONFIG->{'assetsPath'}/ico/" . $c->stash('file') );
 } );
 
 # Served pre-auth too (reachable regardless of login state, like the routes
@@ -601,8 +617,7 @@ $authed->get( '/ico/:file' => [ file => qr/[a-z0-9\-_]+\.svg/ ] => sub ($c) {
 # external CDN. main.js has no pre-auth reader, so it stays gated below with
 # the rest of the authenticated app's assets.
 $authed->get( '/assets/main.css' => sub ($c) {
-   $c->res->headers->cache_control('public, max-age=31536000, immutable');
-   $c->reply->file("$CONFIG->{'clientDistPath'}/main.css");
+   _reply_file( $c, "$CONFIG->{'clientDistPath'}/main.css", 'public, max-age=31536000, immutable' );
 } );
 
 # Gated on login (unlike main.css above) - matches the original's own
@@ -617,13 +632,12 @@ $authed->get( '/assets/main.js' => sub ($c) {
       $c->res->headers->location('/');
       return $c->render( text => "Redirecting to / ...\n", status => 302 );
    }
-   $c->res->headers->cache_control('public, max-age=31536000, immutable');
    # dist/assets/main.js, not dist/main.js: vite.config.js now emits main.js
    # under assets/ too (see that file's own comment) so its on-disk location
    # matches this /assets/main.js URL - needed for its own dynamic import()
    # chunk paths (AdminMain, review.md #10) to resolve correctly in the
    # browser.
-   $c->reply->file("$CONFIG->{'clientDistPath'}/assets/main.js");
+   _reply_file( $c, "$CONFIG->{'clientDistPath'}/assets/main.js", 'public, max-age=31536000, immutable' );
 } );
 
 # Vuetify + MDI font (Stage 3 of docs/plans/vue2-vue3-migration.md, dockside-admin
@@ -654,8 +668,7 @@ $authed->get( '/assets/main.js' => sub ($c) {
 # to a single flat filename under dist/assets/ - same safety property the old
 # whitelist had, just not tied to specific extensions.
 $authed->get( '/assets/:file' => [ file => qr/[\w\-]+(?:\.[\w\-]+)+/ ] => sub ($c) {
-   $c->res->headers->cache_control('public, max-age=31536000, immutable');
-   $c->reply->file("$CONFIG->{'clientDistPath'}/assets/" . $c->stash('file'));
+   _reply_file( $c, "$CONFIG->{'clientDistPath'}/assets/" . $c->stash('file'), 'public, max-age=31536000, immutable' );
 } );
 
 # Anything else under /assets/ or /ico/ - a request none of the specific
