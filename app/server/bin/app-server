@@ -237,6 +237,7 @@ sub _send_branded_page ($c, $code, $class, $body_html) {
              . "</head><body>\n"
              . qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n}
              . '<div class="container"><div class="branded ' . $class . '"><div class="dockside"></div>' . $body_html . "</div></div>\n</body></html>\n";
+   $c->res->headers->cache_control('no-store');
    $c->res->headers->content_type('text/html');
    return $c->render( data => $page, status => $code );
 }
@@ -321,6 +322,13 @@ sub _render_spa_shell ($c, $User, $parentFQDN) {
    # finished parsing, same as this tag's existing placement at the very end
    # of <body> already guaranteed for the classic-script case.
    $page .= qq{<script type="module" src="/assets/main.js?v=$js_v"></script>\n} . "</body></html>\n";
+   # no-store, not just unset: this page embeds the current build's
+   # /assets/main.js?v=... URL, and those assets are served
+   # 'public, max-age=31536000, immutable' (see the /assets/main.js route
+   # below) - a browser that caches this shell would keep pointing at a
+   # stale, no-longer-current build indefinitely, since the immutable asset
+   # headers give it no reason to ever revalidate the URL it already has.
+   $c->res->headers->cache_control('no-store');
    $c->res->headers->content_type('text/html');
    return $c->render( data => $page, status => 200 );
 }
