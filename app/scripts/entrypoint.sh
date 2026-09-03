@@ -481,7 +481,18 @@ if [ ${#OPT_CONFIG_SET[@]} -gt 0 ]; then
   log_pop
 fi
 
-if [ "$OPT_LXCFS_AVAILABLE" == "1" ]; then
+# As with SSL Setup Step 1/2 above, config.json's own lxcfs.available is authoritative once
+# it holds an explicit true/false; --lxcfs-available only seeds an empty config.json. Read the
+# raw value rather than using jq's `//` here: `//` treats a stored `false` the same as a missing
+# key, which would make an explicit --config-set '.lxcfs.available = false' indistinguishable
+# from "not yet set" and let a --lxcfs-available flag baked into this container's command line
+# silently flip it back to true on every restart.
+CONFIG_LXCFS=$(jq_config_get -r '.lxcfs.available')
+if [ "$CONFIG_LXCFS" == "true" ] || [ "$CONFIG_LXCFS" == "false" ]; then
+  if [ "$OPT_LXCFS_AVAILABLE" == "1" ] && [ "$CONFIG_LXCFS" != "true" ]; then
+    log "- config.json already sets lxcfs.available=$CONFIG_LXCFS; ignoring --lxcfs-available (use --config-set '.lxcfs.available = true' to change it)"
+  fi
+elif [ "$OPT_LXCFS_AVAILABLE" == "1" ]; then
   jq_config_set '.lxcfs.available = true'
 fi
 
@@ -512,43 +523,56 @@ CONFIG_SSL=$(jq_config_get -r '.ssl.source')
 CONFIG_SSL_ZONES=($(jq_config_get -r '.ssl.domains[]'))
 
 # SSL Setup Step 1:
-# Assign SSL according to --ssl-* option, or config.json setting, and abort if invalid
+# Assign SSL from config.json's existing ssl.source, if it already holds a recognised value;
+# otherwise (an empty/fresh config.json) seed it from the --ssl-* option, and abort if neither
+# gives a valid value. config.json is authoritative once set, so that a supervisor which always
+# launches this container with the same fixed --ssl-* arguments can't silently undo a later
+# --config-set or a direct config.json edit on the next restart; --ssl-* is only consulted to
+# seed an empty config.json, never to override one that's already populated.
 #
-if [ "$OPT_SSL" == "builtin" ] || [ "$OPT_SSL" == "selfsigned" ] || [ "$OPT_SSL" == "letsencrypt" ] || [ "$OPT_SSL" == "selfsupplied" ]; then
+if [ "$CONFIG_SSL" == "builtin" ] || [ "$CONFIG_SSL" == "selfsigned" ] || [ "$CONFIG_SSL" == "letsencrypt" ] || [ "$CONFIG_SSL" == "selfsupplied" ]; then
+  SSL="$CONFIG_SSL"
+  if [ -n "$OPT_SSL" ] && [ "$OPT_SSL" != "$CONFIG_SSL" ]; then
+    log "- config.json already sets ssl.source='$CONFIG_SSL'; ignoring --ssl-$OPT_SSL (use --config-set '.ssl.source = ...' to change it)"
+  fi
+elif [ "$OPT_SSL" == "builtin" ] || [ "$OPT_SSL" == "selfsigned" ] || [ "$OPT_SSL" == "letsencrypt" ] || [ "$OPT_SSL" == "selfsupplied" ]; then
   SSL="$OPT_SSL"
 elif [ -n "$OPT_SSL" ]; then
   log "Unexpected --ssl-$OPT_SSL option; aborting!"
   exit 1
 else
-  if [ "$CONFIG_SSL" == "builtin" ] || [ "$CONFIG_SSL" == "selfsigned" ] || [ "$CONFIG_SSL" == "letsencrypt" ] || [ "$CONFIG_SSL" == "selfsupplied" ]; then
-    SSL="$CONFIG_SSL"
-  else
-    log "- one of --ssl-builtin, --ssl-selfsigned, --ssl-letsencrypt, --ssl-own must be provided; aborting!"
-    usage
-    exit 1
-  fi
+  log "- one of --ssl-builtin, --ssl-selfsigned, --ssl-letsencrypt, --ssl-own must be provided; aborting!"
+  usage
+  exit 1
 fi
 
 # SSL Setup Step 2:
-# Assign SSL_ZONES according to SSL, and abort if invalid
+# Assign SSL_ZONES according to SSL, and abort if invalid. As in Step 1, config.json's existing
+# ssl.domains is authoritative once set; --ssl-zone only seeds an empty config.json.
 #
 if [ "$SSL" == "builtin" ]; then
   SSL_ZONES=("local.dockside.dev")
 
 elif [ "$SSL" == "selfsigned" ]; then
-  if [ -n "${OPT_SSL_ZONES[0]}" ]; then
-    SSL_ZONES=("${OPT_SSL_ZONES[@]}")
-  elif [ -n "${CONFIG_SSL_ZONES[0]}" ]; then
+  if [ -n "${CONFIG_SSL_ZONES[0]}" ]; then
     SSL_ZONES=("${CONFIG_SSL_ZONES[@]}")
+    if [ -n "${OPT_SSL_ZONES[0]}" ] && [ "${OPT_SSL_ZONES[*]}" != "${CONFIG_SSL_ZONES[*]}" ]; then
+      log "- config.json already sets ssl.domains=(${CONFIG_SSL_ZONES[*]}); ignoring --ssl-zone ${OPT_SSL_ZONES[*]} (use --config-set '.ssl.domains = ...' to change it)"
+    fi
+  elif [ -n "${OPT_SSL_ZONES[0]}" ]; then
+    SSL_ZONES=("${OPT_SSL_ZONES[@]}")
   else
     SSL_ZONES=("selfsigned.dockside.cloud")
   fi
 
 elif [ "$SSL" == "letsencrypt" ]; then
-  if [ -n "${OPT_SSL_ZONES[0]}" ]; then
-    SSL_ZONES=("${OPT_SSL_ZONES[@]}")
-  elif [ -n "${CONFIG_SSL_ZONES[0]}" ]; then
+  if [ -n "${CONFIG_SSL_ZONES[0]}" ]; then
     SSL_ZONES=("${CONFIG_SSL_ZONES[@]}")
+    if [ -n "${OPT_SSL_ZONES[0]}" ] && [ "${OPT_SSL_ZONES[*]}" != "${CONFIG_SSL_ZONES[*]}" ]; then
+      log "- config.json already sets ssl.domains=(${CONFIG_SSL_ZONES[*]}); ignoring --ssl-zone ${OPT_SSL_ZONES[*]} (use --config-set '.ssl.domains = ...' to change it)"
+    fi
+  elif [ -n "${OPT_SSL_ZONES[0]}" ]; then
+    SSL_ZONES=("${OPT_SSL_ZONES[@]}")
   else
     log "- at least one --ssl-zone <zone> option must be provided; aborting!"
     usage
@@ -559,18 +583,19 @@ elif [ "$SSL" == "selfsupplied" ]; then
   # --ssl-zone <zone> doesn't do anything with --ssl-own, except display the correct
   # URL to navigate to in the browser.
 
-  if [ -n "${OPT_SSL_ZONES[0]}" ]; then
-    SSL_ZONES=("${OPT_SSL_ZONES[@]}")
-  elif [ -n "${CONFIG_SSL_ZONES[0]}" ]; then
+  if [ -n "${CONFIG_SSL_ZONES[0]}" ]; then
     SSL_ZONES=("${CONFIG_SSL_ZONES[@]}")
+  elif [ -n "${OPT_SSL_ZONES[0]}" ]; then
+    SSL_ZONES=("${OPT_SSL_ZONES[@]}")
   fi
 
 fi
 
 # SSL Setup Step 3:
-# If valid command-line --ssl-* options found, update their values in config.json.
-# N.B. We check SSL_ZONES not OPT_SSL_ZONES since by now the former will have been
-# set to CONFIG_SSL_ZONES or OPT_SSL_ZONES and we only require one of these.
+# Persist SSL/SSL_ZONES into config.json. Because Step 1/2 already prefer config.json's own
+# ssl.source/ssl.domains whenever those are set, SSL/SSL_ZONES only ever differ from them
+# (and this only ever writes) on the first boot, when config.json is still empty and Step 1/2
+# fell back to seeding from --ssl-*/--ssl-zone.
 #
 if [ "$SSL" != "$CONFIG_SSL" ] || [ "${SSL_ZONES[*]}" != "${CONFIG_SSL_ZONES[*]}" ]; then
   jq_config_set '.ssl.source = $source | .ssl.domains = ($domains|split(" "))' --arg source "$SSL" --arg domains "${SSL_ZONES[*]}"
