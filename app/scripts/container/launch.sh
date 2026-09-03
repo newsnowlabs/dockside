@@ -342,10 +342,35 @@ populate_known_hosts() {
 
 }
 
+# True (0) if the key at $1 is passphrase-protected, judged from the key's own
+# on-disk format — never by supplying or guessing the real passphrase. A legacy
+# PEM key carries a plaintext 'Proc-Type: 4,ENCRYPTED' header line when
+# encrypted. OpenSSH's newer 'OPENSSH PRIVATE KEY' format has no plaintext
+# marker, but its base64-encoded body always names its key-derivation function
+# immediately after the cipher name — 'none' for an unencrypted key, 'bcrypt'
+# for a passphrase-protected one (the only KDF OpenSSH implements for this
+# format) — so decoding the body and looking for the literal 'bcrypt' marker
+# is equivalent to parsing the struct by hand, using only tools already relied
+# on elsewhere in this file (no ssh-keygen: it isn't bundled alongside
+# ssh-add/ssh-agent/ssh-keyscan under $IDE_PATH/bin).
+key_is_passphrase_protected() {
+   local path="$1"
+   if grep -q '^Proc-Type: 4,ENCRYPTED' "$path" 2>/dev/null; then
+      return 0
+   fi
+   sed -n '/BEGIN OPENSSH PRIVATE KEY/,/END OPENSSH PRIVATE KEY/{//!p}' "$path" \
+      | busybox base64 -d 2>/dev/null \
+      | grep -aq 'bcrypt'
+}
+
 populate_ssh_agent_keys() {
    # SSH_AGENT_KEYS is a JSON object mapping keypair name -> { public, private }.
-   # Add every keypair's private key to the ssh-agent, each via a transient key file
-   # that is removed immediately after ssh-add (keys live only in the agent, not on disk).
+   # Each keypair's private key is written to a transient key file only long
+   # enough to ssh-add it, then removed (keys live only in the agent, not on
+   # disk) — except a passphrase-protected key, which ssh-add can never unlock
+   # non-interactively: that one is instead renamed to a stable
+   # dockside-user-key.<name> path (outside the transient sweep below) so the user
+   # can unlock it manually, e.g. via 'ssh-add' in an IDE terminal.
    local names
    names=$(echo "$SSH_AGENT_KEYS" | jq -r 'if type == "object" then keys[] else empty end' 2>/dev/null)
 
@@ -357,12 +382,18 @@ populate_ssh_agent_keys() {
    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
 
    # Defence-in-depth secret cleanup: each keypair is written to a transient
-   # dockside.XXXXXX file (and .pub) only long enough to ssh-add it, then removed
-   # in-loop below. A termination signal arriving inside that window would otherwise
-   # strand private-key material on disk, so sweep every transient file (all share the
-   # dockside. prefix) on the common signals and then exit. The trap is cleared once
-   # the keys are loaded so it does not alter the later IDE-supervision phase.
-   trap 'rm -f "$HOME"/.ssh/dockside.* 2>/dev/null; exit 1' INT TERM HUP
+   # .dockside-agentkey.XXXXXX file (and .pub) only long enough to ssh-add it,
+   # then removed in-loop below (a passphrase-protected key's file is renamed
+   # out of this .dockside-agentkey.* prefix first — see above — so it survives
+   # this sweep by design, not by accident). The prefix is deliberately specific
+   # (not just 'dockside.*') so this sweep can never catch an unrelated file a
+   # user happens to have placed in ~/.ssh under a plain name like 'dockside' or
+   # 'dockside.pub'. A termination signal arriving inside that window would
+   # otherwise strand private-key material on disk, so sweep every remaining
+   # transient file (all share the .dockside-agentkey. prefix) on the common
+   # signals and then exit. The trap is cleared once the keys are loaded so it
+   # does not alter the later IDE-supervision phase.
+   trap 'rm -f "$HOME"/.ssh/.dockside-agentkey.* 2>/dev/null; exit 1' INT TERM HUP
 
    # Iterate via read (never unquoted) since a keypair name may be '*'. Feed the
    # loop with process substitution rather than a pipe so it runs in THIS shell and
@@ -385,7 +416,7 @@ populate_ssh_agent_keys() {
       # material, not even a prefix — the launch log is not a secret store.
       log "SSH_AGENT_KEYS[$name](PUBLIC)=$KEY_PUBLIC"
 
-      KEY_PATH=$(busybox mktemp "$HOME/.ssh/dockside.XXXXXX")
+      KEY_PATH=$(busybox mktemp "$HOME/.ssh/.dockside-agentkey.XXXXXX")
       echo "$KEY_PRIVATE" > "$KEY_PATH"
       echo "$KEY_PUBLIC" > "$KEY_PATH.pub"
       chmod 400 "$KEY_PATH" "$KEY_PATH.pub"
@@ -396,6 +427,22 @@ populate_ssh_agent_keys() {
       # 'ssh-add -L' below succeeds whenever ANY key is loaded, so one failed key
       # would otherwise go completely unnoticed.
       if ! "$IDE_PATH/bin/ssh-add" "$KEY_PATH"; then
+         if key_is_passphrase_protected "$KEY_PATH"; then
+            # Expected, not an error: this key can never be added non-interactively.
+            # Renamed (name sanitised — it forms part of a filesystem path) to a
+            # stable location the user can unlock by hand, e.g. by running
+            # 'ssh-add <path>' in an IDE terminal. A stable name — rather than a
+            # fresh mktemp one — means a later restart overwrites it in place
+            # instead of accumulating one file per restart.
+            local safe_name kept_path
+            safe_name=$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_-]/_/g')
+            kept_path="$HOME/.ssh/dockside-user-key.$safe_name"
+            mv -f "$KEY_PATH" "$kept_path"
+            mv -f "$KEY_PATH.pub" "$kept_path.pub"
+            chmod 600 "$kept_path"; chmod 644 "$kept_path.pub"
+            log "Keypair '$name' is passphrase-protected; left at $kept_path for manual unlock (run 'ssh-add $kept_path' in a terminal)"
+            continue
+         fi
          log "ERROR: ssh-add failed for keypair '$name'"
          add_failures=$((add_failures + 1))
       fi
@@ -405,7 +452,7 @@ populate_ssh_agent_keys() {
 
    # Final sweep catches any transient file stranded by a non-signal failure inside
    # the loop (where the per-iteration rm above would not have run), then disarm.
-   rm -f "$HOME"/.ssh/dockside.* 2>/dev/null
+   rm -f "$HOME"/.ssh/.dockside-agentkey.* 2>/dev/null
    trap - INT TERM HUP
 
    "$IDE_PATH/bin/ssh-add" -L
