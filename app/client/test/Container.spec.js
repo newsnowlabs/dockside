@@ -16,6 +16,10 @@ describe('Container.vue', () => {
          props: { container: makeContainer() },
       });
       expect(wrapper.text()).toContain('my-devtainer');
-      expect(wrapper.text()).toContain('Dockside'); // profileObject.name
+      // Profile now renders as a readonly v-text-field, not plain text - its
+      // value lives in the <input>'s own value, not the DOM's textContent,
+      // so wrapper.text() can't see it.
+      const inputValues = wrapper.findAll('input').map(el => el.element.value);
+      expect(inputValues).toContain('Dockside'); // profileObject.name
    });
 });

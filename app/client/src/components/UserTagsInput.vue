@@ -20,9 +20,12 @@
       :items="autocompleteItems"
       item-title="text"
       item-value="userId"
-      multiple chips closable-chips
+      multiple chips
+      :closable-chips="!readonly"
       :disabled="disabled"
+      :readonly="readonly"
       :placeholder="placeholder"
+      autocomplete="off"
       hide-details
       class="tags-input"
    />
@@ -46,6 +49,11 @@ export default defineComponent({
 
   props: {
      disabled: Boolean,
+     readonly: Boolean,
+     // Shown in place of 'Add User or Role' when readonly and empty - the
+     // caller's own wording for "nothing configured here yet" (e.g.
+     // Container.vue's distinct developers/viewers empty-state text).
+     emptyPlaceholder: { type: String, default: 'None added' },
      value: String // Needed for v-model directive; accepts a comma-separated string of user IDs
   },
 
@@ -110,6 +118,7 @@ export default defineComponent({
      },
 
      placeholder() {
+        if (this.readonly) return this.selectedUserIds.length ? '' : this.emptyPlaceholder;
         return this.disabled ? '' : 'Add User or Role';
      }
   },

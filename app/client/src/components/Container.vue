@@ -13,10 +13,28 @@
                      {{ container.status == 1 ? 'Started' : 'Stopped' }}
                   </v-chip>
                   <span class="devtainer-owner">by {{ userName }} ({{ container.meta.owner }})<template v-if="parseInt(container.meta.private)"> · PRIVATE</template></span>
+                  <!-- Duplicate of the Edit/Cancel buttons at the bottom of the
+                       card (same conditions, same edit()/cancel() methods), so
+                       leaving edit mode doesn't require scrolling down a long
+                       card to find it. .stop is required here (not needed on
+                       the bottom row's own buttons): this sits inside
+                       .devtainer-head, whose own click handler navigates to
+                       the container's view route whenever the card isn't
+                       already selected - without it, clicking Edit would also
+                       fire that navigation in the same click. -->
+                  <div class="devtainer-head-actions">
+                     <v-btn v-if="container.permissions.auth.developer && !isEditMode && container.status >= -1"
+                        variant="outlined" size="small" @click.stop="edit()"
+                     >Edit</v-btn>
+                     <v-btn v-else-if="container.permissions.auth.developer && isEditMode"
+                        variant="outlined" size="small" @click.stop="cancel()"
+                     >Cancel</v-btn>
+                  </div>
                </template>
                <template v-else-if="isPrelaunchMode && !hasProfiles">
                   <v-text-field
                      model-value="NO PROFILES AVAILABLE" disabled
+                     autocomplete="off"
                      hide-details
                      class="devtainer-name-field"
                   />
@@ -29,6 +47,7 @@
                      :disabled="!hasProfiles"
                      :error="!validName"
                      :error-messages="!validName ? [nameErrorText] : []"
+                     autocomplete="off"
                      hide-details="auto"
                      class="devtainer-name-field"
                   />
@@ -36,290 +55,369 @@
             </v-card-title>
 
             <v-card-text v-if="!isPrelaunchMode || hasProfiles">
-               <div class="devtainer-description">
-                  <span v-if="!isEditMode && !isPrelaunchMode"><em>{{ container.meta.description }}</em></span>
-                  <v-text-field v-else
-                     v-model="form.description"
-                     label="Description"
-                     placeholder="Devtainer description"
-                     :disabled="!hasProfiles"
+               <v-text-field v-if="!isEditMode && !isPrelaunchMode"
+                  label="Description"
+                  :model-value="container.meta.description"
+                  readonly
+                  variant="outlined"
+                  autocomplete="off"
+                  hide-details
+                  class="mb-4"
+               />
+               <v-text-field v-else
+                  v-model="form.description"
+                  label="Description"
+                  placeholder="Devtainer description"
+                  :disabled="!hasProfiles"
+                  autocomplete="off"
+                  hide-details
+                  class="mb-4"
+               />
+
+               <!-- Every :value/@input pair below that reads container.X in one
+                    branch and form.X in the other is interim: form is only
+                    ever populated for the prelaunch/edit-entry cases today
+                    (see initialiseForm()), not unconditionally on mount like
+                    UserDetail/RoleDetail/ProfileDetail's own populateForm(),
+                    so a plain view can't yet bind straight to form.X. Once
+                    initialiseForm() runs unconditionally, every field here
+                    should bind directly to form.X and these ternaries should
+                    go away. -->
+               <div class="details-stack">
+                  <!-- Profile: like a devtainer's name, fixed for its whole
+                       lifetime once launched - editable only at prelaunch,
+                       never again afterwards, so it goes disabled (not just
+                       readonly) once edit mode is active: it would otherwise
+                       look editable alongside the fields edit mode does open
+                       up (Network, IDE, Private, ...). -->
+                  <v-select v-if="isPrelaunchMode"
+                     v-model="form.profile"
+                     label="Profile"
+                     :items="profileNames"
+                     :item-title="name => profiles[name].name || name"
+                     :item-value="name => name"
+                     :disabled="profileNames.length <= 1"
+                     autocomplete="off"
                      hide-details
+                     class="mb-4"
                   />
+                  <v-text-field v-else
+                     label="Profile"
+                     :model-value="container.profileObject.name"
+                     :readonly="!isEditMode"
+                     :disabled="isEditMode"
+                     variant="outlined"
+                     autocomplete="off"
+                     hide-details
+                     class="mb-4"
+                  />
+
+                  <!-- Runtime/Image: same "prelaunch-only" lock as Profile. -->
+                  <template v-if="container.permissions.auth.developer && isSelected">
+                     <ChoiceInput v-if="isPrelaunchMode"
+                        label="Runtime"
+                        :values="runtimes"
+                        :value="form.runtime"
+                        @input="form.runtime = $event"
+                        :disabled="runtimes.length <= 1"
+                        aria-label="Choose a runtime"
+                        class="mb-4"
+                     />
+                     <v-text-field v-else
+                        label="Runtime"
+                        :model-value="container.data ? container.data.runtime : ''"
+                        :readonly="!isEditMode"
+                        :disabled="isEditMode"
+                        variant="outlined"
+                        autocomplete="off"
+                        hide-details
+                        class="mb-4"
+                     />
+                  </template>
+
+                  <!-- Network/IDE: unlike Runtime/Image, these stay editable
+                       after launch, so they use ChoiceInput's own readonly
+                       (not disabled) toggle - never permanently locked, so
+                       there's no "still locked in edit mode" state to signal. -->
+                  <ChoiceInput v-if="container.permissions.auth.developer && isSelected"
+                     label="Network"
+                     :values="networks"
+                     :value="(isEditMode || isPrelaunchMode) ? form.network : (container.docker ? container.docker.Networks : '')"
+                     @input="form.network = $event"
+                     :disabled="networks.length <= 1"
+                     :readonly="!isEditMode && !isPrelaunchMode"
+                     aria-label="Choose a network"
+                     class="mb-4"
+                  />
+
+                  <ChoiceInput v-if="container.permissions.auth.developer && isSelected"
+                     label="IDE"
+                     :values="ideOptions()"
+                     :value="(isEditMode || isPrelaunchMode) ? form.IDE : container.meta.IDE"
+                     @input="form.IDE = $event"
+                     :disabled="ideOptions().length <= 1"
+                     :readonly="!isEditMode && !isPrelaunchMode"
+                     aria-label="Choose an IDE"
+                     class="mb-4"
+                  />
+
+                  <template v-if="container.permissions.auth.developer && isSelected">
+                     <ChoiceInput v-if="isPrelaunchMode"
+                        label="Image"
+                        :values="images"
+                        :allow-free-entry="hasWildcardImages"
+                        :disabled="images.length <= 1 && !hasWildcardImages"
+                        :value="form.image"
+                        @input="form.image = $event"
+                        placeholder="Choose an image"
+                        aria-label="Choose an image"
+                        class="mb-4"
+                     />
+                     <v-text-field v-else
+                        label="Image"
+                        :model-value="container.data.image + (container.docker ? ' (' + container.docker.ImageId + ')' : '')"
+                        :readonly="!isEditMode"
+                        :disabled="isEditMode"
+                        variant="outlined"
+                        autocomplete="off"
+                        hide-details
+                        class="mb-4"
+                     />
+                  </template>
+
+                  <template v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
+                     <ChoiceInput v-if="isPrelaunchMode"
+                        label="Git URL"
+                        :values="gitURLs"
+                        :allow-free-entry="hasWildcardGitURLs"
+                        :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
+                        :auto-select="true"
+                        :value="form.gitURL"
+                        @input="form.gitURL = $event"
+                        placeholder="Choose a gitURL"
+                        aria-label="Choose a gitURL"
+                        class="mb-4"
+                     />
+                     <v-text-field v-else
+                        label="Git URL"
+                        :model-value="container.data.gitURL"
+                        :readonly="!isEditMode"
+                        :disabled="isEditMode"
+                        variant="outlined"
+                        autocomplete="off"
+                        hide-details
+                        class="mb-4"
+                     />
+                  </template>
+
+                  <!-- Per-profile custom options: prelaunch-only, same as Runtime/Image. -->
+                  <template v-if="container.permissions.auth.developer && isSelected">
+                     <template v-for="opt in options" :key="'option-' + opt.name">
+                        <!-- A 'text' option is always a plain free-entry field, even if it also
+                             declares 'values' (permitted, if pointless, by profile validation) -
+                             passing those through would misroute it into ChoiceInput's
+                             commit-on-blur autocomplete branch instead. -->
+                        <ChoiceInput v-if="isPrelaunchMode"
+                           :label="opt.label"
+                           :values="opt.type === 'text' ? [] : (opt.values || [])"
+                           :allow-free-entry="opt.type !== 'select'"
+                           :disabled="opt.type === 'select' && (opt.values || []).length <= 1"
+                           :value="form.options[opt.name]"
+                           @input="form.options[opt.name] = $event"
+                           :placeholder="opt.placeholder || ''"
+                           :aria-label="opt.label"
+                           class="mb-4"
+                        />
+                        <v-text-field v-else
+                           :label="opt.label"
+                           :model-value="(container.data.options || {})[opt.name]"
+                           :readonly="!isEditMode"
+                           :disabled="isEditMode"
+                           variant="outlined"
+                           autocomplete="off"
+                           hide-details
+                           class="mb-4"
+                        />
+                     </template>
+                  </template>
+
+                  <!-- Routers: access level uses ChoiceInput's readonly toggle,
+                       same as Network/IDE (editable after launch). Open/Copy/
+                       Setup stay visible in edit mode too - using the
+                       devtainer doesn't depend on whether its metadata is
+                       mid-edit, and hiding them was pure switching jank. -->
+                  <div v-if="routers.length" class="form-row">
+                     <div class="form-row-label">Routers</div>
+                     <div v-for="(router, index) in routers" v-bind:key="index" class="router-row">
+                        <ChoiceInput
+                           :label="'→ ' + router.name"
+                           :values="accessOptions(router)"
+                           :value="(isEditMode || isPrelaunchMode) ? form.access[router.name] : container.meta.access[router.name]"
+                           @input="form.access[router.name] = $event"
+                           :disabled="accessOptions(router).length <= 1"
+                           :readonly="!isEditMode && !isPrelaunchMode"
+                           :aria-label="'Access for ' + router.name"
+                        />
+                        <div v-if="!isPrelaunchMode" class="router-actions">
+                           <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" color="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</v-btn>
+                           <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" :variant="isCopied(router.name) ? 'tonal' : 'outlined'" :color="isCopied(router.name) ? 'accent-strong' : undefined" v-on:click="copyUri(router)">Copy</v-btn>
+                           <v-tooltip v-if="router.type === 'ssh' && container.status >= 0" text="Configure SSH for Dockside">
+                              <template #activator="{ props: tooltipProps }">
+                                 <v-btn v-bind="tooltipProps" size="small" variant="outlined" type="button" v-on:click="openSshInfoModal">Setup</v-btn>
+                              </template>
+                           </v-tooltip>
+                        </div>
+                     </div>
+                  </div>
+
+                  <!-- Private/Developers/Viewers: editable after launch, same as Network/IDE. -->
+                  <v-checkbox v-if="container.permissions.actions.setContainerPrivacy === 1 && isSelected"
+                     :model-value="(isEditMode || isPrelaunchMode) ? form.private : (container.meta.private == 1)"
+                     @update:model-value="form.private = $event"
+                     label="Keep private from other admins"
+                     :readonly="!isEditMode && !isPrelaunchMode"
+                     density="compact"
+                     hide-details
+                     class="mb-4"
+                  />
+
+                  <!-- FIXME: Only owner or admin should be able to specify developers -->
+                  <div v-if="container.permissions.actions.setContainerDevelopers && isSelected" class="form-row">
+                     <div class="form-row-label">Developers</div>
+                     <UserTagsInput
+                        :value="(isEditMode || isPrelaunchMode) ? form.developers : container.meta.developers"
+                        @input="form.developers = $event"
+                        :readonly="!isEditMode && !isPrelaunchMode"
+                        empty-placeholder="No developers configured"
+                     />
+                  </div>
+
+                  <div v-if="container.permissions.actions.setContainerViewers && isSelected" class="form-row">
+                     <div class="form-row-label">Viewers</div>
+                     <UserTagsInput
+                        :value="(isEditMode || isPrelaunchMode) ? form.viewers : container.meta.viewers"
+                        @input="form.viewers = $event"
+                        :readonly="!isEditMode && !isPrelaunchMode"
+                        empty-placeholder="No viewers configured"
+                     />
+                  </div>
+
+                  <!-- Pure metadata below: never editable in any mode, so
+                       these use DetailField rather than a Vuetify field -
+                       there is no affordance to signal either way. -->
+                  <DetailField v-if="container.permissions.auth.developer && container.status >= 0 && isSelected"
+                     label="Created" :value="new Date(container.docker.CreatedAt * 1e3).toString()"
+                  />
+                  <DetailField v-if="container.permissions.auth.developer && container.status >= 0 && isSelected"
+                     label="Status" :value="container.docker.Status"
+                  />
+                  <DetailField v-if="container.permissions.auth.developer && container.status >= 0 && container.docker.Size"
+                     label="Size"
+                     :value="container.docker.Size >= 1000000000 ?
+                        Math.round(container.docker.Size/10000000)/100 + 'GB' :
+                        Math.round(container.docker.Size/10000)/100 + 'MB'"
+                  />
+                  <DetailField v-if="container.permissions.auth.developer && isSelected && !isPrelaunchMode"
+                     label="Reservation ID" :value="container.id"
+                  />
+                  <DetailField v-if="container.permissions.auth.developer && container.status >= 0 && isSelected"
+                     label="Container ID" :value="container.docker.ID"
+                  />
+                  <DetailField v-if="container.permissions.auth.developer && showLaunchProgress && isSelected"
+                     label="Launch progress"
+                  >
+                     <div class="stage-line">
+                        <v-chip size="small" variant="tonal" :color="launchStageVariant">{{ launchStageLabel }}</v-chip>
+                        <span v-if="launchStage === 'pulling' && launchLayers.length" class="layer-count">
+                           {{ completedLayerCount }}/{{ launchLayers.length }} layers
+                        </span>
+                     </div>
+                     <div v-if="launchStage === 'failed'" class="launch-error">
+                        {{ container.createStatus.error }}
+                     </div>
+                     <div v-if="(launchStage === 'pulling' || launchStage === 'failed') && launchLayers.length" class="layer-list">
+                        <div v-for="layer in launchLayers" v-bind:key="layer.id" class="layer-row">
+                           <span class="layer-id">{{ layer.shortId }}</span>
+                           <span class="layer-bar"><span :style="{ width: layer.percent + '%' }"></span></span>
+                           <span class="layer-status">{{ layer.status }}</span>
+                        </div>
+                     </div>
+                  </DetailField>
+                  <DetailField v-if="container.permissions.auth.developer && launchHookIssues.length && isSelected"
+                     label="Launch hooks"
+                  >
+                     <div v-for="issue in launchHookIssues" v-bind:key="issue.name" class="hook-issue-row">
+                        <div class="stage-line">
+                           <v-chip size="small" variant="tonal" color="error">{{ issue.name }}: {{ issue.state }}</v-chip>
+                           <a v-if="issue.logPath" href="javascript:" class="hook-log-toggle" v-on:click="toggleHookLog(issue.name)">{{ hookLogs[issue.name] !== undefined ? 'Hide log' : 'Show log' }}</a>
+                        </div>
+                        <pre v-if="hookLogs[issue.name] === 'loading'" class="hook-log hook-log--muted">Loading…</pre>
+                        <pre v-else-if="Array.isArray(hookLogs[issue.name])" class="hook-log">{{
+                           hookLogs[issue.name].length ? hookLogs[issue.name].join('\n') : '(no output captured)'
+                        }}</pre>
+                     </div>
+                  </DetailField>
                </div>
-               <div class="table-wrap">
-                  <table class="details-table">
-                     <tbody>
-                        <tr>
-                           <th width="15%">Profile</th>
-                           <td v-if="!isPrelaunchMode">{{ container.profileObject.name }}</td>
-                           <td v-else>
-                              <v-select
-                                 v-model="form.profile"
-                                 :items="profileNames"
-                                 :item-title="name => profiles[name].name || name"
-                                 :item-value="name => name"
-                                 :disabled="profileNames.length <= 1"
-                                 hide-details
-                              />
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected">
-                           <th>Runtime</th>
-                           <td v-if="!isPrelaunchMode">{{ container.data ? container.data.runtime : '' }}</td>
-                           <td v-else>
-                              <ChoiceInput
-                                 :values="runtimes"
-                                 :value="form.runtime"
-                                 @input="form.runtime = $event"
-                                 :disabled="runtimes.length <= 1"
-                                 aria-label="Choose a runtime"
-                              />
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected">
-                           <th>Network</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode">{{ container.docker ? container.docker.Networks : '' }}</td>
-                           <td v-else>
-                              <ChoiceInput
-                                 :values="networks"
-                                 :value="form.network"
-                                 @input="form.network = $event"
-                                 :disabled="networks.length <= 1"
-                                 aria-label="Choose a network"
-                              />
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected">
-                           <th>IDE</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.IDE }}</td>
-                           <td v-else>
-                              <ChoiceInput
-                                 :values="ideOptions()"
-                                 :value="form.IDE"
-                                 @input="form.IDE = $event"
-                                 :disabled="ideOptions().length <= 1"
-                                 aria-label="Choose an IDE"
-                              />
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected">
-                           <th>Image</th>
-                           <td v-if="!isPrelaunchMode">{{ container.data.image }} ({{ container.docker ? container.docker.ImageId : '' }})</td>
-                           <td v-else>
-                              <ChoiceInput
-                                 :values="images"
-                                 :allow-free-entry="hasWildcardImages"
-                                 :disabled="images.length <= 1 && !hasWildcardImages"
-                                 :value="form.image"
-                                 @input="form.image = $event"
-                                 placeholder="Choose an image"
-                                 aria-label="Choose an image"
-                              />
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected && ((isPrelaunchMode && allGitURLs && allGitURLs.length > 0) || (!isPrelaunchMode && container.data.gitURL))">
-                           <th>Git URL</th>
-                           <td v-if="!isPrelaunchMode">{{ container.data.gitURL }}</td>
-                           <td v-else>
-                              <ChoiceInput
-                                 :values="gitURLs"
-                                 :allow-free-entry="hasWildcardGitURLs"
-                                 :disabled="gitURLs.length <= 1 && !hasWildcardGitURLs"
-                                 :auto-select="true"
-                                 :value="form.gitURL"
-                                 @input="form.gitURL = $event"
-                                 placeholder="Choose a gitURL"
-                                 aria-label="Choose a gitURL"
-                              />
-                           </td>
-                        </tr>
-                        <template v-if="container.permissions.auth.developer && isSelected">
-                           <tr v-for="opt in options" :key="'option-' + opt.name">
-                              <th>{{ opt.label }}</th>
-                              <td v-if="!isPrelaunchMode">{{ (container.data.options || {})[opt.name] }}</td>
-                              <td v-else>
-                                 <!-- A 'text' option is always a plain free-entry field, even if it also
-                                      declares 'values' (permitted, if pointless, by profile validation) -
-                                      passing those through would misroute it into ChoiceInput's
-                                      commit-on-blur autocomplete branch instead. -->
-                                 <ChoiceInput
-                                    :values="opt.type === 'text' ? [] : (opt.values || [])"
-                                    :allow-free-entry="opt.type !== 'select'"
-                                    :disabled="opt.type === 'select' && (opt.values || []).length <= 1"
-                                    :value="form.options[opt.name]"
-                                    @input="form.options[opt.name] = $event"
-                                    :placeholder="opt.placeholder || ''"
-                                    :aria-label="opt.label"
-                                 />
-                              </td>
-                           </tr>
-                        </template>
-                        <tr v-for="(router, index) in routers" v-bind:key="index">
-                           <th>&#8674;&nbsp;{{ router.name }} </th>
-                           <td v-if="!isEditMode && !isPrelaunchMode" class="router-actions">
-                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" color="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</v-btn>
-                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" :variant="isCopied(router.name) ? 'tonal' : 'outlined'" :color="isCopied(router.name) ? 'accent-strong' : undefined" v-on:click="copyUri(router)">Copy</v-btn>
-                              <v-tooltip v-if="router.type === 'ssh' && container.status >= 0" text="Configure SSH for Dockside">
-                                 <template #activator="{ props: tooltipProps }">
-                                    <v-btn v-bind="tooltipProps" size="small" variant="outlined" type="button" v-on:click="openSshInfoModal">Setup</v-btn>
-                                 </template>
-                              </v-tooltip>
-                              <span>({{ container.meta.access[router.name] }} access)</span>
-                           </td>
-                           <td v-else>
-                              <ChoiceInput
-                                 :values="accessOptions(router)"
-                                 :value="form.access[router.name]"
-                                 @input="form.access[router.name] = $event"
-                                 :disabled="accessOptions(router).length <= 1"
-                                 :aria-label="'Access for ' + router.name"
-                              />
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.actions.setContainerPrivacy === 1 && isSelected">
-                           <th>Keep private from other admins</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode">{{ container.meta.private == 1 ? 'Private' : 'Visible' }}</td>
-                           <td v-else>
-                              <v-checkbox v-model="form.private" label="Private" density="compact" hide-details />
-                           </td>
-                        </tr>
-                        <!-- FIXME: Only owner or admin should be able to specify developers -->
-                        <tr v-if="container.permissions.actions.setContainerDevelopers && isSelected">
-                           <th>Developers</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode && container.meta.developers"><UserTagsInput :value="container.meta.developers" :disabled="true"/></td>
-                           <td v-else-if="!isEditMode && !isPrelaunchMode && !container.meta.developers"><em>[ Edit to share with developers (by name or role) ]</em></td>
-                           <td v-else><UserTagsInput :value="form.developers" @input="form.developers = $event"/></td>
-                        </tr>
-                        <tr v-if="container.permissions.actions.setContainerViewers && isSelected">
-                           <th>Viewers</th>
-                           <td v-if="!isEditMode && !isPrelaunchMode && container.meta.viewers"><UserTagsInput :value="container.meta.viewers" :disabled="true"/></td>
-                           <td v-else-if="!isEditMode && !isPrelaunchMode && !container.meta.viewers"><em>[ Edit to share with viewers (by name or role) ]</em></td>
-                           <td v-else><UserTagsInput :value="form.viewers" @input="form.viewers = $event"/></td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && container.status >= 0 && isSelected">
-                           <th>Created</th>
-                           <td>{{ new Date(container.docker.CreatedAt * 1e3).toString() }}</td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && container.status >= 0 && isSelected">
-                           <th>Status</th>
-                           <td>{{ container.docker.Status }}</td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && container.status >= 0 && container.docker.Size">
-                           <th>Size</th>
-                           <td>{{ container.docker.Size >= 1000000000 ?
-                              Math.round(container.docker.Size/10000000)/100 + 'GB' :
-                              Math.round(container.docker.Size/10000)/100 + 'MB' }}
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && isSelected && !isPrelaunchMode">
-                           <th>Reservation ID</th>
-                           <td>{{ container.id }}</td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && container.status >= 0 && isSelected">
-                           <th>Container ID</th>
-                           <td>{{ container.docker.ID }}</td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && showLaunchProgress && isSelected">
-                           <th>Launch progress</th>
-                           <td>
-                              <div class="stage-line">
-                                 <v-chip size="small" variant="tonal" :color="launchStageVariant">{{ launchStageLabel }}</v-chip>
-                                 <span v-if="launchStage === 'pulling' && launchLayers.length" class="layer-count">
-                                    {{ completedLayerCount }}/{{ launchLayers.length }} layers
-                                 </span>
-                              </div>
-                              <div v-if="launchStage === 'failed'" class="launch-error">
-                                 {{ container.createStatus.error }}
-                              </div>
-                              <div v-if="(launchStage === 'pulling' || launchStage === 'failed') && launchLayers.length" class="layer-list">
-                                 <div v-for="layer in launchLayers" v-bind:key="layer.id" class="layer-row">
-                                    <span class="layer-id">{{ layer.shortId }}</span>
-                                    <span class="layer-bar"><span :style="{ width: layer.percent + '%' }"></span></span>
-                                    <span class="layer-status">{{ layer.status }}</span>
-                                 </div>
-                              </div>
-                           </td>
-                        </tr>
-                        <tr v-if="container.permissions.auth.developer && launchHookIssues.length && isSelected">
-                           <th>Launch hooks</th>
-                           <td>
-                              <div v-for="issue in launchHookIssues" v-bind:key="issue.name" class="hook-issue-row">
-                                 <div class="stage-line">
-                                    <v-chip size="small" variant="tonal" color="error">{{ issue.name }}: {{ issue.state }}</v-chip>
-                                    <a v-if="issue.logPath" href="javascript:" class="hook-log-toggle" v-on:click="toggleHookLog(issue.name)">{{ hookLogs[issue.name] !== undefined ? 'Hide log' : 'Show log' }}</a>
-                                 </div>
-                                 <pre v-if="hookLogs[issue.name] === 'loading'" class="hook-log hook-log--muted">Loading…</pre>
-                                 <pre v-else-if="Array.isArray(hookLogs[issue.name])" class="hook-log">{{
-                                    hookLogs[issue.name].length ? hookLogs[issue.name].join('\n') : '(no output captured)'
-                                 }}</pre>
-                              </div>
-                           </td>
-                        </tr>
-                        <tr>
-                           <th></th>
-                           <td class="action-buttons">
-                              <v-btn size="small" variant="outlined" color="primary"
-                                 v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
-                                 v-on:click="edit()"
-                                 >Edit</v-btn>
 
-                              <v-btn size="small" color="primary"
-                                 v-show="container.permissions.actions.startContainer && !isEditMode && !isPrelaunchMode && container.status >= -1 && container.status <= 0"
-                                 v-on:click="action('start')"
-                                 :data-id="container.id"
-                                 >Start</v-btn>
+               <div class="action-buttons">
+                  <v-btn size="small" variant="outlined" color="primary"
+                     v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
+                     v-on:click="edit()"
+                     >Edit</v-btn>
 
-                              <v-btn size="small" variant="outlined" color="error"
-                                 v-show="container.permissions.actions.stopContainer && !isEditMode && !isPrelaunchMode && container.status == 1"
-                                 v-on:click="action('stop')"
-                                 :data-id="container.id"
-                                 >Stop</v-btn>
+                  <v-btn size="small" color="primary"
+                     v-show="container.permissions.actions.startContainer && !isEditMode && !isPrelaunchMode && container.status >= -1 && container.status <= 0"
+                     v-on:click="action('start')"
+                     :data-id="container.id"
+                     >Start</v-btn>
 
-                              <v-btn size="small" variant="outlined" color="error"
-                                 v-show="canRemove"
-                                 v-on:click="confirmRemove"
-                                 :data-id="container.id"
-                                 >Remove</v-btn>
+                  <v-btn size="small" variant="outlined" color="error"
+                     v-show="container.permissions.actions.stopContainer && !isEditMode && !isPrelaunchMode && container.status == 1"
+                     v-on:click="action('stop')"
+                     :data-id="container.id"
+                     >Stop</v-btn>
 
-                              <v-btn size="small" variant="outlined" color="primary"
-                                 v-show="container.permissions.actions.getContainerLogs && !isEditMode && !isPrelaunchMode && container.status >= 0"
-                                 v-on:click="showLogs()"
-                                 :data-id="container.id"
-                                 >Logs</v-btn>
+                  <v-btn size="small" variant="outlined" color="error"
+                     v-show="canRemove"
+                     v-on:click="confirmRemove"
+                     :data-id="container.id"
+                     >Remove</v-btn>
 
-                              <v-btn size="small" :variant="isCopied('launchCommand') ? 'tonal' : 'outlined'" :color="isCopied('launchCommand') ? 'accent-strong' : 'success'"
-                                 v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
-                                 v-on:click="copyWithFeedback('launchCommand', makeLaunchCommand())"
-                                 :data-id="container.id"
-                                 >Copy Launch Command</v-btn>
+                  <v-btn size="small" variant="outlined" color="primary"
+                     v-show="container.permissions.actions.getContainerLogs && !isEditMode && !isPrelaunchMode && container.status >= 0"
+                     v-on:click="showLogs()"
+                     :data-id="container.id"
+                     >Logs</v-btn>
 
-                              <v-btn size="small" variant="outlined" color="success"
-                                 v-show="container.permissions.auth.developer && isPrelaunchMode"
-                                 v-on:click="saveOrLaunch"
-                                 :data-id="container.id"
-                                 >Launch</v-btn>
+                  <v-btn size="small" :variant="isCopied('launchCommand') ? 'tonal' : 'outlined'" :color="isCopied('launchCommand') ? 'accent-strong' : 'success'"
+                     v-show="container.permissions.auth.developer && !isEditMode && !isPrelaunchMode && container.status >= -1"
+                     v-on:click="copyWithFeedback('launchCommand', makeLaunchCommand())"
+                     :data-id="container.id"
+                     >Copy Launch Command</v-btn>
 
-                              <v-btn size="small" :variant="isCopied('launchCommand') ? 'tonal' : 'outlined'" :color="isCopied('launchCommand') ? 'accent-strong' : 'success'"
-                                 v-show="container.permissions.auth.developer && isPrelaunchMode"
-                                 v-on:click="copyWithFeedback('launchCommand', makeLaunchCommand())"
-                                 :data-id="container.id"
-                                 >Copy Launch Command</v-btn>
+                  <v-btn size="small" variant="outlined" color="success"
+                     v-show="container.permissions.auth.developer && isPrelaunchMode"
+                     v-on:click="saveOrLaunch"
+                     :data-id="container.id"
+                     >Launch</v-btn>
 
-                              <v-btn size="small" variant="outlined" color="success"
-                                 v-show="container.permissions.auth.developer && isEditMode"
-                                 v-on:click="saveOrLaunch"
-                                 :data-id="container.id"
-                                 >Save</v-btn>
+                  <v-btn size="small" :variant="isCopied('launchCommand') ? 'tonal' : 'outlined'" :color="isCopied('launchCommand') ? 'accent-strong' : 'success'"
+                     v-show="container.permissions.auth.developer && isPrelaunchMode"
+                     v-on:click="copyWithFeedback('launchCommand', makeLaunchCommand())"
+                     :data-id="container.id"
+                     >Copy Launch Command</v-btn>
 
-                              <v-btn size="small" variant="outlined" color="error"
-                                 v-show="container.permissions.auth.developer && (isEditMode || isPrelaunchMode)"
-                                 v-on:click="cancel"
-                                 :data-id="container.id"
-                                 >Cancel</v-btn>
-                           </td>
-                        </tr>
-                     </tbody>
-                  </table>
+                  <v-btn size="small" variant="outlined" color="success"
+                     v-show="container.permissions.auth.developer && isEditMode"
+                     v-on:click="saveOrLaunch"
+                     :data-id="container.id"
+                     >Save</v-btn>
+
+                  <v-btn size="small" variant="outlined" color="error"
+                     v-show="container.permissions.auth.developer && (isEditMode || isPrelaunchMode)"
+                     v-on:click="cancel"
+                     :data-id="container.id"
+                     >Cancel</v-btn>
                </div>
             </v-card-text>
          </v-card>
@@ -344,6 +442,7 @@ import { mapActions } from 'vuex';
 import { routing, copyable } from '@/components/mixins';
 import UserTagsInput from '@/components/UserTagsInput';
 import ConfirmModal from '@/components/shared/ConfirmModal';
+import DetailField from '@/components/shared/DetailField';
 import { putContainer, controlContainer, getReservationLogsUri, getHookStatus, formToQuery } from '@/services/container';
 import ChoiceInput from '@/components/ChoiceInput';
 
@@ -353,6 +452,7 @@ export default defineComponent({
   components: {
      UserTagsInput,
      ConfirmModal,
+     DetailField,
      ChoiceInput
   },
 
@@ -914,15 +1014,6 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
-   // Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): this
-   // whole block used to target bootstrap's .table/.form-control/.btn-sm/.red
-   // classes, all of which went dead the moment bootstrap's CSS import was
-   // dropped in Setup - see that plan's SCSS/theme section. Rewritten to
-   // target this file's own scoped classes on the Vuetify markup above,
-   // following the design system's key/value details-table pattern (same
-   // shape SshEditor.vue's keypairs table uses, styled independently per
-   // component rather than through a shared table class).
-
    // Both rely on flex+gap for spacing between adjacent v-btns, not
    // template whitespace - Vue 3's compiler default ('condense') collapses
    // inter-node whitespace containing a newline unpredictably.
@@ -964,31 +1055,25 @@ export default defineComponent({
       color: rgb(var(--v-theme-ink-soft));
    }
 
+   .devtainer-head-actions {
+      display: flex;
+      gap: 6px;
+   }
+
    .devtainer-name-field {
       max-width: 320px;
    }
 
-   .devtainer-description {
-      margin-bottom: 10px;
+   // Sits inside .form-row, which already carries its own margin-bottom (see
+   // index.scss) - only the gap *between* routers needs adding here, not
+   // after the last one too, or the Routers section would end up with a
+   // doubled gap below it.
+   .router-row + .router-row {
+      margin-top: 16px;
    }
 
-   .table-wrap {
-      overflow-x: auto;
-   }
-
-   .details-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.85rem;
-
-      th, td {
-         text-align: left;
-         padding: 6px 8px;
-         border-bottom: 1px solid rgb(var(--v-theme-border));
-         vertical-align: middle;
-      }
-
-      th { font-weight: 600; }
+   .router-actions {
+      margin-top: 6px;
    }
 
    .stage-line {

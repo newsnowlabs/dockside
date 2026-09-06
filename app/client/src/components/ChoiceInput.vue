@@ -1,5 +1,30 @@
 <template>
-   <v-select v-if="!allowFreeEntry"
+   <!-- readonly renders as a single plain text display regardless of which of
+        the three editable branches below would otherwise apply - a readonly
+        v-select still shows its dropdown chevron, a readonly v-combobox still
+        shows its chip/input chrome, and neither reads as "just a value" the
+        way a readonly v-text-field does. resolvedLabel resolves the current
+        value to its display text the same way the v-select branch's own
+        item-title does, so the readonly text matches what the dropdown would
+        have shown.
+
+        autocomplete="off" on every branch: these are all structured pick-lists,
+        never personal data, so there's nothing for the browser's own autofill
+        to usefully suggest here - and left to its own heuristics (no `name`
+        distinguishing one instance from another) it will suggest one field's
+        prior value into an unrelated one it judges "similar enough", and can
+        intercept a field's click/focus with its own suggestion popup instead
+        of the field's real dropdown ever opening. -->
+   <v-text-field v-if="readonly"
+      :label="label"
+      :model-value="resolvedLabel"
+      readonly
+      :aria-label="ariaLabel"
+      autocomplete="off"
+      hide-details
+   />
+   <v-select v-else-if="!allowFreeEntry"
+      :label="label"
       :items="values"
       :item-title="optionLabel"
       :item-value="optionValue"
@@ -7,17 +32,21 @@
       @update:model-value="$emit('input', $event)"
       :disabled="disabled"
       :aria-label="ariaLabel"
+      autocomplete="off"
       hide-details
    />
    <v-text-field v-else-if="values.length === 0"
+      :label="label"
       :model-value="value"
       @update:model-value="$emit('input', $event)"
       :placeholder="placeholder"
       :aria-label="ariaLabel"
       :disabled="disabled"
+      autocomplete="off"
       hide-details
    />
    <v-combobox v-else
+      :label="label"
       :items="values"
       :model-value="value"
       @update:model-value="$emit('input', $event)"
@@ -25,6 +54,7 @@
       :aria-label="ariaLabel"
       :auto-select-first="autoSelect"
       :disabled="disabled"
+      autocomplete="off"
       hide-details
    />
 </template>
@@ -80,13 +110,26 @@ export default defineComponent({
   name: 'ChoiceInput',
 
   props: {
+     label: { type: String, default: '' },
      values: { type: Array, default: () => [] },
      allowFreeEntry: { type: Boolean, default: false },
      value: { type: String, default: '' },
      placeholder: { type: String, default: '' },
      ariaLabel: { type: String, default: '' },
      autoSelect: { type: Boolean, default: false },
-     disabled: { type: Boolean, default: false }
+     disabled: { type: Boolean, default: false },
+     readonly: { type: Boolean, default: false }
+  },
+
+  computed: {
+     // The display text for the readonly branch: find the 'values' entry
+     // matching the current value and use its label, falling back to the raw
+     // value itself when there's no match (e.g. a free-entry value not in
+     // the fixed list).
+     resolvedLabel() {
+        const match = this.values.find(v => this.optionValue(v) === this.value);
+        return match ? this.optionLabel(match) : this.value;
+     },
   },
 
   methods: {
