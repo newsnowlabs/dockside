@@ -24,6 +24,7 @@
                <template v-else>
                   <v-text-field
                      v-model="form.name"
+                     label="Name"
                      placeholder="Devtainer name"
                      :disabled="!hasProfiles"
                      :error="!validName"
@@ -39,6 +40,7 @@
                   <span v-if="!isEditMode && !isPrelaunchMode"><em>{{ container.meta.description }}</em></span>
                   <v-text-field v-else
                      v-model="form.description"
+                     label="Description"
                      placeholder="Devtainer description"
                      :disabled="!hasProfiles"
                      hide-details
