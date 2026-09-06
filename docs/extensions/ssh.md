@@ -95,7 +95,37 @@ dockside user edit alice --unset ssh.keypairs.*.public --unset ssh.keypairs.*.pr
 
 On devcontainer launch, Dockside automatically loads **every** complete keypair into the `ssh-agent` (an incomplete or invalid entry is skipped, with a warning surfaced in the devtainer terminal). The keys are then immediately available to the IDE (for `Git: Push` / `Git: Pull`), to VS Code extensions, and to any terminal command — without any manual `ssh-add` step.
 
+### Passphrase-protected keypairs
+
+A keypair whose private key is passphrase-protected can't be added to the `ssh-agent` automatically — there is no way to prompt for a passphrase during non-interactive devcontainer launch. Dockside detects this from the key's own on-disk format (never by guessing or requiring the passphrase itself) and, rather than silently discarding it, leaves it at a stable path for you to unlock by hand:
+
+```sh
+ssh-add ~/.ssh/dockside-user-key.<name>
+```
+
+A launch-time warning, printed in the devtainer terminal on your next login, names the specific keypair and gives you this exact command.
+
+**Recommended: let `git`/`ssh` unlock it for you, on first use, instead of running `ssh-add` yourself every restart.** Add an entry to `~/.ssh/config` naming the persisted key file, with `AddKeysToAgent yes`:
+
+```sshconfig
+Host github.com
+    IdentityFile ~/.ssh/dockside-user-key.<name>
+    AddKeysToAgent yes
+```
+
+With this in place, the *first* `git push`/`git pull` (or any `ssh`/`git` command — run by you, or by an agentic coding tool) against that host prompts for the passphrase once, then leaves the decrypted key in the agent for the rest of that devtainer's uptime, exactly as if you'd run `ssh-add` yourself. This is standard, unmodified OpenSSH behaviour — the bundled `ssh` client fully supports both `IdentityFile` and `AddKeysToAgent`.
+
+Either approach needs somewhere to actually prompt for the passphrase. A real terminal (IDE-integrated or SSH) gets a normal prompt regardless. `Git: Push`/`Git: Pull` from the IDE's Source Control panel run `git` with no terminal at all, so *only* a manual `ssh-add` or the `~/.ssh/config` recipe above can unlock the key for those — and even then, only if something can answer the passphrase prompt. openvscode ships exactly that: its own SSH passphrase prompt (a real browser dialog, not a terminal one), reachable by adding this to `~/.bashrc`:
+```bash
+if [ -n "$GIT_ASKPASS" ]; then
+  export SSH_ASKPASS="$(dirname "$GIT_ASKPASS")/ssh-askpass.sh"
+  export SSH_ASKPASS_REQUIRE=force
+fi
+```
+With this set, the `~/.ssh/config` recipe above and a plain `git`/`ssh` command trigger openvscode's real in-browser passphrase dialog, and the key lands in the agent on success — this askpass bridge answers any `SSH_ASKPASS` invocation the same way, not just openvscode's own HTTPS-credential-prompt flow. This also redirects a *real* terminal's passphrase prompt into the same browser dialog, not just the Source Control panel's.
+
 > **Security notes:**
 > 1. If you share your devcontainer IDE with another user, they will have access to any unencrypted key files present in the container and to any keys currently loaded in the agent. Before sharing with an untrusted team member, run `ssh-add -D` to remove all unencrypted identities from the agent (or `ssh-add -x` to lock it), and ensure any key files on disk are encrypted.
 > 2. Private keys stored in `users.json` are currently readable by Dockside admins and anyone with sufficient access to the Dockside host. If you run a shared Dockside instance, use an SSH key dedicated to your Dockside / development workflow, separate from personal or production keys.
 > 3. If your security requirements demand it, omit the private key from `users.json` and instead run `ssh-add <path-to-key>` manually each session. SSH key files can also be added to a devcontainer directly — by dragging and dropping them into the IDE file explorer, or by right-clicking a folder and selecting `Upload`. Once present in the container, load a key into the agent with `ssh-add <path-to-key>`.
+> 4. A passphrase-protected keypair's private key file, left at `~/.ssh/dockside-user-key.<name>` for manual unlock (see [Passphrase-protected keypairs](#passphrase-protected-keypairs) above), carries the same shared-devtainer exposure as note 1 above, plus the container's whole filesystem more broadly (e.g. a backup or snapshot of the container's disk), for as long as it remains on disk.

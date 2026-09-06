@@ -441,6 +441,7 @@ populate_ssh_agent_keys() {
             mv -f "$KEY_PATH.pub" "$kept_path.pub"
             chmod 600 "$kept_path"; chmod 644 "$kept_path.pub"
             log "Keypair '$name' is passphrase-protected; left at $kept_path for manual unlock (run 'ssh-add $kept_path' in a terminal)"
+            dockside_user_warning "Keypair '$name' is passphrase-protected; run 'ssh-add $kept_path' in a terminal to use it."
             continue
          fi
          log "ERROR: ssh-add failed for keypair '$name'"
