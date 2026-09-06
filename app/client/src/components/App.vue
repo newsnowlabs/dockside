@@ -11,10 +11,9 @@
            themselves: Header's hamburger (which toggles it) and whichever
            sidebar is currently mounted are siblings, not parent/child, so
            App.vue is the nearest common owner. Vuetify's layout system
-           (v-app-bar/v-navigation-drawer/v-main/v-footer, all registered via
-           their own `app`/default layout participation) handles all the
-           spacing math that used to be manual CSS here (body padding-top,
-           Footer's absolute positioning + mobile BottomNav clearance calc). -->
+           (v-app-bar/v-navigation-drawer/v-main, each registered via its own
+           `app` layout participation) handles the spacing math that used to
+           be manual CSS here (body padding-top, BottomNav clearance calc). -->
       <Header @toggle-nav="drawerOpen = !drawerOpen"></Header>
 
       <template v-if="isAdminRoute || isAccountRoute">
@@ -37,7 +36,6 @@
 
       <SSHInfo></SSHInfo>
       <BottomNav></BottomNav>
-      <Footer></Footer>
    </v-app>
 </template>
 
@@ -46,7 +44,6 @@ import { defineComponent, defineAsyncComponent } from 'vue';
 
 import { routePermissions } from '@/components/mixins';
 import Header       from '@/components/Header';
-import Footer       from '@/components/Footer';
 import Sidebar      from '@/components/Sidebar';
 import Main         from '@/components/Main';
 import SSHInfo      from '@/components/SSHInfo';
@@ -68,7 +65,6 @@ export default defineComponent({
 
   components: {
      Header,
-     Footer,
      Sidebar,
      Main,
      SSHInfo,

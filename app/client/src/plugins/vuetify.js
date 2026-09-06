@@ -180,18 +180,14 @@ const vuetify = createVuetify({
    },
 });
 
-// light -> dark -> system -> light ..., matching the 3 icons Header.vue's
-// toggle button cycles through. theme.isSystem/theme.name (both real Vue
-// refs) are read here rather than tracked in a separate ref of our own -
-// they're already the live source of truth Vuetify itself updates.
-const NEXT_MODE = { light: 'dark', dark: 'system', system: 'light' };
-
+// theme.isSystem/theme.name (both real Vue refs) are read here rather than
+// tracked in a separate ref of our own - they're already the live source of
+// truth Vuetify itself updates.
 export function currentThemeMode() {
    return vuetify.theme.isSystem.value ? 'system' : vuetify.theme.name.value;
 }
 
-export function cycleThemeMode() {
-   const next = NEXT_MODE[currentThemeMode()];
+export function setThemeMode(mode) {
    // theme.change(), not a direct assignment to theme.global.name: the
    // latter is a plain property holding a ref-like Proxy, and assigning to
    // it directly (rather than through Vue's reactive() ref-unwrapping,
@@ -200,8 +196,8 @@ export function cycleThemeMode() {
    // updating it - confirmed live: the theme only changed after a full page
    // reload, never on the click itself. change() is Vuetify's own supported
    // API for exactly this.
-   vuetify.theme.change(next);
-   localStorage.setItem(THEME_STORAGE_KEY, next);
+   vuetify.theme.change(mode);
+   localStorage.setItem(THEME_STORAGE_KEY, mode);
 }
 
 export default vuetify;
