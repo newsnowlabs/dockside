@@ -20,25 +20,36 @@
          <h5 class="detail-title">
             {{ isNew ? 'New user' : (selfEdit ? 'My account' : username) }}
          </h5>
-         <div class="detail-actions" v-if="!isEditMode && !isNew">
-            <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
-            <v-btn
-               v-if="!selfEdit && canDelete"
-               color="error" size="small"
-               @click="showDeleteConfirm = true"
-            >Delete</v-btn>
+         <!-- Edit/Delete when viewing; a duplicate Cancel here (mirroring the
+              form's own Cancel button at the bottom) while editing, so leaving
+              edit mode doesn't require scrolling down to find it. -->
+         <div class="detail-actions">
+            <template v-if="!isEditMode && !isNew">
+               <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
+               <v-btn
+                  v-if="!selfEdit && canDelete"
+                  color="error" size="small"
+                  @click="showDeleteConfirm = true"
+               >Delete</v-btn>
+            </template>
+            <v-btn v-else variant="outlined" size="small" :disabled="saving" @click="cancel">Cancel</v-btn>
          </div>
       </div>
 
       <form @submit.prevent="save">
 
-         <!-- username — only editable when creating a new user -->
+         <!-- username — only editable when creating a new user. Readonly (not
+              disabled) in view mode so it reads at full legibility like every
+              other field there; disabled once edit mode is active, so it reads
+              as locked rather than blending in with the fields edit mode makes
+              editable. -->
          <v-text-field
             v-if="!selfEdit"
             v-model="form.username"
             label="Username"
-            :readonly="!isNew"
-            :variant="isNew ? 'outlined' : 'plain'"
+            :readonly="!isEditMode && !isNew"
+            :disabled="isEditMode && !isNew"
+            variant="outlined"
             :error="usernameState === false"
             :error-messages="usernameState === false ? ['Username must contain only letters, digits, hyphens and underscores.'] : []"
             placeholder="alphanumeric, hyphens, underscores"
@@ -51,7 +62,7 @@
             v-model="form.name"
             label="Name"
             :readonly="!isEditMode && !isNew"
-            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            variant="outlined"
             placeholder="Display name"
             hide-details="auto"
             class="mb-4"
@@ -63,7 +74,7 @@
             type="email"
             label="Email"
             :readonly="!isEditMode && !isNew"
-            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            variant="outlined"
             placeholder="user@example.com"
             hide-details="auto"
             class="mb-4"
@@ -74,8 +85,8 @@
             v-if="!selfEdit"
             v-model="form.role"
             label="Role"
-            :disabled="!isEditMode && !isNew"
-            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            :readonly="!isEditMode && !isNew"
+            variant="outlined"
             :items="roleOptions"
             item-title="text"
             item-value="value"
@@ -83,14 +94,18 @@
             class="mb-4"
          />
 
-         <!-- password — only shown for admin user management -->
+         <!-- password — only shown for admin user management. Disabled (not
+              readonly) in view mode: the field is always empty there (a real
+              password is never fetched for display), so readonly would still
+              let a click focus it and float the label/placeholder up as if it
+              were about to accept input. -->
          <v-text-field
             v-if="!selfEdit"
             v-model="form.password"
             type="password"
             label="Password"
-            :readonly="!isEditMode && !isNew"
-            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            :disabled="!isEditMode && !isNew"
+            variant="outlined"
             :placeholder="isNew ? 'Leave blank for no password' : 'Leave blank to keep unchanged'"
             autocomplete="new-password"
             hide-details="auto"
@@ -115,12 +130,15 @@
                </v-btn>
             </template>
          </v-text-field>
-         <!-- View mode: disabled input; placeholder reflects token status -->
+         <!-- View mode: disabled (not readonly) - there is no bound value here,
+              only a placeholder reflecting token status, so a readonly click
+              would still focus the field and float the placeholder up as if
+              it were editable. -->
          <v-text-field
             v-else
             label="GitHub token"
             disabled
-            variant="plain"
+            variant="outlined"
             :placeholder="form.gh_token_masked || ''"
             hide-details="auto"
             class="mb-4"

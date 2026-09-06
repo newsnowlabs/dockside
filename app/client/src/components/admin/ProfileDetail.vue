@@ -23,18 +23,25 @@
                {{ form.active ? 'active' : 'inactive' }}
             </v-chip>
          </div>
-         <div class="detail-actions" v-if="!isEditMode && !isNew">
-            <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
-            <v-btn
-               variant="outlined" size="small"
-               :disabled="hasUnsavedEdits"
-               :title="hasUnsavedEdits ? 'Save or cancel edits before renaming.' : 'Rename profile ID'"
-               @click="startRename"
-            >Rename</v-btn>
-            <v-btn
-               color="error" size="small"
-               @click="showDeleteConfirm = true"
-            >Delete</v-btn>
+         <!-- Edit/Rename/Delete when viewing; a duplicate Cancel here
+              (mirroring the form's own Cancel button at the bottom) while
+              editing, so leaving edit mode doesn't require scrolling down
+              to find it. -->
+         <div class="detail-actions">
+            <template v-if="!isEditMode && !isNew">
+               <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
+               <v-btn
+                  variant="outlined" size="small"
+                  :disabled="hasUnsavedEdits"
+                  :title="hasUnsavedEdits ? 'Save or cancel edits before renaming.' : 'Rename profile ID'"
+                  @click="startRename"
+               >Rename</v-btn>
+               <v-btn
+                  color="error" size="small"
+                  @click="showDeleteConfirm = true"
+               >Delete</v-btn>
+            </template>
+            <v-btn v-else variant="outlined" size="small" :disabled="saving" @click="cancel">Cancel</v-btn>
          </div>
       </div>
 
@@ -69,12 +76,17 @@
             hide-details="auto"
             class="mb-4"
          />
+         <!-- Immutable outside the separate Rename flow above. Readonly (not
+              disabled) in view mode for full legibility; disabled once edit
+              mode is active, so it reads as locked rather than blending in
+              with the fields edit mode makes editable. -->
          <v-text-field
             v-else
             label="ID"
             :model-value="profileId"
-            readonly
-            variant="plain"
+            :readonly="!isEditMode"
+            :disabled="isEditMode"
+            variant="outlined"
             hide-details="auto"
             class="mb-4"
          />
@@ -84,7 +96,7 @@
             v-model="form.name"
             label="Name"
             :readonly="!isEditMode && !isNew"
-            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            variant="outlined"
             placeholder="Display name"
             hide-details="auto"
             class="mb-4"
@@ -95,7 +107,7 @@
             v-model="form.description"
             label="Description"
             :readonly="!isEditMode && !isNew"
-            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
+            variant="outlined"
             placeholder="Brief description"
             hide-details="auto"
             class="mb-4"
@@ -112,13 +124,16 @@
             class="mb-4"
          />
 
-         <!-- version — read-only display -->
+         <!-- version — read-only display. Stays readonly rather than disabled
+              in both view and edit mode: unlike ID (locked behind Rename) or
+              a genuinely empty field, this always shows real, informative
+              content worth reading at full legibility. -->
          <v-text-field
             v-if="!isNew"
             label="Version"
             :model-value="form.version"
             readonly
-            variant="plain"
+            variant="outlined"
             hide-details="auto"
             class="mb-4"
          />

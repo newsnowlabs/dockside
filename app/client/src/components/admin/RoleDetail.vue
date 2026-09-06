@@ -13,25 +13,35 @@
          <h5 class="detail-title">
             {{ isNew ? 'New role' : roleName }}
          </h5>
-         <div class="detail-actions" v-if="!isEditMode && !isNew">
-            <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
-            <v-btn
-               color="error" size="small"
-               :disabled="deleteDisabled"
-               :title="deleteDisabled ? 'Role is assigned to one or more users and cannot be deleted.' : ''"
-               @click="showDeleteConfirm = true"
-            >Delete</v-btn>
+         <!-- Edit/Delete when viewing; a duplicate Cancel here (mirroring the
+              form's own Cancel button at the bottom) while editing, so leaving
+              edit mode doesn't require scrolling down to find it. -->
+         <div class="detail-actions">
+            <template v-if="!isEditMode && !isNew">
+               <v-btn variant="outlined" size="small" @click="startEdit">Edit</v-btn>
+               <v-btn
+                  color="error" size="small"
+                  :disabled="deleteDisabled"
+                  :title="deleteDisabled ? 'Role is assigned to one or more users and cannot be deleted.' : ''"
+                  @click="showDeleteConfirm = true"
+               >Delete</v-btn>
+            </template>
+            <v-btn v-else variant="outlined" size="small" :disabled="saving" @click="cancel">Cancel</v-btn>
          </div>
       </div>
 
       <form @submit.prevent="save">
 
-         <!-- name — only editable when creating -->
+         <!-- name — only editable when creating. Readonly (not disabled) in
+              view mode so it reads at full legibility like every other field
+              there; disabled once edit mode is active, so it reads as locked
+              rather than blending in with fields edit mode makes editable. -->
          <v-text-field
             v-model="form.name"
             label="Name"
-            :readonly="!isNew"
-            :variant="isNew ? 'outlined' : 'plain'"
+            :readonly="!isEditMode && !isNew"
+            :disabled="isEditMode && !isNew"
+            variant="outlined"
             :error="nameState === false"
             :error-messages="nameState === false ? [nameErrorText] : []"
             placeholder="alphanumeric, hyphens, underscores"
