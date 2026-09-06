@@ -12,17 +12,37 @@
                   <v-chip size="small" variant="tonal" :color="container.status == 1 ? 'started' : undefined" class="status-chip">
                      {{ container.status == 1 ? 'Started' : 'Stopped' }}
                   </v-chip>
+                  <!-- Sits beside name/chip above the breakpoint (.devtainer-head's
+                       own grid reflows into two rows below it - see this file's
+                       <style>), so the byline's arbitrary length (an owner name,
+                       plus " · PRIVATE") never affects where the actions cluster
+                       ends up: on a single wrapping row, how much of the byline
+                       fit alongside it used to decide whether the actions cluster
+                       landed beside the name or got shoved onto its own line with
+                       nothing to right-align against. -->
                   <span class="devtainer-owner">by {{ userName }} ({{ container.meta.owner }})<template v-if="parseInt(container.meta.private)"> · PRIVATE</template></span>
-                  <!-- Duplicate of the Edit/Cancel buttons at the bottom of the
-                       card (same conditions, same edit()/cancel() methods), so
-                       leaving edit mode doesn't require scrolling down a long
-                       card to find it. .stop is required here (not needed on
-                       the bottom row's own buttons): this sits inside
-                       .devtainer-head, whose own click handler navigates to
-                       the container's view route whenever the card isn't
-                       already selected - without it, clicking Edit would also
-                       fire that navigation in the same click. -->
+                  <!-- Duplicates the Edit/Cancel/Start/Stop buttons at the bottom
+                       of the card (same conditions, same methods), so acting on
+                       the devtainer doesn't require scrolling down a long card to
+                       find them. .stop is required here (not needed on the bottom
+                       row's own buttons): this sits inside .devtainer-head, whose
+                       own click handler navigates to the container's view route
+                       whenever the card isn't already selected - without it,
+                       clicking a button here would also fire that navigation in
+                       the same click. !isPrelaunchMode is implicit (this whole
+                       template branch is already gated on it), unlike the bottom
+                       row's own copies, which aren't nested inside such a guard. -->
                   <div class="devtainer-head-actions">
+                     <v-btn size="small" color="primary"
+                        v-show="container.permissions.actions.startContainer && !isEditMode && container.status >= -1 && container.status <= 0"
+                        @click.stop="action('start')"
+                        :data-id="container.id"
+                     >Start</v-btn>
+                     <v-btn size="small" variant="outlined" color="error"
+                        v-show="container.permissions.actions.stopContainer && !isEditMode && container.status == 1"
+                        @click.stop="action('stop')"
+                        :data-id="container.id"
+                     >Stop</v-btn>
                      <v-btn v-if="container.permissions.auth.developer && !isEditMode && container.status >= -1"
                         variant="outlined" size="small" @click.stop="edit()"
                      >Edit</v-btn>
@@ -1027,11 +1047,22 @@ export default defineComponent({
       gap: 6px;
    }
 
+   // A grid rather than a wrapping flex row: name/chip/owner/actions need to
+   // change which row they're on between the two breakpoints below (owner
+   // moves from sharing the name's row to a full-width row of its own),
+   // which a flex row can only do by coincidence of how much fits - a grid's
+   // named areas let each element declare where it sits independently of
+   // source order, so the actions cluster stays anchored top-right in both
+   // layouts rather than wherever wrapping happened to leave it.
    .devtainer-head {
-      display: flex;
+      display: grid;
+      grid-template-columns: auto auto 1fr;
+      grid-template-areas:
+         "name chip actions"
+         "owner owner owner";
       align-items: baseline;
-      flex-wrap: wrap;
-      gap: 10px;
+      column-gap: 10px;
+      row-gap: 4px;
       padding: 12px 16px;
 
       &.clickable {
@@ -1043,27 +1074,54 @@ export default defineComponent({
       }
    }
 
+   // Above the breakpoint there's room for the byline to sit on the name's
+   // own row, right up against the actions cluster (matching how much
+   // horizontal space a devtainer name realistically needs) - below it, the
+   // byline (an owner name, plus " · PRIVATE") is arbitrary-length and drops
+   // to its own full-width row instead, so it can never be the reason the
+   // actions cluster runs out of room to stay right-aligned.
+   @media (min-width: 768px) {
+      .devtainer-head {
+         grid-template-columns: auto auto 1fr auto;
+         grid-template-areas: "name chip owner actions";
+      }
+
+      .devtainer-owner {
+         justify-self: end;
+      }
+   }
+
    .devtainer-name {
+      grid-area: name;
       font-size: 1.1rem;
       font-weight: 600;
    }
 
    .status-chip {
+      grid-area: chip;
       font-size: 0.7rem;
    }
 
    .devtainer-owner {
-      margin-left: auto;
+      grid-area: owner;
       font-size: 0.8rem;
       color: rgb(var(--v-theme-ink-soft));
    }
 
    .devtainer-head-actions {
+      grid-area: actions;
       display: flex;
+      flex-wrap: wrap;
       gap: 6px;
+      justify-self: end;
    }
 
    .devtainer-name-field {
+      // The only child in .devtainer-head's grid in this state (no chip/
+      // owner/actions siblings to size the other tracks against), so it
+      // needs an explicit span across every column - left to auto-placement
+      // it only fills the "name" area's own (content-sized, narrow) track.
+      grid-column: 1 / -1;
       max-width: 320px;
    }
 
