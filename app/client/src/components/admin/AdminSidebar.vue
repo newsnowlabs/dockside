@@ -16,9 +16,12 @@
    >
       <v-list nav density="compact" v-model:opened="openSections">
          <v-list-group v-for="section in visibleSections" :key="section.type" :value="section.type">
-            <template #activator="{ props: activatorProps }">
+            <template #activator="{ props: activatorProps, isOpen }">
                <v-list-item v-bind="activatorProps" class="sb-section-heading">
-                  <v-list-item-title>{{ section.label }}</v-list-item-title>
+                  <span class="sb-title-row">
+                     {{ section.label }}
+                     <v-icon :icon="mdiChevronRight" size="16" class="sb-caret" :class="{ 'sb-caret--open': isOpen }"></v-icon>
+                  </span>
                   <template #append>
                      <span class="sb-add" @click.stop="onSelect(() => selectItem(section.type, 'new'))">+ New</span>
                   </template>
@@ -54,14 +57,19 @@
 
 <script>
 import { defineComponent } from 'vue';
+import { mdiChevronRight } from '@mdi/js';
 
 import { mapState, mapGetters } from 'vuex';
 import { sidebarDrawerSelect } from '@/components/mixins';
 
+// `route` is the plural path segment used under /admin/<route>/<id> - both
+// selectItem() (building that URL) and currentSectionType (reading it back
+// out of $route.params.type) key off the same table rather than each
+// keeping its own type<->route-segment mapping.
 const SECTIONS = [
-   { type: 'user',    label: 'USERS',    singular: 'user'    },
-   { type: 'role',    label: 'ROLES',    singular: 'role'    },
-   { type: 'profile', label: 'PROFILES', singular: 'profile' },
+   { type: 'user',    label: 'USERS',    singular: 'user',    route: 'users'    },
+   { type: 'role',    label: 'ROLES',    singular: 'role',    route: 'roles'    },
+   { type: 'profile', label: 'PROFILES', singular: 'profile', route: 'profiles' },
 ];
 
 export default defineComponent({
@@ -74,10 +82,13 @@ export default defineComponent({
 
   data() {
      return {
-        // All sections start open (v-list-group defaults closed otherwise) -
-        // harmless for a section visibleSections later filters out, v-list
-        // just ignores an opened-array entry it has no matching group for.
-        openSections: ['user', 'role', 'profile'],
+        // Starts open on whichever section the current route names (see
+        // currentSectionType below) - e.g. landing directly on
+        // /admin/roles/developer opens ROLES only, not all three. Bare
+        // /admin (no :type at all) has no section to prefer, so nothing
+        // starts open. The $route watcher below is what keeps this in sync
+        // on navigation thereafter.
+        openSections: this.sectionTypeForRoute(this.$route) ? [this.sectionTypeForRoute(this.$route)] : [],
      };
   },
 
@@ -85,6 +96,17 @@ export default defineComponent({
      ...mapState('admin', ['users', 'roles', 'profiles', 'selected', 'loading']),
 
      ...mapGetters('admin', ['isEditMode']),
+
+     mdiChevronRight: () => mdiChevronRight,
+
+     // The section (if any) the current route names, independent of
+     // state.admin.selected - a list route like /admin/roles (no :id) still
+     // names ROLES here even though App.vue's updateStateFromRoute clears
+     // `selected` entirely for it (selected only ever reflects a specific
+     // detail route).
+     currentSectionType() {
+        return this.sectionTypeForRoute(this.$route);
+     },
 
      // Filter the SECTIONS list down to only those the current user has
      // permission to manage.  A user with only manageProfiles sees no Users
@@ -100,6 +122,14 @@ export default defineComponent({
   },
 
   methods: {
+     // The section (if any) whose route segment matches route.params.type -
+     // shared by the openSections initialiser (data(), before this instance
+     // has $route-derived computeds available to reuse) and currentSectionType.
+     sectionTypeForRoute(route) {
+        const section = SECTIONS.find(s => s.route === route.params.type);
+        return section ? section.type : null;
+     },
+
      // Map a section type to the list items it should show in the sidebar.
      // Profile items carry an 'active' flag to drive the coloured dot indicator.
      itemsFor(type) {
@@ -119,13 +149,26 @@ export default defineComponent({
      // but that is idempotent (same value, mode: 'view') so the duplicate is harmless.
      selectItem(type, id) {
         this.$store.commit('admin/setSelected', { type, id, mode: 'view' });
-        const typeToRoute = { user: 'users', role: 'roles', profile: 'profiles' };
-        this.$router.push(`/admin/${typeToRoute[type]}/${encodeURIComponent(id)}`).catch(() => {});
+        const section = SECTIONS.find(s => s.type === type);
+        this.$router.push(`/admin/${section.route}/${encodeURIComponent(id)}`).catch(() => {});
      },
 
      // onSelect (close the drawer, then run the action) comes from the
      // sidebarDrawerSelect mixin (components/mixins/index.js) - shared with
      // Sidebar.vue.
+  },
+
+  watch: {
+     // Collapses back down to just the section the route just navigated to
+     // (e.g. clicking from a Role over to a Profile) - fires only when this
+     // actually changes, so a section opened by hand while browsing (or the
+     // one being navigated within, e.g. Role A to Role B) isn't fought.
+     // A route with no section of its own (the bare /admin placeholder,
+     // Account) resolves to null here and is deliberately left alone rather
+     // than collapsing everything.
+     currentSectionType(type) {
+        if (type) this.openSections = [type];
+     },
   },
 });
 </script>
@@ -133,13 +176,16 @@ export default defineComponent({
 <style lang="scss" scoped>
    .sb-section-heading {
       margin-top: 8px;
+   }
 
-      :deep(.v-list-item-title) {
-         font-size: 11px;
-         font-weight: 700;
-         letter-spacing: 0.07em;
-         text-transform: uppercase;
-      }
+   // A plain span rather than <v-list-item-title> - it holds both the
+   // label and the expand/collapse caret (below) on one line, styled here
+   // directly rather than via the row's own title styling.
+   .sb-title-row {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
    }
 
    .sb-add {
@@ -150,6 +196,24 @@ export default defineComponent({
       &:hover {
          text-decoration: underline;
       }
+   }
+
+   // Only sections matching the current admin route start open (see
+   // AdminSidebar's openSections/currentSectionType) - this is what shows a
+   // closed section is collapsed, not empty, and clickable to expand. Sits
+   // inside .sb-title-row (right after the label text), not the row's
+   // #append slot alongside "+ New" - the far end of the row is shared with
+   // that fixed-position link, too far from the label it reflects to read
+   // as its state indicator.
+   .sb-caret {
+      margin-left: 4px;
+      vertical-align: middle;
+      color: rgb(var(--v-theme-ink-soft));
+      transition: transform 0.2s ease;
+   }
+
+   .sb-caret--open {
+      transform: rotate(90deg);
    }
 
    // Same .sidebar-dot shape (index.scss) every other sidebar list uses -
