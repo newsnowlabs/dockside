@@ -249,23 +249,26 @@
                   <div v-if="routers.length" class="form-row">
                      <div class="form-row-label">Routers</div>
                      <div v-for="(router, index) in routers" v-bind:key="index" class="router-row">
-                        <ChoiceInput
-                           :label="'→ ' + router.name"
-                           :values="accessOptions(router)"
-                           :value="(isEditMode || isPrelaunchMode) ? form.access[router.name] : container.meta.access[router.name]"
-                           @input="form.access[router.name] = $event"
-                           :disabled="accessOptions(router).length <= 1"
-                           :readonly="!isEditMode && !isPrelaunchMode"
-                           :aria-label="'Access for ' + router.name"
-                        />
-                        <div v-if="!isPrelaunchMode" class="router-actions">
-                           <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" color="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</v-btn>
-                           <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" :variant="isCopied(router.name) ? 'tonal' : 'outlined'" :color="isCopied(router.name) ? 'accent-strong' : undefined" v-on:click="copyUri(router)">Copy</v-btn>
-                           <v-tooltip v-if="router.type === 'ssh' && container.status >= 0" text="Configure SSH for Dockside">
-                              <template #activator="{ props: tooltipProps }">
-                                 <v-btn v-bind="tooltipProps" size="small" variant="outlined" type="button" v-on:click="openSshInfoModal">Setup</v-btn>
-                              </template>
-                           </v-tooltip>
+                        <div class="router-row-body">
+                           <ChoiceInput
+                              class="router-access"
+                              :label="'→ ' + router.name"
+                              :values="accessOptions(router)"
+                              :value="(isEditMode || isPrelaunchMode) ? form.access[router.name] : container.meta.access[router.name]"
+                              @input="form.access[router.name] = $event"
+                              :disabled="accessOptions(router).length <= 1"
+                              :readonly="!isEditMode && !isPrelaunchMode"
+                              :aria-label="'Access for ' + router.name"
+                           />
+                           <div v-if="!isPrelaunchMode" class="router-actions">
+                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" color="primary" v-bind:href="makeUri(router)" :target="makeUriTarget(router)">Open</v-btn>
+                              <v-btn v-if="router.type != 'passthru' && container.status == 1 && !(router.type === 'ide' && container.data.runningIDE === 'none')" size="small" :variant="isCopied(router.name) ? 'tonal' : 'outlined'" :color="isCopied(router.name) ? 'accent-strong' : undefined" v-on:click="copyUri(router)">Copy</v-btn>
+                              <v-tooltip v-if="router.type === 'ssh' && container.status >= 0" text="Configure SSH for Dockside">
+                                 <template #activator="{ props: tooltipProps }">
+                                    <v-btn v-bind="tooltipProps" size="small" variant="outlined" type="button" v-on:click="openSshInfoModal">Setup</v-btn>
+                                 </template>
+                              </v-tooltip>
+                           </div>
                         </div>
                      </div>
                   </div>
@@ -1072,8 +1075,20 @@ export default defineComponent({
       margin-top: 16px;
    }
 
-   .router-actions {
-      margin-top: 6px;
+   // gap handles spacing in both directions: side by side (the field and
+   // its actions sharing a row) there's room, wrapped (too narrow, e.g.
+   // mobile) there isn't - a fixed margin on .router-actions would only be
+   // right for one of those.
+   .router-row-body {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+   }
+
+   .router-access {
+      flex: 1 1 260px;
+      min-width: 200px;
    }
 
    .stage-line {
