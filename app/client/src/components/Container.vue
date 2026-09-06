@@ -94,15 +94,6 @@
                   class="mb-4"
                />
 
-               <!-- Every :value/@input pair below that reads container.X in one
-                    branch and form.X in the other is interim: form is only
-                    ever populated for the prelaunch/edit-entry cases today
-                    (see initialiseForm()), not unconditionally on mount like
-                    UserDetail/RoleDetail/ProfileDetail's own populateForm(),
-                    so a plain view can't yet bind straight to form.X. Once
-                    initialiseForm() runs unconditionally, every field here
-                    should bind directly to form.X and these ternaries should
-                    go away. -->
                <div class="details-stack">
                   <!-- Profile: like a devtainer's name, fixed for its whole
                        lifetime once launched - editable only at prelaunch,
@@ -162,7 +153,7 @@
                   <ChoiceInput v-if="container.permissions.auth.developer && isSelected"
                      label="Network"
                      :values="networks"
-                     :value="(isEditMode || isPrelaunchMode) ? form.network : (container.docker ? container.docker.Networks : '')"
+                     :value="form.network"
                      @input="form.network = $event"
                      :disabled="networks.length <= 1"
                      :readonly="!isEditMode && !isPrelaunchMode"
@@ -173,7 +164,7 @@
                   <ChoiceInput v-if="container.permissions.auth.developer && isSelected"
                      label="IDE"
                      :values="ideOptions()"
-                     :value="(isEditMode || isPrelaunchMode) ? form.IDE : container.meta.IDE"
+                     :value="form.IDE"
                      @input="form.IDE = $event"
                      :disabled="ideOptions().length <= 1"
                      :readonly="!isEditMode && !isPrelaunchMode"
@@ -274,7 +265,7 @@
                               class="router-access"
                               :label="'→ ' + router.name"
                               :values="accessOptions(router)"
-                              :value="(isEditMode || isPrelaunchMode) ? form.access[router.name] : container.meta.access[router.name]"
+                              :value="form.access[router.name]"
                               @input="form.access[router.name] = $event"
                               :disabled="accessOptions(router).length <= 1"
                               :readonly="!isEditMode && !isPrelaunchMode"
@@ -295,7 +286,7 @@
 
                   <!-- Private/Developers/Viewers: editable after launch, same as Network/IDE. -->
                   <v-checkbox v-if="container.permissions.actions.setContainerPrivacy === 1 && isSelected"
-                     :model-value="(isEditMode || isPrelaunchMode) ? form.private : (container.meta.private == 1)"
+                     :model-value="form.private"
                      @update:model-value="form.private = $event"
                      label="Keep private from other admins"
                      :readonly="!isEditMode && !isPrelaunchMode"
@@ -308,7 +299,7 @@
                   <div v-if="container.permissions.actions.setContainerDevelopers && isSelected" class="form-row">
                      <div class="form-row-label">Developers</div>
                      <UserTagsInput
-                        :value="(isEditMode || isPrelaunchMode) ? form.developers : container.meta.developers"
+                        :value="form.developers"
                         @input="form.developers = $event"
                         :readonly="!isEditMode && !isPrelaunchMode"
                         empty-placeholder="No developers configured"
@@ -318,7 +309,7 @@
                   <div v-if="container.permissions.actions.setContainerViewers && isSelected" class="form-row">
                      <div class="form-row-label">Viewers</div>
                      <UserTagsInput
-                        :value="(isEditMode || isPrelaunchMode) ? form.viewers : container.meta.viewers"
+                        :value="form.viewers"
                         @input="form.viewers = $event"
                         :readonly="!isEditMode && !isPrelaunchMode"
                         empty-placeholder="No viewers configured"
@@ -505,8 +496,8 @@ export default defineComponent({
         // launch and returns an error, so the user simply retries. A reconciling watcher
         // would add reactive complexity for a transient, self-correcting edge case.
         this.$store.dispatch('account/fetchLaunchProfiles');
-        this.initialiseForm();
      }
+     this.initialiseForm();
   },
 
   computed: {
@@ -701,11 +692,11 @@ export default defineComponent({
         // with both off would otherwise be told it has an access method it doesn't.
         return this.routers.some(r => r.type === 'ssh') ? 'No IDE (SSH only)' : 'No IDE';
      },
+     // Runs unconditionally at created() (not just for prelaunch/edit), and again
+     // whenever the container prop watcher below fires - form always mirrors the
+     // current record, so every field binds straight to form.X, matching
+     // User/Role/Profile's own populateForm().
      initialiseForm() {
-        // We need to initialise the form when:
-        // 1. Component created for launching
-        // 2. Component in Edit mode
-
         let edit = this.container && this.container.name && this.container.id !== 'new';
 
         // Prelaunch only: a deep-linked/bookmarked URL's query string pre-fills the
@@ -732,9 +723,14 @@ export default defineComponent({
            profile: edit ? this.container.profile :
               (q.profile && this.profileNames.includes(q.profile) ? q.profile : this.profileNames[0]),
            gitURL: edit ? this.container.data.gitURL : '',
-           image: edit ? this.container.docker.Image : '',
-           runtime: edit ? this.container.docker.Runtime : '',
-           network: edit ? this.container.docker.Networks : '',
+           // container.docker is absent for a reservation whose launch is still
+           // in flight or failed (status -2/-4) - unlike data/meta, it's never
+           // persisted to the reservations db, only ever populated once Docker
+           // reports a real container (see the status >= 0 guard on
+           // container.docker.Size et al below).
+           image: edit ? (this.container.docker || {}).Image : '',
+           runtime: edit ? (this.container.docker || {}).Runtime : '',
+           network: edit ? (this.container.docker || {}).Networks : '',
            private: edit ? (this.container.meta.private == 1 ? true : false) : (q.private === '1'),
            access: edit ? this.container.meta.access : {},
            viewers: edit ? this.container.meta.viewers : (q.viewers || ''),
@@ -743,8 +739,6 @@ export default defineComponent({
            IDE: edit ? this.container.meta.IDE : '',
            options: edit ? (this.container.data.options || {}) : {}
         };
-
-        console.log('initialiseForm:', this.form);
      },
      // Parse a query-string value that's expected to be a JSON object (form.access,
      // form.options). Falls back silently on anything malformed — a stale or
@@ -973,6 +967,17 @@ export default defineComponent({
   },
 
   watch: {
+     // Main.vue's ~1s poll replaces the whole containers array (see
+     // store/index.js's updateContainers), so this component's own instance is
+     // reused across polls (same v-for key) with a freshly-received container
+     // object each time - re-sync form from it so a plain view stays live
+     // rather than frozen at mount, matching User/Role/Profile's own
+     // currentUserRecord watcher. Skipped in edit mode so a poll landing
+     // mid-edit can't clobber unsaved changes, and in prelaunch mode, which
+     // the $route watcher below re-hydrates on its own terms instead.
+     container(c) {
+        if (c && !this.isEditMode && !this.isPrelaunchMode) this.initialiseForm();
+     },
      // Vue Router reuses this component instance across navigations that resolve
      // to the same v-for key: in prelaunch mode, Main.vue always renders the same
      // fixed dummy reservation object (see filteredContainers), so clicking a
