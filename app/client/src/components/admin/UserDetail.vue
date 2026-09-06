@@ -42,7 +42,8 @@
             :error="usernameState === false"
             :error-messages="usernameState === false ? ['Username must contain only letters, digits, hyphens and underscores.'] : []"
             placeholder="alphanumeric, hyphens, underscores"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- name -->
@@ -52,7 +53,8 @@
             :readonly="!isEditMode && !isNew"
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             placeholder="Display name"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- email -->
@@ -63,7 +65,8 @@
             :readonly="!isEditMode && !isNew"
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             placeholder="user@example.com"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- role — not shown in selfEdit mode -->
@@ -72,10 +75,12 @@
             v-model="form.role"
             label="Role"
             :disabled="!isEditMode && !isNew"
+            :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             :items="roleOptions"
             item-title="text"
             item-value="value"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- password — only shown for admin user management -->
@@ -88,7 +93,8 @@
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             :placeholder="isNew ? 'Leave blank for no password' : 'Leave blank to keep unchanged'"
             autocomplete="new-password"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- GitHub token -->
@@ -100,7 +106,8 @@
             label="GitHub token"
             :placeholder="form.gh_token_is_set ? 'Enter new token to replace existing, or leave blank to keep' : 'ghp_…'"
             autocomplete="off"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          >
             <template #append-inner>
                <v-btn variant="text" size="small" @click.stop="showToken = !showToken">
@@ -115,7 +122,8 @@
             disabled
             variant="plain"
             :placeholder="form.gh_token_masked || ''"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- Permissions — not shown in selfEdit mode -->

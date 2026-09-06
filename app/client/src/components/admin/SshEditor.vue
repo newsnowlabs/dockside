@@ -60,7 +60,8 @@
                   placeholder="e.g. deploy-key"
                   :error="newKpNameState === false"
                   :error-messages="newKpNameState === false ? [newKpNameError] : []"
-                  class="mb-2"
+                  hide-details="auto"
+                  class="mb-4"
                />
                <v-textarea
                   v-model="newKpPublic"
@@ -68,7 +69,7 @@
                   placeholder="ssh-rsa AAAA… or ssh-ed25519 AAAA…"
                   rows="3"
                   hide-details
-                  class="mb-2"
+                  class="mb-4"
                />
                <v-textarea
                   v-model="newKpPrivate"

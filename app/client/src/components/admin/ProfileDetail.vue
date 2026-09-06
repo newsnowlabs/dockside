@@ -44,7 +44,7 @@
             v-model="renameValue"
             label="New ID"
             :error="renameState === false"
-            hide-details
+            hide-details="auto"
             class="rename-input"
             @keyup.enter="commitRename"
             @keyup.escape="cancelRename"
@@ -66,7 +66,8 @@
             :error="idState === false"
             :error-messages="idState === false ? [idErrorText] : []"
             placeholder="letters, digits, dots, hyphens, underscores"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
          <v-text-field
             v-else
@@ -74,7 +75,8 @@
             :model-value="profileId"
             readonly
             variant="plain"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- name -->
@@ -84,7 +86,8 @@
             :readonly="!isEditMode && !isNew"
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             placeholder="Display name"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- description -->
@@ -94,7 +97,8 @@
             :readonly="!isEditMode && !isNew"
             :variant="(!isEditMode && !isNew) ? 'plain' : 'outlined'"
             placeholder="Brief description"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- active -->
@@ -105,7 +109,7 @@
             color="primary"
             density="compact"
             hide-details
-            class="mb-2"
+            class="mb-4"
          />
 
          <!-- version — read-only display -->
@@ -115,7 +119,8 @@
             :model-value="form.version"
             readonly
             variant="plain"
-            class="mb-2"
+            hide-details="auto"
+            class="mb-4"
          />
 
          <!-- JSON body — tree view when viewing (read-only; easier to scan), text mode
