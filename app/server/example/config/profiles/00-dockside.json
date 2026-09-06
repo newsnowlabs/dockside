@@ -35,6 +35,27 @@
 
    "unixusers": [ "dockside" ],
 
+   // Lets a devtainer launched from this profile switch to a different branch or
+   // PR of Dockside's own repo (already baked into the image at
+   // /home/dockside/dockside) and actually run it: the hook below re-checks-out
+   // the repo, rebuilds the client and restarts Dockside's own services. See
+   // docs/extensions/lifecycle-hooks.md.
+   "hooks": {
+      "lifecycle:launch": {
+         "script": "/home/dockside/dockside/app/scripts/hooks/dockside-self-update.sh",
+         "manual": true
+      }
+   },
+   "options": [
+      {
+         "name": "ref",
+         "label": "Branch or PR #",
+         "type": "text",
+         "default": "",
+         "placeholder": "e.g. main, or a PR number like 42 (leave blank to just pull the current branch)"
+      }
+   ],
+
    "imagePathsFilter" : [],
 
    "mounts": {

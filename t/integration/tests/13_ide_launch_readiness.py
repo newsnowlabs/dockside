@@ -55,11 +55,26 @@ _REPOPULATE_SECS = 10
 # format below keeps it literal in the stub until the stub itself runs — but
 # '%s' inside that printf FORMAT would be eaten as a conversion spec, hence
 # the '%%s' escape for the stub's own date call.
+#
+# The stub discriminates on $1: docker-event-daemon's launch dispatch (item F3)
+# invokes this same launcher script once per DAG stage (launch:prep, then -
+# once launch:prep clears - launch:ide, concurrently with launch:git if the
+# profile has one), each time with a different trailing argument, not once
+# per launch the way a single pre-item-F combined exec did. Only launch_ide
+# is the actual "IDE exec" this test's own contract names; launch_prep must
+# still exit 0 (so launch:ide's dependency on it clears at all) but silently -
+# without the case discrimination, the same stub answering both would emit
+# IDE_LAUNCHED twice per launch cycle, not once, and break every index-based
+# marker assertion below (found live: reproduced manually against this exact
+# fixture shape - both launch_prep and launch_ide invocations logged before
+# this fix).
 _FIXTURE_SCRIPT = (
     'echo "ENTRYPOINT_START $(date +%s)"; '
     f'sleep {_REPOPULATE_SECS}; '
     'mkdir -p /opt/dockside/bin; '
-    "printf '#!/bin/sh\\necho \"IDE_LAUNCHED $(date +%%s)\" > /proc/1/fd/1\\n' "
+    "printf '#!/bin/sh\\ncase \"$1\" in\\n"
+    "   launch_ide) echo \"IDE_LAUNCHED $(date +%%s)\" > /proc/1/fd/1 ;;\\n"
+    "esac\\n' "
     '> /opt/dockside/bin/launch.sh; '
     'chmod 755 /opt/dockside/bin/launch.sh; '
     'ln -sf bin/launch.sh /opt/dockside/launch.sh; '

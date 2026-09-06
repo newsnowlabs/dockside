@@ -76,6 +76,7 @@ dockside logs my-feature --raw
 dockside check-url https://www-my-feature.example.com/
 dockside ssh my-feature
 dockside --server staging ssh proxy-command my-feature
+dockside router add my-feature --prefix api --port 8080
 ```
 
 | Subcommand | Purpose |
@@ -241,6 +242,72 @@ For structured debugging output, prefer:
 ```sh
 dockside ssh -o json proxy-command my-feature
 ```
+
+## Router management
+
+Add, remove, or replace routers on a **live** devtainer - previously only possible by editing and
+relaunching from the master profile. Requires the `addContainerRouter`/`removeContainerRouter`
+permissions, developer standing on the devtainer, and (for `add`/`replace`) the devtainer's
+profile opting in via `userRouters`. See
+[`docs/adr/0008-router-mutation.md`](../docs/adr/0008-router-mutation.md) for the full design.
+
+```sh
+dockside router list my-feature
+dockside router add my-feature --prefix api --port 8080
+dockside router replace my-feature --name api --prefix api --port 8090
+dockside router remove my-feature --name api --force
+```
+
+| Subcommand | Purpose |
+|------------|---------|
+| `router list` (`ls`) | List a devtainer's routers |
+| `router add` | Add a router to a live devtainer |
+| `router replace` | Atomically replace an existing router (e.g. to change its prefix or port) |
+| `router remove` (`rm`, `delete`) | Remove a router from a live devtainer |
+
+### `router add` / `router replace`
+
+```sh
+dockside router add my-feature --prefix api --port 8080
+dockside router add my-feature --prefix api --port 8080 --name api-v2
+dockside router add my-feature --prefix api --port 8080 --auth owner,developer
+dockside router add my-feature --prefix api --port 8080 --access developer
+dockside router replace my-feature --name api --prefix api --port 8090
+```
+
+Key points:
+
+- The public listener is always `https`; `--private-protocol` (default `http`) is what nginx
+  speaks *to the devtainer* - `http` also covers websocket upgrades.
+- `--prefix` (repeatable) must not contain a hyphen.
+- A router added this way is stamped `type=user` server-side; it's removable the same way as any
+  other router (`router remove`), except the auto-injected `ide`/`ssh` routers, which can never be
+  removed through this command.
+- `--auth` sets the access levels this router may ever be set to (comma-separated and/or
+  repeatable; default: every known level). `--access` sets its *initial* access level (must be one
+  of `--auth`'s levels, if given); default: `owner` if you own the devtainer, `developer` if
+  you're a shared developer on it. Widen or narrow the active level later with
+  `dockside edit --access`.
+- `router replace` is a same-name remove+add under one transaction - it doesn't support renaming;
+  `--name` identifies the router being replaced and stays its name. The existing access level is
+  carried forward when it's still legal under any new `--auth`; otherwise the same
+  owner/developer default (or an explicit `--access`) applies as for `add`.
+
+For the exact flag surface, use:
+
+```sh
+dockside router add --help
+dockside router replace --help
+```
+
+### `router remove`
+
+```sh
+dockside router remove my-feature --name api
+dockside router remove my-feature --name api --force
+```
+
+Prompts for confirmation unless `--force` is given.
 
 ## User and role management
 

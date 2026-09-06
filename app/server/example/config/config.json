@@ -31,6 +31,9 @@
             "launch_ide"
         ]
     },
+    "hooks": {
+        "defaultTimeoutSeconds": 120
+    },
     "clientDistPath": "/home/dockside/dockside/app/client/dist",
     "docker": {
         "bin": "/usr/bin/docker",

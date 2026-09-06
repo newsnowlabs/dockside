@@ -1,0 +1,1034 @@
+#!/usr/bin/perl
+
+# app-server
+#
+# Dockside's UI/API server, standalone and async - no longer embedded in nginx via
+# ngx_http_perl_module. nginx proxy_passes UI/API traffic to this process on loopback
+# (Proxy::ui_uri); Proxy.pm itself stays embedded in nginx for access-controlled
+# devtainer routing, unaffected by this split.
+#
+# Fully native Mojolicious routing, $c throughout - every route is natively ported, no
+# compatibility shim of any kind sits in front of any of them.
+
+use v5.36;
+
+use Mojolicious;
+use Mojo::Server::Prefork;
+use Mojo::IOLoop;
+use Mojo::Util qw(steady_time);
+
+use Try::Tiny;
+
+use URI::Escape;
+use JSON::XS;   # ->new->... below, and the decode_json/encode_json functions
+                 # it exports by default (used by _parse_body_args)
+use Fcntl qw(:flock);   # _with_reconcile_lock's own LOCK_EX/LOCK_NB/LOCK_UN below
+use File::Path;         # mkpath - _with_reconcile_lock's own tmpPath existence guard
+use Util qw(flog wlog sanitize_sensitive_text YYYYMMDDHHMMSS);
+use Exception;
+use Data qw($CONFIG $HOSTNAME $HOSTINFO $VERSION);
+use Containers;
+use Request;
+use User;
+use Reservation;   # ->load/->create_in_flight_count below - restart-recovery/exit-handler use
+                    # only (every route still reaches Reservation exclusively through User.pm)
+use App;   # split_args, and the asset/header helpers _send_branded_page/
+           # _render_spa_shell below reuse
+use App::Metadata;   # $c-native, not adapter-backed - see its own route below
+
+flog({ 'service' => 'dockside-app', 'file' => "/var/log/$ENV{'USER'}/$ENV{'USER'}.log" });
+flog("Starting...");
+
+Data::load();
+
+# Finds every reservation whose createStatus.stage is non-terminal and asks it to reconcile
+# itself (Reservation::reconcile_create) - the mechanism shared by the startup sweep just
+# below and the per-worker periodic reconciler registered further down, covering the two
+# restart granularities docs/adr/0007-create-restart-recovery.md's own "Context" section
+# lays out. $onDone (optional) fires once every reconciliation kicked
+# off by this call has settled - the startup sweep needs this to know when it's safe to stop
+# pumping the reactor; the periodic reconciler doesn't (it's already running inside a live
+# event loop, so there's nothing to wait for from the outside).
+#
+# Callers must ensure only one of them is ever calling this at a time - it does no claiming or
+# locking of its own. The startup sweep (below) is inherently safe (runs solo, before any
+# worker forks); the periodic reconciler (further down) wraps its own call in
+# _with_reconcile_lock, since it fires independently in every worker (confirmed live - see that
+# doc's Open Questions #4) and two workers finding the same stuck reservation on the same tick
+# would otherwise both try to reconcile it.
+sub _reconcile_stuck_reservations ($onDone = sub {}) {
+   try {
+      my @stuck = grep {
+         my $stage = ( $_->{'createStatus'} // {} )->{'stage'} // '';
+         $stage =~ /^(?:pulling|creating|starting)$/;
+      } @{ Reservation->load() };
+
+      flog(sprintf("app-server: reconcile sweep: %d reservation(s) have a create still in progress", scalar @stuck))
+         if @stuck;
+
+      my $outstanding = scalar @stuck;
+      return $onDone->() unless $outstanding;
+
+      for my $reservation (@stuck) {
+         $reservation->reconcile_create( sub ( $reconciled, $err ) {
+            flog("app-server: reconcile of reservation '" . $reservation->id() . "' failed: " . $err->msg) if $err;
+            $onDone->() unless --$outstanding;
+         } );
+      }
+   }
+   catch {
+      flog("app-server: reconcile sweep failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
+      $onDone->();
+   };
+   return;
+}
+
+# Ensures at most one of this app-server's own N workers runs a reconciliation sweep at a
+# time (see _reconcile_stuck_reservations's own comment on why) - a single process-wide lock,
+# not a per-reservation claim. Tried a per-reservation atomic claim first (mutate()-based, with
+# its own staleness timestamp to survive a claim-holder dying mid-reconciliation); replaced
+# with this once it became clear the actual concern - N workers racing the *same* stuck
+# reservation - doesn't need per-reservation granularity to fix, only "one sweep at a time"
+# does, and a real OS-level flock gets crash-safety for free (released automatically the
+# instant the holding process's fd closes, for any reason, no manual staleness bookkeeping
+# needed) where a plain data-field claim did not. `LOCK_EX | LOCK_NB`: a worker that can't
+# acquire it immediately just skips this tick - not an error, the next tick (this worker's own,
+# 5 minutes later by default) tries again regardless of who won this one.
+sub _with_reconcile_lock ($cb) {
+   mkpath( [ $CONFIG->{'tmpPath'} ], 0, 0755 ) unless -d $CONFIG->{'tmpPath'};
+   open( my $fh, '>>', "$CONFIG->{'tmpPath'}/create-reconcile.lock" ) or do {
+      flog("app-server: could not open reconcile sweep lock: $!");
+      return;
+   };
+   unless ( flock( $fh, LOCK_EX | LOCK_NB ) ) {
+      close($fh);
+      return;   # another worker is already sweeping - skip this tick, try again next time
+   }
+   $cb->();
+   flock( $fh, LOCK_UN );
+   close($fh);
+   return;
+}
+
+# Restart-recovery: create()'s own chain may have been abandoned mid-flight by a previous
+# process - see docs/adr/0007-create-restart-recovery.md. Runs once, here, in the manager,
+# before any worker forks (a replacement worker forked later, mid-lifetime, does NOT re-run
+# this - see the per-worker periodic reconciler registered further down for that case). Pumps
+# the reactor just long enough for this sweep's own async work to settle, the same "run the
+# IOLoop just long enough" idiom docker-event-daemon's own initial containers.json write
+# already uses (docker-event-daemon:985-987) - nothing else is happening on this process yet
+# to lose concurrency with by waiting.
+_reconcile_stuck_reservations( sub { Mojo::IOLoop->stop } );
+Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
+
+my $port    = $CONFIG->{'appServer'}{'port'};
+my $workers = $CONFIG->{'appServer'}{'workers'};
+
+my $app = Mojolicious->new;
+$app->max_request_size( $CONFIG->{'appServer'}{'maxRequestSize'} );
+
+# ── Shared helpers, used across every route below ────────────────────────────
+
+# Set by the graceful exit handler (registered further down, near Mojo::Server::Prefork->new)
+# once this worker's own shutdown begins - declared here, ahead of every route below, since a
+# route's closure can only capture a lexical already in scope when it's compiled, not one
+# declared later in the file even if registered "before" this worker ever runs. Checked by the
+# /containers/create route only - every other route either doesn't start new detached work
+# (nothing else in this file does) or is naturally covered by Mojo::Server::Prefork's own
+# stop-accepting-new-connections behaviour once shutdown begins (see
+# docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section).
+my $shuttingDown = 0;
+
+# Authenticates the request and enforces the globalCookieRequired gate - a real,
+# configured, instance-wide access gate (config.json's globalCookie.name/.secret) every
+# route needs. Returns $User on success. On failure, renders a plain-text 401 directly
+# (not the JSON shape _render_error below produces, since a request that fails this gate
+# has no route-specific response shape yet to match) and returns undef; callers must
+# check for that and stop rather than proceed to dispatch.
+#
+# Data::load() here matters because each of Mojo::Server::Prefork's worker processes has
+# its own independent memory (forked at startup, not shared), so a reservation another
+# worker just created/mutated (e.g. via its own create, or docker-event-daemon's
+# own writes) is otherwise invisible to this one until something reloads it.
+#
+# HTTPS enforcement: nginx's own port-80 server block still proxies 'www' traffic here
+# exactly like port 443 does (Proxy.pm's ui_uri() routing doesn't distinguish), so this
+# process must reject plain HTTP itself - nothing upstream does it.
+sub _authenticate ($c) {
+   Data::load();
+
+   my $protocol = lc( $c->req->headers->header('X-Forwarded-Proto') // 'http' );
+
+   if ( $protocol ne 'https' ) {
+      $c->render( text => "Bad Request\n", status => 400 );
+      return undef;
+   }
+
+   my $User = Request->authenticate( { 'cookie' => $c->req->headers->header('Cookie'), 'protocol' => $protocol } );
+
+   if ( $User->authstate('globalCookieRequired') && !$User->authstate('globalCookie') ) {
+      $c->res->headers->add( 'Cache-Control', 'no-store' );
+      $c->render( text => "Not found!\n", status => 401 );
+      return undef;
+   }
+
+   return $User;
+}
+
+# The sole error-response path for this whole server - same Exception shape, same
+# sanitize_sensitive_text treatment, same 401 default, for every route registered above.
+sub _render_error ($c, $err) {
+   my ( $msg, $dbg, $time, $status );
+   if ( ref($err) eq 'Exception' ) {
+      ( $msg, $dbg, $time, $status ) = ( $err->msg(), $err->dbg(), $err->time(), $err->status() );
+   }
+   else {
+      ( $msg, $dbg, $time ) = ( $err, $err, time() );
+   }
+   $status //= 401;
+   ( $msg, $dbg ) = map { sanitize_sensitive_text($_) } ( $msg, $dbg );
+   my $Time = YYYYMMDDHHMMSS($time);
+   flog("app-server: reporting exception at '$Time': msg='$msg'; dbg='$dbg'; status='$status'");
+   return $c->render(
+      json   => { 'status' => "$status", 'msg' => "$msg (at $Time)", 'time' => $time },
+      status => $status,
+   );
+}
+
+# ── $c-native response helpers ───────────────────────────────────────────────
+# This file's own json/redirect/text/send_branded_page/send_login_page/
+# handle_login_form/render_spa_shell, $c-native throughout.
+sub _json ($c, $code, $data) {
+   # canonical: sort object keys so every API response has a deterministic
+   # key order (Perl hash order is otherwise randomised per process) - same
+   # rationale, same JSON::XS::canonical mechanism as App::json's own
+   # comment; Mojolicious's own json renderer does not sort keys, so
+   # $c->render(json => ...) alone would silently regress this.
+   $c->res->headers->cache_control('no-store');
+   $c->res->headers->content_type('application/json');
+   return $c->render( data => JSON::XS->new->utf8->convert_blessed->canonical->encode($data), status => $code );
+}
+
+sub _redirect ($c, $code, $location, $headers = []) {
+   $c->res->headers->cache_control('no-store');
+   $c->res->headers->location($location);
+   foreach my $h (@$headers) {
+      # Must be ->add, not ->header: login sets two Set-Cookie headers, and a
+      # second ->header call would silently replace the first rather than add
+      # a second one. A real regression here first time round, caught by the
+      # integration suite (fresh test-user logins failing with "Not logged
+      # in" - one of the two cookies never reached the client).
+      $c->res->headers->add(@$h);
+   }
+   $c->res->headers->content_type('text/plain');
+   return $c->render( data => "Redirecting to $location ...\n", status => $code );
+}
+
+sub _text ($c, $code, $data) {
+   $c->res->headers->cache_control('no-store');
+   $c->res->headers->content_type('text/plain');
+   return $c->render( data => $data, status => $code );
+}
+
+sub _send_branded_page ($c, $code, $class, $body_html) {
+   my $css_v = App::_asset_version('main.css');
+   my $page  = App::get_header()
+             . "<style>\n" . App::get_asset('signin.css') . "\n</style>\n"
+             . "</head><body>\n"
+             . qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n}
+             . '<div class="container"><div class="branded ' . $class . '"><div class="dockside"></div>' . $body_html . "</div></div>\n</body></html>\n";
+   $c->res->headers->content_type('text/html');
+   return $c->render( data => $page, status => $code );
+}
+
+sub _send_login_page ($c) {
+   return _send_branded_page( $c, 200, 'signin', <<'_EOE_'
+   <form method="POST" accept-charset="UTF-8">
+      <label for="inputUser" class="sr-only">Username</label>
+      <input name="username" type="username" id="inputUser" class="form-control" placeholder="Username" autocomplete="username" required autofocus>
+      <label for="inputPassword" class="sr-only">Password</label>
+      <input name="password" type="password" id="inputPassword" class="form-control" placeholder="Password" autocomplete="current-password" required>
+      <input class="btn btn-lg btn-primary btn-block" type="submit" value="Sign in">
+   </form>
+_EOE_
+   );
+}
+
+sub _handle_login_form ($c, $parentFQDN) {
+   my %credentials = map { uri_unescape($_) } split( /[&=]/, $c->req->body );
+   try {
+      my $User = Request->authenticate_by_credentials( $credentials{'username'}, $credentials{'password'} );
+      if ( ref($User) ) {
+         my @cookies = $User->generate_auth_cookies($parentFQDN);
+         _redirect( $c, 302, $c->req->url->path->to_string, [ map { [ 'Set-Cookie', $_ ] } @cookies ] );
+         return 1;
+      }
+      elsif ( $User eq 'INVALID' ) {
+         flog("auth_cookie: credentials not valid for user '$credentials{'username'}'");
+         return 0;
+      }
+      elsif ( $User eq 'NOTFOUND' ) {
+         flog("auth_cookie: user '$credentials{'username'}' not found in users.json: check file for errors");
+         return 0;
+      }
+      else {
+         flog("auth_cookie: unknown error authenticating: check users.json for errors");
+         return 0;
+      }
+   }
+   catch {
+      flog("auth_cookie: caught exception: '$_'");
+      return 0;
+   };
+}
+
+sub _render_spa_shell ($c, $User, $parentFQDN) {
+   my $css_v = App::_asset_version('main.css');
+   my $page  = App::get_header() . qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n};
+   try {
+      $page .= sprintf( "<script>window.dockside = %s\n</script>",
+         JSON::XS->new->utf8->convert_blessed->encode( {
+            'user' => {
+               %{ $User->details() },
+               'role'         => $User->role,
+               'role_as_meta' => $User->role_as_meta,
+               'permissions'  => { 'actions' => $User->permissions() }
+            },
+            'profiles'         => $User->profiles(),
+            'containers'       => $User->reservations( { 'client' => 1 } ),
+            'viewers'          => User->viewers(),
+            'dummyReservation' => $User->createClientReservation(),
+            'host'             => $parentFQDN,
+            'version'          => $VERSION // 'v-unknown'
+         } )
+      );
+   }
+   catch {
+      die Exception->new( 'msg' => 'Failed to initialise client-side data structures', 'dbg' => "Caught exception: $_" );
+   };
+   $page .= '</head>' . '<body data-spy="scroll" data-target=".sidebar">' . "\n" . "<div id='app'><router-view></router-view></div>\n";
+   my $js_v = App::_asset_version('main.js');
+   $page .= qq{<script src="/assets/main.js?v=$js_v"></script>\n} . "</body></html>\n";
+   $c->res->headers->content_type('text/html');
+   return $c->render( data => $page, status => 200 );
+}
+
+# ── $c-native request helpers ────────────────────────────────────────────────
+# This file's own request-side helpers (header/args/body reads), $c-native
+# throughout - App.pm carries no equivalents of these at all any more.
+sub _host ($c) {
+   # Proxy::forwarded_host only sets X-Forwarded-Host for UI-classified requests
+   # (always carrying :port); plain Host covers direct/foreground testing before
+   # any real proxy sits in front.
+   return $c->req->headers->header('X-Forwarded-Host') // $c->req->headers->header('Host');
+}
+
+sub _parent_fqdn ($c) {
+   my $parentFQDN = _host($c);
+   $parentFQDN =~ s!^[^\-\.]+!!;
+   $parentFQDN = '-' . $parentFQDN unless $parentFQDN =~ /^\./;
+   return $parentFQDN;
+}
+
+sub _query ($c) {
+   return $c->req->url->query->to_string // '';
+}
+
+sub _parse_body_args ($c) {
+   my $body = $c->req->body // '';
+   my $ct   = $c->req->headers->content_type // '';
+
+   if ( $ct =~ m{application/json}i && length $body ) {
+      my $decoded = eval { JSON::XS->new->utf8->decode($body) };
+      die Exception->new(
+         'msg'    => 'Request body is not a valid JSON object',
+         'dbg'    => 'parse_body_args: application/json body failed to decode to a HASH'
+                     . ( $@ ? ": $@" : '' ),
+         'status' => 400,
+      ) unless ref($decoded) eq 'HASH';
+      return $decoded;
+   }
+
+   # Form-encoded fallback: split on '=' and '&', then for each token translate
+   # '+' to space before percent-decoding, and JSON-decode each value so the
+   # result has the same shape as the JSON path. '_unset' must be a JSON array
+   # of dotted-path keys to delete; a decode failure or non-array defaults to
+   # []. See App.pm's own original parse_body_args for the fuller rationale.
+   my %flat = map { ( my $t = $_ ) =~ tr/+/ /; uri_unescape($t) } split( /[=&]/, $body );
+   my %decoded;
+   for my $key ( keys %flat ) {
+      my $v = $flat{$key};
+      if ( $key eq '_unset' ) {
+         my $list = eval { decode_json($v) };
+         $decoded{$key} = ( ref $list eq 'ARRAY' ) ? $list : [];
+      }
+      elsif ( defined $v && length $v ) {
+         my $d = eval { decode_json($v) };
+         $decoded{$key} = $@ ? $v : $d;
+      }
+      else {
+         $decoded{$key} = $v;
+      }
+   }
+   return \%decoded;
+}
+
+sub _get_args ($c, $querystring) {
+   if ( $c->req->method eq 'POST' ) {
+      my $body_args = _parse_body_args($c);
+      my $qs_args   = App::split_args($querystring);
+      return { %$body_args, %$qs_args };   # query-string wins on collision
+   }
+   return App::split_args($querystring);
+}
+
+# Every JSON API route needs the same "not logged in" handling explicitly - each is its
+# own route, not gated on login by anything upstream, so every one of them calls this
+# first.
+#
+# A 302 redirect is a poor response to an AJAX/fetch caller (nothing about it is
+# actionable - the browser doesn't navigate on an XHR redirect, it just... returns the
+# redirect response). A clean 401 JSON is the more honest response for an API client, so
+# pick between the two via content negotiation: $c->accepts('json', 'html') reads the
+# client's own Accept header (Mojolicious::Types->detect, respecting priority order) -
+# json (or an ambiguous/absent Accept - accepts() defaults to the first format listed,
+# 'json' here) gets 401 JSON; html (a real browser's own top-level navigation, whose
+# default Accept always leads with text/html) gets the redirect. Matches all three real
+# clients that matter here: axios (the Vue app's own HTTP client, unmodified) defaults to
+# "application/json, text/plain, */*" -> json; the CLI sends "application/json"
+# explicitly -> json; a browser navigating sends "text/html,..." -> html.
+sub _require_login ($c, $User) {
+   return 1 if $User->username;
+   if ( ( $c->accepts( 'json', 'html' ) // 'json' ) eq 'html' ) {
+      _redirect( $c, 302, '/' );
+   }
+   else {
+      _json( $c, 401, { 'status' => '401', 'msg' => 'Not logged in' } );
+   }
+   return 0;
+}
+
+# Every state-changing route below is POST-only; a GET (or any other method) to the same path
+# must get a clean 405, not silently fall through to the final catch-all's redirect-to-'/'
+# (indistinguishable there from the path simply not existing). Unlike some frameworks,
+# Mojolicious's router has no automatic "path matched, wrong method" behaviour of its own, so
+# each mutation path needs its own fallback registered (see each route's own use of this sub,
+# always right after its real POST handler at the same path): a request that matches the path
+# AND is a POST already matched the earlier, more specific route and never reaches this one;
+# anything else does. AdminApiTests.test_05_get_on_mutation_is_405 in the integration suite
+# covers this.
+sub _post_only ($c) {
+   return _json( $c, 405, { 'status' => '405', 'msg' => 'Method Not Allowed: use POST' } );
+}
+
+# ── The five native async routes (see the plan's "Async actions" section) ───
+# Registered ahead of the catch-all so Mojolicious's router matches these
+# literal paths before ever trying the wildcard (it would anyway, regardless of
+# registration order, but registering them first keeps the intent readable).
+
+my $routes = $app->routes;
+
+# ── Auth bridge, shared by every route not registered directly on $routes ────
+# Authenticate once, per request, then enforce the globalCookieRequired gate - the same
+# check _authenticate above already factors out for the five async routes, reused here
+# rather than duplicated a third time. A false return short-circuits dispatch
+# entirely for everything registered under this bridge (Mojolicious's own
+# mechanism for "gate before the group", no manual status-code bookkeeping
+# needed) - _authenticate has already rendered the 401 itself in that case.
+#
+# Deliberately does NOT reject an unauthenticated (not-logged-in) request at
+# all, GET or POST - only missing/invalid globalCookie does that
+# unconditionally. Everything else about login state is route-specific:
+# static assets are served regardless (main.css, favicon, ico/*), main.js
+# requires login, _require_login above content-negotiates a 401/redirect for
+# API routes, and the SPA-shell/login route below is the only place that
+# actually treats a not-logged-in POST as a login form submission - scoped there
+# deliberately, not bridge-wide: a real browser's own login form only ever POSTs back to
+# '/' or '/container/*' in practice (the only two paths that ever render it), so nothing
+# legitimate needs any other route to double as a login-attempt handler too.
+#
+# Every route in this file is registered under this bridge, except the five async routes
+# above, which share their own inline _authenticate call rather than the bridge itself -
+# no reason to move them under it just to share more code.
+my $authed = $routes->under('/' => sub ($c) {
+   my $User = _authenticate($c) or return undef;
+   $c->stash( 'user' => $User );
+   return 1;
+} );
+
+$routes->post('/containers/create')->to(
+   cb => sub ($c) {
+      $c->render_later;
+      try {
+         # Belt-and-braces: Mojo::Server::Prefork already stops routing new connections to a
+         # worker mid-graceful-shutdown (covering every route uniformly, not just this one) -
+         # this catches the narrow remaining window where a connection was already accepted,
+         # in flight, right as shutdown began, closing it with a clean, fast rejection rather
+         # than starting a chain that's about to be abandoned. See
+         # docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
+         return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
+            if $shuttingDown;
+
+         my $User = _authenticate($c) or return;
+
+         my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+         $args->{'parentFQDN'} ||= _parent_fqdn($c);
+
+         $User->createContainerReservation(
+            $args,
+            sub ( $reservation, $err ) {
+               return _render_error( $c, $err ) if $err;
+               return $c->render( json => {
+                  'status'      => $reservation ? '200' : '401',
+                  'reservation' => $reservation,
+               } );
+            }
+         );
+      }
+      catch {
+         _render_error( $c, $_ );
+      };
+   }
+);
+$routes->any('/containers/create' => \&_post_only);
+
+for my $action (qw(stop start remove)) {
+   $routes->post("/containers/:id/$action")->to(
+      cb => sub ($c) {
+         $c->render_later;
+         my $id = $c->stash('id');
+         try {
+            my $User = _authenticate($c) or return;
+
+            # Outcome deliberately ignored - until there is better support in the Vue app
+            # to display errors, there is no point in returning it; the client reflects
+            # state from the fresh reservations list below regardless of whether the
+            # underlying action itself succeeded.
+            $User->controlContainer(
+               $action, $id, {},
+               sub ( $result, $err ) {
+                  return $c->render( json => {
+                     'status' => '200',
+                     'data'   => $User->reservations( { 'client' => 1 } ),
+                  } );
+               }
+            );
+         }
+         catch {
+            _render_error( $c, $_ );
+         };
+      }
+   );
+   $routes->any("/containers/:id/$action" => \&_post_only);
+}
+
+$routes->post('/containers/:id/hook')->to(
+   cb => sub ($c) {
+      $c->render_later;
+      my $id = $c->stash('id');
+      try {
+         my $User = _authenticate($c) or return;
+         my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+
+         $User->runContainerHook(
+            $id, $args,
+            sub ( $result, $err ) {
+               return _render_error( $c, $err ) if $err;
+               return $c->render( json => { 'status' => '200', 'data' => $result } );
+            }
+         );
+      }
+      catch {
+         _render_error( $c, $_ );
+      };
+   }
+);
+$routes->any('/containers/:id/hook' => \&_post_only);
+
+# ── Metadata-server emulation (App::Metadata) ────────────────────────────────
+# Alpha/unpublished - never documented, never officially shipped, confirmed not used by
+# any production Dockside deployment - so unlike every other route this server serves,
+# there's no external contract requiring a verbatim adapter-backed port. Given its own
+# genuine, exclusive path prefix, it needs no more than any other route: registered
+# directly here, ahead of the catch-all, matched by
+# path like everything else. Not behind $authed - a devtainer process making
+# this call can't log in; App::Metadata::handle's own IP-based reservation
+# lookup is its authentication, not a cookie. $c passed straight through
+# (App::Metadata is $c-native, not adapter-backed) - the smallest available
+# slice of "stop routing responses through the adapter", not a pattern for the
+# routes still doing that (see the plan's "Two calling conventions").
+$routes->any( '/computeMetadata/v1/*rest' => { rest => '' } => sub ($c) {
+   App::Metadata::handle($c);
+} );
+
+# ── Static assets ─────────────────────────────────────────────────────────
+# Content-Type comes from Mojolicious's own extension-based detection
+# (reply->file, via Mojolicious::Types), which gives "image/x-icon"/"image/png" for
+# favicon.ico/apple-touch-icon.png respectively - both correct IANA-registered types.
+for my $file (qw(favicon.ico apple-touch-icon.png)) {
+   $authed->get("/$file" => sub ($c) { $c->reply->file("$CONFIG->{'assetsPath'}/ico/$file") } );
+}
+$authed->get( '/ico/:file' => [ file => qr/[a-z0-9\-_]+\.png/ ] => sub ($c) {
+   $c->reply->file("$CONFIG->{'assetsPath'}/ico/" . $c->stash('file'));
+} );
+$authed->get( '/ico/:file' => [ file => qr/[a-z0-9\-_]+\.svg/ ] => sub ($c) {
+   $c->reply->file("$CONFIG->{'assetsPath'}/ico/" . $c->stash('file'));
+} );
+
+# Served pre-auth too (reachable regardless of login state, like the routes
+# above - only the $authed bridge's own globalCookieRequired gate applies) so
+# the also-pre-auth login page can link to it same-origin instead of an
+# external CDN. main.js has no pre-auth reader, so it stays gated below with
+# the rest of the authenticated app's assets.
+$authed->get( '/assets/main.css' => sub ($c) {
+   $c->res->headers->cache_control('public, max-age=31536000, immutable');
+   $c->reply->file("$CONFIG->{'clientDistPath'}/main.css");
+} );
+
+# Gated on login (unlike main.css above) - matches the original's own
+# placement, after the "not logged in" branch's own redirect-to-'/' handling.
+# A not-logged-in request here hits that same fate: redirected to '/', not a
+# 401 - stale cached references (e.g. after logout) should land on the login
+# page like any other pre-auth page view, not error.
+$authed->get( '/assets/main.js' => sub ($c) {
+   my $User = $c->stash('user');
+   unless ( $User->username ) {
+      $c->res->headers->add( 'Cache-Control', 'no-store' );
+      $c->res->headers->location('/');
+      return $c->render( text => "Redirecting to / ...\n", status => 302 );
+   }
+   $c->res->headers->cache_control('public, max-age=31536000, immutable');
+   $c->reply->file("$CONFIG->{'clientDistPath'}/main.js");
+} );
+
+# The SPA shell ('/', '/container/*', '/admin/*', '/account/*' - via this file's own
+# $c-native _render_spa_shell below) and the login page/form it falls back to when not
+# logged in. No method restriction - a POST here while logged in (unusual, but not
+# prevented) renders the same shell a GET would.
+#
+# This is the one place a not-logged-in POST is treated as a login form
+# submission - deliberately scoped here rather than handled bridge-wide (see
+# $authed's own comment on why): these are the only paths that ever render
+# the login form in the first place, so they're the only ones a browser's own
+# login form ever POSTs back to.
+#
+# $c-native throughout (_send_login_page/_redirect/_handle_login_form/
+# _render_spa_shell, this file's own siblings of App.pm's originals - see
+# their section's own header comment on why they're separate subs, not the
+# same ones changed in place) - no adapter construction at all, request-side
+# included (_parent_fqdn/$c->req->method).
+my $spa_shell_or_login = sub ($c) {
+   my $User = $c->stash('user');
+   my $path = $c->req->url->path->to_string;
+
+   unless ( $User->username ) {
+      if ( $c->req->method eq 'POST' ) {
+         return _handle_login_form( $c, _parent_fqdn($c) ) || _send_login_page($c);
+      }
+      elsif ( $path eq '/' || $path =~ m!^/container/! ) {
+         return _send_login_page($c);
+      }
+      else {
+         return _redirect( $c, 302, '/' );
+      }
+   }
+
+   return _render_spa_shell( $c, $User, _parent_fqdn($c) );
+};
+
+$authed->any( '/' => $spa_shell_or_login );
+for my $prefix (qw(container admin account)) {
+   $authed->any( "/$prefix" => $spa_shell_or_login );
+   $authed->any( "/$prefix/*rest" => { rest => '' } => $spa_shell_or_login );
+}
+
+# ── Container routes ──────────────────────────────────────────────────────
+# Each route: check login (_require_login), call the matching User.pm method, render via
+# _json/_text, with a per-route try/catch whose body is _render_error (giving every route
+# here the same Exception-aware status/sanitize/json-or-text handling). The five mutating
+# container routes (create/stop/start/remove/hook) are already native, above; update is
+# POST-only exactly like those five, but stayed a synchronous User.pm call
+# (updateContainerReservation was never converted to an _async sibling), so it's
+# registered here instead.
+$authed->post( '/containers/:id/update' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+      $args->{'id'} = $id if $id;
+
+      my $reservation = $User->updateContainerReservation($args);
+      _json( $c, $reservation ? 200 : 401, { 'status' => $reservation ? '200' : '401', 'reservation' => $reservation } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+$authed->any( '/containers/:id/update' => \&_post_only );
+
+# Router add/remove/replace (docs/adr/0008-router-mutation.md) - a sub-resource of the
+# devtainer, same shape as the /hook routes below, rather than folded into /update: add/remove
+# are two distinct permissions and a router definition has enough shape to want its own request
+# body rather than riding inside /update's generic args.
+$authed->post( '/containers/:id/router/add' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+      $args->{'id'} = $id if $id;
+
+      my $reservation = $User->addContainerRouter($args);
+      _json( $c, 200, { 'status' => '200', 'reservation' => $reservation } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+$authed->any( '/containers/:id/router/add' => \&_post_only );
+
+$authed->post( '/containers/:id/router/remove' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+      $args->{'id'} = $id if $id;
+
+      my $reservation = $User->removeContainerRouter($args);
+      _json( $c, 200, { 'status' => '200', 'reservation' => $reservation } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+$authed->any( '/containers/:id/router/remove' => \&_post_only );
+
+$authed->post( '/containers/:id/router/replace' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+      $args->{'id'} = $id if $id;
+
+      my $reservation = $User->replaceContainerRouter($args);
+      _json( $c, 200, { 'status' => '200', 'reservation' => $reservation } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+$authed->any( '/containers/:id/router/replace' => \&_post_only );
+
+$authed->get( '/containers/:id/hook/status' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id     = $c->stash('id');
+      my $args   = App::split_args( _query($c) );
+      my $result = $User->runContainerHookStatus( $id, $args );
+      _json( $c, 200, { 'status' => '200', 'data' => $result } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+$authed->get( '/containers/:id/logs' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $id   = $c->stash('id');
+      my $args = App::split_args( _query($c) );
+      my $logs = $User->controlContainer( 'getLogs', $id, $args );
+      if ( ( $args->{'format'} // '' ) eq 'text' ) {
+         _text( $c, 200, join( '', @$logs ) );
+      }
+      else {
+         _json( $c, 200, { 'status' => '200', 'data' => $logs } );
+      }
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+$authed->get( '/containers' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my $containers = $User->reservations( { 'client' => 1 } );
+      _json( $c, 200, { 'status' => '200', 'data' => $containers } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+$authed->get( '/resources' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      die Exception->new( 'msg' => "You need the 'manageUsers' or 'manageProfiles' permission" )
+         unless $User->has_permission('manageUsers') || $User->has_permission('manageProfiles');
+      my @networks = sort { $a cmp $b } keys %{ ( Containers->containers // {} )->{$HOSTNAME // ''}{'inspect'}{'Networks'} // {} };
+      my @runtimes = sort { $a cmp $b } keys %{ ( $HOSTINFO->{'docker'} // {} )->{'Runtimes'} // {} };
+      my @IDEs     = @{ $HOSTINFO->{'IDEs'} // [] };
+      _json( $c, 200, {
+         'status' => '200',
+         'data'   => {
+            'runtimes'  => \@runtimes,
+            'networks'  => \@networks,
+            'IDEs'      => \@IDEs,
+            'authModes' => [ 'user', 'developer', 'public', 'viewer', 'owner' ],
+         }
+      } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+# ── Admin/self CRUD routes ────────────────────────────────────────────────
+# Every one of these has the identical outer shape: compute some $data from a single
+# User.pm call, then _json($c, 200, {status=>'200', data=>$data}) - only the User.pm
+# method and its args differ. _admin_route factors that shape out once, so each route
+# below is just its own distinctive middle line. Same login gate, same
+# try/catch-via-_render_error as the container routes above.
+sub _admin_route ($body) {
+   return sub ($c) {
+      my $User = $c->stash('user');
+      _require_login( $c, $User ) or return;
+      try {
+         my $data = $body->( $c, $User );
+         _json( $c, 200, { 'status' => '200', 'data' => $data } );
+      }
+      catch {
+         _render_error( $c, $_ );
+      };
+   };
+}
+
+# Every :name/:username placeholder route below that has a 'create' sibling
+# (/users/:username vs /users/create, /roles/:name vs /roles/create,
+# /profiles/:name vs /profiles/create) constrains the placeholder to exclude
+# 'create' - a bare Mojolicious placeholder matches ANY single path segment,
+# including the literal word 'create', so GET /roles/create would otherwise
+# silently dispatch to getRole('create') (a role that doesn't exist) instead
+# of correctly finding no matching route at all and falling through to the
+# POST-only guard (_post_only above) for a clean 405 - exactly the same
+# fallthrough /containers/:id/update already relies on for its 405, which
+# works there only because nothing else registered under $authed happens to
+# collide with that specific path shape. AdminApiTests.test_05_get_on_mutation_is_405
+# in the integration suite covers this routing collision.
+# Account (self-service) - any authenticated user
+$authed->get( '/me' => _admin_route( sub ( $c, $User ) {
+   return $User->getSelf();
+} ) );
+$authed->post( '/me/update' => _admin_route( sub ( $c, $User ) {
+   return $User->updateSelf( _get_args( $c, _query($c) ) );
+} ) );
+$authed->any( '/me/update' => \&_post_only );
+$authed->get( '/me/profiles' => _admin_route( sub ( $c, $User ) {
+   return $User->profiles();
+} ) );
+
+# User management
+$authed->get( '/users' => _admin_route( sub ( $c, $User ) {
+   return $User->listUsers( App::split_args( _query($c) ) );
+} ) );
+$authed->post( '/users/create' => _admin_route( sub ( $c, $User ) {
+   return $User->createUser( _get_args( $c, _query($c) ) );
+} ) );
+$authed->any( '/users/create' => \&_post_only );
+$authed->get( '/users/:username' => [ username => qr/(?!create\z)[^\/]+/ ] => _admin_route( sub ( $c, $User ) {
+   return $User->getUser( $c->stash('username'), App::split_args( _query($c) ) );
+} ) );
+$authed->post( '/users/:username/update' => _admin_route( sub ( $c, $User ) {
+   return $User->updateUser( $c->stash('username'), _get_args( $c, _query($c) ) );
+} ) );
+$authed->any( '/users/:username/update' => \&_post_only );
+$authed->post( '/users/:username/remove' => _admin_route( sub ( $c, $User ) {
+   return $User->removeUser( $c->stash('username'), App::split_args( _query($c) ) );
+} ) );
+$authed->any( '/users/:username/remove' => \&_post_only );
+
+# Role management
+$authed->get( '/roles' => _admin_route( sub ( $c, $User ) {
+   return $User->listRoles();
+} ) );
+$authed->post( '/roles/create' => _admin_route( sub ( $c, $User ) {
+   my $args = _get_args( $c, _query($c) );
+   my $name = $args->{'name'} or die Exception->new( 'msg' => "name is required" );
+   return $User->createRole( $name, $args );
+} ) );
+$authed->any( '/roles/create' => \&_post_only );
+$authed->get( '/roles/:name' => [ name => qr/(?!create\z)[^\/]+/ ] => _admin_route( sub ( $c, $User ) {
+   return $User->getRole( $c->stash('name') );
+} ) );
+$authed->post( '/roles/:name/update' => _admin_route( sub ( $c, $User ) {
+   return $User->updateRole( $c->stash('name'), _get_args( $c, _query($c) ) );
+} ) );
+$authed->any( '/roles/:name/update' => \&_post_only );
+$authed->post( '/roles/:name/remove' => _admin_route( sub ( $c, $User ) {
+   return $User->removeRole( $c->stash('name') );
+} ) );
+$authed->any( '/roles/:name/remove' => \&_post_only );
+
+# Profile management
+$authed->get( '/profiles' => _admin_route( sub ( $c, $User ) {
+   return $User->listProfiles( App::split_args( _query($c) ) );
+} ) );
+$authed->post( '/profiles/create' => _admin_route( sub ( $c, $User ) {
+   my $args = _get_args( $c, _query($c) );
+   my $id   = $args->{'id'} or die Exception->new( 'msg' => "id is required" );
+   return $User->createProfile( $id, $args );
+} ) );
+$authed->any( '/profiles/create' => \&_post_only );
+$authed->get( '/profiles/:name' => [ name => qr/(?!create\z)[^\/]+/ ] => _admin_route( sub ( $c, $User ) {
+   return $User->getProfile( $c->stash('name'), App::split_args( _query($c) ) );
+} ) );
+$authed->post( '/profiles/:name/update' => _admin_route( sub ( $c, $User ) {
+   return $User->updateProfile( $c->stash('name'), _get_args( $c, _query($c) ) );
+} ) );
+$authed->any( '/profiles/:name/update' => \&_post_only );
+$authed->post( '/profiles/:name/remove' => _admin_route( sub ( $c, $User ) {
+   return $User->removeProfile( $c->stash('name') );
+} ) );
+$authed->any( '/profiles/:name/remove' => \&_post_only );
+$authed->post( '/profiles/:name/rename' => _admin_route( sub ( $c, $User ) {
+   my $args     = _get_args( $c, _query($c) );
+   my $new_name = $args->{'new_name'} or die Exception->new( 'msg' => "new_name is required" );
+   return $User->renameProfile( $c->stash('name'), $new_name, $args );
+} ) );
+$authed->any( '/profiles/:name/rename' => \&_post_only );
+
+# getAuthCookies - the one route here that doesn't fit _admin_route's uniform
+# {status,data} shape (it builds a raw Cookie-header string, appending the
+# configured globalCookie if set), but keeps the same login gate and
+# try/catch-via-_render_error as everything else on this bridge.
+$authed->get( '/getAuthCookies' => sub ($c) {
+   my $User = $c->stash('user');
+   _require_login( $c, $User ) or return;
+   try {
+      my @cookies = $User->generate_auth_cookies( _parent_fqdn($c) );
+      my ($cookie) = map { s/;.*$//; $_ } grep { /Secure;$/ } @cookies;
+
+      if ( $CONFIG->{'globalCookie'} && $CONFIG->{'globalCookie'}{'name'} && $CONFIG->{'globalCookie'}{'secret'} ) {
+         $cookie .= sprintf( "; %s=%s",
+            $CONFIG->{'globalCookie'}{'name'},
+            uri_escape( $CONFIG->{'globalCookie'}{'secret'} )
+         );
+      }
+
+      _json( $c, 200, { 'status' => '200', 'data' => $cookie } );
+   }
+   catch {
+      _render_error( $c, $_ );
+   };
+} );
+
+# Mojolicious::Static->dispatch runs on every request, before the router - and before
+# $app->static->paths is even set below, it already has a non-empty 'extra' map: a set of the
+# framework's own bundled fallback assets (favicon.ico, its logo PNGs, mojo.css, the
+# raptor/not-found images its own dev-mode error page uses), served automatically if nothing
+# in 'paths' matches first. That silently shadowed our own favicon.ico route below - it
+# never even ran, because static dispatch already returned a (Mojolicious-branded) response
+# before the router was ever consulted. 'paths' and any __DATA__ section are already entirely
+# ours (docsPath below, nothing else) - 'extra' was the only place anything not-Dockside could
+# ever be served from, so clear it outright rather than deleting keys one at a time as they're
+# noticed.
+$app->static->extra( {} );
+
+# ── Static /docs ──────────────────────────────────────────────────────────
+# nginx's own `root` directive (sites-available/default) served this directly;
+# now this process must, since nginx no longer perl_requires App.pm at all post-
+# cutover. Formerly reached only via the old catch-all's nginx::DECLINED branch
+# (App::_handler's own sole DECLINED source); now its own route, matched by
+# path like everything else. Not behind $authed - the original never gated
+# /docs on login either. Mojolicious::Static::serve only matches exact files,
+# not directories - unlike nginx's own implicit index/redirect behaviour, so
+# both are replicated here explicitly.
+$app->static->paths( [ $CONFIG->{'appServer'}{'docsPath'} ] );
+
+sub _serve_static ($c) {
+   my $path = $c->req->url->path->to_string;
+   my $root = $CONFIG->{'appServer'}{'docsPath'};
+
+   if ( -d "$root$path" ) {
+      if ( $path !~ m{/$} ) {
+         $c->res->headers->location("$path/");
+         return $c->rendered(301);
+      }
+      $path .= 'index.html';
+   }
+
+   # Mojolicious::Static::serve sets $c->res->code/content directly (not via
+   # render()/rendered()) - it has no idea this call is happening from inside a route
+   # callback at all. Mojolicious's own request cycle only considers a request complete
+   # once something calls render()/rendered() on it; skipping that call here (as an
+   # earlier version of this did, only calling it in the 404 branch below) left every
+   # successful static response - a 200 with the file's own bytes already attached to
+   # $c->res, ready to send - never actually sent: the worker just sat there forever,
+   # silently hanging every /docs/ request. Must call rendered() unconditionally here.
+   $c->app->static->serve( $c, $path );
+   return $c->rendered( $c->res->code || 404 );
+}
+
+$routes->any( '/docs' => \&_serve_static );
+$routes->any( '/docs/*rest' => { rest => '' } => \&_serve_static );
+
+# ── Catch-all: genuinely unmatched paths only ────────────────────────────────
+# Every real route is natively registered above; this is reached only for a path that
+# matches none of them - an unconditional redirect to '/' regardless of method or login
+# state, not a 404: a typo'd URL or a stale
+# bookmark lands on the SPA shell (or the login page, if not logged in) like
+# any other unrecognised in-app navigation, and lets Vue Router take it from
+# there client-side, rather than a bare error page.
+$routes->any( '/*whatever' => { whatever => '' } => sub ($c) {
+   return _redirect( $c, 302, '/' );
+} );
+
+# Per-worker periodic reconciler - covers a single worker dying mid-create while its siblings
+# and the manager stay up (the startup sweep above only catches a whole-process restart - see
+# docs/adr/0007-create-restart-recovery.md's own "Context" section). Registered once, pre-fork,
+# on the shared Mojo::IOLoop->singleton - fires independently inside every forked worker. Re-loads
+# reservations.json first - sibling workers/processes may have mutated it since this worker's
+# own last refresh (_authenticate's own per-request Data::load() doesn't fire on a timer tick).
+Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => sub (@) {
+   Data::load('reservations.json');
+   _with_reconcile_lock( \&_reconcile_stuck_reservations );
+} );
+
+# Graceful exit handler - refuses new creates (the /containers/create route's own
+# $shuttingDown check above) and gives an in-flight one a bounded chance to reach a stable
+# state before this worker actually exits, rather than relying solely on the startup
+# sweep/periodic reconciler above to clean up afterwards. Mojo::Server::Prefork's own graceful
+# shutdown (SIGQUIT, not the SIGTERM this repo's restart matrix sends today - see that doc's
+# own "What Mojo::Server::Prefork already gives you" section) only waits for the HTTP
+# connection to close, not for create()'s own detached chain, which by design outlives it -
+# this closes that gap. Registered once, pre-fork, on the shared singleton - confirmed live
+# (Open Questions #4) that this fires exactly once per worker, not once total.
+Mojo::IOLoop->singleton->on( finish => sub (@) {
+   $shuttingDown = 1;
+   my $deadline = steady_time() + $CONFIG->{'appServer'}{'shutdownGracePeriod'};
+   my $wait;
+   $wait = Mojo::IOLoop->recurring( 1 => sub (@) {
+      return if Reservation->create_in_flight_count() && steady_time() < $deadline;
+      Mojo::IOLoop->remove($wait);
+      Mojo::IOLoop->stop;
+   } );
+} );
+
+flog("Listening on 127.0.0.1:$port with $workers worker(s)...");
+
+Mojo::Server::Prefork->new(
+   listen           => ["http://127.0.0.1:$port"],
+   workers          => $workers,
+   # 150s, not the 120s default - comfortably above appServer.shutdownGracePeriod (90s
+   # default) so the exit handler's own bounded wait never races this hard force-kill ceiling.
+   # See docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
+   graceful_timeout => 150,
+)->app($app)->run;

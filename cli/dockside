@@ -155,6 +155,20 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+def _truthy_flag(v):
+    """Coerce a boolean-ish JSON API field to a real bool, treating the *string* "0"
+    (and "") as false - unlike Python's default truthiness, where any non-empty string,
+    including "0", is true. Needed because some server-side fields (e.g. a dispatched
+    hook's status record) can arrive JSON-quoted ("busy":"0") rather than bare ("busy":0),
+    a side effect of
+    Perl's cloneHash comparing values with `ne` before storing them - fixed at the
+    server now, but cheap to guard against defensively here too, since a silent
+    false positive here (treating a real "0" as busy) is easy to miss."""
+    if isinstance(v, str):
+        return v not in ('', '0')
+    return bool(v)
+
+
 # ── Safe file I/O ─────────────────────────────────────────────────────────────
 
 def _ensure_config_dir():
@@ -843,6 +857,68 @@ def api_control(opener, server, res_id, cmd):
     return data.get('data') or []
 
 
+def api_hook(opener, server, res_id, name, timeout=None):
+    """Dispatch a devtainer's profile-declared hook named `name` now. The hook
+    runs asynchronously server-side - this call returns almost
+    immediately with the dispatch outcome: {started:1, name} once the hook has
+    been kicked off, or {busy:1} if a previous invocation of the same name was
+    already running (no docker call attempted). Use api_hook_status/
+    wait_for_hook below to learn how it actually turns out."""
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/hook'
+    params = {'name': name}
+    if timeout:
+        params['timeout'] = timeout
+    data = _do_post(opener, url, params, timeout=30)
+    return data.get('data') or {}
+
+
+def api_hook_status(opener, server, res_id, name):
+    """Read back a dispatched hook invocation's current status/log. Returns
+    {status, output}: status is hook_status($name)'s master-record entry
+    (None if `name` has never been invoked on this devtainer), output is its
+    tailed log lines (a list of strings, [] if there's nothing to show yet -
+    either because status is None, or the log has no content yet)."""
+    url = (server.rstrip('/') +
+           f'/containers/{urllib.parse.quote(res_id)}/hook/status'
+           f'?{_encode_params({"name": name})}')
+    data = _do_get(opener, url, timeout=30)
+    return data.get('data') or {}
+
+
+def api_router_add(opener, server, res_id, router, access=None):
+    """Add a router to a live devtainer (docs/adr/0008-router-mutation.md). `router` is a dict
+    with prefixes/domains/http/https/name, and optionally 'auth' (the access levels this router
+    may ever be set to) - never 'type', which is always server-assigned. `access` (optional) is
+    the initial access level to assign; omitted, the server defaults it to 'owner' if this user
+    owns the devtainer, else 'developer'."""
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/router/add'
+    params = {'router': router}
+    if access is not None:
+        params['access'] = access
+    data = _do_post(opener, url, params, timeout=30)
+    return data.get('reservation')
+
+
+def api_router_remove(opener, server, res_id, name):
+    """Remove router `name` from a live devtainer."""
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/router/remove'
+    data = _do_post(opener, url, {'name': name}, timeout=30)
+    return data.get('reservation')
+
+
+def api_router_replace(opener, server, res_id, name, router, access=None):
+    """Atomically replace router `name` with `router` (a convenience wrapper - see
+    docs/adr/0008-router-mutation.md). `access`, if given, is used only as a fallback when the
+    router's existing access level isn't legal under its (possibly narrowed) new 'auth' list -
+    the existing level is carried forward unchanged whenever it's still legal."""
+    url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/router/replace'
+    params = {'name': name, 'router': router}
+    if access is not None:
+        params['access'] = access
+    data = _do_post(opener, url, params, timeout=30)
+    return data.get('reservation')
+
+
 def api_user_list(opener, server, sensitive=False):
     qs = ('?' + _encode_params({'sensitive': 1})) if sensitive else ''
     data = _do_get(opener, server.rstrip('/') + '/users' + qs)
@@ -952,6 +1028,52 @@ def api_logs(opener, server, res_id):
     return _do_get_text(opener, url, timeout=60)
 
 
+# The 5 launch:-/lifecycle:-DAG stage names docker-event-daemon dispatches after container
+# create/start succeeds (see docker-event-daemon's own %LAUNCH_STAGES) - kept here as a literal
+# list, not derived from the server, since the CLI has no other reason to know DED's dispatch
+# graph and this is the full, fixed set for every profile (a profile without e.g. gitURLs just
+# leaves 'launch:git' 'skipped', still present in data.hooks.status).
+LAUNCH_DAG_STAGES = ['launch:prep', 'launch:git', 'launch:ide', 'lifecycle:launch', 'lifecycle:start']
+
+
+def launch_hook_issues(c):
+    """Launch-DAG stages (see LAUNCH_DAG_STAGES) currently in a problem state - failed, timed
+    out, or aborted (DED/app-server died mid-dispatch - see Reservation::hook_status_completed's
+    own 'aborted' path). Distinct from create_status_error: that covers the earlier docker
+    create/pull/start phase (createStatus), this covers the async post-start hook DAG
+    (data.hooks.status) - a container can be Docker-'running' (createStatus done) while this
+    still shows a real failure, which is exactly the gap this exists to close. Returns a list of
+    {name, state, startTime, logPath} dicts, empty if nothing is wrong."""
+    status = ((c.get('data') or {}).get('hooks') or {}).get('status') or {}
+    issues = []
+    for name in LAUNCH_DAG_STAGES:
+        entry = status.get(name) or {}
+        if entry.get('state') in ('failed', 'timedOut', 'aborted'):
+            issues.append({
+                'name':      name,
+                'state':     entry.get('state'),
+                'startTime': entry.get('startTime') or '',
+                'logPath':   entry.get('logPath'),
+            })
+    return issues
+
+
+def create_status_error(c):
+    """Human-readable launch-failure message from a reservation's createStatus field, or
+    None if there wasn't one. Two shapes on the wire, both handled: the current
+    Reservation::create {stage, failed, layers, error} hash - truthy at *every*
+    stage, including 'done', so only .failed means a real failure, and .error already
+    carries a clean message - or the legacy plain-scalar Docker CLI exit code from before
+    create existed, which (unlike the hash) was only ever recorded on failure, so
+    any truthy value there does mean one."""
+    cs = c.get('createStatus')
+    if isinstance(cs, dict):
+        if not cs.get('failed'):
+            return None
+        return cs.get('error') or 'launch failed (no further detail available)'
+    return f'docker create exited non-zero (code {cs})' if cs else None
+
+
 # ── Wait for state ────────────────────────────────────────────────────────────
 
 def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=False):
@@ -1001,6 +1123,37 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
     if not quiet:
         print(file=sys.stderr)
     return False
+
+
+def wait_for_hook(opener, server, res_id, name, timeout=120, interval=1.0, quiet=False):
+    """
+    Poll a dispatched hook's status/log (api_hook_status above) until it
+    reaches a terminal state ('done' or 'aborted'), or `timeout` (+ a fixed
+    margin, mirroring the old single-blocking-call client_timeout's margin
+    over the server-side hook timeout) elapses.
+
+    Returns the read endpoint's {status, output} dict once terminal, or None
+    if the client gave up waiting - a safety net only: the server's own
+    request_timeout, sized from this same `timeout`, should always settle
+    the record to 'done' (possibly with timedOut=1) well within this
+    deadline in practice.
+    """
+    deadline = time.monotonic() + timeout + 15
+    printed = False
+    while time.monotonic() < deadline:
+        result = api_hook_status(opener, server, res_id, name)
+        status = result.get('status')
+        if status and status.get('state') in ('done', 'aborted'):
+            if printed and not quiet:
+                print(file=sys.stderr)
+            return result
+        if not quiet:
+            print('.', end='', flush=True, file=sys.stderr)
+            printed = True
+        time.sleep(interval)
+    if printed and not quiet:
+        print(file=sys.stderr)
+    return None
 
 
 # ── Log sanitisation ──────────────────────────────────────────────────────────
@@ -1487,7 +1640,11 @@ def _fmt_detail(c):
         ('Options',       options_str),
         ('Docker status', docker.get('Status', '')),
         ('Created',       created),
-        ('Launch error',  f'docker create exit code {c["createStatus"]}' if c.get('createStatus') else ''),
+        ('Launch error',  create_status_error(c) or ''),
+        ('Launch hooks',  '; '.join(
+            f"{i['name']} {i['state']}" + (f" ({i['startTime']})" if i['startTime'] else '')
+            for i in launch_hook_issues(c)
+        )),
     ]
 
     # Append a labelled URL line for each non-passthru router
@@ -2055,6 +2212,26 @@ def cmd_get(args):
     else:
         print(_fmt_detail(c))
 
+        # Best-effort: for every launch-DAG stage currently showing a real failure (see
+        # launch_hook_issues), also fetch and print its captured log tail - the 'Launch hooks'
+        # line above only has room to say *that* something failed, not why. One extra request
+        # per failed stage (there are at most 5, and failures are the exception, not the norm),
+        # so this stays cheap in the common all-healthy case. A stage with no logPath (e.g. an
+        # older reservation launched before DED started capturing launch:prep/launch:git output,
+        # or launch:ide, which is detached and was never going to have one) is skipped silently -
+        # nothing to fetch.
+        for issue in launch_hook_issues(c):
+            if not issue['logPath']:
+                continue
+            try:
+                result = api_hook_status(opener, server, c['id'], issue['name'])
+            except APIError:
+                continue
+            output = '\n'.join(result.get('output') or []).strip()
+            if output:
+                print(f"\n--- {issue['name']} log (tail) ---")
+                print(output)
+
 
 def _load_json_input(from_json):
     """Load a JSON dict from a file path or '-' for stdin."""
@@ -2318,8 +2495,7 @@ def cmd_create(args):
                 launch_failed = True
                 print(
                     f'Error: {name!r} failed to launch '
-                    f'(docker create exit code: {failed_c.get("createStatus")}). '
-                    f'Check launch logs for details.',
+                    f'({create_status_error(failed_c) or "no further detail available"}).',
                     file=sys.stderr,
                 )
             else:
@@ -2373,8 +2549,8 @@ def cmd_start(args):
                 # A failed (re)launch is a hard error: exit non-zero so callers
                 # do not treat it as a successful start.
                 print(f'Error: {name!r} failed to start '
-                      f'(docker create exit code: {failed_c.get("createStatus")}). '
-                      f'Check launch logs for details.', file=sys.stderr)
+                      f'({create_status_error(failed_c) or "no further detail available"}).',
+                      file=sys.stderr)
                 sys.exit(1)
             print(f'Warning: timed out after {args.timeout}s. '
                   f'{name!r} may still be starting.', file=sys.stderr)
@@ -2408,6 +2584,98 @@ def cmd_stop(args):
                   f'{name!r} may still be stopping.', file=sys.stderr)
     else:
         print(f'Stop command sent for {name!r}.', file=sys.stderr)
+
+
+def cmd_hook_run(args):
+    """Run a devtainer's profile-declared hook now (see docs/extensions/lifecycle-hooks.md).
+
+    Dispatches the hook - which runs asynchronously server-side - then polls its
+    status until it settles, preserving this command's previous synchronous,
+    run-to-completion user experience even though the underlying call is no
+    longer a single blocking request.
+
+    Exit codes: 0 success; 1 hook script failed, aborted before completion, or
+    the client gave up waiting for its outcome (see below); 3 a run was
+    already in progress ('busy'); 4 the hook timed out.
+    """
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    res_id = c['id']
+    devtainer_name = c.get('name', res_id)
+    hook_name = args.hook_name
+    print(f'Running hook {hook_name!r} on {devtainer_name!r}…', file=sys.stderr)
+    try:
+        dispatch = api_hook(opener, server, res_id, hook_name, timeout=args.timeout)
+    except APIError as e:
+        die(str(e))
+
+    # Pre-exec "already running?" check (hook_is_running - see item B): rejected
+    # before any docker call was even attempted, so there is no status record
+    # to poll for this invocation at all.
+    if dispatch.get('busy'):
+        print(f'Hook {hook_name!r} already running on {devtainer_name!r}; try again shortly.', file=sys.stderr)
+        sys.exit(3)
+
+    try:
+        result = wait_for_hook(opener, server, res_id, hook_name, timeout=args.timeout or 120)
+    except APIError as e:
+        die(str(e))
+
+    if result is None:
+        die(f'Gave up waiting for hook {hook_name!r} on {devtainer_name!r} to report its '
+            f'outcome - it may still be running; check again shortly.')
+
+    status = result.get('status') or {}
+    output = '\n'.join(result.get('output') or []).strip()
+
+    # The process dispatching the hook (app-server or docker-event-daemon) died or was
+    # restarted before it ever recorded a normal completion (see hook_status_completed's
+    # catch block, and hook_is_running's own self-healing check) - there is no exit code
+    # to report, unlike every other case below.
+    if status.get('state') == 'aborted':
+        print(f'Hook {hook_name!r} on {devtainer_name!r} aborted unexpectedly '
+              f'(no exit code recorded).', file=sys.stderr)
+        if output:
+            print(output, file=sys.stderr)
+        sys.exit(1)
+
+    # A rarer, later busy signal than the pre-exec check above: run_hook's own
+    # in-container mkdir lock (launch.sh) rejected an overlapping run that
+    # slipped past that check - a genuine race, not expected to be common.
+    if _truthy_flag(status.get('busy')):
+        print(f'Hook {hook_name!r} already running on {devtainer_name!r}; try again shortly.', file=sys.stderr)
+        sys.exit(3)
+
+    if _truthy_flag(status.get('timedOut')):
+        print(f'Hook {hook_name!r} on {devtainer_name!r} timed out.', file=sys.stderr)
+        if output:
+            print(output, file=sys.stderr)
+        sys.exit(4)
+
+    exit_code = status.get('exitCode')
+    try:
+        # Same defensive coercion as _truthy_flag above and for the same reason -
+        # exitCode can arrive JSON-quoted ("0" rather than 0); a plain `== 0` on an
+        # uncoerced string would always be false, misreporting a real success as a
+        # failure with a confusing "(exit 0)" message.
+        exit_code = int(exit_code) if exit_code is not None else None
+    except (TypeError, ValueError):
+        pass
+    if exit_code == 0:
+        print(f'Hook {hook_name!r} on {devtainer_name!r} succeeded.', file=sys.stderr)
+        if output:
+            print(output, file=sys.stderr)
+        return
+
+    print(f'Hook {hook_name!r} on {devtainer_name!r} failed (exit {exit_code}).', file=sys.stderr)
+    if output:
+        print(output, file=sys.stderr)
+    sys.exit(1)
 
 
 def cmd_edit(args):
@@ -2494,6 +2762,143 @@ def cmd_logs(args):
         logs = sanitize_terminal(logs)
 
     sys.stdout.write(logs)
+
+
+# ── Router command implementations ────────────────────────────────────────────
+# docs/adr/0008-router-mutation.md. A router's public listener is always 'https' here,
+# matching every router this repo actually declares in practice - the private `protocol` (what
+# nginx speaks *to the container*) is the axis that varies (plain HTTP dev servers vs. a
+# container terminating its own TLS), so that's the one exposed as --private-protocol.
+
+def _router_fields_from_args(args):
+    fields = {
+        'prefixes': args.prefix,
+        'domains':  args.domain or ['*'],
+        'https':    {'protocol': args.private_protocol, 'port': args.port},
+    }
+    auth_groups = getattr(args, 'auth', None)
+    if auth_groups:
+        # Each --auth occurrence is itself a list (comma-split by _parse_auth_levels), and
+        # occurrences accumulate (action='append') - flatten into one combined list.
+        fields['auth'] = [level for group in auth_groups for level in group]
+    return fields
+
+
+def cmd_router_list(args):
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    routers = (c.get('profileObject') or {}).get('routers') or []
+    access = (c.get('meta') or {}).get('access') or {}
+
+    if args._fmt in ('json', 'yaml'):
+        emit(routers, args._fmt)
+        return
+
+    if not routers:
+        print('No routers.')
+        return
+
+    for r in routers:
+        priv = r.get('https') or r.get('http') or {}
+        print(
+            f"{r.get('name', ''):<20} "
+            f"type={r.get('type') or '-':<8} "
+            f"prefixes={','.join(r.get('prefixes') or []):<15} "
+            f"domains={','.join(r.get('domains') or []):<10} "
+            f"private={priv.get('protocol', '')}:{priv.get('port', '')} "
+            f"access={access.get(r.get('name', ''), '')}"
+        )
+
+
+def cmd_router_add(args):
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    res_id = c['id']
+    name   = c.get('name', res_id)
+    router = _router_fields_from_args(args)
+    if args.name:
+        router['name'] = args.name
+
+    try:
+        reservation = api_router_add(opener, server, res_id, router, access=args.access)
+    except APIError as e:
+        die(str(e))
+
+    print(f'Added router to {name!r}.', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(reservation, args._fmt)
+    else:
+        print(_fmt_detail(reservation))
+
+
+def cmd_router_remove(args):
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    res_id = c['id']
+    name   = c.get('name', res_id)
+
+    if not args.force:
+        try:
+            answer = input(f'Remove router {args.name!r} from {name!r}? [y/N] ').strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print('\nAborted.', file=sys.stderr)
+            sys.exit(0)
+        if answer not in ('y', 'yes'):
+            print('Aborted.', file=sys.stderr)
+            return
+
+    try:
+        reservation = api_router_remove(opener, server, res_id, args.name)
+    except APIError as e:
+        die(str(e))
+
+    print(f'Removed router {args.name!r} from {name!r}.', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(reservation, args._fmt)
+    else:
+        print(_fmt_detail(reservation))
+
+
+def cmd_router_replace(args):
+    opener, server = _client(args)
+    try:
+        containers = fetch_containers(opener, server)
+        c = resolve(containers, args.devtainer)
+    except APIError as e:
+        die(str(e))
+
+    res_id = c['id']
+    name   = c.get('name', res_id)
+    # Same name as the target being replaced - this CLI command doesn't support renaming via
+    # replace (it exists for in-place prefix/port edits, not identity changes).
+    router = _router_fields_from_args(args)
+    router['name'] = args.name
+
+    try:
+        reservation = api_router_replace(opener, server, res_id, args.name, router, access=args.access)
+    except APIError as e:
+        die(str(e))
+
+    print(f'Replaced router {args.name!r} on {name!r}.', file=sys.stderr)
+    if args._fmt in ('json', 'yaml'):
+        emit(reservation, args._fmt)
+    else:
+        print(_fmt_detail(reservation))
 
 
 # ── User command implementations ──────────────────────────────────────────────
@@ -3493,6 +3898,131 @@ def build_parser():
     sp.add_argument('devtainer', metavar='DEVTAINER')
     _add_wait_flags(sp, 'the container to stop')
     sp.set_defaults(func=cmd_stop)
+
+    # ── hook ───────────────────────────────────────────────────────────────────
+    hook_p = sub.add_parser('hook', help="Run a devtainer's profile-declared hook")
+    hook_sub = hook_p.add_subparsers(dest='hook_command', metavar='SUBCOMMAND')
+    hook_sub.required = True
+
+    sp = hook_sub.add_parser(
+        'run',
+        help="Run a devtainer's profile-declared hook now",
+        description=(
+            "Run a profile-declared hook (see docs/extensions/lifecycle-hooks.md) "
+            'inside a devtainer now, synchronously, and report its outcome. Useful after '
+            "changing a devtainer's branch/pr options without a full relaunch, or for any "
+            "custom hook a profile declares. HOOK is either 'lifecycle:launch' or "
+            "'lifecycle:start' (if the profile's entry for it sets \"manual\": true) or any "
+            "custom name the profile declares in its hooks."
+        ),
+    )
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER',
+                    help='Name, reservation ID, or container ID')
+    sp.add_argument('hook_name', metavar='HOOK',
+                    help="Name of the hook to run, e.g. 'lifecycle:launch', 'lifecycle:start', "
+                         "or a custom hook name")
+    sp.add_argument('--timeout', type=int, default=None, metavar='SECONDS',
+                    help='Server-side time limit for the hook to run (default: server-configured, currently 120s)')
+    sp.set_defaults(func=cmd_hook_run)
+
+    # ── router ─────────────────────────────────────────────────────────────────
+    # docs/adr/0008-router-mutation.md. Requires addContainerRouter/removeContainerRouter
+    # (role-level permission) plus, for add/replace, the reservation's own profile opting in via
+    # userRouters (an admin-controlled decision - see the plan for why).
+    router_p = sub.add_parser(
+        'router',
+        help="Manage a devtainer's routers (requires addContainerRouter/removeContainerRouter permission)"
+    )
+    router_sub = router_p.add_subparsers(dest='router_command', metavar='SUBCOMMAND')
+    router_sub.required = True
+
+    _ROUTER_AUTH_LEVELS = ('user', 'developer', 'public', 'viewer', 'owner')
+
+    def _parse_auth_levels(value):
+        """argparse type= for --auth: splits one occurrence on commas (each occurrence may also
+        just be repeated instead, or both combined) and validates every token, since 'choices='
+        can't be applied to a type= that returns a list rather than a single value."""
+        levels = [v.strip() for v in value.split(',') if v.strip()]
+        for level in levels:
+            if level not in _ROUTER_AUTH_LEVELS:
+                raise argparse.ArgumentTypeError(
+                    f"invalid choice: {level!r} (choose from {', '.join(_ROUTER_AUTH_LEVELS)})")
+        return levels
+
+    def _add_router_def_flags(rsp, name_help=None):
+        rsp.add_argument('--prefix', action='append', required=True, metavar='PREFIX',
+                         help='Public URL prefix this router responds to (repeatable for more '
+                              'than one). Must not contain a hyphen.')
+        rsp.add_argument('--domain', action='append', metavar='DOMAIN',
+                         help="Domain to match (repeatable; default: '*')")
+        rsp.add_argument('--port', type=int, required=True, metavar='PORT',
+                         help='Private port inside the devtainer to forward to')
+        rsp.add_argument('--private-protocol', choices=['http', 'https'], default='http',
+                         dest='private_protocol',
+                         help="Protocol nginx speaks to the devtainer's own port (default: http - "
+                              "covers plain HTTP and websocket servers alike; use https only if "
+                              "the target server terminates its own TLS)")
+        rsp.add_argument('--auth', action='append', type=_parse_auth_levels,
+                         metavar='LEVEL[,LEVEL...]',
+                         help='Access levels this router may be set to (comma-separated and/or '
+                              'repeatable; default: all of them - the same wide allow-list an '
+                              "ordinary profile-declared router gets). Choices: " +
+                              ', '.join(_ROUTER_AUTH_LEVELS) + '.')
+        rsp.add_argument('--access', choices=_ROUTER_AUTH_LEVELS, metavar='LEVEL',
+                         help="Initial access level to set on this router (must be one of "
+                              "--auth's allowed levels, if given). Default: 'owner' if you own "
+                              "this devtainer, 'developer' if you're a shared developer on it.")
+        # name_help=None (replace's case): --name is already added by the caller, identifying
+        # the router being targeted - it doubles as the replacement's own name (no rename
+        # support in v1), so adding a second --name here would conflict.
+        if name_help is not None:
+            rsp.add_argument('--name', metavar='NAME', help=name_help)
+
+    sp = router_sub.add_parser('list', aliases=['ls'], help="List a devtainer's routers")
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER')
+    sp.set_defaults(func=cmd_router_list)
+
+    sp = router_sub.add_parser(
+        'add',
+        help='Add a router to a live devtainer',
+        description=(
+            "Add a router to a live devtainer, subject to the addContainerRouter permission and "
+            "the devtainer's profile allowing self-service routers at all. The public listener "
+            "is always https; --private-protocol is what nginx speaks *to the devtainer* "
+            "(default http, which also covers websocket upgrades). The new router's initial "
+            "access level defaults to 'owner' if you own this devtainer, or 'developer' if "
+            "you're a shared developer on it (override with --access) - widen or narrow it "
+            "afterward with 'dockside edit --access', within whatever --auth allows."
+        ),
+    )
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER')
+    _add_router_def_flags(sp, name_help="Router name (default: derived from --prefix)")
+    sp.set_defaults(func=cmd_router_add)
+
+    sp = router_sub.add_parser('remove', aliases=['rm', 'delete'], help='Remove a router from a live devtainer')
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER')
+    sp.add_argument('--name', required=True, metavar='NAME', help='Name of the router to remove')
+    sp.add_argument('--force', '-f', action='store_true', help='Skip confirmation prompt')
+    sp.set_defaults(func=cmd_router_remove)
+
+    sp = router_sub.add_parser(
+        'replace',
+        help='Atomically replace an existing router (e.g. to change its prefix or port)',
+        description=(
+            'Same-name remove+add under one server-side transaction, carrying the existing '
+            'access level forward - a convenience over a separate remove then add. Does not '
+            'support renaming; --name identifies the router being replaced and stays its name.'
+        ),
+    )
+    _add_global_flags(sp)
+    sp.add_argument('devtainer', metavar='DEVTAINER')
+    sp.add_argument('--name', required=True, metavar='NAME', help='Name of the router to replace')
+    _add_router_def_flags(sp)
+    sp.set_defaults(func=cmd_router_replace)
 
     # ── edit ───────────────────────────────────────────────────────────────────
     sp = sub.add_parser(

@@ -3,6 +3,8 @@ package Reservation;
 
 use v5.36;
 
+use JSON;
+use Exception;
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD);
 
 ################################################################################
@@ -22,9 +24,20 @@ my $PLACEHOLDERS = {
 sub _placeholders ($self, $value) {
    local $_ = $value;
 
+   # Only ever substitutes when the brace contents are an exact (case-insensitive)
+   # match for one of the known prefixes above - anything else is left untouched,
+   # rather than treated as a malformed placeholder. Profile-author command/hook
+   # scripts routinely contain unrelated curly braces (shell parameter expansion
+   # like ${VAR#pattern}, brace command grouping like `{ cmd; }`, embedded JSON,
+   # awk/printf blocks, ...); since none of those ever happen to equal one of this
+   # short, fixed set of words, requiring an exact match - rather than merely "some
+   # {...} was found" - removes the false-positive collisions without needing a
+   # different delimiter. Trade-off: a typo'd prefix (e.g. '{usre.name}') silently
+   # passes through instead of erroring, since it's indistinguishable from ordinary
+   # script text once unrecognized {...} is no longer treated as a mistake.
    s/\{([^\}\.]+)(?:\.([^\}]+))?\}/do {
       my $sub = $PLACEHOLDERS->{lc($1)};
-      $sub ? $self->$sub($2) : die Exception->new( 'msg' => "Unknown placeholder '$&' in '$_'" );
+      $sub ? $self->$sub($2) : $&;
    }/egs;
 
    return $_;
@@ -301,6 +314,200 @@ sub cmdline ($self) {
    );
 }
 
+# Docker CLI size-string parsing (--memory=1G, tmpfs-size, ...): digits + an optional
+# b/k/kb/m/mb/g/gb unit (case-insensitive), matching Docker CLI's own convention -
+# not a general-purpose parser, just what the flags below actually use.
+sub _parse_docker_size ($str) {
+   return 0 + $str if $str =~ /^\d+$/;
+   my ( $num, $unit ) = $str =~ /^([\d.]+)\s*([a-zA-Z]*)$/
+      or die Exception->new( 'msg' => "Internal error - cannot parse docker size string '$str'" );
+   my %mult = ( '' => 1, 'b' => 1, 'k' => 1024, 'kb' => 1024, 'm' => 1024**2, 'mb' => 1024**2, 'g' => 1024**3, 'gb' => 1024**3 );
+   my $m = $mult{ lc($unit) };
+   die Exception->new( 'msg' => "Internal error - unknown docker size unit '$unit' in '$str'" ) unless defined $m;
+   return int( $num * $m );
+}
+
+# Sibling to cmdline() above, emitting a hash for the Docker Engine API's
+# POST /containers/create body (see Reservation::create) instead of a CLI
+# argv list - same specification (the cmdline_* builders' own underlying data),
+# a second rendering. Built by reading the *same* structured profile/reservation
+# data each cmdline_* builder above reads, not by parsing those builders' own CLI-
+# string output back into structured data - that would be the wrong direction,
+# fragile by construction (lossy string round-tripping) where this is direct.
+#
+# --name is deliberately not in this hash: on the CLI it's a flag, but on the
+# Create API it's the ?name= query parameter, not part of the body - the caller
+# (create) already has $self->name directly and supplies it there.
+#
+# dockerArgs (profile-declared, free-form CLI flags - cmdline_docker_args() above)
+# has no generic CLI-flag-to-JSON translation available - unlike every other
+# field here, these are arbitrary strings a profile author can put anything into.
+# Scoped instead to exactly the flag patterns every profile in this repo actually
+# uses today (--memory, --pids-limit, --cpus, --env - verified by grep across
+# app/server/example/config/profiles/*.json and the integration test fixtures) -
+# anything else fails loudly with a clear message naming the unsupported flag,
+# rather than silently dropping it or creating a container that doesn't match
+# what the profile declared. Extending this list for a new flag pattern is
+# straightforward if/when a profile actually needs one outside this set.
+sub cmdline_json ($self) {
+   # Mirrors cmdline_security()'s own per-flag logic above, reading $security directly rather
+   # than parsing that function's own CLI-flag output back apart - see this function's own
+   # header comment on why. Docker's Create API HostConfig.SecurityOpt array wants the same
+   # bare "key=value"/"label=disable" strings the --security-opt flag's own value already is,
+   # just without the "--security-opt=" prefix a CLI arg needs and a JSON array element doesn't.
+   my $security = $self->profileObject->{'security'};
+   my @securityOpt;
+   foreach my $m ('apparmor', 'seccomp') {
+      my $profile = ($security->{$m} // $CONFIG->{'docker'}{'security'}{$m}) // 'unspecified';
+      push(@securityOpt, "$m=$profile") if $profile ne 'unspecified';
+   }
+   if($security->{'no-new-privileges'}) {
+      push(@securityOpt, 'no-new-privileges');
+   }
+   if($security->{'labels'}) {
+      if( ref($security->{'labels'}) eq 'SCALAR' && $security->{'labels'} eq 'disable' ) {
+         push(@securityOpt, 'label=disable');
+      }
+      elsif( ref($security->{'labels'}) eq 'HASH' ) {
+         foreach my $opt ('user', 'role', 'type', 'level') {
+            push(@securityOpt, "label=$opt:$security->{'labels'}{$opt}");
+         }
+      }
+   }
+
+   my $hostConfig = {};
+   $hostConfig->{'SecurityOpt'} = \@securityOpt if @securityOpt;
+
+   if ( my $runtime = $self->data('runtime') ) {
+      $hostConfig->{'Runtime'} = $runtime;
+   }
+   if ( my $network = $self->data('network') ) {
+      $hostConfig->{'NetworkMode'} = $network;
+   }
+
+   my $exposedPorts = {};
+   if ( $CONFIG->{'gatewayMode'} ) {
+      my $portBindings = {};
+      for my $port ( $self->profileObject->ports() ) {
+         $exposedPorts->{"$port/tcp"}  = {};
+         $portBindings->{"$port/tcp"} = [ {} ];   # empty binding = Docker picks the host port
+      }
+      $hostConfig->{'PortBindings'} = $portBindings if %$portBindings;
+   }
+
+   # Seeded with DOCKSIDE_OPTION_<NAME> (see Reservation::_option_env_pairs) so a profile's own
+   # command/entrypoint (PID-1) can read a plain env var - $DOCKSIDE_OPTION_REF, same convention
+   # a hook script already gets - instead of needing {option.<name>} argv substitution just to
+   # reach it. {option.<name>} remains the right tool when a value needs to land directly in a
+   # non-shell binary's own argv (a CLI flag, say); this doesn't replace that, it just means a
+   # shell entrypoint no longer needs the argv detour purely to read a value into a variable.
+   # Placed first so an explicit dockerArgs '--env=' entry below can still override on a name
+   # collision - profile-author intent expressed directly in dockerArgs wins over the derived
+   # options-projection.
+   my @env = $self->_option_env_pairs();
+   if ( ref( $self->profileObject->{'dockerArgs'} ) eq 'ARRAY' ) {
+      for my $raw ( @{ $self->profileObject->{'dockerArgs'} } ) {
+         my $arg = $self->_placeholders($raw);
+         if ( $arg =~ /^--memory=(.+)$/ ) {
+            $hostConfig->{'Memory'} = _parse_docker_size($1);
+         }
+         elsif ( $arg =~ /^--pids-limit=(-?\d+)$/ ) {
+            $hostConfig->{'PidsLimit'} = 0 + $1;
+         }
+         elsif ( $arg =~ /^--cpus=([\d.]+)$/ ) {
+            $hostConfig->{'NanoCpus'} = int( $1 * 1_000_000_000 );
+         }
+         elsif ( $arg =~ /^--env=(.+)$/ ) {
+            push( @env, $1 );
+         }
+         else {
+            die Exception->new( 'msg' => "Internal error - dockerArgs entry '$arg' has no JSON Create API equivalent implemented" );
+         }
+      }
+   }
+
+   my @mounts;
+   for my $m ( @{ $self->profileObject->{'mounts'}{'tmpfs'} } ) {
+      die Exception->new( 'msg' => "Internal error - tmpfs mount options beyond size/mode have no JSON Create API equivalent implemented (dst='$m->{'dst'}')" )
+         if $m->{'tmpfs-uid'} || $m->{'tmpfs-gid'} || $m->{'tmpfs-noexec'} || $m->{'tmpfs-nosuid'} || $m->{'tmpfs-nodev'};
+      my $tmpfsOptions = {};
+      $tmpfsOptions->{'SizeBytes'} = _parse_docker_size( $m->{'tmpfs-size'} ) if $m->{'tmpfs-size'};
+      $tmpfsOptions->{'Mode'}      = oct( $m->{'tmpfs-mode'} )               if $m->{'tmpfs-mode'};
+      push( @mounts, {
+         'Type'         => 'tmpfs',
+         'Target'       => $self->_placeholders( $m->{'dst'} ),
+         'TmpfsOptions' => $tmpfsOptions,
+      } );
+   }
+   for my $m ( @{ $self->profileObject->{'mounts'}{'bind'} } ) {
+      push( @mounts, {
+         'Type'   => 'bind',
+         'Source' => $m->{'src'},
+         'Target' => $self->_placeholders( $m->{'dst'} ),
+         ( $m->{'readonly'} ? ( 'ReadOnly' => JSON::true ) : () ),
+      } );
+   }
+   for my $m ( @{ $self->profileObject->{'mounts'}{'volume'} } ) {
+      push( @mounts, {
+         'Type'   => 'volume',
+         ( $m->{'src'} ? ( 'Source' => $self->_placeholders( $m->{'src'} ) ) : () ),
+         'Target' => $self->_placeholders( $m->{'dst'} ),
+         ( $m->{'readonly'} ? ( 'ReadOnly' => JSON::true ) : () ),
+      } );
+   }
+   if ( $self->profileObject->has_lxcfs_enabled ) {
+      my $mountpoint = $CONFIG->{'lxcfs'}{'mountpoint'} // '/var/lib/lxcfs';
+      $mountpoint =~ s!/+$!!;
+      for my $mp ( @{ $CONFIG->{'lxcfs'}{'mountpoints'} } ) {
+         my ( $src, $dst ) = $mp =~ m!^/! ? ( "$mountpoint$mp", $mp ) : ( "$mountpoint/proc/$mp", "/proc/$mp" );
+         push( @mounts, { 'Type' => 'bind', 'Source' => $src, 'Target' => $dst } );
+      }
+   }
+
+   # Mirrors cmdline_ide_mount's own logic (see its own comment for the
+   # INNER_DOCKERD/HOSTNAME source-discovery reasoning) - unchanged here, just
+   # rendered as Mounts entries instead of --mount= strings.
+   die Exception->new( 'msg' => "Failed to locate IDE and/or host data volumes because expected Dockside container hostname is undefined" )
+      unless $HOSTNAME || $INNER_DOCKERD;
+   my $idePath      = $CONFIG->{'ide'}{'path'};
+   my $hostDataPath = $CONFIG->{'ssh'}{'path'};
+   if ( $self->profileObject->should_mount_ide ) {
+      my $ide = $INNER_DOCKERD ? [ 'bind', $idePath ]
+              : $HOSTNAME       ? Containers->containers->{$HOSTNAME}{'inspect'}{'ideVolume'}
+              : undef;
+      die Exception->new( 'msg' => "Failed to locate IDE volume for host '$HOSTNAME'" ) unless $ide;
+      push( @mounts, { 'Type' => $$ide[0], 'Source' => $$ide[1], 'Target' => $idePath, 'ReadOnly' => JSON::true } );
+   }
+   if ( $self->profileObject->ssh ) {
+      my $hostData = $INNER_DOCKERD ? [ 'bind', $hostDataPath ]
+                   : $HOSTNAME       ? Containers->containers->{$HOSTNAME}{'inspect'}{'hostDataVolume'}
+                   : undef;
+      if ($hostData) {
+         push( @mounts, { 'Type' => $$hostData[0], 'Source' => $$hostData[1], 'Target' => $hostDataPath, 'ReadOnly' => JSON::true } );
+      }
+   }
+   $hostConfig->{'Mounts'} = \@mounts if @mounts;
+
+   $hostConfig->{'Init'} = JSON::true if $self->profileObject->run_docker_init;
+
+   my $entrypoint = $self->data('entrypoint') || $self->profileObject->entrypoint || undef;
+
+   my @command = ref( $self->data('command') ) eq 'ARRAY'
+      ? @{ $self->data('command') }
+      : $self->profileObject->default_command();
+   @command = map { $self->_placeholders($_) } @command;
+
+   return {
+      'Image'    => $self->data('image'),
+      'Hostname' => $self->name,
+      ( defined($entrypoint) ? ( 'Entrypoint' => [$entrypoint] ) : () ),
+      'Cmd'      => \@command,
+      ( @env             ? ( 'Env'          => \@env )          : () ),
+      ( %$exposedPorts    ? ( 'ExposedPorts' => $exposedPorts )  : () ),
+      'HostConfig' => $hostConfig,
+   };
+}
+
 sub ide_command ($self) {
    my @command = @{$self->{'ide'}{'command'} // []};
 
@@ -331,7 +538,10 @@ sub container ($self, $prop = undef) {
       'hostname' => 'FQDN'
    }->{$prop};
 
-   return $dataProp ? $self->data($dataProp) : '';
+   die Exception->new( 'msg' => "Unknown placeholder '{container.$prop}' - '$prop' is not a recognized container property" )
+      unless $dataProp;
+
+   return $self->data($dataProp);
 }
 
 sub gitURL ($self) {
@@ -340,7 +550,15 @@ sub gitURL ($self) {
 
 sub option_value ($self, $name = undef) {
    return '' unless defined $name;
+
+   die Exception->new( 'msg' => "Unknown placeholder '{option.$name}' - '$name' is not declared in this profile's options" )
+      unless grep { $_->{'name'} eq $name } @{$self->profileObject->options};
+
    return ($self->data('options') // {})->{$name} // '';
+}
+
+sub hook_script ($self, $name) {
+   return $self->profileObject->hooks->{$name}{'script'} // '';
 }
 
 # If the dockside container and launched container share the default 

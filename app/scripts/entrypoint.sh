@@ -268,7 +268,7 @@ if [ "$OPT_RUN_DOCKERD" != "1" ]; then
 fi
 
 log "Configuring standard services ..."
-for s in bind nginx docker-event-daemon logrotate dehydrated playwright-proxy
+for s in bind nginx app-server docker-event-daemon logrotate dehydrated playwright-proxy
 do
   log "- Configuring $s"
   mkdir -p /etc/service/$s /etc/service/$s/data
@@ -299,6 +299,22 @@ _EOE_
 
   # Create symlink for runscript
   ln -sf $APP_DIR/app/scripts/runscripts/$s/run /etc/service/$s/run
+
+  # Symlink down-signal, if this service declares one - s6-supervise reads it at startup and
+  # uses it (instead of the SIGTERM default) as the signal `s6-svc -d` sends, *and* as the
+  # signal s6-svscan itself cascades to this service on a whole-scandir shutdown (verified
+  # live: SIGTERM to s6-svscan's own pid delivers each service's own down-signal, not a bare
+  # SIGTERM, to that service) - i.e. this is what makes a real `docker stop`/host reboot
+  # deliver app-server's own graceful-shutdown signal, not just the manually-run `s6-svc -q`
+  # documented in CLAUDE.md's restart matrix (down-signal has no effect on `-t`/`-q`
+  # specifically - those always send the literal signal named by their own flag, confirmed
+  # live - so this is a separate, complementary protection, not a replacement for that
+  # doc). Generic here (any service can opt in by adding its own down-signal file), not
+  # app-server-specific - currently only app-server has one, for create()'s own detached-chain
+  # reasons (docs/adr/0007-create-restart-recovery.md).
+  if [ -f "$APP_DIR/app/scripts/runscripts/$s/down-signal" ]; then
+    ln -sf $APP_DIR/app/scripts/runscripts/$s/down-signal /etc/service/$s/down-signal
+  fi
 
   # Copy each immediate child of $APP_DIR/app/scripts/runscripts/$s/data
   # N.B. We can't symlink $APP_DIR/app/scripts/runscripts/logrotate/data because
@@ -506,6 +522,17 @@ if ! [ -d $DATA_DIR/config/profiles ]; then
   log "- No $DATA_DIR/config/profiles directory found, so installing vanilla profiles ..."
   cp -a $APP_DIR/app/server/example/config/profiles $DATA_DIR/config/
 fi
+
+# logrotate-daemon needs tmpPath and hooks.logRetentionDays to prune orphaned/history-evicted
+# hook-invocation log files (r-<id>-hook-<invocationId>.log). Appended here, after
+# config.json is guaranteed to exist and be initialised/patched above, rather than in the
+# "Configuring standard services" data/env generation loop earlier in this script - that loop
+# runs before $DATA_DIR/config/config.json is installed on a fresh container.
+log "- Adding hook-log retention settings to logrotate service env ..."
+cat >>/etc/service/logrotate/data/env <<_EOE_
+TMP_PATH=$(jq_config_get -r '.tmpPath // "/tmp/dockside"')
+HOOK_LOG_RETENTION_DAYS=$(jq_config_get -r '.hooks.logRetentionDays // 30')
+_EOE_
 
 log "Checking SSL certificates ..."
 CONFIG_SSL=$(jq_config_get -r '.ssl.source')

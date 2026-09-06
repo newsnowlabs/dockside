@@ -1,0 +1,56 @@
+{
+   "version": 4,
+   "name": "Multi-repo, image-embedded (entrypoint-driven)",
+   "description": "Demonstrates docs/extensions/lifecycle-hooks.md's multi-repo section, entrypoint branch: the same two toy repos as 05-image-embedded-multi-repo-hook.json (see app/server/example/images/multi-repo-demo/), switched by the identical script - but invoked directly from this profile's own command (no hooks declared at all) instead of a hook, so the switch happens once, at container-create time, before the long-running process starts. There is no way to re-switch without recreating the devtainer: with no hooks entry, `dockside hook run` has nothing to dispatch. Build the image first: docker build -t dockside-example-multi-repo:latest app/server/example/images/multi-repo-demo/. The two profiles' command/hooks fields are the only difference between them - deliberately, to isolate exactly what changing that one axis (docs/extensions/lifecycle-hooks.md's 'what performs the switch') buys or costs you.",
+   "active": true,
+   "routers": [
+      {
+         "name": "alpha",
+         "prefixes": [ "alpha" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8081 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      },
+      {
+         "name": "beta",
+         "prefixes": [ "beta" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8082 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "*" ],
+   "images": [
+      "dockside-example-multi-repo:latest"
+   ],
+   "unixusers": ["dockside"],
+   "options": [
+      {
+         "name": "alpha_ref",
+         "label": "Alpha: branch",
+         "type": "text",
+         "default": "main",
+         "placeholder": "e.g. main or feature-x"
+      },
+      {
+         "name": "beta_ref",
+         "label": "Beta: branch",
+         "type": "text",
+         "default": "main",
+         "placeholder": "e.g. main or feature-x"
+      }
+   ],
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
+      "bind": [],
+      "volume": []
+   },
+   "dockerArgs": ["--memory=512M", "--pids-limit=1000"],
+   "command": [
+      "/bin/sh", "-c",
+
+      "/opt/dockside-examples/multi-repo/multi-repo-switch-and-serve.sh && sleep infinity"
+   ]
+}

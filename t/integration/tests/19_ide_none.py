@@ -1,5 +1,5 @@
 """
-15_ide_none.py — the 'none' pseudo-IDE (SSH-only devtainers)
+19_ide_none.py — the 'none' pseudo-IDE (SSH-only devtainers)
 
 Covers:
   - A profile offering 'none' alongside a real IDE: creating with --ide none

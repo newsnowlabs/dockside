@@ -4,10 +4,35 @@
   ShellCheck, JSON/YAML, Python compile) — run it regularly, not just for Perl.
   `./test.sh --only <check>` runs a single check (e.g. `--only perl` while iterating on
   Perl under `app/server/lib` or `app/server/bin`; `--only vue`, `--only eslint`, …).
-- When validating Perl server changes on this local Dockside host, restart:
-  - `sudo s6-svc -t /etc/service/nginx`
-  - `sudo s6-svc -t /etc/service/docker-event-daemon`
-- Before running tests that exercise **server** changes, restart the services above —
+- Perl server code runs across **three** independent processes, each loading its own copy of
+  `app/server/lib` at startup — a file edit alone changes nothing until the process(es) that
+  loaded it are restarted (Perl modules compile once at process start, no hot-reload). Restart
+  by what you touched:
+  - `app/server/lib/{App,App/Metadata,User,Reservation,Reservation/*,Data,Util,Exception,
+    Profile,Containers,Request}.pm`, `app/server/bin/app-server` → **all three, as three
+    separate invocations** — `s6-svc` (and `s6-svstat`) take exactly one `servicedir` argument
+    each; passing all three paths to a single call silently restarts (or checks) only the
+    first and drops the rest with a warning, no error:
+    ```
+    sudo s6-svc -r /etc/service/nginx
+    sudo s6-svc -r /etc/service/docker-event-daemon
+    sudo s6-svc -r /etc/service/app-server
+    ```
+    — these are shared libs `docker-event-daemon` and `app-server` both load directly, and
+    `Proxy.pm` (embedded in nginx) also loads `Reservation.pm`/`Data.pm`/`Request.pm`.
+    `-r` restarts via whichever signal the service's own `./down-signal` file names, or
+    `SIGTERM` if it has none. `app-server` ships a `down-signal` of `QUIT`, so its `-r` is a
+    graceful `SIGQUIT` — it's the one process that can have a `create()` chain genuinely in
+    flight. `nginx`/`docker-event-daemon` have no `down-signal` file, so their `-r` is a
+    plain `SIGTERM`, same as before.
+  - `app/server/lib/Proxy.pm`, `app/server/nginx/conf/**` → `sudo s6-svc -r /etc/service/nginx`
+    only.
+  - `app/server/bin/docker-event-daemon` only → `sudo s6-svc -r /etc/service/docker-event-daemon`
+    only.
+  - When in doubt, or after any multi-file change, just restart all three — cheap, and the
+    single most common self-inflicted "why is my fix not taking effect" bug is one of these
+    three processes silently still running the pre-edit code.
+- Before running tests that exercise **server** changes, restart the relevant services above —
   the running server is **not** auto-reloaded. Rebuild the Vue bundle
   (`cd app/client && npm run build`) for **client** changes.
 
@@ -125,7 +150,8 @@ launches. So you can update `/opt/dockside` directly — exactly as a fresh imag
 `entrypoint.sh` + launch would — and test server, `launch.sh`, and IDE changes end-to-end
 without rebuilding an image:
 
-- **Server Perl** loads from the repo (`perl_modules …/app/server/lib`) → just restart the services.
+- **Server Perl** loads from the repo (`perl_modules …/app/server/lib`) → restart whichever of
+  the three services actually loaded what you changed (see the restart matrix above).
 - **`launch.sh` / IDE assets** come from `/opt/dockside` → deploy as `entrypoint.sh` does, e.g.
   `sudo cp app/scripts/container/launch.sh /opt/dockside/bin/launch.sh` (back up first); the
   change then reaches newly-launched devtainers.

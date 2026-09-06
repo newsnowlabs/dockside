@@ -1,0 +1,58 @@
+{
+   "version": 4,
+   "name": "Multi-repo, image-embedded (hook-driven)",
+   "description": "Demonstrates docs/extensions/lifecycle-hooks.md's multi-repo section, hook branch: two toy repos ('alpha', 'beta') already baked into the image (see app/server/example/images/multi-repo-demo/), each independently switchable via its own option, both switched/restarted by a single lifecycle:launch hook - re-runnable at any later point via `dockside hook run <devtainer> lifecycle:launch`, without recreating the container. Build the image first: docker build -t dockside-example-multi-repo:latest app/server/example/images/multi-repo-demo/. Compare to 06-image-embedded-multi-repo-entrypoint.json, which switches the same two repos the same way but once only, at container-create time, via its own command instead of a hook - re-switching there means recreating the devtainer.",
+   "active": true,
+   "routers": [
+      {
+         "name": "alpha",
+         "prefixes": [ "alpha" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8081 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      },
+      {
+         "name": "beta",
+         "prefixes": [ "beta" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8082 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "*" ],
+   "images": [
+      "dockside-example-multi-repo:latest"
+   ],
+   "unixusers": ["dockside"],
+   "options": [
+      {
+         "name": "alpha_ref",
+         "label": "Alpha: branch",
+         "type": "text",
+         "default": "main",
+         "placeholder": "e.g. main or feature-x"
+      },
+      {
+         "name": "beta_ref",
+         "label": "Beta: branch",
+         "type": "text",
+         "default": "main",
+         "placeholder": "e.g. main or feature-x"
+      }
+   ],
+   "hooks": {
+      "lifecycle:launch": {
+         "script": "/opt/dockside-examples/multi-repo/multi-repo-switch-and-serve.sh",
+         "manual": true
+      }
+   },
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ],
+      "bind": [],
+      "volume": []
+   },
+   "dockerArgs": ["--memory=512M", "--pids-limit=1000"],
+   "command": ["/bin/sh", "-c", "sleep infinity"]
+}

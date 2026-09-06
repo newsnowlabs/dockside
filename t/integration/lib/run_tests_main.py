@@ -119,6 +119,43 @@ _ALPINE_PROFILE = {
     ],
 }
 
+# Otherwise identical to _ALPINE_PROFILE, but with userRouters enabled - the one profile-level
+# gate docs/adr/0008-router-mutation.md keeps (add only; remove has no profile gate at all).
+# Kept as its own profile literal (not a copy of _ALPINE_PROFILE, same reasoning
+# as _DEBIAN_PROFILE below being its own literal too - no shared-reference risk between
+# fixtures), distinct from _ALPINE_PROFILE precisely so 04's negative "profile does not allow
+# this" test can use a profile that does NOT set this - reusing _ALPINE_PROFILE for both would
+# make that case untestable.
+_ROUTER_PROFILE = {
+    "version": 2,
+    "name": "Integration Test - Router Mutation",
+    "active": True,
+    "userRouters": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "[ -x \"$(which sudo)\" ] || (apk update && apk add sudo curl libgcc libstdc++ bash;); sleep infinity",
+    ],
+}
+
 # Debian counterpart to _ALPINE_PROFILE, used by the lifecycle (03) and IDE (07)
 # modules.  Those modules previously hard-coded the server's bundled '11-debian'
 # profile, which violates the suite's no-pre-existing-fixtures rule and breaks on
@@ -170,18 +207,11 @@ _GIT_PROFILE = {
     "unixusers": ["dockside"],
     "options": [
         {
-            "name": "branch",
-            "label": "Branch",
+            "name": "ref",
+            "label": "Branch or PR #",
             "type": "text",
             "default": "",
-            "placeholder": "e.g. main, feature/my-feature (leave blank for default)",
-        },
-        {
-            "name": "pr",
-            "label": "Pull Request #",
-            "type": "text",
-            "default": "",
-            "placeholder": "e.g. 42 (overrides branch if set)",
+            "placeholder": "e.g. main, feature/my-feature, or a PR number like 42 (leave blank for default)",
         },
         {
             "name": "gh_token",
@@ -201,6 +231,324 @@ _GIT_PROFILE = {
     "command": [
         "/bin/sh", "-c",
         "[ -x \"$(which sudo)\" ] || (apt update && apt -y install sudo); sleep infinity",
+    ],
+}
+
+# Fixture for 14_hooks.py: a profile declaring the 'lifecycle:launch' and
+# 'lifecycle:start' hooks, plus a second, custom-named hook ('update') purely to
+# exercise the generalized custom-hook dispatch mechanism end-to-end (independent
+# sentinel/lock state, no 'manual' entry needed since custom hooks are always
+# manually invocable). All scripts are synthesized by the container's own command
+# (no custom baked image needed, per the suite's no-pre-existing-fixtures rule);
+# the launch- and start-hook scripts each record one line per run (an incrementing
+# index, not a timestamp, so runs are unambiguously ordered even if they land
+# within the same wall-clock second) to their own log file, and the launch hook
+# exits non-zero if the 'fail' option is set to '1', to exercise the failure path.
+# The update-hook script logs to a separate file again, so its independence from
+# the lifecycle hooks is directly observable. All script write+chmod blocks come
+# first in `command`, ahead of `sleep infinity` - the launch- and start-hook ones
+# race launch.sh's own auto-invoke of 'lifecycle:launch' (only on this devtainer's
+# true first launch) and 'lifecycle:start' (every launch, including that one),
+# both fired right after launch.sh's git/ssh/gh setup, within the same instant the
+# container starts. Neither script uses sudo, so there's nothing to install first.
+_HOOK_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Hooks",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "hooks": {
+        "lifecycle:launch": {"script": "/usr/local/bin/dockside-test-hook.sh", "manual": True},
+        "lifecycle:start": {"script": "/usr/local/bin/dockside-test-start-hook.sh", "manual": True},
+        "update": {"script": "/usr/local/bin/dockside-test-update-hook.sh"},
+    },
+    "options": [
+        {
+            "name": "marker",
+            "label": "Marker",
+            "type": "text",
+            "default": "",
+            "placeholder": "arbitrary marker string recorded on each hook run",
+        },
+        {
+            "name": "fail",
+            "label": "Fail",
+            "type": "text",
+            "default": "",
+            "placeholder": "set to 1 to make the hook script exit non-zero",
+        },
+    ],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "cat > /usr/local/bin/dockside-test-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "[ \"$DOCKSIDE_OPTION_FAIL\" = \"1\" ] && exit 1\n"
+        "n=$(wc -l < /tmp/hook-runs.log 2>/dev/null || echo 0)\n"
+        "echo \"ran:$DOCKSIDE_OPTION_MARKER:$n\" >> /tmp/hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-hook.sh; "
+        "cat > /usr/local/bin/dockside-test-start-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "n=$(wc -l < /tmp/start-hook-runs.log 2>/dev/null || echo 0)\n"
+        "echo \"ran:$n\" >> /tmp/start-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-start-hook.sh; "
+        "cat > /usr/local/bin/dockside-test-update-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "n=$(wc -l < /tmp/update-hook-runs.log 2>/dev/null || echo 0)\n"
+        "echo \"ran:update:$n\" >> /tmp/update-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-update-hook.sh; "
+        "sleep infinity",
+    ],
+}
+
+# Fixture for 14_hooks.py's test_13_concurrent_invoke_exactly_once: a dedicated custom hook
+# ('slow') that sleeps 3s before recording its run - deliberately separate from _HOOK_PROFILE's
+# own near-instant lifecycle:launch/update scripts, not a shared/reused fixture. A near-instant
+# hook makes "did N concurrent invokes overlap" unreliable to assert on: if invocation #1's own
+# claim-run-release cycle finishes before invocation #2's CLI subprocess even reaches the server
+# (real, measurable jitter across N separate `subprocess.run` calls - fork+exec a fresh
+# interpreter, TLS handshake, per call), #2 legitimately gets to claim and run too - correct
+# sequential behavior, not a broken lock, but indistinguishable from one at the API-response
+# level. A multi-second sleep makes genuine overlap deterministic, the same reasoning the
+# ded-async-rewrite branch's own manual thrash-testing session used when it first found this bug
+# (a sleep 4 hook, not the fast one). Uses a plain custom name, not lifecycle:launch, so the test
+# needs no auto-invoke settling step first - a custom hook never auto-fires.
+_HOOK_RACE_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Hook Race (slow)",
+    "active": True,
+    "routers": [
+        {
+            "name": "www", "prefixes": ["www"], "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "hooks": {
+        "slow": {"script": "/usr/local/bin/dockside-test-slow-hook.sh"},
+    },
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "cat > /usr/local/bin/dockside-test-slow-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "n=$(wc -l < /tmp/slow-hook-runs.log 2>/dev/null || echo 0)\n"
+        "sleep 3\n"
+        "echo \"ran:$n\" >> /tmp/slow-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-slow-hook.sh; "
+        "sleep infinity",
+    ],
+}
+
+# Fixture for 15_entrypoint_signaling.py: tests only the mechanism pattern B relies on
+# ({option.<name>} resolving into the container's own command argv at container-create
+# time) - no git, no hook, no credentials of any kind, so this launches/settles fast.
+_OPTION_ARGV_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Option Argv Resolution",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "options": [
+        {
+            "name": "value",
+            "label": "Value",
+            "type": "text",
+            "default": "",
+            "placeholder": "arbitrary value; recorded verbatim into a marker file",
+        },
+    ],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "printf '%s' \"$1\" > /tmp/option-argv-marker\nsleep infinity",
+        "sh",
+        "{option.value}",
+    ],
+}
+
+# Fixture for 14_hooks.py's HookWithGitUrlTests: a gitURLs profile (so launch.sh's own
+# create_git_repo() clones synchronously, in-line, before run_hook is ever invoked - no
+# race with anything the container's own command does) whose ref-bearing option is
+# deliberately NOT named 'ref', so launch.sh's built-in checkout_git_ref() reads an empty
+# DOCKSIDE_OPTION_REF and cleanly no-ops, leaving the switch entirely to the hook. The
+# hook script mirrors app/scripts/hooks/dockside-self-update.sh's disambiguation/switch
+# logic (minus the rebuild/restart, irrelevant here) and needs no git/gh install of its
+# own: a hook dispatched via run_hook inherits launch.sh's own PATH, which already
+# prepends $IDE_PATH/bin, so plain `git`/`gh` resolve to the IDE-bundled binaries.
+_HOOK_GIT_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Hook + GitURL",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "gitURLs": ["*"],
+    "unixusers": ["dockside"],
+    "hooks": {
+        "lifecycle:launch": {"script": "/usr/local/bin/dockside-test-git-hook.sh", "manual": True},
+    },
+    "options": [
+        {
+            "name": "test_ref",
+            "label": "Test Ref",
+            "type": "text",
+            "default": "",
+            "placeholder": "branch name or bare PR number - deliberately not named 'ref'",
+        },
+    ],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "cat > /usr/local/bin/dockside-test-git-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "set -e\n"
+        "REPO=\"$HOME/dockside\"\n"
+        "cd \"$REPO\"\n"
+        "REF=\"$DOCKSIDE_OPTION_TEST_REF\"\n"
+        "PR=\"\" BRANCH=\"\" NUM=\"${REF#'#'}\"\n"
+        "case \"$NUM\" in\n"
+        "  ''|*[!0-9]*) BRANCH=\"$REF\" ;;\n"
+        "  *)           PR=\"$NUM\" ;;\n"
+        "esac\n"
+        "if [ -n \"$PR\" ]; then\n"
+        "  gh pr checkout --force \"$PR\" || { git fetch origin \"refs/pull/$PR/head\" && git checkout FETCH_HEAD; }\n"
+        "elif [ -n \"$BRANCH\" ]; then\n"
+        "  git fetch origin \"refs/heads/$BRANCH:refs/remotes/origin/$BRANCH\"\n"
+        "  git switch \"$BRANCH\" 2>/dev/null || git switch --track -c \"$BRANCH\" \"origin/$BRANCH\"\n"
+        "  git reset --hard \"origin/$BRANCH\"\n"
+        "fi\n"
+        "echo \"switched:$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\" > /tmp/hook-git-result\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-git-hook.sh; "
+        "sleep infinity",
+    ],
+}
+
+# Fixture for 14_hooks.py's hook-naming edge-case tests: (1) "lifecycle:launch" is
+# declared but deliberately does NOT set 'manual' - auto-invoke doesn't consult it
+# at all, so it still fires fine at launch, but manual re-invoke is rejected,
+# proving manual runnability of a lifecycle hook is opt-in; (2) a bare "launch" key
+# (no 'lifecycle:' namespace) is schema-valid, inert (nothing ever auto-invokes it -
+# only 'lifecycle:launch' does), and reachable only via its custom name; (3) a
+# reserved-but-unimplemented lifecycle name ("lifecycle:stop") is schema-valid and
+# may even set 'manual', but dispatch still rejects running it as "not yet
+# implemented" regardless - proving the "is it implemented" and "is it manual"
+# gates are independent. The "lifecycle:launch" script write comes first in
+# `command`, ahead of the other two (which are only ever manually invoked, so their
+# write timing doesn't race anything) - see _HOOK_PROFILE's own comment above for
+# why auto-invoke timing forces this ordering.
+_EDGE_CASE_HOOK_PROFILE = {
+    "version": 4,
+    "name": "Integration Test - Hook Naming Edge Cases",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "hooks": {
+        "lifecycle:launch": {"script": "/usr/local/bin/dockside-test-edge-launch-hook.sh"},
+        "launch": {"script": "/usr/local/bin/dockside-test-bare-launch-hook.sh"},
+        "lifecycle:stop": {"script": "/usr/local/bin/dockside-test-stop-hook.sh", "manual": True},
+    },
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000"],
+    "command": [
+        "/bin/sh", "-c",
+        "cat > /usr/local/bin/dockside-test-edge-launch-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "echo ran >> /tmp/edge-launch-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-edge-launch-hook.sh; "
+        "cat > /usr/local/bin/dockside-test-bare-launch-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "echo ran >> /tmp/bare-launch-hook-runs.log\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-bare-launch-hook.sh; "
+        "cat > /usr/local/bin/dockside-test-stop-hook.sh <<'EOF'\n"
+        "#!/bin/sh\n"
+        "exit 0\n"
+        "EOF\n"
+        "chmod +x /usr/local/bin/dockside-test-stop-hook.sh; "
+        "sleep infinity",
     ],
 }
 
@@ -261,7 +609,13 @@ _DEVELOPER_ROLE_PERMISSIONS = {
     'setContainerViewers':        1,
     'setContainerDevelopers':     1,
     'getContainerLogs':           1,
+    'runContainerHooks':          1,
     'viewAllContainers':          0,
+    # docs/adr/0008-router-mutation.md - granted to both dev1 and dev2 (they share this
+    # role), so a router-mutation test failing for dev2 on a container only dev1 owns/is
+    # shared on exercises the can_on(develop) gate specifically, not just a missing permission.
+    'addContainerRouter':         1,
+    'removeContainerRouter':      1,
 }
 
 _VIEW_ALL_ROLE_PERMISSIONS = {
@@ -283,6 +637,7 @@ _REQUIRED_ADMIN_PERMISSIONS = [
     'setContainerViewers',
     'setContainerDevelopers',
     'getContainerLogs',
+    'runContainerHooks',
     'viewAllContainers',
     'manageUsers',
     'manageProfiles',
@@ -792,9 +1147,15 @@ class _EnvManager:
         # default_network / DocksideClient.create()), which is also what keeps every
         # devtainer's default network deterministic without touching the profile.
         self.profile_alpine     = self._ensure_profile('inttest-alpine',     _ALPINE_PROFILE)
+        self.profile_router     = self._ensure_profile('inttest-router',    _ROUTER_PROFILE)
         self.profile_debian     = self._ensure_profile('inttest-debian',     _DEBIAN_PROFILE)
         self.profile_nginx      = self._ensure_profile('inttest-nginx',      _NGINX_PROFILE)
         self.profile_git        = self._ensure_profile('inttest-git',        _GIT_PROFILE)
+        self.profile_hook       = self._ensure_profile('inttest-hook',       _HOOK_PROFILE)
+        self.profile_hook_race  = self._ensure_profile('inttest-hook-race',  _HOOK_RACE_PROFILE)
+        self.profile_option_argv = self._ensure_profile('inttest-option-argv', _OPTION_ARGV_PROFILE)
+        self.profile_hook_git   = self._ensure_profile('inttest-hook-git',   _HOOK_GIT_PROFILE)
+        self.profile_hook_edge_case = self._ensure_profile('inttest-hook-edge-case', _EDGE_CASE_HOOK_PROFILE)
         self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
@@ -983,9 +1344,15 @@ def main():
         test_role_view_all   = _env_manager.role_view_all
         test_role_develop_all = _env_manager.role_develop_all
         test_profile_alpine     = _env_manager.profile_alpine
+        test_profile_router     = _env_manager.profile_router
         test_profile_debian     = _env_manager.profile_debian
         test_profile_nginx      = _env_manager.profile_nginx
         test_profile_git        = _env_manager.profile_git
+        test_profile_hook       = _env_manager.profile_hook
+        test_profile_hook_race  = _env_manager.profile_hook_race
+        test_profile_option_argv = _env_manager.profile_option_argv
+        test_profile_hook_git   = _env_manager.profile_hook_git
+        test_profile_hook_edge_case = _env_manager.profile_hook_edge_case
         test_profile_bad_image  = _env_manager.profile_bad_image
         test_image_alpine       = _prefix_image('alpine:latest')
         test_image_nginx        = _prefix_image('nginx:latest')
@@ -1010,9 +1377,15 @@ def main():
             'test_role_view_all':   test_role_view_all,
             'test_role_develop_all': test_role_develop_all,
             'test_profile_alpine':     test_profile_alpine,
+            'test_profile_router':     test_profile_router,
             'test_profile_debian':     test_profile_debian,
             'test_profile_nginx':      test_profile_nginx,
             'test_profile_git':        test_profile_git,
+            'test_profile_hook':       test_profile_hook,
+            'test_profile_hook_race':  test_profile_hook_race,
+            'test_profile_option_argv': test_profile_option_argv,
+            'test_profile_hook_git':   test_profile_hook_git,
+            'test_profile_hook_edge_case': test_profile_hook_edge_case,
             'test_profile_bad_image':  test_profile_bad_image,
             'test_image_alpine':       test_image_alpine,
             'test_image_nginx':        test_image_nginx,
