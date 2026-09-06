@@ -9,6 +9,7 @@
             :readonly="readonly"
             placeholder="One public key per line (ssh-rsa AAAA… / ssh-ed25519 AAAA…)"
             rows="4"
+            autocomplete="off"
             hide-details
             class="ssh-pubkeys-textarea"
             @change="emitUpdate"
@@ -60,6 +61,7 @@
                   placeholder="e.g. deploy-key"
                   :error="newKpNameState === false"
                   :error-messages="newKpNameState === false ? [newKpNameError] : []"
+                  autocomplete="off"
                   hide-details="auto"
                   class="mb-4"
                />
@@ -68,14 +70,20 @@
                   label="Public key"
                   placeholder="ssh-rsa AAAA… or ssh-ed25519 AAAA…"
                   rows="3"
+                  autocomplete="off"
                   hide-details
                   class="mb-4"
                />
+               <!-- autocomplete="off" matters more here than anywhere else in
+                    the app: this is private key material, and a browser that
+                    ignored it and offered to save/suggest it later would be a
+                    real credential-leakage risk, not just autofill noise. -->
                <v-textarea
                   v-model="newKpPrivate"
                   label="Private key"
                   placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                   rows="5"
+                  autocomplete="off"
                   hint="The private key will be stored securely and never shown again."
                   persistent-hint
                />

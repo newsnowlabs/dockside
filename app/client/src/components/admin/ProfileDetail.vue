@@ -51,6 +51,7 @@
             v-model="renameValue"
             label="New ID"
             :error="renameState === false"
+            autocomplete="off"
             hide-details="auto"
             class="rename-input"
             @keyup.enter="commitRename"
@@ -73,6 +74,7 @@
             :error="idState === false"
             :error-messages="idState === false ? [idErrorText] : []"
             placeholder="letters, digits, dots, hyphens, underscores"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />
@@ -87,6 +89,7 @@
             :readonly="!isEditMode"
             :disabled="isEditMode"
             variant="outlined"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />
@@ -98,6 +101,7 @@
             :readonly="!isEditMode && !isNew"
             variant="outlined"
             placeholder="Display name"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />
@@ -109,6 +113,7 @@
             :readonly="!isEditMode && !isNew"
             variant="outlined"
             placeholder="Brief description"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />
@@ -134,6 +139,7 @@
             :model-value="form.version"
             readonly
             variant="outlined"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />

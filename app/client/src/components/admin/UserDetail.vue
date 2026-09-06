@@ -53,6 +53,7 @@
             :error="usernameState === false"
             :error-messages="usernameState === false ? ['Username must contain only letters, digits, hyphens and underscores.'] : []"
             placeholder="alphanumeric, hyphens, underscores"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />
@@ -64,6 +65,7 @@
             :readonly="!isEditMode && !isNew"
             variant="outlined"
             placeholder="Display name"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />
@@ -76,6 +78,7 @@
             :readonly="!isEditMode && !isNew"
             variant="outlined"
             placeholder="user@example.com"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />
@@ -90,6 +93,7 @@
             :items="roleOptions"
             item-title="text"
             item-value="value"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />
@@ -140,6 +144,7 @@
             disabled
             variant="outlined"
             :placeholder="form.gh_token_masked || ''"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
          />

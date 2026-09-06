@@ -45,6 +45,7 @@
             :error="nameState === false"
             :error-messages="nameState === false ? [nameErrorText] : []"
             placeholder="alphanumeric, hyphens, underscores"
+            autocomplete="off"
             hide-details="auto"
             class="mb-4"
         />

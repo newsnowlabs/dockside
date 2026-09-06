@@ -21,6 +21,7 @@
       multiple chips closable-chips
       :disabled="readonly"
       :placeholder="placeholder"
+      autocomplete="off"
       hide-details
       class="resource-tags-input"
    >
