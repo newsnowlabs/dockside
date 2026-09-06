@@ -132,3 +132,29 @@ p {
    margin-left: 8px;
 }
 
+// A readonly outlined field (a view-mode value display, e.g. Container.vue's
+// non-edit-mode fields, ChoiceInput's own readonly branch, the readonly
+// branches of the admin detail views) stays focusable, so its content can
+// still be selected/copied - but nothing typed into it does anything.
+// Vuetify doesn't know that: it escalates a focused field's outline to full
+// opacity/width (.38 -> 1, 1px -> 2px) and its label to full opacity
+// regardless of `readonly`, the same escalation an editable field gets,
+// which reads as "you can type here now" on a field that can't be. Still
+// needs *some* focus feedback though - a sighted mouse user gets their own
+// feedback from the click, but a keyboard user tabbing through several
+// identical-looking readonly fields in a row has nothing else to go on -
+// so darken the outline a step short of that full escalation (opacity only;
+// width stays put) rather than suppressing it outright: a visible but
+// distinctly weaker cue than an editable field's own focus state, and -
+// since it's the field's own border, not a separately-drawn overlay - one
+// that respects the border's existing notch around a floating label instead
+// of cutting across it the way an external ring/shadow would.
+// !important: overriding CSS custom properties Vuetify sets from a
+// same-specificity selector of its own (.v-field.v-field--focused ...) -
+// ordinary selector specificity can't be relied on to win that from outside
+// Vuetify's own stylesheet.
+.v-input--readonly .v-field--focused .v-field__outline {
+   --v-field-border-opacity: .65 !important;
+   --v-field-border-width: 1px !important;
+}
+
