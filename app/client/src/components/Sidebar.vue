@@ -154,14 +154,21 @@ export default defineComponent({
    // (see plugins/vuetify.js) - the same blue Container.vue's own "Started"
    // chip uses, rather than inventing a second "running" colour.
    .status-1  { background: rgb(var(--v-theme-started)); }
-   // 0/-1/-2/-3 (exited / created-not-started / launch-in-flight / destroyed
-   // - see Reservation.pm's own status derivation) are all "not running,
-   // not failed" - one shared neutral dot rather than 4 shades the design
+   // 0/-1/-2 (exited / created-not-started / launch-in-flight - see
+   // Reservation.pm's own status derivation) are all "not running, not
+   // failed" - one shared neutral dot rather than 3 shades the design
    // system has no dedicated token for. -4 (create failed) is the one
    // genuine error state among them, so it alone gets the danger token.
    .status-0  { background: rgb(var(--v-theme-neutral)); }
    .status--1 { background: rgb(var(--v-theme-neutral)); }
    .status--2 { background: rgb(var(--v-theme-neutral)); }
-   .status--3 { background: rgb(var(--v-theme-neutral)); }
+   // -3 (destroyed: the container is gone but this reservation hasn't been
+   // reclaimed yet) stays navigable like any other item, but shouldn't read
+   // as merely "stopped" - the container itself no longer exists. Dimmed to
+   // Vuetify's own disabled-state opacity (see index.scss's readonly-field
+   // comment) rather than a lighter background token: at this dot's 7px
+   // size, a lighter fill washes out to near-invisible in the light theme,
+   // where opacity stays visibly distinct in both themes.
+   .status--3 { background: rgb(var(--v-theme-neutral)); opacity: 0.38; }
    .status--4 { background: rgb(var(--v-theme-danger)); }
 </style>

@@ -10,7 +10,7 @@
                <template v-if="!isPrelaunchMode">
                   <span class="devtainer-name">{{ container.name }}</span>
                   <v-chip size="small" variant="tonal" :color="container.status == 1 ? 'started' : undefined" class="status-chip">
-                     {{ container.status == 1 ? 'Started' : 'Stopped' }}
+                     {{ statusLabel }}
                   </v-chip>
                   <!-- Sits beside name/chip above the breakpoint (.devtainer-head's
                        own grid reflows into two rows below it - see this file's
@@ -521,6 +521,12 @@ export default defineComponent({
      // nameErrorText for the same pattern).
      nameErrorText() {
         return "Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter";
+     },
+     // -3 (Reservation.pm's own status derivation) means the reservation's container has
+     // already been destroyed but the reservation itself hasn't been reclaimed yet -
+     // distinct from a merely-stopped container, which still exists and can be restarted.
+     statusLabel() {
+        return this.container.status === -3 ? 'Removed' : (this.container.status === 1 ? 'Started' : 'Stopped');
      },
      // container.status already encodes "launch in flight" (-2) / "create failed" (-4) -
      // see Reservation.pm's own comment deriving status from createStatus. createStatus
