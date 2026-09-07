@@ -67,7 +67,7 @@
 #                                  in PATH or the runner aborts early.  'docker'
 #                                  uses docker exec — bypasses the SSH path, useful
 #                                  on hosts without wstunnel but not recommended
-#                                  for CI.  'auto' is no longer accepted.
+#                                  for CI.  'auto' is not a valid value.
 #
 # Examples:
 #   # Harness mode (CI):

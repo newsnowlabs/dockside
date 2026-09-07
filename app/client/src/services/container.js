@@ -39,11 +39,11 @@ const getReservationLogsUri = (args) => {
    return `/containers/${encodeURIComponent(args.id)}/logs?stdout=true&stderr=true&format=text&clean_pty=true&merge=true`;
 };
 
-// Container mutations now go over POST — no state-changing route is reachable via
+// Container mutations go over POST — no state-changing route is reachable via
 // GET (GET is cacheable/prefetchable/logged). The body is the same form-encoded
-// arg string the querystring used to carry, so the server still parses it raw with
-// split_args (the reservation setters decode structured fields themselves): this is
-// a transport-only change.
+// arg string the querystring carries for other routes, so the server still parses
+// it raw with split_args (the reservation setters decode structured fields
+// themselves).
 const FORM_POST = { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } };
 
 const putContainer = (args) => {

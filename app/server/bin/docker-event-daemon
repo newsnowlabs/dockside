@@ -641,7 +641,7 @@ sub _update_merge ($newContainersFromAPI, $oldJSON) {
       $newContainers->{$ID}{'docker'} = {
          'ID' => $ID, # Short ID (for now)
          'Names' => substr($c->{'Names'}[0], 1), # Skip leading '/'
-         'CreatedAt' => $c->{'Created'}, # Was string; now unixtime
+         'CreatedAt' => $c->{'Created'}, # Unix timestamp
          'Status' => $c->{'Status'}, # String
          'Image' => $c->{'Image'}, # String
          'ImageId' => substr( substr($c->{'ImageID'}, 7), 0, 12), # Strip 'sha256:' prefix (7 chars), then truncate to short ID.

@@ -340,8 +340,7 @@ fi
 log "Creating /var/log/$APP log directory ..."
 mkdir -p /var/log/$APP && chown -R $USER:$USER /var/log/$APP
 
-# Determine IDE volume state once: drives the populate logic below and replaces
-# the separate writability log that previously appeared after the populate block.
+# Determine IDE volume state once: drives the populate logic below.
 if ! mountpoint -q "$OPT_PATH" 2>/dev/null; then
   OPT_PATH_STATE=symlinked
 elif (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then

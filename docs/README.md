@@ -101,7 +101,7 @@ Advanced features:
 <a title="Click to view video in HD on YouTube" href="https://www.youtube.com/embed/buAefREyngQ" target="_blank"><img src="https://user-images.githubusercontent.com/354555/135777679-67fd1424-f01f-4072-ac3e-ed910c8711af.gif" alt="Dockside Walkthrough Video" width="70%"></a>
 </p>
 
-> _Recorded in 2021 — the core workflow remains the same, though the UI has evolved since then._
+> _The core workflow shown here is still current, though the UI's present design differs in appearance._
 
 ## Host requirements
 

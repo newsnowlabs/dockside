@@ -132,7 +132,7 @@ sub viewers ($class = undef) {
 # - with data from users.json, for populating the $USERS in-memory user database;
 # - with no data, representing a client connection, subject to authentication.
 #
-# N.B. We NO LONGER check that the user has a password defined in the passwd file,
+# N.B. This does not check that the user has a password defined in the passwd file,
 # to allow for API to return list of users to an admin, including those without passwords.
 
 sub new ($class, $data = undef) {
@@ -786,11 +786,11 @@ sub set ($self, $reservation, $property, $value = '') {
       }
 
       # $value ne '' above leaves $value as '' (not decoded) whenever no access was
-      # requested - previously that meant $value stayed undef, and Perl reads undef->{$name}
-      # below as an empty map without complaint; now that the top-of-sub $value //= '' means
-      # a real, defined '' reaches here instead, the same read would die ("Can't use string
-      # as a HASH ref") under strict refs. Normalise explicitly rather than depending on
-      # that undef-specific leniency.
+      # requested. $value must be normalised to a HASH ref explicitly here: an undef
+      # $value->{$name} read below would return an empty map without complaint, but
+      # the top-of-sub $value //= '' guarantees a real, defined '' reaches here instead,
+      # and the same read on a defined non-ref string would die ("Can't use string as
+      # a HASH ref") under strict refs.
       $value = {} unless ref($value) eq 'HASH';
 
       my $oldAccess = $reservation->meta('access');

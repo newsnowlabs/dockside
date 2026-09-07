@@ -2,8 +2,8 @@
 
 # FIXME:
 # - Write unit test for code returning wrong exit code when log_do pipes into a process like 'head -n 1' that
-#   causes a SIGPIPE. For background, this was the first test case:
-#   . /nfs/brackup/bin/log_do; LOG_DO_RUN=1; LOG_DO_VERBOSE=1; log_do cat /tmp/y | head -n 1; echo $?
+#   causes a SIGPIPE:
+#   . /path/to/log_do; LOG_DO_RUN=1; LOG_DO_VERBOSE=1; log_do cat /tmp/y | head -n 1; echo $?
 
 LOG_DO_VERSION="1.2.3"
 

@@ -211,8 +211,9 @@ class RejectionTests(TestCase):
 
     def test_18_admin_cannot_strip_own_admin_role(self):
         """updateRole self-lock-out: an admin must not remove manageUsers from its OWN
-        admin-granting (custom) role. Exercises a guard added concurrently in the server,
-        so assert only that the request is rejected — not an exact message/status."""
+        admin-granting (custom) role. The server enforces this unconditionally on any
+        such edit, so assert only that the request is rejected — not an exact
+        message/status."""
         self.assert_api_error(
             lambda: self._adminrole_client._run('role', 'edit', self._admin_role,
                                                 '--set', 'permissions.manageUsers=0'))

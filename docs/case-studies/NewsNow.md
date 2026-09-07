@@ -2,7 +2,7 @@
 
 Dockside is used in production for all aspects of web application and back-end development and staging (including acceptance testing) of the websites [https://www.newsnow.co.uk/](https://www.newsnow.co.uk/) and [https://www.newsnow.com/](https://www.newsnow.com/) by a team of around seven developers and seven editorial staff plus managers. Running on a KVM-based VM hosted on bare metal in NewsNow's data centre with 64GB memory, NewsNow's instance of Dockside handles 20-30 devtainers running simultaneously.
 
-The precise number can vary depending on the resource-intensiveness of the application being developed. In the past, the VM required only 32GB memory but the memory requirements of the NewsNow application have grown.
+The precise number can vary depending on the resource-intensiveness of the application being developed, and the VM's memory requirement scales with the NewsNow application's own footprint.
 
 The Dockside Theia IDE itself occupies only ~100MB memory per devtainer, so for a very lightweight application an 8GB server or VM could conceivably handle up to 40 simultaneous running devtainers.
 

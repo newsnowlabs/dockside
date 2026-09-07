@@ -3,10 +3,6 @@
 - **Status:** Proposed (draft — part of the `OtdcG` curated merge)
 - **Date:** 2026-06-13
 - **Deciders:** Struan Bartlett
-- **Provenance:** Distilled from the branch's working documents
-  `COOKIEJAR_ISOLATION_ANALYSIS.md`, `PLAN_cookiejar_isolation.md`, and `ISSUES.md`,
-  which were exploratory artifacts and are **not** carried into `main` (they remain in
-  the archived `raw/$FEATURE` history). This ADR is the durable record.
 
 ## Context
 

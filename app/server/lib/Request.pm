@@ -90,7 +90,7 @@ sub authenticate ($class, $options) {
    # - user exists
    if( my $uid = validate_auth_cookie( $options, $CONFIG->{'uidCookie'}{'name'}, $CONFIG->{'uidCookie'}{'salt'} ) ) {
       # Check that $user is named in users.json file (if it's not loaded, it's not named).
-      # N.B. We NO LONGER check that the user has a password defined in the passwd file,
+      # N.B. This does not check that the user has a password defined in the passwd file,
       # for consistency with normal expectations (of e.g. a unix user account).
       unless($user->load($uid->{'name'})) {
          wlog( "auth: user '$uid->{'name'}' not found in users.json file" );

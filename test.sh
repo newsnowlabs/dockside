@@ -290,9 +290,9 @@ check_perltidy() {
 check_json() {
   local failed=0
 
-  # Note: t/integration/config/{users,roles}.json were removed when the
-  # integration harness moved to creating all users/roles/profiles dynamically
-  # via the admin API (commit 7b2f1bb); they are no longer static config files.
+  # Note: no static t/integration/config/{users,roles}.json config files exist —
+  # the integration harness creates all users/roles/profiles dynamically via the
+  # admin API instead.
   local json_files=(
     app/client/package.json
     app/client/jsconfig.json
@@ -409,7 +409,7 @@ run_check "shellcheck" check_shellcheck
 run_check "json"       check_json
 run_check "python"     check_python
 # perltidy is available via --only perltidy but excluded from the default run:
-# the codebase pre-dates perltidy enforcement and has many pre-existing diffs.
+# many files do not currently conform to the perltidy profile.
 [[ -n "$ONLY" ]] && run_check "perltidy" check_perltidy
 # Integration tests require a running Dockside instance; opt-in only:
 [[ -n "$ONLY" ]] && run_check "integration" check_integration

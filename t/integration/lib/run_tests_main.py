@@ -157,11 +157,12 @@ _ROUTER_PROFILE = {
 }
 
 # Debian counterpart to _ALPINE_PROFILE, used by the lifecycle (03) and IDE (07)
-# modules.  Those modules previously hard-coded the server's bundled '11-debian'
-# profile, which violates the suite's no-pre-existing-fixtures rule and breaks on
-# any server that does not ship that exact profile.  An apt-based image is needed
-# (rather than reusing the alpine fixture) because 07 launches an IDE, whose
-# bootstrap assumes a Debian/Ubuntu userland.
+# modules.  These modules must not hard-code the server's bundled '11-debian'
+# profile — the suite's no-pre-existing-fixtures rule requires creating this
+# profile at runtime instead, so the tests pass on any server regardless of
+# which profiles it ships.  An apt-based image is needed (rather than reusing
+# the alpine fixture) because 07 launches an IDE, whose bootstrap assumes a
+# Debian/Ubuntu userland.
 _DEBIAN_PROFILE = {
     "version": 2,
     "name": "Integration Test - Debian",
@@ -960,15 +961,16 @@ class _EnvManager:
     def select_network(self, test_mode, allow_network_modify, dockside_container_id):
         """Choose which Docker network test devtainers use, deterministically.
 
-        Every default test profile used to declare ``"networks": ["*"]``, which
-        Profile::applyDefaultsAndFilters resolves to an alphabetical sort of
+        A default test profile declaring ``"networks": ["*"]`` would leave
+        Profile::applyDefaultsAndFilters to resolve it to an alphabetical sort of
         whatever networks the Dockside-under-test happens to be attached to.  On
         a real instance with more than one attached network (e.g. one firewall-
-        managed, one not), that made a test run's actual network non-deterministic
-        and dependent on incidental network naming rather than anything the suite
-        declares — the same "correct by assumption" problem the no-pre-existing-
-        fixtures rule exists to avoid for users/roles/profiles.  This picks one
-        network explicitly instead, in priority order:
+        managed, one not), that would make a test run's actual network non-
+        deterministic and dependent on incidental network naming rather than
+        anything the suite declares — the same "correct by assumption" problem
+        the no-pre-existing-fixtures rule exists to avoid for users/roles/
+        profiles.  This method picks one network explicitly instead, in
+        priority order:
 
           1. DOCKSIDE_TEST_NETWORK env var — used verbatim.  Verified against the
              Dockside-under-test's actual attachments when docker access and a

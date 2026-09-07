@@ -19,9 +19,10 @@ class LifecycleDebianTests(TestCase):
 
     State (the container) persists across all test methods in this class.
     setUpClass computes the suffixed container name; tearDownClass cleans up once.
-    Per-test tearDown is NOT used for this container — that was the root cause of
-    the docker errors where tearDown removed the container after test_01_create,
-    leaving tests 04-06 operating on a reservation with no backing docker container.
+    Per-test tearDown is NOT used for this container: tests 04-06 depend on the
+    container created by test_01_create still existing, so a per-test tearDown
+    that removed it after test_01_create would leave them operating on a
+    reservation with no backing docker container.
     """
 
     @classmethod

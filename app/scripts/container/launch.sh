@@ -32,7 +32,7 @@ log() {
 
 # Use the IDE-bundled git binary. Its CA cert store (http.sslcainfo) and exec-path
 # are baked into that binary's own wrapper script (created in the Dockerfile next to
-# the gh wrapper), so they no longer need to be passed on every call here.
+# the gh wrapper), so they don't need to be passed on every call here.
 git() {
    $IDE_PATH/bin/git "$@"
 }
@@ -205,9 +205,9 @@ create_git_repo() {
    fi
 
    log "- Running: git clone $GIT_URL"
-   # Detect clone failure explicitly: without this the function returned the
-   # status of the trailing gitconfig block, so a failed clone went unnoticed and
-   # the caller went on to touch .git-repo-ready over an absent repository.
+   # This function's exit status must reflect the clone itself, not the trailing
+   # gitconfig block, so the caller can detect a failed clone and avoid touching
+   # .git-repo-ready over an absent repository.
    if ! GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" git clone "$GIT_URL"; then
       log "ERROR: git clone '$GIT_URL' failed"
       return 1
@@ -1036,8 +1036,8 @@ run_prep_nonroot() {
    rm -f "$LOG_PATH/launch-status.txt" "$LOG_PATH/.credentials-ready" 2>/dev/null
    install_launch_status_notice
    spawn_ssh_agent
-   # A failed key load is non-fatal (the IDE still launches), but no longer silent:
-   # populate_ssh_agent_keys logs + returns non-zero, and we surface it to the user.
+   # A failed key load is non-fatal (the IDE still launches) and is surfaced to the
+   # user: populate_ssh_agent_keys logs + returns non-zero.
    if ! populate_ssh_agent_keys; then
       dockside_user_warning "One or more SSH keys could not be loaded into the ssh-agent (see $LOG)."
    fi
@@ -1102,7 +1102,7 @@ launch_git() {
             # consumer can detect it immediately rather than waiting for a timeout.
             #
             # On success (or when no ref was requested), write .git-repo-ready. With a
-            # hard clone failure now handled above, this signals that a GIT_URL clone
+            # hard clone failure detected above, this signals that a GIT_URL clone
             # succeeded and any requested ref was checked out; it does NOT wait for the
             # later VS Code population, and Dockside does not guarantee an otherwise error-free
             # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole
