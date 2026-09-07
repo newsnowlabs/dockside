@@ -12,13 +12,21 @@
          <a v-if="isSelected" v-on:click="goBackOrHome(true)" class="view-containers" href="javascript:">&lt; Back</a>
          <Welcome v-if="!isSelected"/>
 
-         <div>
-            <Container v-for="container in filteredContainers" v-bind:key="container.id" v-bind:container="container" class="list-item"></Container>
+         <div class="container-list">
+            <Container v-for="container in filteredContainers" v-bind:key="container.id" v-bind:container="container"></Container>
          </div>
       </template>
       <Welcome v-else/>
    </div>
 </template>
+
+<style lang="scss" scoped>
+   .container-list {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+   }
+</style>
 
 <script>
 import { defineComponent } from 'vue';
