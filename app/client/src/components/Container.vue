@@ -9,7 +9,7 @@
             >
                <template v-if="!isPrelaunchMode">
                   <span class="devtainer-name">{{ container.name }}</span>
-                  <v-chip size="small" variant="tonal" :color="container.status == 1 ? 'started' : undefined" class="status-chip">
+                  <v-chip size="small" variant="tonal" :color="statusColor" class="status-chip">
                      {{ statusLabel }}
                   </v-chip>
                   <!-- Sits beside name/chip above the breakpoint (.devtainer-head's
@@ -527,6 +527,14 @@ export default defineComponent({
      // distinct from a merely-stopped container, which still exists and can be restarted.
      statusLabel() {
         return this.container.status === -3 ? 'Removed' : (this.container.status === 1 ? 'Started' : 'Stopped');
+     },
+     // Same started/neutral/danger theme colours as Sidebar.vue's own status dot (see
+     // plugins/vuetify.js) - -3 (Removed) stays neutral like a plain stopped container; only
+     // its label and Sidebar.vue's dimmed sidebar treatment mark it apart from -1/-2/0.
+     statusColor() {
+        if(this.container.status === 1) return 'started';
+        if(this.container.status === -4) return 'danger';
+        return 'neutral';
      },
      // container.status already encodes "launch in flight" (-2) / "create failed" (-4) -
      // see Reservation.pm's own comment deriving status from createStatus. createStatus

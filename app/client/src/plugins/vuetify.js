@@ -15,11 +15,12 @@ import { createVuetify } from 'vuetify';
 // rgb(var(--v-theme-<name>)), the same pattern already used for started/
 // stopped below.
 //
-// started/stopped (container running/stopped status, used by Sidebar.vue's
-// status dot) are accent/neutral respectively, not independent colors - the
-// design doc calls out both explicitly: "Status uses the accent for
-// 'running,' not the more obvious green" (started), and neutral's own
-// swatch entry is labelled "Stopped / inactive status" (stopped).
+// started/stopped/danger (container running/stopped/create-failed status,
+// used by Sidebar.vue's status dot and Container.vue's status chip) are
+// granted/neutral/danger respectively, not independent colors - reusing the
+// same green/grey/red already registered for "granted"/"inactive"/"error"
+// elsewhere keeps every reader of container status resolving to the same
+// hex regardless of which of the two components it's read from.
 //
 // warning isn't part of the design doc's own palette - it exists purely to
 // give Vuetify's built-in 'warning' slot (used by index.scss's tonal-alert
@@ -35,7 +36,7 @@ function themeColors({ ink, inkSoft, ground, surface, surfaceAlt, border, accent
       'primary-darken-1': accentStrong,
       error: danger,
       success: granted,
-      started: accent,
+      started: granted,
       stopped: neutral,
       ink,
       'ink-soft': inkSoft,

@@ -152,7 +152,7 @@ export default defineComponent({
    // is new here - previously the "no override, plain text" default, it
    // needs its own colour now a plain dot would otherwise read as identical
    // to an item with no status at all. Reuses the 'started' theme colour
-   // (see plugins/vuetify.js) - the same blue Container.vue's own "Started"
+   // (see plugins/vuetify.js) - the same green Container.vue's own "Started"
    // chip uses, rather than inventing a second "running" colour.
    //
    // .status-removed (below) is the one deliberate exception to "colour
