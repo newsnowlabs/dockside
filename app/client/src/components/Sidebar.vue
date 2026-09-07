@@ -28,6 +28,7 @@
             <v-list-item v-for="container in sidebarContainers"
                :key="container.id"
                :active="container.name === selectedContainer"
+               :class="{ 'status-removed': container.status === -3 }"
                @click="onSelect(() => goToContainer(container.name, 'view'))"
             >
                <template #prepend>
@@ -153,6 +154,11 @@ export default defineComponent({
    // to an item with no status at all. Reuses the 'started' theme colour
    // (see plugins/vuetify.js) - the same blue Container.vue's own "Started"
    // chip uses, rather than inventing a second "running" colour.
+   //
+   // .status-removed (below) is the one deliberate exception to "colour
+   // carried by the dot alone": a dot's colour/opacity alone reads as too
+   // subtle a cue at this size, so a destroyed-but-unreclaimed reservation
+   // dims its title text too.
    .status-1  { background: rgb(var(--v-theme-started)); }
    // 0/-1/-2 (exited / created-not-started / launch-in-flight - see
    // Reservation.pm's own status derivation) are all "not running, not
@@ -171,4 +177,10 @@ export default defineComponent({
    // where opacity stays visibly distinct in both themes.
    .status--3 { background: rgb(var(--v-theme-neutral)); opacity: 0.38; }
    .status--4 { background: rgb(var(--v-theme-danger)); }
+
+   // Same disabled-state opacity as .status--3's own dot, applied to the row's
+   // title text as well - see this style block's opening comment.
+   .status-removed :deep(.v-list-item-title) {
+      opacity: 0.38;
+   }
 </style>
