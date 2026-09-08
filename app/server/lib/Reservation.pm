@@ -1023,9 +1023,9 @@ sub referencing_reservations ($class, $identifier, $kind) {
 # RESERVATION CONTROL METHODS
 #
 
-# The one survivor of the old action()/action_async() split that stays synchronous - a fast
-# local read, never worth an async version. Stop/start/remove (see action() below) are the
-# genuinely slow ones; getLogs isn't, so it isn't routed through action() at all.
+# getLogs stays synchronous - a fast local read, never worth an async version. Stop/start/remove
+# (see action() below) are the genuinely slow ones; getLogs isn't, so it isn't routed through
+# action() at all.
 sub getLogs ($self, $args = {}) {
    return $self->load_container_logs({
       'stdout' => is_true($args->{'stdout'}) ? { 'clean_pty' => is_true($args->{'clean_pty'}) } : undef,
@@ -1479,7 +1479,7 @@ sub _create_track ($self, $promise, $onSettled = sub {}) {
 # exception to this file otherwise having no Mojolicious-framework dependency at all (no $c, no
 # ->render, no routes) - chosen here specifically because this is the one multi-step chain in
 # the whole file; the alternative (nested callbacks) would be a four-deep pyramid. Not precedent
-# for reaching for Mojo::Promise/Mojo::IOLoop elsewhere in this file - every other _async sub
+# for reaching for Mojo::Promise/Mojo::IOLoop elsewhere in this file - every other async method
 # here stays on the plain ($self, ..., $cb) single-callback convention.
 sub create ($self, $cb) {
    my $id = $self->id();

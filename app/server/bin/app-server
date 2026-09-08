@@ -722,8 +722,8 @@ for my $prefix (qw(container admin account)) {
 # _json/_text, with a per-route try/catch whose body is _render_error (giving every route
 # here the same Exception-aware status/sanitize/json-or-text handling). The five mutating
 # container routes (create/stop/start/remove/hook) are already native, above; update is
-# POST-only exactly like those five, but stayed a synchronous User.pm call
-# (updateContainerReservation was never converted to an _async sibling), so it's
+# POST-only exactly like those five, but calls a synchronous User.pm method
+# (updateContainerReservation), so it's
 # registered here instead.
 $authed->post( '/containers/:id/update' => sub ($c) {
    my $User = $c->stash('user');
