@@ -115,6 +115,10 @@ lock's protection.
 rejects a colliding router prefix/domain/protocol within a profile — `Reservation::routers()`'s own
 lookup table is a silent last-write-wins hash, tolerable for a trusted admin's static file.
 Self-service input gets a real collision check instead of silently shadowing an existing route.
+A hyphenated prefix is rejected outright for the same reason: `lookup_container_uri` treats any
+hyphen in an actual request prefix as a passthrough indicator and diverts to the `**` router
+without ever consulting the literal prefix table, so a router registered under one would add
+successfully but could never be reached.
 
 **gatewayMode: reject `add` outright, unconditionally.** gatewayMode publishes Docker ports only at
 container-create time, so a new router's port may not be reachable without a full recreate. Rather
