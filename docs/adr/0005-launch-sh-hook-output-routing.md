@@ -25,10 +25,10 @@ to fd 3/4 to reach the host: `launch_prep`/`launch_git`'s entire invocation (`ev
 other `log()` call — including `run_hook`'s own pre-flight diagnostics ("script not found or
 not executable", "hook already running") — went to fd 2, which by then meant `$LOG` only.
 
-This was found live: a `lifecycle:launch` hook whose script was missing on disk failed with
-exit code 1 and a host-side hook log containing **zero bytes** — `run_hook`'s "not found"
-`log()` line was real, but it only ever reached `$LOG`, invisible without a `docker exec` into
-the devtainer itself. The bug wasn't specific to that one message; it was that host visibility
+For example, a `lifecycle:launch` hook whose script is missing on disk fails with exit code 1
+and a host-side hook log containing **zero bytes** — `run_hook`'s "not found" `log()` line is
+real, but it only ever reaches `$LOG`, invisible without a `docker exec` into the devtainer
+itself. The bug isn't specific to that one message; it's that host visibility
 was an *opt-in allow-list* (`launch_prep`/`launch_git`/the one line in `run_hook`) that had to
 be kept in sync, by hand, with every dispatch shape docker-event-daemon's DAG and
 `run_hook_manual` could produce — and nothing enforced that sync. Any future pre-flight
