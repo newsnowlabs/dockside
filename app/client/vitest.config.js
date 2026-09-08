@@ -16,12 +16,11 @@ export default mergeConfig(viteConfig, defineConfig({
       // pipeline, which intercepts .css imports, but Vitest's default
       // dependency handling resolves node_modules packages via plain Node
       // ESM resolution rather than routing them through that same
-      // interception, so the .css import hit Node's loader directly and
-      // threw "Unknown file extension '.css'" - confirmed live, the first
-      // spec file mounting any component that pulls in Vuetify (Container,
-      // ProfileDetail, UserDetail - anything using the new ChoiceInput.vue)
-      // failed to even load. server.deps.inline routes the named packages
-      // through Vite's transform pipeline instead, same as the real build.
+      // interception, so the .css import hits Node's loader directly and
+      // throws "Unknown file extension '.css'" for any spec mounting a
+      // component that pulls in Vuetify. server.deps.inline routes the
+      // named packages through Vite's transform pipeline instead, same as
+      // the real build.
       server: {
          deps: {
             inline: ['vuetify'],
