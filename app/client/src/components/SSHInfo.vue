@@ -1,12 +1,9 @@
-<!-- Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): v-dialog
-     replaces b-modal; open/close is driven by store.state.sshInfoModalOpen
-     (see store/index.js's own comment) rather than bootstrap-vue's
-     open-by-id $bvModal/v-b-modal directive, since this component is
-     mounted as an App.vue-level singleton with no parent/child relationship
-     to whichever button opens it (Container.vue's Setup button, currently
-     the only caller). v-tabs+v-window replaces b-tabs' combined
-     tab-strip-and-panel component - Vuetify keeps the two concerns
-     separate. -->
+<!-- v-dialog's open/close state is driven by store.state.sshInfoModalOpen
+     (see store/index.js's own comment) rather than an open-by-id directive,
+     since this component is mounted as an App.vue-level singleton with no
+     parent/child relationship to whichever button opens it (Container.vue's
+     Setup button, currently the only caller). v-tabs and v-window keep the
+     tab strip and its panels as separate components. -->
 <template>
    <v-dialog v-model="showModal" max-width="800">
       <v-card>
@@ -277,12 +274,11 @@ ForwardAgent yes`;
    margin-bottom: 0.75rem;
    overflow: hidden;
 }
-/* A real toolbar row below the code, not a button absolutely positioned
-   over it - the old bootstrap-vue button was small enough to tuck into a
-   reserved padding-right gutter without touching the text, but that stopped
-   being true when it became a real v-btn (visibly wider), and any long
-   unbroken line (the wstunnel ProxyCommand, the Cookie header) still ran
-   underneath it. This scales with whatever the button's actual size is. */
+/* A real toolbar row below the code, not a button absolutely positioned over
+   it - an absolutely-positioned button would need a reserved padding-right
+   gutter sized to its own width, and any long unbroken line (the wstunnel
+   ProxyCommand, the Cookie header) would still run underneath it. This
+   layout scales with whatever the button's actual size is. */
 .code-block-toolbar {
    display: flex;
    justify-content: flex-end;

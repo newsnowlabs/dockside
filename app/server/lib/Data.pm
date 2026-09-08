@@ -24,9 +24,8 @@ our $PROFILES_DIR = "$CONFIG_PATH/profiles";
 # Load in the container ID of this Dockside container and the inner-dockerd flag.
 # See entrypoint.sh for details. Read from app-server's own service data dir, not nginx's -
 # ctr-id/inner-dockerd are identical copies in every service's data dir (entrypoint.sh writes
-# them per-service), but 'version' is only ever computed and written by one runscript, and
-# since the mojolicious-app-server split that's app-server/run (it's the process that actually
-# renders it into the UI), not nginx/run any more.
+# them per-service), but 'version' is only ever computed and written by app-server/run, the
+# process that actually renders it into the UI.
 our $HOSTNAME = get_config('/etc/service/app-server/data/ctr-id');
 our $INNER_DOCKERD = get_config('/etc/service/app-server/data/inner-dockerd');
 our $VERSION = get_config('/etc/service/app-server/data/version');
@@ -106,10 +105,8 @@ $CONFIG_FILES = {
          $CONFIG->{'appServer'}{'port'} //= 8100;
          $CONFIG->{'appServer'}{'workers'} //= 4;
          $CONFIG->{'appServer'}{'maxRequestSize'} //= 0;
-         # Static root for /docs, now that nginx no longer runs App.pm in-process to fall
-         # through to nginx's own `root` directive for it. Matches that directive's own value
-         # (sites-available/default) - not a new convention, the existing one, now needing an
-         # explicit config point since nginx itself no longer serves it.
+         # Static root for /docs, served by bin/app-server via this explicit config point,
+         # matching the value nginx's own `root` directive uses for it (sites-available/default).
          $CONFIG->{'appServer'}{'docsPath'} //= '/home/dockside/dockside/app/server/nginx/html';
          # create's own restart-recovery/graceful-exit design - see
          # docs/adr/0007-create-restart-recovery.md. reconcileIntervalSeconds is the per-worker

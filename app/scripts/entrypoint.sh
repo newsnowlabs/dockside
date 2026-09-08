@@ -371,7 +371,7 @@ if [ -d "${OPT_PATH}.img" ]; then
 
         name="$(basename "$ide")"
 
-        # Backwards-compatibility with Dockside v3.x: if 'latest' is not a symlink, mv it to 'latest.orig'
+        # Handle a non-symlink 'latest' directory (legacy layout) by renaming it aside.
         if [ -d "${OPT_PATH}/ide/$name/latest" ] && [ ! -h "${OPT_PATH}/ide/$name/latest" ]; then
           mv "${OPT_PATH}/ide/$name/latest" "${OPT_PATH}/ide/$name/latest.orig"
         fi
@@ -394,7 +394,7 @@ if [ -d "${OPT_PATH}.img" ]; then
         cp -a -P "$ide/latest" "$OPT_PATH/ide/$(basename "$ide")"
       done
 
-      # Backwards-compatibility with Dockside v3.x: if 'latest' is not a symlink, mv it to 'latest.orig'
+      # Handle a non-symlink 'latest' directory (legacy layout) by renaming it aside.
       if [ -d "${OPT_PATH}/system/latest" ] && [ ! -h "${OPT_PATH}/system/latest" ]; then
         mv "${OPT_PATH}/system/latest" "${OPT_PATH}/system/latest.orig"
       fi

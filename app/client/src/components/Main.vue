@@ -1,12 +1,10 @@
 <template>
-   <!-- No more b-col md="9" offset-md="3" here: that Bootstrap grid offset went
-        dead the moment bootstrap's own CSS was removed earlier in Stage 3 (its
-        classes kept getting added to the DOM by bootstrap-vue, matching
-        nothing) - v-main (App.vue) already does 100% of the actual offsetting,
-        registered with Vuetify's own layout system against the sidebar's
-        width, so this is a plain content container now, not a grid column.
-        The content gutter itself lives on .page-content, the wrapper App.vue
-        renders this into (shared with AdminMain.vue) - not duplicated here. -->
+   <!-- Offsetting content clear of the sidebar is handled entirely by v-main
+        (App.vue), registered with Vuetify's own layout system against the
+        sidebar's width, so this is a plain content container, not a grid
+        column. The content gutter itself lives on .page-content, the wrapper
+        App.vue renders this into (shared with AdminMain.vue) - not
+        duplicated here. -->
    <div class="main">
       <template v-if="filteredContainers.length > 0">
          <a v-if="isSelected" v-on:click="goBackOrHome(true)" class="view-containers" href="javascript:">&lt; Back</a>

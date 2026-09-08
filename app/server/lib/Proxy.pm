@@ -17,17 +17,13 @@ use Request;
 
 flog({ 'service' => 'dockside-proxy' });
 
-# Load at module-load time - previously App.pm's own perl_require (loaded first in nginx
-# config) guaranteed $CONFIG was populated before Proxy's own perl_set vars ever ran; that
-# module_require is gone now that App.pm's own content-handler role has moved to bin/app-server,
-# so Proxy must ensure this itself rather than depend on load order elsewhere in the config.
+# Load at module-load time - Proxy.pm's own perl_set vars need $CONFIG populated before they
+# run, and nothing else in the nginx config loads it first, so Proxy must ensure this itself.
 Data::load();
 
-# Where a UI/API request gets proxied to, now that App.pm is no longer perl_require'd (and
-# hence no longer runs as nginx's own content handler) - bin/app-server, standalone, on
-# loopback. Replaces the old '_UI_' sentinel string (which relied on falling through to
-# nginx's own `perl App::handlerHTTP[S];` content-handler directive once no proxy_pass matched
-# - that directive is gone from the nginx config too, see the same cutover).
+# Where a UI/API request gets proxied to: bin/app-server, standalone, on loopback. nginx has no
+# content-handler directive to fall through to - every UI/API request must resolve to this URI
+# via proxy_pass.
 sub ui_uri () {
    return sprintf( 'http://127.0.0.1:%d', $CONFIG->{'appServer'}{'port'} // 8100 );
 }
@@ -111,8 +107,8 @@ sub is_ui_request ($r) {
    return ( defined($host) && $host eq 'www' && $prefix eq '' ) ? 1 : 0;
 }
 
-# Renamed from get_server_port - see the fail-closed get_server_port wrapper below, which is
-# the name nginx config actually calls now.
+# Core routing logic. Wrapped by the fail-closed get_server_port below, which is the name the
+# nginx config calls.
 sub _get_server_port ($r, $protocol) {
    # Reload config, containers and reservations as needed.
    Data::load();
@@ -227,14 +223,11 @@ sub _get_server_port ($r, $protocol) {
    return $errorCode;
 }
 
-# Fail-closed wrapper around _get_server_port above. Before this split, an uncaught die here
-# left $upstream_http/$upstream_https unset, and nginx's own `perl App::handlerHTTP[S];`
-# directive (the location's default content handler) served the request instead - never
-# actually a *safe* fallback, just an accidental one. That directive is gone now (see the
-# cutover), so an uncaught die here would otherwise propagate as nginx's own generic 500 with
-# no branded error page and no log context. Catch here instead, log it, and fail closed to the
-# same '400' _get_server_port itself already uses for "reservation not found" - nginx's own
-# `if ($upstream_http = '400') {...}` block (see the nginx config) already handles that value.
+# Fail-closed wrapper around _get_server_port above. An uncaught die here would otherwise
+# propagate as nginx's own generic 500, with no branded error page and no log context. Catch
+# here instead, log it, and fail closed to the same '400' _get_server_port itself already uses
+# for "reservation not found" - nginx's own `if ($upstream_http = '400') {...}` block (see the
+# nginx config) already handles that value.
 sub get_server_port ($r, $protocol) {
    return try {
       return _get_server_port($r, $protocol);
@@ -259,9 +252,8 @@ sub https_server_port ($r) {
 }
 
 # Remove the configured uidCookie(s) from the cookie header - for a devtainer-bound request
-# only; a UI/API-bound request (now genuinely proxied to bin/app-server, not handled in-process
-# - see is_ui_request's own comment) needs the cookie intact, since bin/app-server's own
-# Request->authenticate reads it directly, same as App.pm always did when it ran embedded.
+# only; a UI/API-bound request (proxied to bin/app-server - see is_ui_request's own comment)
+# needs the cookie intact, since bin/app-server's own Request->authenticate reads it directly.
 sub upstream_cookie ($r) {
    my $cookie = $r->header_in('Cookie');
 

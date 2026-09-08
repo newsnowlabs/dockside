@@ -18,14 +18,8 @@ the rest of the suite, so it runs under the default profile.
 Uses concurrent.futures.ThreadPoolExecutor to fire real concurrent CLI
 subprocess calls - each thread blocks on its own `subprocess.run`, which
 releases the GIL for the duration, so this achieves genuine OS-level
-concurrency the same way the manual thrash-testing session's backgrounded
-shell `&`/`wait` did. First use of real concurrency in this harness (stdlib
-only - no new dependency).
-
-STATUS: executed against a live instance (2026-08-09, DOCKSIDE_TEST_MODE=local
-DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1) - both tests passed (test_01: 12.3s, test_02: 55.5s
-for N=8), clean teardown. N=8 held up fine on this host; re-verify/adjust if run somewhere
-with less headroom.
+concurrency the same way independent backgrounded shell processes would.
+Uses only the stdlib - no new dependency.
 """
 
 import os

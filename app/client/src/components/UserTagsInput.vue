@@ -1,18 +1,6 @@
-<!-- Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): pulled
-     forward from its original Stage 4 slot (a version-bump-only change) once
-     Container.vue's live edit-mode testing turned up something worse than a
-     style mismatch - @johmun/vue-tags-input reads Vue 2's private
-     `this._events` directly (not the documented $on/$off/$emit API @vue/compat's
-     INSTANCE_EVENT_EMITTER flag shims), which doesn't exist on a real Vue 3
-     instance at all. Confirmed live: every tag add threw
-     "Cannot read properties of undefined (reading 'update:tags')" from inside
-     the library's own addTag(), and because that read sits in the same
-     comma-operator statement as the library's `tags-changed` emit, the throw
-     pre-empted the emit too - clicking an autocomplete suggestion added
-     nothing. v-autocomplete replaces it outright (not a version bump): this
-     mode only ever adds from the known user/role directory
-     (add-only-from-autocomplete was already true), so `multiple` + `chips` is
-     a direct fit, no free-text branch needed - see ResourceTagsInput.vue's
+<!-- v-autocomplete: this component only ever adds from the known user/role
+     directory (add-only-from-autocomplete), so `multiple` + `chips` is a
+     direct fit, with no free-text branch needed - see ResourceTagsInput.vue's
      v-combobox for the free-entry counterpart. -->
 <template>
    <v-autocomplete
@@ -34,15 +22,11 @@
 <script>
 import { defineComponent } from 'vue';
 
-// Deliberately still value/input (not modelValue/update:modelValue): while
-// @vue/compat's MODE 2 was in the build (Stages 2-3), its compiler-level
-// compatConfig rewrote ANY 'modelValue'-named prop key on a component back
-// to 'value', even for an explicit :modelValue binding, not just v-model
-// shorthand - confirmed directly on JsonEditor.vue (see its own comment).
-// Stage 4 removed @vue/compat entirely (docs/plans/vue2-vue3-migration.md,
-// dockside-admin repo), so that rewrite no longer happens, but this
-// component's own contract is untouched - not worth modernizing on its own
-// without a reason to touch its callers.
+// Deliberately still value/input (not modelValue/update:modelValue), matching
+// this component's own external contract: its caller (Container.vue) binds
+// it via explicit :value/@input rather than v-model. Modernizing this prop
+// naming is a Container.vue-conversion-time decision, not this one - it
+// would mean editing that call site for no behavioural gain.
 export default defineComponent({
   emits: ['input'],
   name: 'UserTagsInput',

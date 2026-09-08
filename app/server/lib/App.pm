@@ -20,10 +20,10 @@ Data::load();
 ####################################################################################################
 #
 # Asset/HTML-fragment helpers, reused by bin/app-server's own $c-native
-# response helpers (_send_branded_page/_render_spa_shell). Every route is
-# natively Mojolicious now (bin/app-server), and nginx no longer perl_requires
+# response helpers (_send_branded_page/_render_spa_shell). All routes are
+# handled natively by Mojolicious (bin/app-server); nginx does not perl_require
 # this module at all (see Proxy.pm) - only these pure asset/string helpers
-# remain here.
+# live here.
 #
 
 sub get_asset ($filename) {

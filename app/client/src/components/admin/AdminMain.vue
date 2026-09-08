@@ -1,8 +1,7 @@
 <template>
-   <!-- No more b-col md="9" offset-md="3" here - see Main.vue's own comment;
-        same dead-Bootstrap-grid-offset cleanup, v-main already does the work.
-        The content gutter itself lives on .page-content, the wrapper App.vue
-        renders this into (shared with Main.vue) - not duplicated here. -->
+   <!-- v-main (in App.vue) handles the page grid layout; the content gutter
+        lives on .page-content, the wrapper App.vue renders this into
+        (shared with Main.vue). -->
    <div class="admin-main">
 
       <v-alert v-if="error && !isAccountRoute" type="error" variant="tonal" closable class="mb-3" @click:close="clearError">

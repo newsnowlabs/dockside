@@ -20,12 +20,6 @@ resolve_allow_service_restart's own comment in dockside_test.py). This means
 these tests are opt-in, not part of a default `bash t/integration/run_tests.sh`
 run - see this repo's CLAUDE.md "Runtime environment & testing capability"
 section for which launch profile gives that access (mountIDE:false).
-
-STATUS: executed against a live instance (2026-08-09, mountIDE:false, DOCKSIDE_TEST_MODE=local
-DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1 DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1) - both tests
-passed (test_01: 4.5s, test_02: 10.7s), clean teardown, docker-event-daemon came back up
-healthy after each restart. Run it again the same way after any further change to the
-launch-DAG/restart-recovery code.
 """
 
 import os

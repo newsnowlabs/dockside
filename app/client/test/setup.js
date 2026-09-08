@@ -1,7 +1,5 @@
-// No configureCompat() here any more - Stage 4 of
-// docs/plans/vue2-vue3-migration.md (dockside-admin repo) dropped
-// @vue/compat from the build entirely, so there's no compat runtime left to
-// configure, in tests or in index.js.
+// The build has no @vue/compat runtime, so there is no compat configuration
+// to set up here or in index.js.
 
 // jsdom doesn't implement window.matchMedia at all - both App.vue's
 // drawerOpen seed and plugins/vuetify.js's initialTheme() call it directly

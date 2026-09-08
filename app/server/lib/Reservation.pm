@@ -218,9 +218,9 @@ sub meta ($self, $key, @rest) {
       foreach my $name (keys %$value) {
          # Allow any value known_router_auth_levels() recognises (owner/viewer/developer/user/
          # public) - one shared list rather than a second hardcoded copy that could drift from
-         # it. 'containerCookie' used to be in this list too, but has no actual code support
-         # (User::reservationPermissions never grants it, Proxy.pm's own handling is commented
-         # out) - dropped rather than accepted here and silently unusable everywhere else.
+         # it. 'containerCookie' is deliberately excluded from that list: User::reservationPermissions
+         # never grants it and Proxy.pm's own handling of it is commented out, so accepting it
+         # here would be silently unusable everywhere else.
          # (unless type eq ide, in which case allow only owner|developer).
          #
          # If no value specified, set to the default ('developers' if none specified in the profile).

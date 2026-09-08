@@ -17,16 +17,12 @@ import { defineComponent } from 'vue';
 
 /**
  * ConfirmModal — thin wrapper around v-dialog for delete/destructive confirmations.
- * Show it by setting the caller's own v-model boolean to true (Stage 3 of
- * docs/plans/vue2-vue3-migration.md: replaces bootstrap-vue's imperative,
- * id-based this.$bvModal.show(id) API, which has no Vuetify equivalent -
- * v-dialog is purely v-model-driven).
+ * Show it by setting the caller's own v-model boolean to true; v-dialog is
+ * purely v-model-driven.
  *
- * Real modelValue/update:modelValue here, not the value/input convention
- * Stage 2 forced onto our other custom form components - this component was
- * new in Stage 3, so it never carried that workaround forward (and it's moot
- * now anyway: Stage 4 dropped @vue/compat entirely, see
- * docs/plans/vue2-vue3-migration.md in the dockside-admin repo).
+ * Uses real modelValue/update:modelValue here, not the value/input
+ * convention this repo's other custom form components use, for consistency
+ * with v-dialog's own v-model contract.
  *
  * Emits: confirm - onConfirm() below closes the dialog itself right after
  * emitting, unconditionally; a caller doesn't need to (and every current

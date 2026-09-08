@@ -11,7 +11,6 @@ export default mergeConfig(viteConfig, defineConfig({
       environment: 'jsdom',
       setupFiles: ['./test/setup.js'],
       include: ['test/**/*.spec.js'],
-      // Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo):
       // Vuetify components each import their own .css file directly (e.g.
       // VBtn.js: import "./VBtn.css") - fine for Vite's real build/dev
       // pipeline, which intercepts .css imports, but Vitest's default

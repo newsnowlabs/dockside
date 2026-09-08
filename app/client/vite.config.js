@@ -22,15 +22,10 @@ import path from 'path';
 // code-splitting builds"), which is what inlineDynamicImports previously
 // papered over by forcing every dynamic import() back inline.
 export default defineConfig({
-   // Pure Vue 3 as of Stage 4 (docs/plans/vue2-vue3-migration.md,
-   // dockside-admin repo) - no @vue/compat, no compatConfig. Stages 2-3 ran
-   // this under @vue/compat MODE 2 (global Vue.use/Vue.component, legacy
-   // $listeners/$children, v-model default prop/event names, ...) as the
-   // "soft landing" that let bootstrap-vue keep working unmodified while it
-   // was migrated off component-by-component; that scaffolding is gone now
-   // there's nothing left that needs it (verified live pre-cutover: zero
-   // compat deprecation warnings anywhere in the app, meaning nothing was
-   // silently still relying on it).
+   // Pure Vue 3 build: no @vue/compat, no compatConfig. Components register
+   // locally via imports and use Vue 3's own component/prop/event
+   // conventions directly - no global Vue.use/Vue.component registration,
+   // legacy $listeners/$children, or Vue 2 v-model default prop/event names.
    plugins: [vue({
       template: {
          // Lets Vuetify's own asset-handling (e.g. <v-img src="...">) resolve
@@ -39,8 +34,7 @@ export default defineConfig({
          transformAssetUrls,
       },
    }),
-   // Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo):
-   // Vuetify 3 replacing bootstrap-vue app-wide. autoImport scans each SFC's
+   // Vuetify 3 provides the app's UI components. autoImport scans each SFC's
    // template for Vuetify component/directive names actually used and injects
    // only those imports - no need to hand-import every v-* component. This is
    // a compile-time source transform (adds import statements before Rollup

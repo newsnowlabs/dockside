@@ -12,15 +12,10 @@ import vuetify from '@/plugins/vuetify';
 // module). `stubs` is a convenience alias for `global.stubs` (@vue/test-utils
 // v2 moved plain top-level `stubs` under `global`).
 //
-// Installs the real Vuetify plugin (unlike bootstrap-vue before it - see the
-// old version of this comment in git history): Vuetify's own components
-// throw outright without it ("[Vuetify] Could not find defaults instance",
-// confirmed live the moment UserDetail.vue/ProfileDetail.vue's converted
-// forms started using real v-btn/v-text-field/etc. in Stage 3), not the
-// bootstrap-vue-install-onto-a-legacy-Vue-constructor mismatch this comment
-// used to describe. Vuetify is genuinely Vue-3-native and installs the same
-// way here as in the real app (index.js) - no special-casing needed, unlike
-// that mismatch ever required.
+// Installs the real Vuetify plugin: Vuetify's own components throw outright
+// without it ("[Vuetify] Could not find defaults instance"). Vuetify is
+// Vue-3-native and installs via plugin, matching the real app at index.js -
+// no special-casing needed here.
 export function mountApp(Component, { storeSetup, routerOptions, props, stubs, global, ...mountOptions } = {}) {
    const store = createStore();
    if (storeSetup) storeSetup(store);

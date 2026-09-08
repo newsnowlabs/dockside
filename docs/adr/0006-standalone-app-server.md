@@ -124,32 +124,23 @@ longer executes any UI/API application logic itself.
     `X-Forwarded-For` construction, but worth stating since it's the kind of
     ordering assumption an unrelated future change could break without
     realizing it depends on this.
-- **Bugs found and fixed during the migration, before landing** — each
-  caught by the integration suite or live verification, not shipped:
-  - A bare Mojolicious placeholder (`/roles/:name`) matched *any* single path
-    segment, including the literal word `create` — silently swallowing
-    `/roles/create` (and the equivalent `/users`/`/profiles` routes) instead
-    of falling through to a 405. Fixed with a placeholder constraint
-    (`qr/(?!create\z)[^\/]+/`).
-  - A `_redirect` helper used `->headers->header(...)` instead of
-    `->headers->add(...)`, silently replacing rather than appending —
-    login's second `Set-Cookie` header never reached the client, so every
-    fresh login failed "Not logged in".
-  - The old `_api_handler`'s explicit method guards for 17 state-changing
-    paths used to turn a GET into a clean 405; Mojolicious has no automatic
-    "path matched, wrong method" behaviour of its own, so deleting that guard
-    silently turned them into redirects instead. Fixed with a `_post_only`
-    fallback registered right after each path's real POST handler.
-  - The shared `_authenticate` helper (used by both the login-redirect bridge
-    and the five async routes) never enforced HTTPS the way the old
-    `_handler` always had — nginx's port-80 block still proxies `www` traffic
-    here exactly like port 443 does. Fixed at the one place every route now
-    funnels through.
-  - `Mojolicious::Static`'s own bundled fallback assets (`favicon.ico`, logo
-    PNGs, `mojo.css`) are checked before the router runs, regardless of our
-    own configured static paths — `/favicon.ico` was silently serving
-    Mojolicious's own icon instead of Dockside's. Cleared the bundled `extra`
-    map outright.
+- **Invariants this design depends on:**
+  - Each Mojolicious route placeholder that shares a path prefix with a
+    literal `create` route (`/roles/:name`, and the equivalent
+    `/users`/`/profiles` routes) must stay constrained to exclude that literal
+    segment (`qr/(?!create\z)[^\/]+/`) — a bare placeholder matches any single
+    path segment, including the word `create`, and would swallow
+    `/roles/create` instead of letting it fall through to the dedicated
+    route.
+  - The `_redirect` helper must set `Set-Cookie` via `->headers->add(...)`,
+    never `->headers->header(...)`: `header` replaces a header outright, so a
+    second `Set-Cookie` on the same response (login sets two) would silently
+    overwrite the first rather than both reaching the client.
+  - Mojolicious has no automatic "path matched, wrong method" behaviour of its
+    own, so each of the 17 state-changing paths registers a `_post_only`
+    fallback right after its real POST handler — this is what turns a GET to
+    one of those paths into a clean 405 instead of falling through to a
+    redirect.
 - **ADR-0002** (POST-only mutation enforcement) and **ADR-0003** (client-safe
   error responses) both describe mechanisms that lived in `App.pm`'s
   `_api_handler`/central error handler pre-migration; both decisions still

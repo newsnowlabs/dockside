@@ -28,11 +28,9 @@ const createStore = () => createVuexStore({
       containers: window.dockside.containers.map(c => markRaw(c)),
       welcomeTextStatus: localStorage.getItem(welcomeTextStatusLocalStorageKey) !== null ?
          parseInt(localStorage.getItem(welcomeTextStatusLocalStorageKey)) : 0,
-      // Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo):
-      // replaces bootstrap-vue's v-b-modal="'sshinfo-modal'" open-by-id
-      // directive, which needed no shared parent because $bvModal was a
-      // global bus. Container.vue's Setup button and SSHInfo.vue (mounted as
-      // an App.vue-level singleton) are siblings with no parent/child
+      // sshInfoModalOpen persists modal state in the store because
+      // Container.vue's Setup button and SSHInfo.vue (mounted as an
+      // App.vue-level singleton) are siblings with no parent/child
       // relationship, so v-dialog's plain v-model has nowhere shared to
       // live except here.
       sshInfoModalOpen: false,

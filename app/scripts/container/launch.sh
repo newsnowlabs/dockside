@@ -891,12 +891,11 @@ populate_vscode_settings() {
 # uses - so the su'd child gets exactly the same init() setup (LOG_PATH, PATH, its own fd 5/
 # $LOG handle) a freshly-dispatched exec would, and its own log() output reaches the same
 # caller-visible stream (fd 1/2, inherited straight through su/env) as the parent's, with no
-# extra plumbing needed. Generalized from a single hardcoded target: what used to be
-# one function, run_nonroot, was split into launch_prep's own non-root tail plus the separate
-# launch_git entry point - both need this same su-transition machinery, only launch_prep's
-# since launch_git is dispatched directly as the non-root user by DED, needing no su at all
-# (only steps that genuinely need root - create_user, launch_sshd's dropbear - run as root at
-# all; everything else drops to the non-root user as soon as it can).
+# extra plumbing needed. Takes the target function as a parameter rather than a single
+# hardcoded target, since launch_prep's non-root tail needs this same su-transition machinery
+# while launch_git does not - launch_git is dispatched directly as the non-root user by DED,
+# needing no su at all (only steps that genuinely need root - create_user, launch_sshd's
+# dropbear - run as root at all; everything else drops to the non-root user as soon as it can).
 launch_nonroot() {
    local FUNCTION="${1:-run_prep_nonroot}"
    log "Continuing launch as non-root user '$IDE_USER' (running '$FUNCTION') ..."

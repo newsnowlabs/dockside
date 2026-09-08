@@ -1,16 +1,11 @@
 <template>
-   <!-- Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): one
-        v-navigation-drawer replaces the old desktop b-col + mobile b-sidebar
-        pair - :permanent on md+ makes it always-visible and part of the
-        layout (offsetting v-main automatically); below md it's Vuetify's
-        default temporary/overlay drawer, opened via Header's hamburger
-        through the modelValue this component exposes to App.vue. Real
-        modelValue/update:modelValue here (not the value/input convention
-        Stage 2 forced onto older components) - this is a fresh contract
-        between two components converted in the same pass, not an existing
-        caller left untouched, so it never needed the workaround to begin
-        with (moot anyway since Stage 4 dropped @vue/compat entirely - see
-        docs/plans/vue2-vue3-migration.md, dockside-admin repo). -->
+   <!-- One v-navigation-drawer serves as the sidebar at every viewport size:
+        :permanent on md+ makes it always-visible and part of the layout
+        (offsetting v-main automatically); below md it's Vuetify's default
+        temporary/overlay drawer, opened via Header's hamburger through the
+        modelValue this component exposes to App.vue. It exposes a plain
+        modelValue/update:modelValue contract - Vue 3's native v-model -
+        since App.vue is its only caller. -->
    <v-navigation-drawer
       :model-value="modelValue"
       @update:model-value="$emit('update:modelValue', $event)"
@@ -145,15 +140,14 @@ export default defineComponent({
       color: rgb(var(--v-theme-ink-soft));
    }
 
-   // Status colour moved from the list-item's text (its old home) onto its
-   // .sidebar-dot instead - unifies with every other sidebar list, all of
-   // which now convey their per-item state (or lack of one) the same way:
-   // neutral grey text, colour carried by the dot alone. status-1 (running)
-   // is new here - previously the "no override, plain text" default, it
-   // needs its own colour now a plain dot would otherwise read as identical
-   // to an item with no status at all. Reuses the 'started' theme colour
-   // (see plugins/vuetify.js) - the same green Container.vue's own "Started"
-   // chip uses, rather than inventing a second "running" colour.
+   // Status colour is carried by the .sidebar-dot, not the list-item's text -
+   // unifies with every other sidebar list, all of which convey their
+   // per-item state (or lack of one) the same way: neutral grey text, colour
+   // carried by the dot alone. status-1 (running) gets its own colour here
+   // because a plain, uncoloured dot would otherwise read as identical to an
+   // item with no status at all. Reuses the 'started' theme colour (see
+   // plugins/vuetify.js) - the same green Container.vue's own "Started" chip
+   // uses, rather than inventing a second "running" colour.
    //
    // .status-removed (below) is the one deliberate exception to "colour
    // carried by the dot alone": a dot's colour/opacity alone reads as too

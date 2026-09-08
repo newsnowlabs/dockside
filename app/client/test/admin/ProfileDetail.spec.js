@@ -10,8 +10,8 @@ import { mountApp } from '../helpers';
 // eager), which throws in this environment - so mock the module itself too.
 vi.mock('json-editor-vue', () => ({ default: {} }));
 
-// Smoke coverage only (see docs/plans/vue2-vue3-migration.md, Stage 1) - a
-// regression tripwire, not a behavioral test suite. Default props (no
+// Smoke coverage only - a regression tripwire, not a behavioral test suite.
+// Default props (no
 // `profileId`) put the component in its "New profile" create-flow state.
 describe('ProfileDetail.vue', () => {
    it('renders the new-profile form without throwing', () => {

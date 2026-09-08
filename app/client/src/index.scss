@@ -2,13 +2,7 @@
 // src/plugins/vuetify.js (see vite-plugin-vuetify's README), not here -
 // Vuetify 3 ships precompiled CSS rather than a Sass entrypoint to @import.
 //
-// Everything that used to live here targeted bootstrap's own classes
-// (.card/.card-header, .col-3, .form-group) and went dead one file at a
-// time as Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin
-// repo) converted each of their last remaining callers to Vuetify -
-// Container.vue's card-header hover tint was the final one. The two rules
-// below are new genuinely-global overrides, the first tenants of the "future"
-// this file was kept empty for.
+// This file holds global Vuetify overrides.
 
 // A tonal-variant alert (v-alert type="warning" variant="tonal", currently
 // only SSHInfo.vue, but this is deliberately global so any future one picks
@@ -38,17 +32,13 @@
 }
 
 // Per-item marker for every sidebar list (devtainer list, launch-profile
-// picker, admin Users/Roles/Profiles) - "a status dot per item instead of a
-// bullet" per the design system's own Sidebar-section-header spec (drafted
-// earlier in Stage 3 of docs/plans/vue2-vue3-migration.md, dockside-admin
-// repo). Genuinely global rather than duplicated in Sidebar.vue and
-// AdminSidebar.vue separately: the two components' lists needed the same
-// dot, and AdminSidebar's own Profiles list was already drawing one, just
-// as a unicode "●" glyph rather than this shape - inconsistent geometry
-// between lists that were supposed to match. Defaults to a neutral grey,
-// since most lists (users, roles, launch profiles) have no per-item state
-// to show; components with a real one (devtainer status, profile
-// active/inactive) add a modifier class over this shared shape.
+// picker, admin Users/Roles/Profiles) - a status dot per item instead of a
+// bullet. Genuinely global rather than duplicated in Sidebar.vue and
+// AdminSidebar.vue separately, so every list renders the same dot shape.
+// Defaults to a neutral grey, since most lists (users, roles, launch
+// profiles) have no per-item state to show; components with a real one
+// (devtainer status, profile active/inactive) add a modifier class over
+// this shared shape.
 .sidebar-dot {
    display: inline-block;
    width: 7px;
@@ -62,13 +52,10 @@
    margin-right: 10px;
 }
 
-// Restores the inline-code highlight bootstrap's own base CSS used to give
-// every bare <code> tag (its $code-color, #e83e8c) - lost app-wide the
-// moment bootstrap's CSS was dropped in Stage 3's Setup, though only
-// SSHInfo.vue's prose actually uses bare <code> today. Deliberately not
-// `pre code`: the <pre> blocks are real copy-paste command output, styled
-// on their own terms (see SSHInfo.vue's .code-block) - this is only for
-// inline code called out mid-sentence.
+// Colors every bare <code> tag app-wide (only SSHInfo.vue's prose uses bare
+// <code> today). Deliberately not `pre code`: the <pre> blocks are real
+// copy-paste command output, styled on their own terms (see SSHInfo.vue's
+// .code-block) - this is only for inline code called out mid-sentence.
 code {
    color: #e83e8c;
    font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
@@ -76,15 +63,12 @@ code {
 
 // Restores two browser-default typographic behaviors Vuetify's own base
 // reset (`* { margin: 0; padding: 0; }`) strips app-wide: a <ul>/<ol>'s
-// indent (confirmed live - Welcome.vue's bullets sat flush against the
-// list's own left edge, no gap from their marker) and a <p>'s spacing
-// from its neighbours (paragraphs ran together with no visible break).
-// Neither is Welcome.vue-specific - SSHInfo.vue's lists lost the same
-// indent - so fixed once, globally, for prose content generally rather
-// than patched per component. Confirmed safe for Vuetify's own components:
-// v-list (and everything built on it) renders a plain <div>, not a <ul>
-// (see makeTagProps' default tag), so this can't touch sidebar/menu/nav
-// styling.
+// indent from its marker, and a <p>'s spacing from its neighbours. Applied
+// globally for prose content generally (Welcome.vue and SSHInfo.vue both
+// depend on it) rather than patched per component. Safe for Vuetify's own
+// components: v-list (and everything built on it) renders a plain <div>,
+// not a <ul> (see makeTagProps' default tag), so this can't touch
+// sidebar/menu/nav styling.
 ul, ol {
    padding-left: 1.5em;
    margin-bottom: 1em;

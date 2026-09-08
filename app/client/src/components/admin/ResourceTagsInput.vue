@@ -1,19 +1,11 @@
-<!-- Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): pulled
-     forward from Stage 4 once Container.vue's live edit-mode testing found
-     @johmun/vue-tags-input genuinely broken under Vue 3 - see
-     UserTagsInput.vue's own comment for the root cause (it reads Vue 2's
-     private this._events directly, which @vue/compat doesn't shim). v-combobox
-     replaces it: this mode allows free-typed entries in addition to
-     `suggestions` (add-only-from-autocomplete was already false here), which
-     is exactly what v-combobox's multiple+chips mode is for.
+<!-- v-combobox's multiple+chips mode allows free-typed entries in addition to
+     `suggestions` (add-only-from-autocomplete is false), which is exactly
+     what this field needs.
 
-     One deliberate behavior change, not just a restyle: the old typed
-     "value (Denied)" suffix convention for adding a tag pre-denied is
-     dropped. Every new tag now starts allowed and gets denied by clicking
-     its chip, same as toggling an already-added tag - one mechanism instead
-     of two, and the click affordance was already the primary one
-     (ResourcesEditor.vue's own legend led with it). See that component's
-     legend text, updated to match. -->
+     Every new tag starts allowed and gets denied by clicking its chip, the
+     same mechanism used to toggle an already-added tag's allow/deny state -
+     one mechanism for both cases. See ResourcesEditor.vue's legend text for
+     how this is documented to users. -->
 <template>
    <v-combobox
       v-model="selectedKeys"

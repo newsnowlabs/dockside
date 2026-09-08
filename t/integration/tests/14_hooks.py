@@ -366,15 +366,13 @@ class HooksTests(TestCase):
         A custom hook also needs no auto-invoke-settled wait first, unlike
         lifecycle:launch - nothing auto-fires it.
 
-        Regression check for a real bug found and fixed on the ded-async-
-        rewrite branch: Reservation::run_hook_sync's busy-guard used to be a
-        two-step, unlocked check-then-write (hook_is_running() then
-        hook_status_started()), racy across nginx's multiple worker processes -
-        2 of 4 genuinely concurrent invokes were both observed to actually
-        execute the hook script for real, confirmed against the container's
-        own execution log, not just the API's response. Fixed via
-        Reservation::Mutate::hook_claim_if_not_running, an atomic check-and-
-        claim under mutate()'s exclusive lock.
+        Verifies Reservation::run_hook_sync's busy-guard:
+        Reservation::Mutate::hook_claim_if_not_running performs an atomic
+        check-and-claim under mutate()'s exclusive lock, so that of N
+        genuinely concurrent invokes of the same hook on the same devtainer -
+        across nginx's multiple worker processes - only one actually executes
+        the hook script, verified against the container's own execution log,
+        not just the API's response.
         """
         name = self._sfx('inttest-hook-race-exact')
         self.register_cleanup(name)

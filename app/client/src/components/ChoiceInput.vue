@@ -82,20 +82,11 @@ import { defineComponent } from 'vue';
 // all themselves built on, not something to reach for directly - it has no
 // built-in editable text control of its own).
 //
-// Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): the
-// third branch was @trevoreyre/autocomplete-vue (a free-text-plus-suggestions
-// combobox) until this pass replaced it outright with Vuetify's own
-// v-combobox - pulled forward from the plan doc's original Stage-4 "bump to
-// 3.x" step once it turned out to be one more branch in a file already being
-// converted for the other two, and since a second, unrelated UI kit hand-
-// skinned with bespoke CSS to merely resemble Bootstrap (see this file's own
-// former <style> block) was exactly the kind of mixed-paradigm inconsistency
-// Stage 3 exists to remove. Along the way: the old autocomplete branch's own
-// :disabled binding (`values.length <= 1 && !allowFreeEntry`) was dead code -
-// !allowFreeEntry is always false in a branch only reachable when
-// allowFreeEntry is true - so the component's own disabled prop was silently
-// never honoured there. v-combobox below uses :disabled="disabled" like the
-// other two branches, fixing that.
+// The third branch, for a free-entry field that does have suggestions, is
+// Vuetify's own v-combobox. Like the v-select and plain-text-field branches
+// above it, it binds :disabled="disabled" directly, so the component's
+// disabled prop is honoured consistently regardless of which of the three
+// branches ends up rendering.
 //
 // Deliberately still value/input, not modelValue/update:modelValue, on this
 // component's OWN external contract: the :model-value/@update:model-value

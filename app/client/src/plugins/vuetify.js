@@ -1,8 +1,5 @@
 // Vuetify 3 instance, configured once here and installed globally in
-// index.js (via a real app.use() - Vuetify is genuinely Vue-3-native, unlike
-// bootstrap-vue, which needed the compat global Vue.use() path; see index.js
-// for that history). Stage 3 of docs/plans/vue2-vue3-migration.md
-// (dockside-admin repo): replaces bootstrap-vue app-wide.
+// index.js via app.use().
 import 'vuetify/styles';
 import { aliases, mdi } from 'vuetify/iconsets/mdi-svg';
 import { createVuetify } from 'vuetify';
@@ -128,13 +125,12 @@ const vuetify = createVuetify({
       // is showing tree depth via padding) isn't wanted anywhere in this
       // app - the one current user (AdminSidebar.vue's USERS/ROLES/PROFILES
       // sections) already reads as a heading via its own bold small-caps
-      // styling, so the indent was just unused dead space (confirmed live:
-      // ~140px). Set once here, as a component default, rather than a
-      // `fluid` prop repeated on every v-list-group - the same reasoning as
-      // App.vue's .page-content gutter and index.scss's alert/code
-      // overrides: a per-instance prop is one a future v-list-group can
-      // just as easily forget, the same way AdminMain.vue's own copy of
-      // Main.vue's gutter padding was dropped without anyone noticing.
+      // styling, so the indent is just unused dead space. Set once here, as
+      // a component default, rather than a `fluid` prop repeated on every
+      // v-list-group - the same reasoning as App.vue's .page-content gutter
+      // and index.scss's alert/code overrides: centralizing it here means a
+      // future v-list-group picks it up automatically, rather than
+      // depending on each call site setting `fluid` itself.
       VListGroup: {
          fluid: true,
       },
@@ -167,14 +163,13 @@ const vuetify = createVuetify({
          variant: 'outlined',
          density: 'compact',
       },
-      // Vuetify's own default (no override anywhere) is variant: 'elevated'
-      // - confirmed live, e.g. UserDetail.vue's Save button rendered with a
-      // real box-shadow. Every button that cares about its own look already
-      // sets variant explicitly (Edit/Cancel: outlined, Delete: flat +
+      // Vuetify's own default (no override anywhere) is variant: 'elevated',
+      // which renders a real box-shadow (e.g. UserDetail.vue's Save
+      // button). Every button that cares about its own look already sets
+      // variant explicitly (Edit/Cancel: outlined, Delete: flat +
       // color="error", nav links: text) - this only changes the ones that
-      // didn't (Save buttons, BottomNav's nav buttons, ...), matching the
-      // doc's "flat primary buttons" rather than Material's shadowed
-      // default.
+      // didn't (Save buttons, BottomNav's nav buttons, ...), giving flat
+      // primary buttons by default rather than Material's shadowed one.
       VBtn: {
          variant: 'flat',
       },
@@ -194,9 +189,10 @@ export function setThemeMode(mode) {
    // it directly (rather than through Vue's reactive() ref-unwrapping,
    // which only applies when accessed as e.g. this.$vuetify.theme.global.
    // name from inside a component) replaces that Proxy outright instead of
-   // updating it - confirmed live: the theme only changed after a full page
-   // reload, never on the click itself. change() is Vuetify's own supported
-   // API for exactly this.
+   // updating it, so the new value never reaches the places already holding
+   // a reference to the original Proxy until they're re-created (e.g. by a
+   // full page reload). change() is Vuetify's own supported API for
+   // exactly this.
    vuetify.theme.change(mode);
    localStorage.setItem(THEME_STORAGE_KEY, mode);
 }

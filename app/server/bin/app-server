@@ -2,10 +2,9 @@
 
 # app-server
 #
-# Dockside's UI/API server, standalone and async - no longer embedded in nginx via
-# ngx_http_perl_module. nginx proxy_passes UI/API traffic to this process on loopback
-# (Proxy::ui_uri); Proxy.pm itself stays embedded in nginx for access-controlled
-# devtainer routing, unaffected by this split.
+# Dockside's standalone async UI/API server; nginx proxy_passes UI/API traffic to this
+# process on loopback (Proxy::ui_uri). Proxy.pm itself stays embedded in nginx for
+# access-controlled devtainer routing.
 #
 # Fully native Mojolicious routing, $c throughout - every route is natively ported, no
 # compatibility shim of any kind sits in front of any of them.
@@ -85,15 +84,12 @@ sub _reconcile_stuck_reservations ($onDone = sub {}) {
 
 # Ensures at most one of this app-server's own N workers runs a reconciliation sweep at a
 # time (see _reconcile_stuck_reservations's own comment on why) - a single process-wide lock,
-# not a per-reservation claim. Tried a per-reservation atomic claim first (mutate()-based, with
-# its own staleness timestamp to survive a claim-holder dying mid-reconciliation); replaced
-# with this once it became clear the actual concern - N workers racing the *same* stuck
-# reservation - doesn't need per-reservation granularity to fix, only "one sweep at a time"
-# does, and a real OS-level flock gets crash-safety for free (released automatically the
-# instant the holding process's fd closes, for any reason, no manual staleness bookkeeping
-# needed) where a plain data-field claim did not. `LOCK_EX | LOCK_NB`: a worker that can't
-# acquire it immediately just skips this tick - not an error, the next tick (this worker's own,
-# 5 minutes later by default) tries again regardless of who won this one.
+# not a per-reservation claim: the concern is N workers racing the *same* stuck reservation,
+# which needs only "one sweep at a time", not per-reservation granularity. A real OS-level
+# flock gets crash-safety for free - released automatically the instant the holding process's
+# fd closes, for any reason, with no manual staleness bookkeeping needed. `LOCK_EX | LOCK_NB`:
+# a worker that can't acquire it immediately just skips this tick - not an error, the next tick
+# (this worker's own, 5 minutes later by default) tries again regardless of who won this one.
 sub _with_reconcile_lock ($cb) {
    mkpath( [ $CONFIG->{'tmpPath'} ], 0, 0755 ) unless -d $CONFIG->{'tmpPath'};
    open( my $fh, '>>', "$CONFIG->{'tmpPath'}/create-reconcile.lock" ) or do {
@@ -213,11 +209,8 @@ sub _redirect ($c, $code, $location, $headers = []) {
    $c->res->headers->cache_control('no-store');
    $c->res->headers->location($location);
    foreach my $h (@$headers) {
-      # Must be ->add, not ->header: login sets two Set-Cookie headers, and a
-      # second ->header call would silently replace the first rather than add
-      # a second one. A real regression here first time round, caught by the
-      # integration suite (fresh test-user logins failing with "Not logged
-      # in" - one of the two cookies never reached the client).
+      # Must be ->add, not ->header: login sets multiple Set-Cookie headers;
+      # ->header would replace instead of add.
       $c->res->headers->add(@$h);
    }
    $c->res->headers->content_type('text/plain');
@@ -1025,12 +1018,9 @@ $authed->get( '/getAuthCookies' => sub ($c) {
 $app->static->extra( {} );
 
 # ── Static /docs ──────────────────────────────────────────────────────────
-# nginx's own `root` directive (sites-available/default) served this directly;
-# now this process must, since nginx no longer perl_requires App.pm at all post-
-# cutover. Formerly reached only via the old catch-all's nginx::DECLINED branch
-# (App::_handler's own sole DECLINED source); now its own route, matched by
-# path like everything else. Not behind $authed - the original never gated
-# /docs on login either. Mojolicious::Static::serve only matches exact files,
+# Static /docs: this process serves them directly (nginx no longer has App.pm
+# embedded). Matched by path like every other route. Not behind $authed - /docs
+# is not gated on login. Mojolicious::Static::serve only matches exact files,
 # not directories - unlike nginx's own implicit index/redirect behaviour, so
 # both are replicated here explicitly.
 $app->static->paths( [ $CONFIG->{'appServer'}{'docsPath'} ] );
@@ -1049,12 +1039,9 @@ sub _serve_static ($c) {
 
    # Mojolicious::Static::serve sets $c->res->code/content directly (not via
    # render()/rendered()) - it has no idea this call is happening from inside a route
-   # callback at all. Mojolicious's own request cycle only considers a request complete
-   # once something calls render()/rendered() on it; skipping that call here (as an
-   # earlier version of this did, only calling it in the 404 branch below) left every
-   # successful static response - a 200 with the file's own bytes already attached to
-   # $c->res, ready to send - never actually sent: the worker just sat there forever,
-   # silently hanging every /docs/ request. Must call rendered() unconditionally here.
+   # callback at all. Must call rendered() unconditionally: Mojolicious requires it to
+   # mark the request complete, and a response left unrendered never reaches the
+   # client, hanging the worker.
    $c->app->static->serve( $c, $path );
    return $c->rendered( $c->res->code || 404 );
 }

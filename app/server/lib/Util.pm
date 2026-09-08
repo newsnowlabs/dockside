@@ -180,9 +180,9 @@ sub call_socket_api_sync ($socket, $path, $opts = {}) {
       elsif($method eq 'POST') {
          my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
 
-         # No 'on_read' streamed-consumption option here (unlike call_socket_api) -
-         # the only caller that ever needed it on the blocking path was the now-deleted sync
-         # docker_exec; every real streamed caller today goes through call_socket_api.
+         # No 'on_read' streamed-consumption option here (unlike call_socket_api) - this
+         # blocking path only ever returns a complete buffered response; a caller that needs
+         # streamed consumption uses call_socket_api instead.
          $result = $ua->post($uri => $headers => $body)->result;
       }
       else {

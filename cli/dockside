@@ -160,10 +160,9 @@ def _truthy_flag(v):
     (and "") as false - unlike Python's default truthiness, where any non-empty string,
     including "0", is true. Needed because some server-side fields (e.g. a dispatched
     hook's status record) can arrive JSON-quoted ("busy":"0") rather than bare ("busy":0),
-    a side effect of
-    Perl's cloneHash comparing values with `ne` before storing them - fixed at the
-    server now, but cheap to guard against defensively here too, since a silent
-    false positive here (treating a real "0" as busy) is easy to miss."""
+    a side effect of Perl's cloneHash comparing values with `ne` before storing them.
+    This guards defensively against a silent false positive (treating a real "0" as
+    busy)."""
     if isinstance(v, str):
         return v not in ('', '0')
     return bool(v)
@@ -1063,9 +1062,9 @@ def create_status_error(c):
     None if there wasn't one. Two shapes on the wire, both handled: the current
     Reservation::create {stage, failed, layers, error} hash - truthy at *every*
     stage, including 'done', so only .failed means a real failure, and .error already
-    carries a clean message - or the legacy plain-scalar Docker CLI exit code from before
-    create existed, which (unlike the hash) was only ever recorded on failure, so
-    any truthy value there does mean one."""
+    carries a clean message - or a plain-scalar Docker CLI exit code (the other shape
+    on the wire, only ever recorded on failure), so any truthy value there does mean
+    one."""
     cs = c.get('createStatus')
     if isinstance(cs, dict):
         if not cs.get('failed'):

@@ -178,8 +178,9 @@ export default defineComponent({
         // Rebuild publicKeys from the textarea (one key per non-blank line).
         // Preserve the existing name for any unchanged line, and give every
         // other line a guaranteed-unique name (its full comment if present,
-        // else key-N). Keying naively by the comment field collapsed two keys
-        // that shared a comment word into one — silently dropping a key.
+        // else key-N). Each line must have a guaranteed-unique name so that
+        // two keys sharing a comment word stay distinct instead of
+        // collapsing into one and silently dropping a key.
         const lines = this.publicKeysText.split('\n').map(l => l.trim()).filter(Boolean);
         const origByLine = Object.fromEntries(
            Object.entries((this.ssh && this.ssh.publicKeys) || {}).map(([n, l]) => [l, n]));

@@ -4,8 +4,7 @@
 . $APP_DIR/app/scripts/includes/snore
 . $APP_DIR/app/scripts/includes/log_do
 
-# Tag/commit-ID version file (./data/version) moved to app-server/run - it's the process
-# that actually renders it into the UI now, not nginx (see Data.pm's own comment).
+# Tag/commit-ID version file is managed by app-server, not nginx (see Data.pm).
 
 if [ -f "/data/certs/fullchain.pem" ] && [ -f "/data/certs/privkey.pem" ]; then
   log "Launching nginx"

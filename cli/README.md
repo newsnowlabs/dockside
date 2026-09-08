@@ -245,8 +245,7 @@ dockside ssh -o json proxy-command my-feature
 
 ## Router management
 
-Add, remove, or replace routers on a **live** devtainer - previously only possible by editing and
-relaunching from the master profile. Requires the `addContainerRouter`/`removeContainerRouter`
+Add, remove, or replace routers on a **live** devtainer. Requires the `addContainerRouter`/`removeContainerRouter`
 permissions, developer standing on the devtainer, and (for `add`/`replace`) the devtainer's
 profile opting in via `userRouters`. See
 [`docs/adr/0008-router-mutation.md`](../docs/adr/0008-router-mutation.md) for the full design.

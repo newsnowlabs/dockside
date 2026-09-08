@@ -3,9 +3,9 @@
 
 Coverage:
   - restarting app-server (`sudo s6-svc -t`, a genuinely non-graceful signal - standing in for
-    a real crash/OOM kill; see docs/adr/0007-create-restart-recovery.md's own "Confirmed live"
-    finding on what that signal actually does to Mojo::Server::Prefork, and on why the
-    documented day-to-day `-r` command is deliberately not used here) while a devtainer's
+    a real crash/OOM kill; see docs/adr/0007-create-restart-recovery.md's "Decision" section
+    on what that signal actually does to Mojo::Server::Prefork, and on why the documented
+    day-to-day `-r` command is deliberately not used here) while a devtainer's
     create() chain is still genuinely in flight (createStatus.stage non-terminal, with real
     progress recorded - not "started a moment ago") does not strand it forever: the startup
     reconcile sweep and per-worker periodic reconciler (Reservation::reconcile_create, both
@@ -27,13 +27,6 @@ to force a real, multi-second pull window every run - without this, a second/sub
 would find the image already cached and race an effectively-instant create, making the restart
 timing unreliable rather than deterministic.
 
-STATUS: executed against a live instance (2026-08-12, mountIDE:false, DOCKSIDE_TEST_MODE=local
-DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1 DOCKSIDE_TEST_ALLOW_NETWORK_MODIFY=1) - both tests
-passed (single: 35.7s, concurrent: 43.3s). Confirmed as a real regression test, not one that
-would have passed regardless: run against the working tree with just the recovery-mechanism
-files stashed out, both tests failed at their own timeout (125.3s/123.8s) with createStatus
-never leaving 'pulling'. Run it again the same way after any further change to create()'s
-restart-recovery/graceful-exit code.
 """
 
 import os
@@ -50,10 +43,8 @@ from dockside_test import TestCase, APIError, restart_app_server
 # _ensure_image_absent) - large enough that a genuine pull takes several real seconds, giving
 # comfortable margin to observe createStatus.stage=='pulling' with actual layer progress and
 # issue the restart while the chain is still genuinely in flight, rather than racing an
-# already-cached image's near-instant create. Same image this session's own live verification
-# of create-restart-recovery-plan.md's Open Questions #1 already used for the identical
-# purpose (confirmed there: a killed pull aborts server-side, so recovery here really does
-# have to redo the whole pull, not just resume one already-abandoned mid-stream).
+# already-cached image's near-instant create. A killed pull aborts server-side, so recovery
+# here has to redo the whole pull, not resume one already-abandoned mid-stream.
 PULL_IMAGE = 'node:22'
 
 
@@ -178,9 +169,8 @@ class CreateRestartRecoveryTests(TestCase):
     def test_02_concurrent_creates_restart_mid_flight(self):
         """The condition the atomic reconciliation claim actually exists for: several
         creates in flight at once, so the periodic reconciler's own independent-per-worker
-        firing (confirmed live - see create-restart-recovery-plan.md's Open Questions #4)
-        has more than one stuck reservation to race over, not just one with nothing to
-        contend for."""
+        firing has more than one stuck reservation to race over, not just one with nothing
+        to contend for."""
         self._ensure_image_absent()
         n = 4
         names = [self._sfx(f'inttest-createrestart-{i}') for i in range(n)]

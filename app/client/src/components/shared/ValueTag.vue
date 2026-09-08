@@ -1,24 +1,18 @@
 <template>
-   <!-- Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo):
-        design "F" from that stage's UI exploration - a v-select-style
-        trigger (short, explicit closed-state text) that opens a menu of
-        three full-sentence choices, replacing the old cycle-on-click chip.
-        Same three states (null/1/0), same cycle semantics available via the
-        menu instead of blind repeated clicks, but now explicit about the
-        inherited value's *source* too (role vs system default) wherever
-        that's ambiguous - see the design doc's own writeup for why the old
-        chip's colour-only "inherited (denied)" was two different real
-        situations rendered identically.
+   <!-- A v-select-style trigger (short, explicit closed-state text) that
+        opens a menu of three full-sentence choices for the three states
+        (null/1/0), with the same cycle semantics available via the menu.
+        The inherited value's *source* (role vs system default) is stated
+        explicitly wherever that's ambiguous, rather than relying on colour
+        alone to distinguish "inherited (denied)" states that can arise from
+        two different real situations.
 
-        The design doc's own case for "F" was reusing an existing Vuetify
-        overlay rather than hand-rolling one ("v-select renders its own
-        overlay... F is what a from-scratch version should have been built
-        as") - v-menu here, not the v-select it specifically named, since a
-        real v-select's field chrome (outlined border, ~40px min-height,
-        label spacing, combobox ARIA) is built for a standalone form field,
-        not a ~24px inline pill repeated 30-60+ times in a dense permissions
-        grid. v-menu gets the same point (Vuetify owns the overlay: position,
-        z-index, Escape-to-close, click-outside) without that overhead. -->
+        v-menu, not v-select, provides the overlay: it gives Vuetify
+        ownership of overlay concerns (position, z-index, Escape-to-close,
+        click-outside) without a real v-select's field chrome (outlined
+        border, ~40px min-height, label spacing, combobox ARIA), which is
+        built for a standalone form field, not a ~24px inline pill repeated
+        30-60+ times in a dense permissions grid. -->
    <span class="value-tag">
       <v-menu v-model="open" :close-on-content-click="false" location="bottom start">
          <template #activator="{ props: menuProps }">

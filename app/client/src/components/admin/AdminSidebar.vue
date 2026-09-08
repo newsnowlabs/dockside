@@ -1,13 +1,11 @@
 <template>
-   <!-- Stage 3 of docs/plans/vue2-vue3-migration.md (dockside-admin repo): one
-        v-navigation-drawer replaces the old desktop b-col + mobile b-sidebar
-        pair (see Sidebar.vue's own comment for the same pattern and the
-        modelValue/COMPONENT_V_MODEL reasoning). Each section is a
-        v-list-group - Vuetify's own collapsible-header primitive - rather
-        than the old manual b-collapse + hand-rolled ▸/▾ toggle. Its default
-        per-nesting-level indent is turned off app-wide (plugins/vuetify.js's
-        VListGroup default, not a `fluid` prop here) - see that file's own
-        comment for why. -->
+   <!-- A single v-navigation-drawer serves both the desktop (permanent) and
+        mobile (overlay) layouts - see Sidebar.vue's own comment for the same
+        pattern and the modelValue/COMPONENT_V_MODEL reasoning. Each section
+        is a v-list-group, Vuetify's own collapsible-header primitive. Its
+        default per-nesting-level indent is turned off app-wide
+        (plugins/vuetify.js's VListGroup default, not a `fluid` prop here) -
+        see that file's own comment for why. -->
    <v-navigation-drawer
       :model-value="modelValue"
       @update:model-value="$emit('update:modelValue', $event)"

@@ -4,9 +4,8 @@
 
 HOME=$APP_HOME
 
-# Extract tag and short commit ID and save for rendering in the UI (moved here from
-# nginx/run by the mojolicious-app-server split - app-server is the process that actually
-# renders it now, and Data.pm reads every service's version file from its own service dir).
+# Extract tag and short commit ID for UI rendering; Data.pm reads every service's version
+# file from its own service dir.
 # The production image has no `git` package/PATH entry (see development stage in
 # Dockerfile); use the bundled system binary instead, matching entrypoint.sh's own
 # ide_cmd() convention for reaching tools under $IDE_PATH/bin.

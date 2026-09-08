@@ -58,10 +58,9 @@
 # Lifecycle:
 # - Runs in an outer while(1) loop: if eventHandler crashes or the /events stream closes (Docker
 #   restart, connection error, etc.), it restarts automatically after 1 second.
-# - Handles SIGTERM/SIGINT/SIGQUIT cleanly: sets a flag and stops the Mojo::IOLoop reactor -
-#   Mojo::IOLoop->stop cleanly interrupts an in-flight streamed request with no hang and no
-#   completion callback firing, so there is no subprocess-style two-stage SIGTERM-then-SIGKILL
-#   shutdown to do here any more; the process just exits.
+# - Handles SIGTERM/SIGINT/SIGQUIT cleanly: sets a flag and stops the reactor
+#   (Mojo::IOLoop->stop cleanly interrupts an in-flight streamed request with no hang and no
+#   completion callback firing); the process then just exits.
 
 use v5.36;
 
@@ -196,20 +195,17 @@ sub launch_or_queue_until_launcher_ready ($reservation, $context, $since) {
 # ide_command_env) and pure state-recording methods (hook_status_*/increment_start_count/
 # store_fields) are called directly from here - reused as-is, not reimplemented.
 #
-# TRANSPORT: every dispatch below is non-blocking (Util::docker_exec), never a fork. This
-# is what collapses the entire self-heal-vs-on_success race class that a forked, fork-per-tick
-# design was vulnerable to (see item F2's own history in this doc for the bug that motivated
-# this rewrite): there is only ever one process, so "which of two paths resolves this stage
-# first" is not a question that can be asked any more - the completion callback is the sole,
-# unambiguous resolver. It also means self-heal (polling a 'running' stage to check whether its
-# owning process died) is *only* ever needed once, at DED's own startup, for a stage left
-# 'running' by a *previous*, now-dead DED process - see this file's own restart-recovery sweep,
-# near the bottom. During normal operation, launch_advance below deliberately does NOT poll a
-# 'running' stage at all: it will resolve via its own completion callback, guaranteed, unless
-# DED itself dies - a case the restart-recovery sweep alone exists to cover. This removes the
-# old fork model's %launchInFlight per-tick polling entirely, not just relocates it - nothing
-# needs to keep re-checking an in-flight launch, because the callback chain drives itself to
-# completion on its own.
+# TRANSPORT: every dispatch below is non-blocking (Util::docker_exec), never a fork.
+# Non-blocking dispatch avoids races between self-heal and completion callbacks: there is
+# only ever one process, so "which of two paths resolves this stage first" is not a question
+# that can be asked - the completion callback is the sole, unambiguous resolver. It also
+# means self-heal (polling a 'running' stage to check whether its owning process died) is
+# *only* ever needed once, at DED's own startup, for a stage left 'running' by a *previous*,
+# now-dead DED process - see this file's own restart-recovery sweep, near the bottom. During
+# normal operation, launch_advance below deliberately does NOT poll a 'running' stage at all:
+# it will resolve via its own completion callback, guaranteed, unless DED itself dies - a case
+# the restart-recovery sweep alone exists to cover. Nothing needs to keep re-checking an
+# in-flight launch, because the callback chain drives itself to completion on its own.
 my $ROOT_USER    = sub ($reservation) { 'root' };
 my $NONROOT_USER = sub ($reservation) { $reservation->unixuser() };
 
@@ -364,9 +360,8 @@ sub launch_advance ($reservation) {
 # _launch_dispatch_exec/_launch_dispatch_hook_stage below) is what makes a stage's 'running'
 # status visible to *this same process* immediately - there is no IPC gap for a second,
 # re-entrant launch_advance call (from this stage's own completion callback, or a differently-
-# triggered call) to race against, unlike the old fork model where a forked child's write
-# landed asynchronously relative to the parent's own view. This is a direct, structural
-# consequence of there being only one process now, not a guard bolted on afterward.
+# triggered call) to race against. This is a direct, structural consequence of there being
+# only one process, not a guard bolted on afterward.
 sub launch_maybe_dispatch ($reservation, $stage) {
    my $status = $reservation->hook_status($stage);
    return if $status && ( $status->{'state'} // '' ) ne 'pending';
@@ -509,8 +504,7 @@ sub _launch_prep_env ($reservation, $userObj) {
 }
 
 # launch:prep's own dispatch - not just a plain _launch_dispatch_exec call, because this stage
-# carries two things specific to it alone, both preserved from the pre-item-F single-exec
-# design this whole split replaces: (1) _launch_prep_env's own SSH/owner env; (2)
+# carries two things specific to it alone: (1) _launch_prep_env's own SSH/owner env; (2)
 # DOCKSIDE_START_COUNT's compute-before/persist-after-confirmed-success dance - computed here as
 # a *prospective* value (purely informational for the container), but only ever persisted via
 # on_success once _launch_dispatch_exec confirms real success - never on a failed or merely-
@@ -546,18 +540,17 @@ sub _launch_dispatch_prep ($reservation, $cb) {
 
 # launch:ide's dispatch for a launch-version-0 profile (Profile::ide_launch_version): a devtainer
 # whose own launch.sh - never the outer's own, since this can only happen when mountIDE:false -
-# predates the launch:prep/launch:git split. Its single launch_ide entry point does all three
-# stages' own work itself (create_user/launch_sshd, then git clone/checkout, then the actual IDE
-# process), so this combines launch:prep's and launch:git's own env - both were resolved
-# 'skipped' outright rather than ever dispatched, see launch_reset_stages - into the one call.
-# Dispatched as root, not the split interface's nonroot: that interface's own slimmed-down
-# launch_ide only needs the nonroot user launch:prep already created; this container's
-# launch_ide still starts with create_user itself, which needs root exactly as launch:prep does.
+# has no launch:prep/launch:git/launch:ide split. Its single launch_ide entry point does all
+# three stages' own work itself (create_user/launch_sshd, then git clone/checkout, then the
+# actual IDE process), so this combines launch:prep's and launch:git's own env into the one
+# call; both stages resolve 'skipped' without ever dispatching (see launch_reset_stages).
+# Dispatched as root: this container's launch_ide starts with create_user itself, which needs
+# root exactly as launch:prep does, unlike a slimmed-down launch_ide that only needs the
+# nonroot user launch:prep already created.
 #
-# on_success here fires once dispatch is confirmed to have started (same as the split
-# interface's own launch:ide - see _launch_dispatch_exec's own comment on why Detach never
-# resolves via a real exit code), not once the launch has actually finished - there is no
-# separate bounded stage left to observe real completion on, since this container's own
+# on_success here fires once dispatch starts (not once the launch has actually finished) -
+# see _launch_dispatch_exec's own comment on why Detach never resolves via a real exit code.
+# There is no separate bounded stage to observe real completion on, since this container's own
 # launch_ide covers everything in one perpetual call.
 sub _launch_dispatch_legacy_ide ($reservation, $cb) {
    my $owner = $reservation->owner('username');
@@ -609,14 +602,11 @@ sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
    );
 }
 
-# Pure, synchronous merge of an already-fetched Docker /containers/json response with the
-# existing containers.json content - no I/O of its own. Split out from what used to be _update's
-# single function (fetch + merge in one, called from inside cacheReadWrite's own held lock) so
-# the (potentially slow - see update's own comment) fetch can happen *before* the lock is
-# ever taken, leaving only this fast, pure step to run under it. $newContainersFromAPI is the
-# decoded body of the API response; $oldJSON is cacheReadWrite's own existing-file content
-# (read fresh, right before this runs - see update's own comment on why that's a genuine,
-# if incidental, improvement over the old single-function shape, not just a refactor).
+# Pure, synchronous merge (no I/O) of an already-fetched Docker /containers/json response with
+# the existing containers.json content. Runs after the (potentially slow - see update's own
+# comment) fetch completes, so only this fast, pure step needs to run under cacheReadWrite's
+# lock. $newContainersFromAPI is the decoded body of the API response; $oldJSON is
+# cacheReadWrite's own existing-file content, read fresh right before this runs.
 sub _update_merge ($newContainersFromAPI, $oldJSON) {
    my $oldContainers;
    try {
@@ -687,12 +677,10 @@ sub _update_merge ($newContainersFromAPI, $oldJSON) {
 #
 # The fetch happens *before* cacheReadWrite is ever called, deliberately - nothing about
 # fetching depends on containers.json's own content, so there's no correctness reason to hold
-# its lock for the fetch's duration (unlike the old single-function _update, which held it for
-# exactly that - a side effect of being written as one plain synchronous function passed
-# straight into cacheReadWrite, not because the lock genuinely needed to span the fetch). cacheReadWrite
-# itself needs no changes at all: only the fast, pure merge (_update_merge, called from here)
-# ever runs under its lock now, exactly its existing synchronous contract, same as its other
-# callers throughout the codebase (Profile/User/Role management) still get.
+# its lock for the fetch's duration. cacheReadWrite itself needs no changes: only the fast,
+# pure merge (_update_merge, called from here) ever runs under its lock, exactly its existing
+# synchronous contract, same as its other callers throughout the codebase (Profile/User/Role
+# management).
 sub update ($opts, $cb) {
    # $CONFIG->{'docker'}{'sizes'} can disable size tracking entirely, not just defer it.
    my $path = '/containers/json?all=true' . (($CONFIG->{'docker'}{'sizes'} && $opts->{'updateSizes'}) ? '&size=true' : '');
@@ -1032,10 +1020,9 @@ sub eventHandler {
    # Reset to no-op so a late SIGTERM arriving after loop exit doesn't call stop on a dead loop.
    $STOP_EVENT_LOOP = sub {};
 
-   # Mojo::IOLoop is a singleton, reused across every eventHandler() call (unlike the old
-   # per-call IO::Async::Loop->new) - explicitly remove this call's own recurring timer or a
-   # later restart accumulates a second, overlapping one alongside it. See this sub's own
-   # header comment for why that matters, not just tidiness.
+   # Mojo::IOLoop is a singleton, reused across every eventHandler() call - explicitly remove
+   # this call's own recurring timer or a later restart accumulates a second, overlapping one
+   # alongside it. See this sub's own header comment for why that matters, not just tidiness.
    Mojo::IOLoop->remove($recurringId);
 
    flog("eventHandler: Ending...");

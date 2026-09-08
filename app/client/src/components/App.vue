@@ -1,11 +1,9 @@
 <template>
    <!-- v-app is Vuetify 3's required root wrapper, not decorative: components
         that render into an overlay (v-dialog, v-menu, v-tooltip, ...) look
-        for the layout context v-app provides and otherwise never mount their
-        content at all - confirmed live (Stage 3 of
-        docs/plans/vue2-vue3-migration.md): a bare v-dialog under a plain
-        <div> root updated its v-model correctly but produced zero DOM output,
-        no error, no warning. -->
+        for the layout context v-app provides. Without it, such a component
+        can update its v-model correctly yet mount no content at all, with no
+        error or warning to say why. -->
    <v-app>
       <!-- drawerOpen is lifted here rather than owned by Sidebar/AdminSidebar
            themselves: Header's hamburger (which toggles it) and whichever
@@ -80,16 +78,12 @@ export default defineComponent({
         // v-navigation-drawer only self-initialises to "visible" under
         // :permanent when its modelValue is left undefined at setup (see its
         // own source: `if (props.modelValue == null && !isTemporary.value)
-        // isActive.value = props.permanent || !mobile.value`) - binding an
-        // explicit, always-concrete controlled boolean here (needed so
-        // Header's hamburger and the sidebar can share state as siblings)
-        // means that branch never runs, so an initial `false` sticks even
-        // once :permanent resolves true. Confirmed live: $vuetify.display.
-        // mdAndUp read true on the mounted sidebar, yet the drawer still
-        // rendered closed/off-screen (no v-navigation-drawer--permanent
-        // class), because nothing had ever set the controlled value to true
-        // in the first place. Seeding it from the viewport directly, rather
-        // than a flat `false`, sidesteps needing that self-init branch at all.
+        // isActive.value = props.permanent || !mobile.value`). drawerOpen is
+        // bound as an explicit, always-concrete controlled boolean instead
+        // (needed so Header's hamburger and the sidebar can share state as
+        // siblings), so that self-init branch never runs - the value must be
+        // seeded from the actual viewport here, not a flat `false`, or the
+        // drawer stays closed/off-screen even once :permanent resolves true.
         drawerOpen: window.matchMedia('(min-width: 960px)').matches,
      };
   },
@@ -191,25 +185,21 @@ export default defineComponent({
       overflow-y: scroll;
    }
 
-   // No more manual `padding-top: 58px` for the fixed navbar height - Vuetify's
-   // layout system (v-app-bar/v-navigation-drawer/v-main/v-footer, all
-   // registered as layout participants) computes and applies this offset
-   // itself. The old active-nav-link underline rule moved too: it's now
-   // Header.vue's own .nav-btn--active and BottomNav.vue's .bottom-btn--active,
-   // scoped to those components rather than a global bootstrap-class selector.
+   // Vuetify's layout system (v-app-bar/v-navigation-drawer/v-main/v-footer,
+   // all registered as layout participants) computes and applies the fixed
+   // navbar's height offset itself, so no manual padding-top is set here.
+   // The active-nav-link underline rule lives in Header.vue's own
+   // .nav-btn--active and BottomNav.vue's .bottom-btn--active, scoped to
+   // those components.
    body {
       font-size: 0.9rem;
    }
 
    // Content gutter for whichever page renders inside v-main (Main.vue or
    // AdminMain.vue) - standardised here, on .page-content (the one shared
-   // wrapper both render into below), rather than duplicated per component:
-   // it was duplicated once already (AdminMain.vue's own copy silently lost
-   // its horizontal padding partway through Stage 3 of
-   // docs/plans/vue2-vue3-migration.md while its vertical padding survived -
-   // the admin/account pages ran edge-to-edge until that was caught), and a
-   // single copy here can't drift out of sync like that again, including
-   // for any future top-level page. Deliberately NOT on v-main itself:
+   // wrapper both render into below), rather than duplicated per component,
+   // so it can't drift out of sync between them, including for any future
+   // top-level page. Deliberately NOT on v-main itself:
    // v-main's own padding-* is how Vuetify's layout system offsets content
    // clear of the app-bar/drawer/footer (see its own padding-left:
    // var(--v-layout-left) etc.) - overriding that would break the offset
