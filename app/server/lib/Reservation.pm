@@ -1056,23 +1056,39 @@ sub action ($self, $action, $args, $cb) {
    # A reservation whose container does not exist - a create that failed, or one still in
    # flight - has no id to act on, and interpolating it into the paths below would ask Docker
    # about '/containers//stop'. Reported through $cb, the channel every other outcome of this
-   # call already uses.
+   # call already uses - as an Exception, the same shape a Docker-side refusal below hands back,
+   # so the caller has one kind of thing to render (see the route in bin/app-server).
    unless ( length( $containerId // '' ) ) {
-      $cb->( undef, "reservation '" . $self->id() . "' has no container to '$action'" );
+      $cb->( undef, Exception->new(
+         'msg'    => "This devtainer has no running container to '$action'",
+         'status' => 409,
+      ) );
       return;
    }
 
-   my ( $method, $path );
+   # $ok decides, per action, which Docker response codes count as the action having taken
+   # effect - not just a 2xx, because Docker signals several already-in-the-desired-state
+   # outcomes with a 304 or 404 that are successes for our purpose. $refusal names the codes
+   # worth reporting in words rather than as a bare number.
+   my ( $method, $path, $ok, $refusal );
 
    if ( $action eq 'stop' ) {
       my $t = $args->{'t'} // 10;   # Docker CLI's own default stop grace period
       ( $method, $path ) = ( 'POST', "/containers/$containerId/stop?t=$t" );
+      # 204 stopped, 304 already stopped, 404 already gone - all mean "not running", the goal.
+      $ok = sub ($code) { $code == 204 || $code == 304 || $code == 404 };
    }
    elsif ( $action eq 'start' ) {
       ( $method, $path ) = ( 'POST', "/containers/$containerId/start" );
+      # 204 started, 304 already running. A 404 here is a real failure - nothing to start.
+      $ok = sub ($code) { $code == 204 || $code == 304 };
    }
    elsif ( $action eq 'remove' ) {
       ( $method, $path ) = ( 'DELETE', "/containers/$containerId?v=true" );
+      # 204 removed, 404 already gone (a remove that finds nothing has reached its goal). 409 is
+      # Docker refusing to remove a still-running container - the one refusal worth naming.
+      $ok      = sub ($code) { $code == 204 || $code == 404 };
+      $refusal = { 409 => 'This devtainer is running; stop it before it can be removed' };
    }
    else {
       die Exception->new( 'msg' => "Unknown docker container action '$action'" );
@@ -1081,9 +1097,33 @@ sub action ($self, $action, $args, $cb) {
    call_socket_api(
       $CONFIG->{'docker'}{'socket'}, $path, { 'method' => $method },
       sub ( $result, $err ) {
+         my $code = $result ? $result->code : undef;
          flog( "Reservation::action: '$action' on '$containerId' "
-            . ( $err ? "failed: $err" : 'returned ' . ( $result ? $result->code : '(no result)' ) ) );
-         $cb->( $result, $err );
+            . ( $err ? "failed: $err" : 'returned ' . ( $code // '(no result)' ) ) );
+
+         # A transport-level failure ($err set, no HTTP response) is an upstream problem: this
+         # server could not reach or drive Docker. dbg carries the raw reason for the log;
+         # msg stays client-safe.
+         if ( $err ) {
+            $cb->( $result, Exception->new(
+               'msg'    => "Could not reach Docker to '$action' this devtainer",
+               'dbg'    => "Reservation::action: '$action' on '$containerId': $err",
+               'status' => 502,
+            ) );
+            return;
+         }
+
+         # A response arrived, but with a code this action does not count as success - a genuine
+         # refusal (named, where known) rather than the silent 200 this used to report.
+         if ( defined($code) && !$ok->($code) ) {
+            $cb->( $result, Exception->new(
+               'msg'    => $refusal->{$code} // "Docker refused to '$action' this devtainer (HTTP $code)",
+               'status' => $refusal->{$code} ? 409 : 502,
+            ) );
+            return;
+         }
+
+         $cb->( $result, undef );
       }
    );
    return;

@@ -562,13 +562,14 @@ for my $action (qw(stop start remove)) {
          try {
             my $User = _authenticate($c) or return;
 
-            # Outcome deliberately ignored - until there is better support in the Vue app
-            # to display errors, there is no point in returning it; the client reflects
-            # state from the fresh reservations list below regardless of whether the
-            # underlying action itself succeeded.
+            # An action Docker refused (a remove of a still-running container, say) or could
+            # not carry out is reported as that failure, with its own status and a client-safe
+            # message (Reservation::action classifies the Docker response into $err). Success
+            # still returns the fresh reservations list the client reflects its state from.
             $User->controlContainer(
                $action, $id, {},
                sub ( $result, $err ) {
+                  return _render_error( $c, $err ) if $err;
                   return $c->render( json => {
                      'status' => '200',
                      'data'   => $User->reservations( { 'client' => 1 } ),
