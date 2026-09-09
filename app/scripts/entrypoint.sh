@@ -316,6 +316,14 @@ _EOE_
     ln -sf $APP_DIR/app/scripts/runscripts/$s/down-signal /etc/service/$s/down-signal
   fi
 
+  # Symlink a finish script, if this service declares one - s6-supervise runs ./finish after
+  # ./run exits and before it restarts it, so a service that can exit on a fatal error (a core
+  # config file that won't parse - see Data.pm) uses it to throttle the crash-restart loop.
+  # Generic here (any service can opt in), like down-signal above.
+  if [ -f "$APP_DIR/app/scripts/runscripts/$s/finish" ]; then
+    ln -sf $APP_DIR/app/scripts/runscripts/$s/finish /etc/service/$s/finish
+  fi
+
   # Copy each immediate child of $APP_DIR/app/scripts/runscripts/$s/data
   # N.B. We can't symlink $APP_DIR/app/scripts/runscripts/logrotate/data because
   #.     for logrotate to run, these files must be root-owned.

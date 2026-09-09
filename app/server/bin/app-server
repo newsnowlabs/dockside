@@ -38,6 +38,11 @@ use App::Metadata;   # $c-native, not adapter-backed - see its own route below
 flog({ 'service' => 'dockside-app', 'file' => "/var/log/$ENV{'USER'}/$ENV{'USER'}.log" });
 flog("Starting...");
 
+# Startup config load is fatal on a core-file parse failure: this process cannot serve correctly
+# without config/users/roles/reservations/containers, so a corrupt one exits for s6 to restart
+# (see Data::$CORE_PARSE_FAILURE_FATAL). Cleared before the prefork server starts so the
+# per-request reloads inside workers instead fail that one request closed rather than exiting.
+$Data::CORE_PARSE_FAILURE_FATAL = 1;
 Data::load();
 
 # Finds every reservation whose createStatus.stage is non-terminal and asks it to reconcile
@@ -1177,6 +1182,12 @@ Mojo::IOLoop->singleton->on( finish => sub (@) {
 } );
 
 flog("Listening on 127.0.0.1:$port with $workers worker(s)...");
+
+# Startup is done; the workers about to be forked will reload config per request, where a core
+# parse failure must fail that request closed rather than exit the worker (see the startup load
+# above and Data::$CORE_PARSE_FAILURE_FATAL). Cleared here, before the fork, so workers inherit
+# the non-fatal setting.
+$Data::CORE_PARSE_FAILURE_FATAL = 0;
 
 Mojo::Server::Prefork->new(
    listen           => ["http://127.0.0.1:$port"],

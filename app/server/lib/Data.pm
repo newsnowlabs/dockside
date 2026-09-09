@@ -31,6 +31,19 @@ our $INNER_DOCKERD = get_config('/etc/service/app-server/data/inner-dockerd');
 our $VERSION = get_config('/etc/service/app-server/data/version');
 our $HOSTINFO = { 'docker' => undef, 'IDEs' => undef }; # Host info cache: populated later
 
+# Core config files: a failure to parse one is a critical error, not something to run past on
+# stale/undef data (see load()'s own parse-failure handling). Profiles are deliberately not
+# here - a single unparseable profile is skipped individually (Data.pm's profiles loader), never
+# a whole-server failure.
+my %CORE_FILE = map { $_ => 1 } qw( config.json users.json roles.json reservations.json containers.json );
+
+# Set true by app-server / docker-event-daemon around their own startup load: a core-file parse
+# failure then exits the process (bypassing any surrounding catch) so s6 restarts it. Left false
+# for reload-time loads and for nginx-embedded Proxy, where the failure is instead re-thrown and
+# caught by the request/event handler already around it - failing that one request/event closed
+# rather than taking the process, or an nginx worker, down.
+our $CORE_PARSE_FAILURE_FATAL = 0;
+
 sub parse_json ($json) {
    local $_ = $json;
 
@@ -314,7 +327,27 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
             }
             catch {
                chomp;
-               flog("Data::load: error parsing '$file': '$_'");
+               my $err = $_;
+
+               if ( $CORE_FILE{$p} ) {
+                  # Log loudly - to flog and, unconditionally, to STDERR so it reaches the
+                  # container's log stream (`docker logs`) whatever the state of the log file -
+                  # then either exit for s6 to restart (at startup, $CORE_PARSE_FAILURE_FATAL) or
+                  # re-throw. The re-throw aborts this file's update below, so its lastModified and
+                  # last-good data are left untouched (the outer handler swallows it) and the next
+                  # load retries, rather than running 'process' on a partial/undef parse.
+                  my $emsg = "Data::load: ERROR: cannot parse core config file '$file': $err";
+                  flog($emsg);
+                  print STDERR "[dockside] $emsg\n";
+                  if ( $CORE_PARSE_FAILURE_FATAL ) {
+                     flog("Data::load: ERROR: exiting so s6 restarts this service");
+                     print STDERR "[dockside] Data::load: ERROR: exiting so s6 restarts this service\n";
+                     exit(1);
+                  }
+                  die $err;
+               }
+
+               flog("Data::load: error parsing '$file': '$err'");
             };
          }
 

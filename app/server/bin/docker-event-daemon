@@ -1033,6 +1033,11 @@ sub eventHandler {
 flog({ 'service' => 'docker-event-daemon', 'file' => "/var/log/$ENV{'USER'}/$ENV{'USER'}.log" });
 flog("Starting...");
 
+# Startup config loads (here and the restart-recovery sweep below) are fatal on a core-file
+# parse failure: this daemon cannot manage containers without them, so a corrupt one exits for
+# s6 to restart (see Data::$CORE_PARSE_FAILURE_FATAL). Cleared before the event loop so the
+# per-event reloads there instead skip that one event rather than exiting the daemon.
+$Data::CORE_PARSE_FAILURE_FATAL = 1;
 Data::load('config.json');
 
 # Create temporary path needed for cache and log files.
@@ -1096,6 +1101,10 @@ try {
 catch {
    flog("Restart-recovery sweep failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
 };
+
+# Startup is done; the event loop's own per-event reloads must skip a bad reload rather than
+# exit the daemon (see the startup load above and Data::$CORE_PARSE_FAILURE_FATAL).
+$Data::CORE_PARSE_FAILURE_FATAL = 0;
 
 # Restart eventHandler if the 'docker events' stream closes unexpectedly (e.g. Docker restart).
 while(1) {
