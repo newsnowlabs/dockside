@@ -999,7 +999,9 @@ sub meta_has_user ($self, $key, $user) {
    # Empty $user would still match the regex, so check for this case.
    return 0 unless defined($user);
 
-   return $self->meta($key) =~ /(?:^|,)\Q$user\E(?:,|$)/;
+   # An unset list - 'viewers'/'developers' never assigned on this reservation - names nobody,
+   # and is matched against as the empty string rather than as undef.
+   return ( $self->meta($key) // '' ) =~ /(?:^|,)\Q$user\E(?:,|$)/;
 }
 
 # Return the reservations whose owner/viewers/developers reference $identifier, as a
@@ -1050,6 +1052,16 @@ sub getLogs ($self, $args = {}) {
 # container command that stays synchronous, never routed through here.
 sub action ($self, $action, $args, $cb) {
    my $containerId = $self->containerId();
+
+   # A reservation whose container does not exist - a create that failed, or one still in
+   # flight - has no id to act on, and interpolating it into the paths below would ask Docker
+   # about '/containers//stop'. Reported through $cb, the channel every other outcome of this
+   # call already uses.
+   unless ( length( $containerId // '' ) ) {
+      $cb->( undef, "reservation '" . $self->id() . "' has no container to '$action'" );
+      return;
+   }
+
    my ( $method, $path );
 
    if ( $action eq 'stop' ) {

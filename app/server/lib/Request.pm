@@ -46,7 +46,10 @@ sub authenticate_by_credentials ($class, $username, $password) {
 # - a User object containing authentication state, if authentication cookie(s) can be validated
 
 sub authenticate ($class, $options) {
-   my $cookie = $options->{'cookie'};
+   # A request carrying no Cookie header at all is ordinary - every pre-login page view is one -
+   # and reaches here as undef. The checks below all read this as a string, so an absent header
+   # is one carrying no cookies rather than an undefined value.
+   my $cookie = $options->{'cookie'} // '';
 
    my $user = User->new();
 
