@@ -320,10 +320,18 @@ sub cmdline ($self) {
 sub _parse_docker_size ($str) {
    return 0 + $str if $str =~ /^\d+$/;
    my ( $num, $unit ) = $str =~ /^([\d.]+)\s*([a-zA-Z]*)$/
-      or die Exception->new( 'msg' => "Internal error - cannot parse docker size string '$str'" );
+      or die Exception->new(
+         'msg'    => "This devtainer's profile declares a size, '$str', that cannot be read as one " .
+                     "(expected digits, optionally followed by b, k, kb, m, mb, g or gb)",
+         'status' => 400
+      );
    my %mult = ( '' => 1, 'b' => 1, 'k' => 1024, 'kb' => 1024, 'm' => 1024**2, 'mb' => 1024**2, 'g' => 1024**3, 'gb' => 1024**3 );
    my $m = $mult{ lc($unit) };
-   die Exception->new( 'msg' => "Internal error - unknown docker size unit '$unit' in '$str'" ) unless defined $m;
+   die Exception->new(
+      'msg'    => "This devtainer's profile declares a size, '$str', with an unrecognised unit " .
+                  "'$unit' (expected b, k, kb, m, mb, g or gb)",
+      'status' => 400
+   ) unless defined $m;
    return int( $num * $m );
 }
 
@@ -421,15 +429,23 @@ sub cmdline_json ($self) {
             push( @env, $1 );
          }
          else {
-            die Exception->new( 'msg' => "Internal error - dockerArgs entry '$arg' has no JSON Create API equivalent implemented" );
+            die Exception->new(
+               'msg'    => "This devtainer's profile declares a dockerArgs entry, '$arg', that this " .
+                           "server cannot apply. Supported entries are --memory, --pids-limit, " .
+                           "--cpus and --env.",
+               'status' => 400
+            );
          }
       }
    }
 
    my @mounts;
    for my $m ( @{ $self->profileObject->{'mounts'}{'tmpfs'} } ) {
-      die Exception->new( 'msg' => "Internal error - tmpfs mount options beyond size/mode have no JSON Create API equivalent implemented (dst='$m->{'dst'}')" )
-         if $m->{'tmpfs-uid'} || $m->{'tmpfs-gid'} || $m->{'tmpfs-noexec'} || $m->{'tmpfs-nosuid'} || $m->{'tmpfs-nodev'};
+      die Exception->new(
+         'msg'    => "This devtainer's profile declares a tmpfs mount for '$m->{'dst'}' using options " .
+                     "that this server cannot apply. Only size and mode are supported.",
+         'status' => 400
+      ) if $m->{'tmpfs-uid'} || $m->{'tmpfs-gid'} || $m->{'tmpfs-noexec'} || $m->{'tmpfs-nosuid'} || $m->{'tmpfs-nodev'};
       my $tmpfsOptions = {};
       $tmpfsOptions->{'SizeBytes'} = _parse_docker_size( $m->{'tmpfs-size'} ) if $m->{'tmpfs-size'};
       $tmpfsOptions->{'Mode'}      = oct( $m->{'tmpfs-mode'} )               if $m->{'tmpfs-mode'};

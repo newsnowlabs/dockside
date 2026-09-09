@@ -1260,8 +1260,19 @@ sub createContainerReservation ($self, $args, $cb) {
 
    $reservation->data('runningIDE', $reservation->meta('IDE'));
 
-   # Test if we can construct the command line; on failure, we'll throw an error.
-   $reservation->cmdline();
+   # Render the Create API request body now, synchronously, and discard it. This is the same
+   # cmdline_json() call create() itself makes, so whatever it rejects - a dockerArgs entry,
+   # tmpfs option or size string this server cannot express, an undeclared {option.<name>} or
+   # {container.<prop>} placeholder - is reported in the response to this request, while this
+   # reservation has not been persisted and the devcontainer.json fetch below has not run. The
+   # same failure raised from inside create() would arrive only after both, leaving a stored
+   # reservation with a 'failed' createStatus behind for a profile that cannot launch as
+   # written.
+   #
+   # The body is deliberately not carried forward to create(): building it is pure computation
+   # over profile/reservation data with no I/O, and create() needs the version reflecting
+   # whatever the fetch below changes.
+   $reservation->cmdline_json();
 
    $reservation->getGitDevContainer( sub ($dc) {
       if ($dc) {
