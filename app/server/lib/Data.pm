@@ -56,6 +56,10 @@ our $CONFIG;
 my $CONFIG_FILES;
 $CONFIG_FILES = {
    'users.json' => {
+      # Read under cacheReadWrite's shared lock, the same lock User/Manage.pm's writes take
+      # exclusively - so a read never observes a half-written file, matching reservations.json
+      # and containers.json below.
+      'load' => \&cacheReadWrite,
       'process' => sub ($c) {
          my $USERS;
          foreach my $username ( keys %$c ) {
@@ -72,6 +76,8 @@ $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'roles.json' => {
+      # Shared-locked read, same as users.json above.
+      'load' => \&cacheReadWrite,
       'process' => sub ($ROLES) {
          if($ROLES) {
             # Set up convenience shortcut
