@@ -34,6 +34,11 @@ const createStore = () => createVuexStore({
       // relationship, so v-dialog's plain v-model has nowhere shared to
       // live except here.
       sshInfoModalOpen: false,
+      // The app-wide snackbar (rendered once in App.vue). Lives in the store,
+      // like sshInfoModalOpen above, because any component - via the notifier
+      // mixin - needs to raise it, and the single <v-snackbar> that shows it is
+      // a sibling of all of them, not a parent.
+      snackbar: { show: false, text: '', color: 'error', timeout: 6000 },
    },
    getters: {
       welcomeTextStatus: state => state.welcomeTextStatus,
@@ -72,7 +77,16 @@ const createStore = () => createVuexStore({
       },
       setSshInfoModalOpen(state, open) {
          state.sshInfoModalOpen = open;
-      }
+      },
+      showSnackbar(state, { text, color = 'error', timeout = 6000 }) {
+         // Replace the whole object so a rapid second message re-triggers the
+         // snackbar even while the first is still visible (Vuetify re-opens on a
+         // fresh truthy model-value, but only if the reference actually changes).
+         state.snackbar = { show: true, text, color, timeout };
+      },
+      hideSnackbar(state) {
+         state.snackbar = { ...state.snackbar, show: false };
+      },
    },
    actions: {
       updateWelcomeTextStatus({ state, commit }, status) {

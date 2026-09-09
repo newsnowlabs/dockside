@@ -34,6 +34,23 @@
 
       <SSHInfo></SSHInfo>
       <BottomNav></BottomNav>
+
+      <!-- App-wide snackbar: one instance, driven by store state, raised from
+           anywhere via the notifier mixin (replaces the old blocking alert()s).
+           Controlled rather than v-model'd so its auto-timeout close is written
+           back to the store, keeping state.snackbar.show honest. -->
+      <v-snackbar
+         :model-value="snackbar.show"
+         @update:model-value="(v) => { if (!v) { $store.commit('hideSnackbar'); } }"
+         :color="snackbar.color"
+         :timeout="snackbar.timeout"
+         location="bottom right"
+      >
+         {{ snackbar.text }}
+         <template #actions>
+            <v-btn variant="text" @click="$store.commit('hideSnackbar')">Close</v-btn>
+         </template>
+      </v-snackbar>
    </v-app>
 </template>
 
@@ -91,6 +108,9 @@ export default defineComponent({
   computed: {
      user() {
         return this.$store.state.account.currentUser;
+     },
+     snackbar() {
+        return this.$store.state.snackbar;
      },
   },
 

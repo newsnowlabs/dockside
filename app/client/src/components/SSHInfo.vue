@@ -140,12 +140,12 @@
 import { defineComponent } from 'vue';
 import { mapState } from 'vuex';
 
-import { copyable } from '@/components/mixins';
+import { copyable, notifier } from '@/components/mixins';
 import { getAuthCookies } from '@/services/container';
 
 export default defineComponent({
   name: 'SSHInfo',
-  mixins: [copyable],
+  mixins: [copyable, notifier],
 
   data() {
      return {
@@ -239,13 +239,8 @@ ForwardAgent yes`;
               this.cookiesRaw = data.data;
            })
            .catch((error) => {
-              if(error.response && error.response.status == 401) {
-                 console.log(error.response.data.msg);
-                 alert(error.response.data.msg);
-              }
-              else {
-                 console.error("Error fetching authentication cookie", error);
-              }
+              // Surface the server's msg in the snackbar (any status, not only a 401), else log.
+              this.notifyError(error, "Error fetching authentication cookie");
            });
      }
   },

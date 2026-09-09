@@ -453,7 +453,7 @@ import { defineComponent } from 'vue';
 import { mapState } from 'vuex';
 import { mapGetters } from 'vuex';
 import { mapActions } from 'vuex';
-import { routing, copyable } from '@/components/mixins';
+import { routing, copyable, notifier } from '@/components/mixins';
 import UserTagsInput from '@/components/UserTagsInput';
 import ConfirmModal from '@/components/shared/ConfirmModal';
 import DetailField from '@/components/shared/DetailField';
@@ -852,18 +852,10 @@ export default defineComponent({
               me.$store.dispatch('setContainers', data.data);
            })
            .catch((error) => {
-              // See https://github.com/axios/axios#handling-errors. The server now reports a
-              // refused or failed action (e.g. removing a still-running devtainer) as a non-2xx
-              // carrying a sanitised msg, not only the 401 this used to special-case - surface
-              // whatever msg came back, whatever its status.
-              const msg = error.response && error.response.data && error.response.data.msg;
-              if(msg) {
-                 console.log(msg);
-                 alert(msg);
-              }
-              else {
-                 console.error(error);
-              }
+              // The server reports a refused or failed action (e.g. removing a still-running
+              // devtainer) as a non-2xx carrying a sanitised msg; notifyError surfaces that in
+              // the app-wide snackbar, whatever the status, and logs anything without a msg.
+              me.notifyError(error);
            });
      },
      showLogs() {
@@ -957,14 +949,9 @@ export default defineComponent({
               me.goToContainer(data.reservation.name, 'view', 1);
            })
            .catch((error) => {
-              // See https://github.com/axios/axios#handling-errors
-              if(error.response && error.response.status == 401) {
-                 console.log(error.response.data.msg);
-                 alert(error.response.data.msg);
-              }
-              else {
-                 console.error(error);
-              }
+              // A failed launch now surfaces its server-supplied msg in the snackbar, not only
+              // for a 401 as this used to - same treatment as the action() catch above.
+              me.notifyError(error);
            });
      },
      cancel() {
@@ -981,7 +968,7 @@ export default defineComponent({
      }
   },
 
-  mixins: [routing, copyable],
+  mixins: [routing, copyable, notifier],
 
   beforeUnmount() {
      clearTimeout(this.querySyncTimeout);

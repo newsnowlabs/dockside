@@ -164,4 +164,26 @@ const copyable = {
    },
 };
 
-export { filteredContainers, navIcons, routing, routePermissions, sidebarDrawerSelect, copyable };
+// Raises the app-wide snackbar (rendered once in App.vue, backed by the root
+// store's snackbar state) from any component, replacing the bare alert() calls
+// that used to interrupt the page. notifyError is the shared shape every catch
+// block wants: show the server's own sanitised msg when there is one, otherwise
+// log - so a genuine transport failure with no response body is recorded rather
+// than surfaced as an empty, unactionable toast.
+const notifier = {
+   methods: {
+      notify(text, { color = 'error', timeout = 6000 } = {}) {
+         this.$store.commit('showSnackbar', { text, color, timeout });
+      },
+      notifyError(error, context) {
+         const msg = error && error.response && error.response.data && error.response.data.msg;
+         if (msg) {
+            this.notify(msg, { color: 'error' });
+         } else {
+            console.error(context || 'Request failed', error);
+         }
+      },
+   },
+};
+
+export { filteredContainers, navIcons, routing, routePermissions, sidebarDrawerSelect, copyable, notifier };
