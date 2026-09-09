@@ -872,6 +872,16 @@ sub normalise_router_def ($routerDef, $existingRouters) {
       next unless $proto;
       die Exception->new( 'msg' => "router '$publicProtocol' must be an Object with 'protocol' and 'port'", 'status' => 400 )
          unless ref($proto) eq 'HASH' && $proto->{'protocol'} && defined($proto->{'port'});
+      # 'protocol' ends up as the scheme of the proxy_pass target nginx is handed for every
+      # request to this router (Reservation::lookup_container_uri renders it straight into
+      # "<protocol>://<ip>:<port>", which Proxy::_get_server_port returns to the nginx config's
+      # own `proxy_pass $upstream_https`). nginx honours a proxy target supplied via a variable
+      # verbatim, without normalising it, so this must stay restricted to the two schemes nginx
+      # can actually proxy to: a value carrying its own host, path or query would otherwise be
+      # honoured as one, redirecting this router's traffic anywhere the Dockside container can
+      # reach.
+      die Exception->new( 'msg' => "router '$publicProtocol.protocol' must be 'http' or 'https'", 'status' => 400 )
+         unless $proto->{'protocol'} =~ /^https?$/;
       die Exception->new( 'msg' => "router '$publicProtocol.port' must be an integer between 1 and 65535", 'status' => 400 )
          unless $proto->{'port'} =~ /^\d+$/ && $proto->{'port'} >= 1 && $proto->{'port'} <= 65535;
       $public{$publicProtocol} = { 'protocol' => $proto->{'protocol'}, 'port' => 0 + $proto->{'port'} };
