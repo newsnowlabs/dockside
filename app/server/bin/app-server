@@ -314,7 +314,14 @@ sub _render_spa_shell ($c, $User, $parentFQDN) {
       );
    }
    catch {
-      die Exception->new( 'msg' => 'Failed to initialise client-side data structures', 'dbg' => "Caught exception: $_" );
+      # status 500 explicitly: _render_error defaults an Exception carrying no status of its own
+      # to 401, which for a failure to assemble this page's own data would tell an authenticated
+      # browser it is not logged in and bounce it to the login page, hiding the real failure.
+      die Exception->new(
+         'msg'    => 'Failed to initialise client-side data structures',
+         'dbg'    => "Caught exception: $_",
+         'status' => 500,
+      );
    };
    $page .= '</head>' . '<body data-spy="scroll" data-target=".sidebar">' . "\n" . "<div id='app'><router-view></router-view></div>\n";
    # 'assets/main.js', not 'main.js': its on-disk path, matching where the
