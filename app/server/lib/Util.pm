@@ -37,8 +37,11 @@ my $FLOG;
 
 sub flog ($m) {
    if(ref($m) eq 'HASH') {
-      $FLOG->{'service'} = $m->{'service'};
-      $FLOG->{'file'} = $m->{'file'};
+      # Only the keys actually supplied are updated. A caller naming just a service (App.pm,
+      # Proxy.pm) must not silently redirect logging that another caller has already pointed at
+      # a specific file: bin/app-server and bin/docker-event-daemon each set both, and a later
+      # service-only call would otherwise send the rest of that process's output somewhere else.
+      $FLOG->{$_} = $m->{$_} for grep { exists $m->{$_} } qw( service file );
       return;
    }
 
@@ -47,10 +50,24 @@ sub flog ($m) {
    my @tm = gmtime($time[0]);
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
 
-   open( LOG, ">>", $FLOG->{'file'} || "/var/log/dockside/dockside.log" ) && do {
-      printf LOG "%05d: %s [%s] %s\n", $$, $dt, $FLOG->{'service'} // 'dockside', $m;
-      close LOG;
-   };
+   my $file = $FLOG->{'file'} || "/var/log/dockside/dockside.log";
+   my $line = sprintf( "%05d: %s [%s] %s\n", $$, $dt, $FLOG->{'service'} // 'dockside', $m );
+
+   if( open( my $fh, ">>", $file ) ) {
+      print $fh $line;
+      close $fh;
+      return;
+   }
+
+   # A log file this process cannot open must not cost the line. STDERR reaches the container's
+   # own log stream for an s6-supervised service, and nginx's error log for the embedded proxy,
+   # so both the message and the reason it could not be filed remain visible to an operator.
+   # This matters because the file is shared by processes running as different users - nginx's
+   # master is root, everything else is $USER - so whichever process creates it decides who can
+   # write to it afterwards; without this, that lands as silence rather than as a diagnosis.
+   print STDERR "[dockside] flog: cannot append to '$file' ($!): $line";
+
+   return;
 }
 
 sub wlog ($m) {
