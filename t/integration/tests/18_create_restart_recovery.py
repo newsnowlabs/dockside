@@ -37,7 +37,14 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
-from dockside_test import TestCase, APIError, restart_app_server
+from dockside_test import TestCase, APIError, restart_app_server, restart_app_server_graceful
+
+# app-server's own log. Read directly (it is world-readable) rather than through the CLI, for
+# the one thing the CLI cannot show: whether a graceful restart drained an in-flight create in
+# the worker that owned it, or left it to the startup sweep afterwards - both end 'done', so the
+# drain's own log line is the only observable difference (see test_03). The same low-level-helper
+# allowance (CLAUDE.md t/integration rule 5) that _ensure_image_absent's docker calls rely on.
+_APP_SERVER_LOG = '/var/log/dockside/dockside.log'
 
 # A real, moderately-sized image, deliberately made absent before each test (see
 # _ensure_image_absent) - large enough that a genuine pull takes several real seconds, giving
@@ -201,3 +208,61 @@ class CreateRestartRecoveryTests(TestCase):
         for name in names:
             data = self._wait_create_settled(name)
             self._assert_recovered(name, data)
+
+    def _log_contains_since(self, offset, needle, timeout=120):
+        """Poll app-server's log, from byte `offset`, for `needle`. The drain line is written as
+        the worker exits, which under a graceful shutdown trails the restart by however long the
+        pull takes to finish - so this polls rather than reading once.
+
+        Rotation-aware: logrotate can rotate this file mid-test (size-triggered, ~every 60s), which
+        would leave `offset` pointing past the end of the new, smaller file. When the file is now
+        smaller than `offset`, read it whole from the start instead - safe here because the needle
+        (the graceful drain line) is written by nothing else in this module (test_01/02 use a
+        non-graceful `-t` that never drains), so a match cannot be some earlier line before the
+        offset."""
+        def _check():
+            try:
+                size = os.path.getsize(_APP_SERVER_LOG)
+                with open(_APP_SERVER_LOG, 'r', errors='replace') as fh:
+                    fh.seek(0 if size < offset else offset)
+                    return needle in fh.read()
+            except OSError:
+                return False
+
+        try:
+            return self.wait_until(_check, timeout=timeout, interval=1, timeout_msg='not found')
+        except AssertionError:
+            return False
+
+    def test_03_graceful_restart_drains_in_flight_create(self):
+        """A graceful restart (`s6-svc -r` -> SIGQUIT, app-server's own down-signal) mid-pull must
+        DRAIN the in-flight create() in the worker that owns it - ADR-0007 mechanism 3 - not
+        abandon it for the startup sweep to recover afterwards. Both paths leave the reservation
+        'done', so the drain is asserted via the exit handler's own log line, the only observable
+        difference, alongside the terminal state. This is the path restart_app_server's `-t`
+        deliberately does not exercise, and which shipped inert until it was fixed."""
+        self._ensure_image_absent()
+        name = self._sfx('inttest-createrestart-graceful')
+        self.register_cleanup(name)
+        self.admin.create(profile=self._profile, name=name, no_wait=True)
+
+        self._wait_pulling_with_progress(name)
+
+        try:
+            offset = os.path.getsize(_APP_SERVER_LOG)
+        except OSError:
+            offset = 0
+
+        # SIGQUIT while the pull is genuinely in flight. This blocks until the manager exits,
+        # which it only does once its workers have drained - so on return the drain has happened.
+        restart_app_server_graceful()
+
+        self.assert_true(
+            self._log_contains_since(offset, 'drained every in-flight create chain'),
+            "graceful restart did not drain the in-flight create(): no 'drained every in-flight "
+            "create chain' line after the restart - mechanism 3 inert, or the drain hit its grace "
+            "period",
+        )
+
+        data = self._wait_create_settled(name)
+        self._assert_recovered(name, data)

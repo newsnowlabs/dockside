@@ -858,6 +858,55 @@ def restart_app_server(timeout=15):
     raise AssertionError(f'app-server did not come back up with a new pid within {timeout}s of restart')
 
 
+def restart_app_server_graceful(timeout=150):
+    """Restart app-server via `s6-svc -r` - its documented day-to-day restart - and wait for a
+    new pid.
+
+    Unlike restart_app_server above, which forces a non-graceful `-t` to stand in for a hard
+    kill, this exercises the graceful path: app-server ships a down-signal of QUIT, so `-r`
+    delivers SIGQUIT, which Mojo::Server::Prefork treats as a graceful shutdown - each worker
+    runs its exit handler and drains any in-flight create() chain before exiting
+    (docs/adr/0007-create-restart-recovery.md, mechanism 3). The manager therefore does not exit,
+    and s6 does not report a new pid, until that drain finishes - hence a far more generous
+    default timeout than the `-t` path.
+
+    Skips (CapabilityUnavailable) if the down-signal file isn't in place: without it `-r` is a
+    bare SIGTERM and there is no graceful drain to exercise - the exact environment gap that left
+    this path untested until now (a container built before the file existed; entrypoint.sh
+    installs it on a current image).
+    """
+    svc = '/etc/service/app-server'
+    if not os.path.exists(f'{svc}/down-signal'):
+        raise CapabilityUnavailable(
+            f'{svc}/down-signal is not present, so `s6-svc -r` is a non-graceful SIGTERM here '
+            f'and the graceful create-drain cannot be exercised - relaunch from a current image '
+            f'(entrypoint.sh installs down-signal).'
+        )
+    probe = subprocess.run(['sudo', '-n', 's6-svstat', svc], capture_output=True, text=True, timeout=10)
+    if probe.returncode != 0:
+        raise CapabilityUnavailable(
+            f'app-server not reachable via sudo s6-svstat (rc={probe.returncode}, '
+            f'stderr={probe.stderr.strip()!r}) - needs a mountIDE:false environment with our '
+            f'own writable /opt/dockside, see CLAUDE.md\'s testing-capability matrix'
+        )
+    before_pid = _svstat_pid(probe.stdout)
+
+    r = subprocess.run(['sudo', '-n', 's6-svc', '-r', svc], capture_output=True, text=True, timeout=10)
+    if r.returncode != 0:
+        raise CapabilityUnavailable(
+            f'sudo s6-svc -r {svc} failed (rc={r.returncode}, stderr={r.stderr.strip()!r})'
+        )
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.5)
+        probe = subprocess.run(['sudo', '-n', 's6-svstat', svc], capture_output=True, text=True, timeout=10)
+        pid = _svstat_pid(probe.stdout) if probe.returncode == 0 else None
+        if pid and pid != before_pid:
+            return
+    raise AssertionError(f'app-server did not come back up with a new pid within {timeout}s of graceful restart')
+
+
 def create_and_attach_test_network(admin_client, ctr, probe_profile, probe_name,
                                     timeout=45, interval=3):
     """Create a throwaway Docker network, attach it to `ctr`, and wait until Dockside
