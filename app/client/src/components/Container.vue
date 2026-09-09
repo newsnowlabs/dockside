@@ -845,14 +845,21 @@ export default defineComponent({
         controlContainer(this.container.id, command)
            .then(data => {
               console.log('controlContainer', data);
+              // Only navigate away and refresh on success. A refused remove rejects instead,
+              // so the card stays put and the displayed state - unchanged, because the action
+              // didn't take effect - remains accurate.
               if(command === 'remove') { me.goHome(); }
               me.$store.dispatch('setContainers', data.data);
            })
            .catch((error) => {
-              // See https://github.com/axios/axios#handling-errors
-              if(error.response && error.response.status == 401) {
-                 console.log(error.response.data.msg);
-                 alert(error.response.data.msg);
+              // See https://github.com/axios/axios#handling-errors. The server now reports a
+              // refused or failed action (e.g. removing a still-running devtainer) as a non-2xx
+              // carrying a sanitised msg, not only the 401 this used to special-case - surface
+              // whatever msg came back, whatever its status.
+              const msg = error.response && error.response.data && error.response.data.msg;
+              if(msg) {
+                 console.log(msg);
+                 alert(msg);
               }
               else {
                  console.error(error);
