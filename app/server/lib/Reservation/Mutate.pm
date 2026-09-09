@@ -158,11 +158,19 @@ sub load_clean_map ($class, @containerIds) {
 # record_hook_history:
 #
 # Atomically append $entry to reservation $id's data.hooks.history array, evicting oldest-first
-# down to at most $cap rows once appending would exceed it - but only rows in a terminal state
-# ($_->{'exitCode'} defined), never a still-running one (item B's storage-model rule: an
-# unrelated, more-frequent *other* hook name's invocations must never push a genuinely
-# still-running row out from under it, so the array can transiently exceed $cap while enough
-# invocations are genuinely in flight at once - expected, not a bug).
+# down to at most $cap rows once appending would exceed it - but never a row still recording a
+# running invocation (item B's storage-model rule: an unrelated, more-frequent *other* hook
+# name's invocations must never push a genuinely still-running row out from under it, so the
+# array can transiently exceed $cap while enough invocations are genuinely in flight at once -
+# expected, not a bug).
+#
+# Eligibility is decided on 'state', which is what that rule is actually about, and not on
+# whether a row carries an exitCode: a row can be perfectly terminal and still have none, and
+# several routinely do - 'skipped' (every inapplicable launch:-DAG stage, recorded on every
+# container start), 'aborted' (a dispatch that never produced an exit code at all) and
+# 'timedOut'. Making those ineligible would leave the array unable to shrink whenever they
+# outnumber the rows that do carry an exitCode, which for an ordinary launch cycle they always
+# do, and $cap would then bound nothing.
 #
 # Deliberately its own atomic mutator, bypassing Reservation::store()'s usual whole-record
 # update() - update()'s cloneHash-based merge (Util.pm) recurses safely into nested *hashes*
@@ -186,7 +194,7 @@ sub record_hook_history ($id, $entry, $cap) {
          while( @$history > $cap ) {
             my $evictIndex;
             for my $i ( 0 .. $#$history ) {
-               if( defined $history->[$i]{'exitCode'} ) {
+               if( ( $history->[$i]{'state'} // '' ) ne 'running' ) {
                   $evictIndex = $i;
                   last;
                }
