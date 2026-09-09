@@ -1346,10 +1346,20 @@ sub _create_stage_creating ($self, $body) {
    # GET on the ordinary, non-recovery path too, where it will (almost) always come back
    # absent, but that's a cheap, uniform cost for not needing a second, recovery-only code
    # path here at all.
-   return Mojo::Promise->new( sub ($resolve, $reject) {
+   # Reads back the id of the container holding this reservation's own name, or undef if no
+   # container holds it. Shared by the ground-truth check below and the name-conflict path
+   # underneath it, which need the identical lookup for the same reason.
+   my $idByName = sub ($cb) {
       call_socket_api( $socket, '/containers/' . uri_escape( $self->name ) . '/json', {}, sub ($result, $err) {
+         return $cb->( undef, $err ) if $err;
+         $cb->( ( $result && $result->code == 200 ) ? decode_json( $result->body )->{'Id'} : undef, undef );
+      } );
+   };
+
+   return Mojo::Promise->new( sub ($resolve, $reject) {
+      $idByName->( sub ( $existingId, $err ) {
          return $reject->($err) if $err;
-         $resolve->( $result && $result->code == 200 ? decode_json( $result->body )->{'Id'} : undef );
+         $resolve->($existingId);
       } );
    } )->then( sub ($existingId) {
       return $existingId if $existingId;
@@ -1360,6 +1370,22 @@ sub _create_stage_creating ($self, $body) {
             'json'   => $body,
          }, sub ($result, $err) {
             if ( $err || !$result || !$result->is_success ) {
+               # 409 is Docker's own name-uniqueness refusal: something created this
+               # reservation's container between the ground-truth check above and this call -
+               # another process or worker reconciling the same reservation. This stage is
+               # expected to lose that race cleanly rather than fail
+               # (docs/adr/0007-create-restart-recovery.md's own reconciliation table): the
+               # container it was about to create now exists, so its id is read back by name
+               # and the chain proceeds to 'starting', which is idempotent. Reporting a failure
+               # here instead would flip createStatus to 'failed' - and set an expiryTime - for
+               # a create that has actually succeeded.
+               if ( $result && $result->code == 409 ) {
+                  return $idByName->( sub ( $conflictId, $lookupErr ) {
+                     return $reject->( $lookupErr // 'container name already in use, but no container found under that name' )
+                        unless $conflictId;
+                     $resolve->($conflictId);
+                  } );
+               }
                $reject->( $err // ( $result ? $result->body : 'no response' ) );
                return;
             }

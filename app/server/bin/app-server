@@ -57,9 +57,18 @@ Data::load();
 # would otherwise both try to reconcile it.
 sub _reconcile_stuck_reservations ($onDone = sub {}) {
    try {
+      # A non-terminal stage means "no process is driving this chain any more" only for a chain
+      # this process is not itself driving right now: create() writes its stage before any
+      # Docker call and leaves it non-terminal for the chain's whole duration, so a
+      # legitimately-running create - an image pull can outlast reconcileIntervalSeconds
+      # comfortably - looks identical on disk to an abandoned one. create_in_flight tells the
+      # two apart for this process's own chains, which is what a worker's own timer tick would
+      # otherwise trip over. It is per-process state, so it says nothing about a sibling
+      # worker's chains; every stage is individually re-enterable and the creating stage
+      # tolerates a name conflict, which is what keeps that case harmless.
       my @stuck = grep {
          my $stage = ( $_->{'createStatus'} // {} )->{'stage'} // '';
-         $stage =~ /^(?:pulling|creating|starting)$/;
+         $stage =~ /^(?:pulling|creating|starting)$/ && !Reservation->create_in_flight( $_->id() );
       } @{ Reservation->load() };
 
       flog(sprintf("app-server: reconcile sweep: %d reservation(s) have a create still in progress", scalar @stuck))
