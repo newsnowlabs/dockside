@@ -1026,15 +1026,30 @@ $app->static->extra( {} );
 $app->static->paths( [ $CONFIG->{'appServer'}{'docsPath'} ] );
 
 sub _serve_static ($c) {
-   my $path = $c->req->url->path->to_string;
    my $root = $CONFIG->{'appServer'}{'docsPath'};
 
-   if ( -d "$root$path" ) {
-      if ( $path !~ m{/$} ) {
-         $c->res->headers->location("$path/");
+   # Mojolicious::Static::serve (called below) joins the path it is given onto its own root
+   # exactly as given - the canonicalisation and traversal refusal live in
+   # Mojolicious::Static::dispatch, which this route does not go through, so both belong here.
+   # canonicalize resolves interior '..' segments against what precedes them; a '..' that
+   # survives that is one with nothing left to resolve against, i.e. one that escapes the root,
+   # and a backslash segment is refused for the same reason dispatch refuses it (it is a
+   # separator on some filesystems but not one canonicalize recognises). Any such request gets
+   # a 404, never a file: nothing outside docsPath is this route's to serve.
+   my @parts = @{ $c->req->url->path->clone->canonicalize->parts };
+   return _text( $c, 404, "Not Found\n" )
+      if !@parts || grep { $_ eq '..' || m{\\} } @parts;
+
+   my $path = join( '/', @parts );
+
+   if ( -d "$root/$path" ) {
+      unless ( $c->req->url->path->trailing_slash ) {
+         # Redirect to the canonical path, not the requested one - '/docs/./adr' and
+         # '/docs/adr' name the same directory and must land on the same '/docs/adr/'.
+         $c->res->headers->location("/$path/");
          return $c->rendered(301);
       }
-      $path .= 'index.html';
+      $path .= '/index.html';
    }
 
    # Mojolicious::Static::serve sets $c->res->code/content directly (not via
