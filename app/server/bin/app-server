@@ -129,7 +129,15 @@ Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
 my $port    = $CONFIG->{'appServer'}{'port'};
 my $workers = $CONFIG->{'appServer'}{'workers'};
 
-my $app = Mojolicious->new;
+# Production mode unless an operator deliberately asks for something else. Mojolicious defaults
+# to 'development', which does two things this server must not do: it renders the framework's own
+# exception page - stack trace, request dump and all - for any exception that escapes a route's
+# own handling, bypassing _render_error and with it the rule that only a sanitised 'msg' ever
+# reaches a client (docs/adr/0003-error-reporting-surface.md); and it leaves Mojo::Log at 'trace',
+# logging every request's routing to STDERR. The log level follows from the mode via
+# Mojolicious's own 'log' default ('info' outside development), so this is the only knob needed;
+# MOJO_LOG_LEVEL still overrides it for a debugging session.
+my $app = Mojolicious->new( mode => $ENV{'MOJO_MODE'} // 'production' );
 $app->max_request_size( $CONFIG->{'appServer'}{'maxRequestSize'} );
 
 # ── Shared helpers, used across every route below ────────────────────────────
@@ -496,7 +504,16 @@ my $routes = $app->routes;
 # above, which share their own inline _authenticate call rather than the bridge itself -
 # no reason to move them under it just to share more code.
 my $authed = $routes->under('/' => sub ($c) {
-   my $User = _authenticate($c) or return undef;
+   # Defensive, deliberately: this bridge is the one dispatch path in this file with no
+   # try/catch of its own, so anything thrown here reaches Mojolicious's own error handling
+   # instead of _render_error - answering with a framework error page rather than this server's
+   # sanitised one, for every route registered under the bridge. Nothing in _authenticate's
+   # current call path does throw (Data::load logs and swallows a parse failure of its own;
+   # Request->authenticate raises nothing), so this keeps the contract every other route here
+   # already keeps rather than fixing a known failure.
+   my $User = try { _authenticate($c) }
+   catch { _render_error( $c, $_ ); undef };
+   return undef unless $User;
    $c->stash( 'user' => $User );
    return 1;
 } );
