@@ -1099,14 +1099,47 @@ Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => s
 # this closes that gap. Registered once, pre-fork, on the shared singleton - confirmed live
 # (Open Questions #4) that this fires exactly once per worker, not once total.
 Mojo::IOLoop->singleton->on( finish => sub (@) {
+   # A second QUIT re-emits this event (Mojo::IOLoop::stop_gracefully emits it on every call),
+   # and a second, nested drain would wait a second full grace period on top of the first.
+   return if $shuttingDown;
    $shuttingDown = 1;
-   my $deadline = steady_time() + $CONFIG->{'appServer'}{'shutdownGracePeriod'};
-   my $wait;
-   $wait = Mojo::IOLoop->recurring( 1 => sub (@) {
-      return if Reservation->create_in_flight_count() && steady_time() < $deadline;
-      Mojo::IOLoop->remove($wait);
-      Mojo::IOLoop->stop;
-   } );
+
+   my $grace    = $CONFIG->{'appServer'}{'shutdownGracePeriod'};
+   my $deadline = steady_time() + $grace;
+   my $inFlight = Reservation->create_in_flight_count();
+   return unless $inFlight;
+
+   flog("app-server: worker $$ is shutting down; waiting up to ${grace}s for $inFlight create chain(s) to settle");
+
+   # The wait happens here, synchronously, by pumping the reactor - not by registering a timer
+   # that waits after this handler returns. Mojo::IOLoop::stop_gracefully stops the reactor the
+   # moment this handler returns unless an accepted inbound connection is still open, and
+   # create()'s own route answers its HTTP request immediately by design (the fast-ack-then-poll
+   # contract create() itself describes), so the connection that started a chain has long since
+   # closed by the time shutdown begins - a timer registered here would never receive a tick.
+   # one_tick keeps the chain's own I/O and timer callbacks running until it settles, Prefork's
+   # own worker heartbeat included, so the manager continues to see this worker as healthy while
+   # it drains rather than force-killing it as unresponsive.
+   #
+   # The pacing timer bounds how long a single tick may block: one_tick derives its timeout from
+   # the nearest pending timer, and the periodic reconciler's own is up to 300s away, so with no
+   # nearer timer a quiet moment mid-chain (an image pull between layer reads, say) would block
+   # well past the deadline instead of honouring it.
+   # The reactor is addressed directly, rather than via Mojo::IOLoop->one_tick: that wrapper
+   # croaks outright when the loop is already running, which it is here (this handler runs from
+   # inside stop_gracefully, itself reached from the reactor's own signal dispatch). Its body is
+   # exactly this call, and Mojo::Reactor::Poll::one_tick is re-entrant by construction - it
+   # keeps its own 'running' flag set for a nested call and returns after a single event - so
+   # this is the supported way to pump a running reactor from within one of its callbacks.
+   my $reactor = Mojo::IOLoop->singleton->reactor;
+   my $pacer   = Mojo::IOLoop->recurring( 1 => sub (@) { } );
+   $reactor->one_tick while Reservation->create_in_flight_count() && steady_time() < $deadline;
+   Mojo::IOLoop->remove($pacer);
+
+   my $remaining = Reservation->create_in_flight_count();
+   flog( $remaining
+      ? "app-server: worker $$ reached its ${grace}s shutdown grace period with $remaining create chain(s) still in flight; the startup sweep/periodic reconciler will recover them"
+      : "app-server: worker $$ drained every in-flight create chain; exiting" );
 } );
 
 flog("Listening on 127.0.0.1:$port with $workers worker(s)...");
