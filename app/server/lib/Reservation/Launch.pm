@@ -439,21 +439,43 @@ sub cmdline_json ($self) {
       }
    }
 
+   # Docker has two independent mechanisms for a tmpfs mount. The structured Mounts[] form
+   # (Type=tmpfs + TmpfsOptions) is used below whenever a mount only needs size/mode - but its
+   # TmpfsOptions.Options field (confirmed against the installed dockerd's own source) validates
+   # against a hardcoded exec/noexec-only allowlist, so uid/gid/nosuid/nodev can never reach Docker
+   # through it. The legacy HostConfig.Tmpfs field - a plain {dst => "opt,opt,..."} map with no
+   # schema of its own, the same one 'docker run --tmpfs' uses - passes its string straight to the
+   # kernel's tmpfs mount parser and so supports the full option set; used here only when one of
+   # the five extra options is actually set, since switching every tmpfs mount to it unconditionally
+   # would drop plain size/mode mounts out of `docker inspect`'s top-level Mounts array for no
+   # reason (confirmed live; docker-event-daemon reads that array for volume discovery elsewhere).
+   # noexec/nosuid/nodev are bare flags in this string, not "flag=value" - confirmed live that the
+   # kernel's tmpfs parser rejects "nodev=1" et al.
    my @mounts;
+   my %tmpfsLegacy;
    for my $m ( @{ $self->profileObject->{'mounts'}{'tmpfs'} } ) {
-      die Exception->new(
-         'msg'    => "This devtainer's profile declares a tmpfs mount for '$m->{'dst'}' using options " .
-                     "that this server cannot apply. Only size and mode are supported.",
-         'status' => 400
-      ) if $m->{'tmpfs-uid'} || $m->{'tmpfs-gid'} || $m->{'tmpfs-noexec'} || $m->{'tmpfs-nosuid'} || $m->{'tmpfs-nodev'};
-      my $tmpfsOptions = {};
-      $tmpfsOptions->{'SizeBytes'} = _parse_docker_size( $m->{'tmpfs-size'} ) if $m->{'tmpfs-size'};
-      $tmpfsOptions->{'Mode'}      = oct( $m->{'tmpfs-mode'} )               if $m->{'tmpfs-mode'};
-      push( @mounts, {
-         'Type'         => 'tmpfs',
-         'Target'       => $self->_placeholders( $m->{'dst'} ),
-         'TmpfsOptions' => $tmpfsOptions,
-      } );
+      my $dst = $self->_placeholders( $m->{'dst'} );
+      if ( $m->{'tmpfs-uid'} || $m->{'tmpfs-gid'} || $m->{'tmpfs-noexec'} || $m->{'tmpfs-nosuid'} || $m->{'tmpfs-nodev'} ) {
+         $tmpfsLegacy{$dst} = join( ',',
+            $m->{'tmpfs-size'}   ? "size=$m->{'tmpfs-size'}" : (),
+            $m->{'tmpfs-mode'}   ? "mode=$m->{'tmpfs-mode'}" : (),
+            $m->{'tmpfs-uid'}    ? "uid=$m->{'tmpfs-uid'}"   : (),
+            $m->{'tmpfs-gid'}    ? "gid=$m->{'tmpfs-gid'}"   : (),
+            $m->{'tmpfs-noexec'} ? 'noexec'                  : (),
+            $m->{'tmpfs-nosuid'} ? 'nosuid'                  : (),
+            $m->{'tmpfs-nodev'}  ? 'nodev'                   : (),
+         );
+      }
+      else {
+         my $tmpfsOptions = {};
+         $tmpfsOptions->{'SizeBytes'} = _parse_docker_size( $m->{'tmpfs-size'} ) if $m->{'tmpfs-size'};
+         $tmpfsOptions->{'Mode'}      = oct( $m->{'tmpfs-mode'} )               if $m->{'tmpfs-mode'};
+         push( @mounts, {
+            'Type'         => 'tmpfs',
+            'Target'       => $dst,
+            'TmpfsOptions' => $tmpfsOptions,
+         } );
+      }
    }
    for my $m ( @{ $self->profileObject->{'mounts'}{'bind'} } ) {
       push( @mounts, {
@@ -503,6 +525,7 @@ sub cmdline_json ($self) {
       }
    }
    $hostConfig->{'Mounts'} = \@mounts if @mounts;
+   $hostConfig->{'Tmpfs'}  = \%tmpfsLegacy if %tmpfsLegacy;
 
    $hostConfig->{'Init'} = JSON::true if $self->profileObject->run_docker_init;
 
