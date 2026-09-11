@@ -318,22 +318,27 @@ sub _render_spa_shell ($c, $User, $parentFQDN) {
    my $css_v = App::_asset_version('main.css');
    my $page  = App::get_header() . qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n};
    try {
-      $page .= sprintf( "<script>window.dockside = %s\n</script>",
-         JSON::XS->new->utf8->convert_blessed->encode( {
-            'user' => {
-               %{ $User->details() },
-               'role'         => $User->role,
-               'role_as_meta' => $User->role_as_meta,
-               'permissions'  => { 'actions' => $User->permissions() }
-            },
-            'profiles'         => $User->profiles(),
-            'containers'       => $User->reservations( { 'client' => 1 } ),
-            'viewers'          => User->viewers(),
-            'dummyReservation' => $User->createClientReservation(),
-            'host'             => $parentFQDN,
-            'version'          => $VERSION // 'v-unknown'
-         } )
-      );
+      # Must not contain a literal '<': every string in here (a user's display name via
+      # 'viewers', etc.) is attacker-controlled, and an unescaped '<' lets a crafted value
+      # close this <script> block early and inject markup. JSON::XS's own escaping doesn't
+      # cover this, since '<' is not a JSON metacharacter -- escape it after encoding, not by
+      # sanitising individual fields, so no future field addition can reopen this.
+      my $json = JSON::XS->new->utf8->convert_blessed->encode( {
+         'user' => {
+            %{ $User->details() },
+            'role'         => $User->role,
+            'role_as_meta' => $User->role_as_meta,
+            'permissions'  => { 'actions' => $User->permissions() }
+         },
+         'profiles'         => $User->profiles(),
+         'containers'       => $User->reservations( { 'client' => 1 } ),
+         'viewers'          => User->viewers(),
+         'dummyReservation' => $User->createClientReservation(),
+         'host'             => $parentFQDN,
+         'version'          => $VERSION // 'v-unknown'
+      } );
+      $json =~ s/</\\u003c/g;
+      $page .= sprintf( "<script>window.dockside = %s\n</script>", $json );
    }
    catch {
       # status 500 explicitly: _render_error defaults an Exception carrying no status of its own
