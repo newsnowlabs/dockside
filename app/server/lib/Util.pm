@@ -466,6 +466,16 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
             $cb->( undef, "docker_exec: unable to start execId=$execId" . ( $startErr ? ": $startErr" : '' ) );
             return;
          }
+         # Same status check as the Detach branch above - a non-200 here (e.g. a 404/409 from a
+         # since-removed or already-started exec) still leaves $startRes truthy, so without this
+         # check it falls through to the inspect call below as if the exec had actually started.
+         # An exec that was never started inspects with ExitCode: null, which both callers of
+         # this function already treat as a failure - but the error surfaced would be a
+         # misleadingly bare "exit code unavailable" rather than the real cause.
+         unless( $startRes->code == 200 ) {
+            $cb->( undef, sprintf( "docker_exec: unable to start execId=%s: %d %s", $execId, $startRes->code, $startRes->body ) );
+            return;
+         }
 
          call_socket_api( $socket, "/exec/$execId/json", {}, sub ($inspectRes, $inspectErr) {
             my $exitCode;
