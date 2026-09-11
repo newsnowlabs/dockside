@@ -1294,32 +1294,36 @@ sub createContainerReservation ($self, $args, $cb) {
    $reservation->cmdline_json();
 
    $reservation->getGitDevContainer( sub ($dc) {
-      if ($dc) {
-         if($dc->{'image'}) {
-            $reservation->data('image', $dc->{'image'});
+      # This whole callback runs outside the caller's own try/catch frame (it fires later, off
+      # the event loop, once the GitHub fetch above resolves) - an uncaught die anywhere in here,
+      # not just around store()->create below, would be an uncaught exception inside a Mojo
+      # completion callback, not something bin/app-server's own surrounding try/catch could ever
+      # see (see docker_exec's own comment on this same hazard, Util.pm). $dc itself is already
+      # guaranteed a HASH or undef by getGitDevContainer, but the setters below can still throw
+      # on content they reject (e.g. an invalid 'image'), so the try/catch has to cover them too,
+      # not just the store/create call after them.
+      try {
+         if ($dc) {
+            if($dc->{'image'}) {
+               $reservation->data('image', $dc->{'image'});
 
-            if(!$dc->{'overrideCommand'}) {
-               $reservation->data('entrypoint', '/bin/sh');
-               $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+               if(!$dc->{'overrideCommand'}) {
+                  $reservation->data('entrypoint', '/bin/sh');
+                  $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+               }
             }
+
+            $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
+            $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
+            $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
          }
 
-         $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
-         $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
-         $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
-      }
-
-      # Store, then create/launch asynchronously, then hand $cb a sanitised clone of the
-      # reservation object. A full (not narrowed) store() is correct here specifically: this
-      # reservation id has never been persisted before this call, so no other process can
-      # possibly be concurrently writing to it - none of Reservation::store_fields' concerns (a
-      # stale in-memory copy of some unrelated field clobbering a fresher one) apply to a
-      # record's very first write. Wrapped in try/catch because this whole callback runs outside
-      # the caller's own try/catch frame (it fires later, off the event loop, once the GitHub
-      # fetch above resolves) - an uncaught die here would be an uncaught exception inside a Mojo
-      # completion callback, not something bin/app-server's own surrounding try/catch could ever
-      # see (see docker_exec's own comment on this same hazard, Util.pm).
-      try {
+         # Store, then create/launch asynchronously, then hand $cb a sanitised clone of the
+         # reservation object. A full (not narrowed) store() is correct here specifically: this
+         # reservation id has never been persisted before this call, so no other process can
+         # possibly be concurrently writing to it - none of Reservation::store_fields' concerns
+         # (a stale in-memory copy of some unrelated field clobbering a fresher one) apply to a
+         # record's very first write.
          $reservation->store()->create( sub ($createdReservation, $err) {
             return $cb->( undef, $err ) if $err;
             return $cb->( $self->createClientReservation($createdReservation), undef );

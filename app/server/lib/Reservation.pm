@@ -1254,7 +1254,11 @@ sub getGitDevContainer ($self, $cb) {
             my $body = $result->body;
             $body =~ s!//.*$!!gm;
             my $decoded = eval { decode_json($body) };
-            if ($decoded) {
+            # Only a JSON Object is a usable devcontainer.json - $cb's caller (User.pm) reads
+            # $dc as a hashref unconditionally. A syntactically valid but non-Object body (an
+            # Array, string or number) falls through to the next branch exactly like a parse
+            # failure, rather than handing the caller something it can't safely dereference.
+            if ( ref($decoded) eq 'HASH' ) {
                $cb->($decoded);
                return;
             }
