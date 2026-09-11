@@ -296,6 +296,12 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
       # Work out the most recent last-modified time for all files in the current list
       my $lastModified = 0;
       foreach my $file (@files) {
+         # This is Time::HiRes::stat (this file's own top-of-file import), not CORE::stat -
+         # $lm carries a fractional-second mtime, and the comparison below relies on that
+         # sub-second precision to tell apart two writes to the same file within one wall-clock
+         # second (a real occurrence under concurrent reservation/container churn). Removing
+         # 'stat' from that import - e.g. while tidying an apparently-unused-looking name -
+         # would silently widen every caller's staleness window back out to a full second.
          my $lm = (stat($file))[9];
          $lastModified = $lm if $lm > $lastModified;
       }
