@@ -5,6 +5,7 @@ use v5.36;
 use Try::Tiny;
 use JSON;
 use Util qw(flog);
+use Data;
 use Reservation;
 
 # $c-native (Mojolicious::Controller) - this module is unpublished/alpha (never
@@ -91,6 +92,14 @@ sub handle ($c) {
    $path =~ s!^/computeMetadata/v1/!!;
 
    try {
+      # Reload config, containers and reservations as needed - same idiom as
+      # Proxy::_get_server_port's own per-request refresh. This route isn't behind $authed and
+      # so has no reconciler tick of its own to rely on for freshness: without this, a worker
+      # that hasn't otherwise touched reservations.json/containers.json recently answers from
+      # whatever $BY_IP snapshot it last built, which can 502 a just-created devtainer or, after
+      # its IP is reused, return a previous reservation's metadata.
+      Data::load();
+
       my $reservations = Reservation->load( {
          'ip' => _remote_addr($c)
       } );
