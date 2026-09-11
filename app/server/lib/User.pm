@@ -1052,6 +1052,23 @@ sub _defaultRouterAccessLevel ($self, $reservation, $auth) {
    return ( grep { $_ eq $preferred } @$auth ) ? $preferred : $auth->[0];
 }
 
+# Narrows $routerDef->{'auth'} (already defaulted to the full known-levels list by the caller if
+# the request itself didn't supply one) down to whichever of those levels this user's own
+# derivedResourceConstraints actually permits - same filtering idiom Profile::applyConstraints
+# uses to strip disallowed levels from a profile-declared router's 'auth' at launch time, so a
+# role/user resource constraint means the same thing whichever path enforces it. Without this, a
+# caller could both request and receive a router auth list wider than their own role/user
+# 'auth' resource constraint allows - constrained here (self-service add/replace) is the only
+# path that skipped it; profile-declared routers already go through cloneWithConstraints. Dies
+# rather than silently narrowing to an empty list, since a router with no legal auth level can
+# never be reached by anyone.
+sub _constrainRouterAuth ($self, $routerDef) {
+   my $allowed = $self->derivedResourceConstraints->{'auth'} // {};
+   $routerDef->{'auth'} = [ grep { $allowed->{$_} // $allowed->{'*'} } @{$routerDef->{'auth'}} ];
+   die Exception->new( 'msg' => "None of the requested router 'auth' levels are permitted for this user" )
+      unless @{$routerDef->{'auth'}};
+}
+
 # Adds a router to a live reservation (docs/adr/0008-router-mutation.md). Gated on
 # addContainerRouter + can_on(develop) (the same two-part shape as every other developer-level
 # container mutation above - see the 'access'/'private' branches of set()) and, unless this user
@@ -1076,6 +1093,7 @@ sub addContainerRouter ($self, $args) {
 
    my $routerDef = _decode_router_arg( $args->{'router'} );
    $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
+   $self->_constrainRouterAuth($routerDef);
    my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
 
    $reservation->add_router( $routerDef, $accessLevel );
@@ -1124,6 +1142,7 @@ sub replaceContainerRouter ($self, $args) {
 
    my $routerDef = _decode_router_arg( $args->{'router'} );
    $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
+   $self->_constrainRouterAuth($routerDef);
    my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
 
    $reservation->replace_router( $args->{'name'}, $routerDef, $accessLevel );
