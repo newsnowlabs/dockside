@@ -1466,7 +1466,13 @@ sub _create_stage_starting ($self, $containerId) {
 
    return Mojo::Promise->new( sub ($resolve, $reject) {
       call_socket_api( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
-         if ( $err || !$result || !$result->is_success ) {
+         # 304 is Docker's "already started" response, same as action()'s own 'start' outcome
+         # set above - reachable here whenever this stage is re-entered against a container that
+         # a previous, interrupted or overlapping run already started (docs/adr/0007-create-
+         # restart-recovery.md's reconciliation table relies on this stage tolerating it).
+         # Rejecting it would record 'failed' with an expiry on a container that is actually
+         # healthy and running.
+         if ( $err || !$result || !( $result->is_success || $result->code == 304 ) ) {
             $reject->( $err // ( $result ? $result->body : 'no response' ) );
             return;
          }
