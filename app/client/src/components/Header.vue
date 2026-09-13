@@ -53,6 +53,10 @@
             </v-list-item>
 
             <v-divider></v-divider>
+            <v-list-item href="https://github.com/newsnowlabs/dockside" target="_blank" rel="noopener">
+               <template #prepend><v-icon :icon="mdiGithub"></v-icon></template>
+               <v-list-item-title>GitHub</v-list-item-title>
+            </v-list-item>
             <v-list-item disabled class="settings-version">Dockside {{ version }}</v-list-item>
          </v-list>
       </v-menu>
@@ -61,7 +65,7 @@
 
 <script>
 import { defineComponent } from 'vue';
-import { mdiWeatherSunny, mdiWeatherNight, mdiBrightnessAuto } from '@mdi/js';
+import { mdiWeatherSunny, mdiWeatherNight, mdiBrightnessAuto, mdiGithub } from '@mdi/js';
 
 import { mapGetters } from 'vuex';
 import { routing, routePermissions, navIcons } from '@/components/mixins';
@@ -95,6 +99,9 @@ export default defineComponent({
 
   computed: {
      ...mapGetters(['isSelected', 'isPrelaunchMode']),
+     // Header-only, unlike navIcons' shared nav-bar icons - not worth promoting to that
+     // mixin for a single settings-menu item.
+     mdiGithub: () => mdiGithub,
      containersFilterItems() {
         return CONTAINERS_FILTER_ITEMS;
      },
