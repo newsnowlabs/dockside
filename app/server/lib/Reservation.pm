@@ -19,7 +19,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api_sync call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text);
+use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api_sync call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text tryLockFile);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
@@ -1299,6 +1299,26 @@ my %CREATE_IN_FLIGHT;
 sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
 sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 
+# Path of the per-reservation ownership lock create()/reconcile_one() hold, non-blockingly, for
+# a create() chain's whole lifetime - docs/adr/0007-create-restart-recovery.md's "Decision"
+# section. Lives under tmpPath, alongside hook logs (the established per-reservation-file
+# location) - not persisted content, just a kernel lock target: a wiped or freshly-created file
+# is acquired correctly either way, since ownership lives in the flock, not the file's bytes.
+sub _create_lock_path ($id) {
+   return "$CONFIG->{'tmpPath'}/r-$id.lock";
+}
+
+# Forces this worker's own reservation cache to catch up with whatever another process (a
+# sibling worker, docker-event-daemon) has written to reservations.json since this worker's own
+# copy was last loaded, then returns the current Reservation object for $id, or undef if it no
+# longer exists. Reuses Data::load()'s own mtime-gated refresh and Reservation::Load::load's own
+# parsing - the same path every request already takes via _authenticate's own Data::load() call
+# - rather than re-reading or re-parsing reservations.json independently.
+sub _reservation_reloaded ($id) {
+   Data::load('reservations.json');
+   return $Reservation::BY_ID->{$id};
+}
+
 # Ground-truth stage builders, shared by create() (always starts at 'pulling') and
 # reconcile_create() (resumes at whatever stage createStatus was stuck at) - see
 # docs/adr/0007-create-restart-recovery.md's own "Ground truth per stage" table for the
@@ -1393,55 +1413,45 @@ sub _create_stage_pulling ($self, $image) {
    } );
 }
 
-sub _create_stage_creating ($self, $body) {
+sub _create_stage_creating ($self, $body, $isRecovery = 0) {
    my $socket = $CONFIG->{'docker'}{'socket'};
 
-   # Ground-truth check, unconditional (not just for reconciliation) - does a container with
-   # this reservation's own name already exist? Makes this stage safely re-enterable by
-   # construction: a blind retry here would 409 on the name collision (create-restart-
-   # recovery-plan.md's own "Ground truth per stage" table) - checking first costs one extra
-   # GET on the ordinary, non-recovery path too, where it will (almost) always come back
-   # absent, but that's a cheap, uniform cost for not needing a second, recovery-only code
-   # path here at all.
-   # Reads back the id of the container holding this reservation's own name, or undef if no
-   # container holds it. Shared by the ground-truth check below and the name-conflict path
-   # underneath it, which need the identical lookup for the same reason.
+   # Ground-truth-by-name lookup, run only on a recovery re-entry (this stage found already
+   # persisted for $self, i.e. reconcile_create() resuming a chain some other process left
+   # mid-flight - see $isRecovery below). Anchored to the exact name via the collection
+   # endpoint's own filters, not Docker's single-container GET /containers/{name}/json, which
+   # also resolves an id prefix - a reservation named after a hex prefix of some other
+   # container's id would otherwise match that container instead
+   # (docs/adr/0007-create-restart-recovery.md's "Decision" section). Returns the matched
+   # container's full inspect data (so the label check below can read it), or undef if nothing
+   # holds the name.
    my $idByName = sub ($cb) {
-      call_socket_api( $socket, '/containers/' . uri_escape( $self->name ) . '/json', {}, sub ($result, $err) {
+      call_socket_api( $socket,
+         '/containers/json?all=1&filters=' . uri_escape( encode_json( { 'name' => [ '^/' . $self->name . '$' ] } ) ),
+         {}, sub ($result, $err) {
          return $cb->( undef, $err ) if $err;
-         $cb->( ( $result && $result->code == 200 ) ? decode_json( $result->body )->{'Id'} : undef, undef );
+         my $matches = ( $result && $result->code == 200 ) ? decode_json( $result->body ) : [];
+         $cb->( $matches->[0], undef );
       } );
    };
 
-   return Mojo::Promise->new( sub ($resolve, $reject) {
-      $idByName->( sub ( $existingId, $err ) {
-         return $reject->($err) if $err;
-         $resolve->($existingId);
-      } );
-   } )->then( sub ($existingId) {
-      return $existingId if $existingId;
-
+   my $createContainer = sub {
       return Mojo::Promise->new( sub ($resolve, $reject) {
          call_socket_api( $socket, '/containers/create?name=' . uri_escape( $self->name ), {
             'method' => 'POST',
             'json'   => $body,
          }, sub ($result, $err) {
             if ( $err || !$result || !$result->is_success ) {
-               # 409 is Docker's own name-uniqueness refusal: something created this
-               # reservation's container between the ground-truth check above and this call -
-               # another process or worker reconciling the same reservation. This stage is
-               # expected to lose that race cleanly rather than fail
-               # (docs/adr/0007-create-restart-recovery.md's own reconciliation table): the
-               # container it was about to create now exists, so its id is read back by name
-               # and the chain proceeds to 'starting', which is idempotent. Reporting a failure
-               # here instead would flip createStatus to 'failed' - and set an expiryTime - for
-               # a create that has actually succeeded.
+               # 409 is Docker's own name-uniqueness refusal. With this reservation's own
+               # ownership lock held for the create chain's whole lifetime
+               # (docs/adr/0007-create-restart-recovery.md's "Decision" section), no other
+               # process can legitimately be creating this same reservation's container right
+               # now - a 409 here always means a container this reservation does not own
+               # already holds the name, never a race against another driver of this same
+               # chain, so it fails the chain closed rather than adopting whatever it finds.
                if ( $result && $result->code == 409 ) {
-                  return $idByName->( sub ( $conflictId, $lookupErr ) {
-                     return $reject->( $lookupErr // 'container name already in use, but no container found under that name' )
-                        unless $conflictId;
-                     $resolve->($conflictId);
-                  } );
+                  $reject->( "name '" . $self->name . "' is already in use by a container this reservation does not own" );
+                  return;
                }
                $reject->( $err // ( $result ? $result->body : 'no response' ) );
                return;
@@ -1449,7 +1459,33 @@ sub _create_stage_creating ($self, $body) {
             $resolve->( decode_json( $result->body )->{'Id'} );
          } );
       } );
-   } )->then( sub ($containerId) {
+   };
+
+   my $lookupOrCreate = $isRecovery
+      ? Mojo::Promise->new( sub ($resolve, $reject) {
+           $idByName->( sub ( $found, $err ) {
+              return $reject->($err) if $err;
+              unless ($found) {
+                 $createContainer->()->then( $resolve, $reject );
+                 return;
+              }
+              # Only dev.dockside.reservation.id is load-bearing - see cmdline_json's own
+              # comment on why the other identity labels are cosmetic. A container under this
+              # reservation's own name is adopted only if it also carries this reservation's own
+              # id under that label; any other or missing label fails the chain closed exactly
+              # like the create-path 409 above, without ever attempting the create call (which
+              # would only 409 anyway, since the name is taken).
+              if ( ( $found->{'Labels'}{'dev.dockside.reservation.id'} // '' ) eq $self->id() ) {
+                 $resolve->( $found->{'Id'} );
+              }
+              else {
+                 $reject->( "name '" . $self->name . "' is already in use by a container this reservation does not own" );
+              }
+           } );
+        } )
+      : $createContainer->();
+
+   return $lookupOrCreate->then( sub ($containerId) {
       # Store the 12-char short id, matching Reservation::containerId's own established
       # convention - docker-event-daemon's containers.json keys are the same 12-char short id
       # (_update_merge: 'substr($c->{'Id'}, 0, 12)'), and both $BY_CONTAINERID (this file's own
@@ -1498,16 +1534,16 @@ sub _create_run_from_starting ($self) {
    } );
 }
 
-sub _create_run_from_creating ($self, $body) {
+sub _create_run_from_creating ($self, $body, $isRecovery = 0) {
    $self->_create_status_set( { 'stage' => 'creating', 'failed' => 0, 'layers' => {} } );
-   return _create_stage_creating( $self, $body )->then( sub (@) {
+   return _create_stage_creating( $self, $body, $isRecovery )->then( sub (@) {
       return $self->_create_run_from_starting();
    } );
 }
 
-sub _create_run_from_pulling ($self, $body) {
+sub _create_run_from_pulling ($self, $body, $isRecovery = 0) {
    return _create_stage_pulling( $self, $self->data('image') )->then( sub (@) {
-      return $self->_create_run_from_creating($body);
+      return $self->_create_run_from_creating( $body, $isRecovery );
    } );
 }
 
@@ -1535,8 +1571,11 @@ sub _create_fail ($self, $err) {
 # consumer for its tail) fires after cleanup, with the terminal ($self,undef)/(undef,$exception)
 # result - reconcile_create() below is the one real consumer, since unlike create()'s
 # fire-fast-then-continue $cb, its own $cb fires exactly once, on settle, with nothing else to
-# ack early.
-sub _create_track ($self, $promise, $onSettled = sub {}) {
+# ack early. $lock (optional: create()/reconcile_create()'s own per-reservation ownership lock
+# handle - docs/adr/0007-create-restart-recovery.md's "Decision" section) is held in this
+# closure and closed - releasing it - only once the chain settles, so the lock covers this
+# chain's entire lifetime regardless of outcome.
+sub _create_track ($self, $promise, $onSettled = sub {}, $lock = undef) {
    my $id = $self->id();
    $CREATE_IN_FLIGHT{$id} = 1;
 
@@ -1547,6 +1586,7 @@ sub _create_track ($self, $promise, $onSettled = sub {}) {
       $onSettled->( undef, Exception->new( 'msg' => $msg ) );
    } )->finally( sub (@) {
       delete $CREATE_IN_FLIGHT{$id};
+      close($lock) if $lock;
    } );
 
    return;
@@ -1569,9 +1609,16 @@ sub _create_track ($self, $promise, $onSettled = sub {}) {
 # reaches a terminal stage, nothing above this sub notices on its own - see reconcile_create()
 # below and docs/adr/0007-create-restart-recovery.md for what does.
 #
-# Idempotency guard: writes an initial createStatus synchronously, before any Docker call
-# begins, then checks-then-sets with no yield point in between - race-free because a single
-# Mojolicious worker processes one request at a time.
+# Idempotency guard, in two parts, both required: a non-blocking per-reservation ownership lock
+# (tryLockFile - docs/adr/0007-create-restart-recovery.md's "Decision" section), acquired
+# before any Docker call begins, refuses a second concurrent create() for the same id outright
+# rather than letting two processes or workers both drive a chain for it - immediately
+# (LOCK_NB), not by queuing behind whoever holds it, since a second call arriving while a chain
+# is genuinely live should be refused, not delayed until that chain happens to finish. Once the
+# lock is held, nothing else can be concurrently mutating this id's createStatus, but this
+# object's own copy of it can still be stale (loaded before some earlier chain for this id
+# completed and released the lock this call just acquired) - so the actual guard is a forced
+# reload under the lock, not the in-memory copy; see _reservation_reloaded's own comment.
 #
 # Composed with Mojo::Promise, not nested callbacks - the one genuinely multi-step async chain
 # in this file (image check -> optional pull -> create -> start). This is a deliberate, scoped
@@ -1583,7 +1630,14 @@ sub _create_track ($self, $promise, $onSettled = sub {}) {
 sub create ($self, $cb) {
    my $id = $self->id();
 
-   if ( $self->{'createStatus'} ) {
+   my $lock = tryLockFile( _create_lock_path($id) );
+   unless ($lock) {
+      $cb->( undef, Exception->new( 'msg' => "Reservation '$id' already has a create in progress; refusing a duplicate create" ) );
+      return;
+   }
+
+   if ( ( _reservation_reloaded($id) // {} )->{'createStatus'} ) {
+      close($lock);
       $cb->( undef, Exception->new( 'msg' => "Reservation '$id' already has a createStatus set; refusing a duplicate create" ) );
       return;
    }
@@ -1594,30 +1648,37 @@ sub create ($self, $cb) {
    }
    catch {
       my $msg = $self->_create_fail($_);
+      close($lock);
       $cb->( undef, Exception->new( 'msg' => "Failed to compile 'docker create' request body, with error: $msg" ) );
    };
-   return unless $body;   # cmdline_json() threw - already reported via $cb above
+   return unless $body;   # cmdline_json() threw - already reported, and the lock already released, via $cb above
 
    $self->_create_status_set( { 'stage' => 'pulling', 'failed' => 0, 'layers' => {} } );
    $cb->( $self, undef );
 
-   $self->_create_track( $self->_create_run_from_pulling($body) );
+   $self->_create_track( $self->_create_run_from_pulling($body), sub {}, $lock );
    return;
 }
 
-# Resumes a create() chain interrupted by the process (or, under Mojo::Server::Prefork, just
-# the one worker) that was driving it dying mid-flight - reads createStatus.stage to decide
-# where to resume, per docs/adr/0007-create-restart-recovery.md's own "Ground truth per
-# stage" table. No claim/locking of its own - callers (bin/app-server's startup sweep and
-# periodic reconciler) are responsible for ensuring only one caller ever reconciles a given
-# reservation at a time; the periodic reconciler does this via a single process-wide sweep
-# lock (not a per-reservation claim - see that doc's own "Revision 3" for why a per-reservation
-# claim, tried first, was more machinery than the actual concern needed).
+# Resumes a create() chain abandoned by the process (or, under Mojo::Server::Prefork, just the
+# one worker) that was driving it - reads createStatus.stage to decide where to resume, per
+# docs/adr/0007-create-restart-recovery.md's own "Ground truth per stage" table.
+# $self must already be a freshly-read, lock-held snapshot - see reconcile_one below, the one
+# real caller, for both. Every stage this resumes runs with $isRecovery true (the 'creating'
+# stage's own label-checked adoption - see _create_stage_creating), even one resumed from
+# 'pulling': a chain that only ever reached 'pulling' before being abandoned never attempted a
+# create, so the ground-truth-by-name lookup simply comes back empty and falls through to a
+# plain create - the uniform choice costs one always-empty extra GET rather than needing a
+# second, resumed-from-which-stage-shaped branch here.
 #
 # $cb fires exactly once, when reconciliation fully settles (success or failure) - unlike
 # create()'s own fire-fast-then-continue contract, nothing is waiting synchronously on this
-# (it's driven by a sweep/timer, not an HTTP request), so there is no early ack to give.
-sub reconcile_create ($self, $cb) {
+# (it's driven by a timer, not an HTTP request), so there is no early ack to give. $lock is
+# reconcile_one's own already-acquired ownership lock handle, threaded through to _create_track
+# so it is held for this resumed chain's whole lifetime and released only once it settles -
+# every early return in this function must close it first, since _create_track never runs to
+# do so on those paths.
+sub reconcile_create ($self, $cb, $lock = undef) {
    my $stage = ( $self->{'createStatus'} // {} )->{'stage'} // '';
 
    my $body;
@@ -1626,25 +1687,61 @@ sub reconcile_create ($self, $cb) {
    }
    catch {
       my $msg = $self->_create_fail($_);
+      close($lock) if $lock;
       $cb->( undef, Exception->new( 'msg' => $msg ) );
    };
    return unless $body;
 
    my $chain =
-        $stage eq 'pulling'  ? $self->_create_run_from_pulling($body)
-      : $stage eq 'creating' ? $self->_create_run_from_creating($body)
+        $stage eq 'pulling'  ? $self->_create_run_from_pulling( $body, 1 )
+      : $stage eq 'creating' ? $self->_create_run_from_creating( $body, 1 )
       : $stage eq 'starting' ? $self->_create_run_from_starting()
       : undef;
 
    unless ($chain) {
       my $msg = "reservation '" . $self->id() . "' has unreconcilable createStatus.stage '$stage'";
       flog("Reservation::reconcile_create: $msg");
+      close($lock) if $lock;
       $cb->( undef, Exception->new( 'msg' => $msg ) );
       return;
    }
 
-   $self->_create_track( $chain, $cb );
+   $self->_create_track( $chain, $cb, $lock );
    return;
+}
+
+# Decides what a non-terminal createStatus.stage for $id actually means, and resumes the chain
+# if it was abandoned - the one entry point _reconcile_pass (bin/app-server) uses for every
+# candidate it finds.
+#
+# A non-terminal stage on disk is ambiguous alone - it can't say whether a live process is still
+# driving it. The lock resolves that: refused means one is (skip). Acquired means the previous
+# holder either finished and released it deliberately (a fresh reload now shows a terminal
+# stage, or no reservation at all) or died mid-chain (the kernel freed the lock, but nothing
+# wrote a terminal stage, so the reload still shows the same non-terminal stage). Reading the
+# stage only after acquiring the lock is what tells these apart - the caller's own candidate
+# list is just a snapshot and is never trusted directly for this (see _reservation_reloaded).
+#
+# Returns 1 if it resumed a chain, 0 if it skipped; says nothing about whether a resumed chain
+# later succeeds, which lands in createStatus as always. The lock is held for the resumed
+# chain's whole lifetime by reconcile_create/_create_track, released only when it settles.
+sub reconcile_one ($class, $id, $cb = sub {}) {
+   my $lock = tryLockFile( _create_lock_path($id) );
+   unless ($lock) {
+      $cb->();
+      return 0;
+   }
+
+   my $reservation = _reservation_reloaded($id);
+   my $stage = $reservation ? ( ( $reservation->{'createStatus'} // {} )->{'stage'} // '' ) : '';
+   unless ( $stage =~ /^(?:pulling|creating|starting)$/ ) {
+      close($lock);
+      $cb->();
+      return 0;
+   }
+
+   $reservation->reconcile_create( $cb, $lock );
+   return 1;
 }
 
 # $command is undef for exactly one caller shape: docker-event-daemon's genuine container-start

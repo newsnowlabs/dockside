@@ -544,6 +544,19 @@ sub cmdline_json ($self) {
       ( @env             ? ( 'Env'          => \@env )          : () ),
       ( %$exposedPorts    ? ( 'ExposedPorts' => $exposedPorts )  : () ),
       'HostConfig' => $hostConfig,
+      # Identity labels - docs/adr/0007-create-restart-recovery.md's "Decision" section. Only
+      # dev.dockside.reservation.id is load-bearing: it's what a recovery re-entry's by-name
+      # lookup checks before adopting a container it finds under this reservation's name. The
+      # rest exist so `docker inspect` shows a coherent, self-describing set instead of one
+      # opaque key, and `docker ps --filter label=dev.dockside.reservation.id` works as a
+      # handle. Keys use reverse-DNS of dockside.dev, Docker's own documented namespacing
+      # convention.
+      'Labels' => {
+         'dev.dockside.reservation.id' => $self->id,
+         'dev.dockside.owner.username' => $self->owner('username') // '',
+         'dev.dockside.owner.name'     => $self->owner('name') // '',
+         'dev.dockside.profile'        => $self->profile,
+      },
    };
 }
 

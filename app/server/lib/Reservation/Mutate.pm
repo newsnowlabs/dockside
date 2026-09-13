@@ -145,6 +145,12 @@ sub load_clean_map ($class, @containerIds) {
                delete $by_name->{ $by_id->{$id}{'name'} };
                delete $by_id->{$id};
                $Updates++;
+
+               # The only place a reservation record is ever removed, and therefore the only
+               # place its per-reservation create() ownership lock file (docs/adr/0007-create-
+               # restart-recovery.md's "Lock-file lifecycle and constraints" section) can be unlinked safely - a live
+               # holder can only exist for a reservation that still exists.
+               unlink("$CONFIG->{'tmpPath'}/r-$id.lock");
             }
          }
 

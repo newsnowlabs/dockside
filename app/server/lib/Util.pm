@@ -12,7 +12,7 @@ our @EXPORT_OK = ( qw(
    run run_system clean_pty run_pty
    sanitize_sensitive_text
    YYYYMMDDHHMMSS TO_JSON
-   cacheReadWrite cloneHash lockFile
+   cacheReadWrite cloneHash lockFile tryLockFile
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    unique
    apply_args_to_record
@@ -755,6 +755,24 @@ sub lockFile ($lockfile) {
       || die Exception->new( 'dbg' => "Cannot open lock file '$lockfile' ($!)" );
    flock( $LK, LOCK_EX )
       || do { close $LK; die Exception->new( 'dbg' => "Cannot lock '$lockfile' ($!)" ); };
+   return $LK;
+}
+
+# Like lockFile, but non-blocking: returns the open, locked handle immediately if the lock is
+# free, or undef immediately if some other live process already holds it - never waits. Used
+# wherever "someone else already owns this" is a normal, expected outcome to detect and skip
+# rather than a failure (docs/adr/0007-create-restart-recovery.md's per-reservation create lock
+# is the first caller: a chain already running elsewhere, in this process or another, must be
+# detected without blocking on it). Same scope-guard release contract as lockFile above - the
+# caller keeps the handle in a lexical scoped to exactly the region to hold the lock, and
+# dropping it (return, die, or process exit) releases it.
+sub tryLockFile ($lockfile) {
+   open( my $LK, ">>", $lockfile )
+      || die Exception->new( 'dbg' => "Cannot open lock file '$lockfile' ($!)" );
+   unless ( flock( $LK, LOCK_EX | LOCK_NB ) ) {
+      close($LK);
+      return undef;
+   }
    return $LK;
 }
 

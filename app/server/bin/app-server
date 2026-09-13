@@ -21,8 +21,6 @@ use Try::Tiny;
 use URI::Escape;
 use JSON::XS;   # ->new->... below, and the decode_json/encode_json functions
                  # it exports by default (used by _parse_body_args)
-use Fcntl qw(:flock);   # _with_reconcile_lock's own LOCK_EX/LOCK_NB/LOCK_UN below
-use File::Path;         # mkpath - _with_reconcile_lock's own tmpPath existence guard
 use Util qw(flog wlog sanitize_sensitive_text YYYYMMDDHHMMSS);
 use Exception;
 use Data qw($CONFIG $HOSTNAME $HOSTINFO $VERSION);
@@ -45,91 +43,59 @@ flog("Starting...");
 $Data::CORE_PARSE_FAILURE_FATAL = 1;
 Data::load();
 
-# Finds every reservation whose createStatus.stage is non-terminal and asks it to reconcile
-# itself (Reservation::reconcile_create) - the mechanism shared by the startup sweep just
-# below and the per-worker periodic reconciler registered further down, covering the two
-# restart granularities docs/adr/0007-create-restart-recovery.md's own "Context" section
-# lays out. $onDone (optional) fires once every reconciliation kicked
-# off by this call has settled - the startup sweep needs this to know when it's safe to stop
-# pumping the reactor; the periodic reconciler doesn't (it's already running inside a live
-# event loop, so there's nothing to wait for from the outside).
+# One-time orphan cleanup: unlinks any per-reservation ownership lock file left behind by a
+# reservation that no longer exists - docs/adr/0007-create-restart-recovery.md's lock-file
+# lifecycle constraints. Safe only here, before any worker forks: once a worker exists, it may
+# hold one of these locks for a live reservation, and unlinking a lock file while its
+# reservation still exists would let a live holder and a later claimant lock two different
+# inodes under the same path.
+sub _cleanup_orphaned_reservation_locks {
+   opendir( my $dh, $CONFIG->{'tmpPath'} ) or return;
+   my %liveIds = map { $_->id() => 1 } @{ Reservation->load() };
+   for my $entry ( readdir($dh) ) {
+      next unless $entry =~ /^r-(.+)\.lock$/;
+      next if $liveIds{$1};
+      unlink("$CONFIG->{'tmpPath'}/$entry")
+         or flog("app-server: could not remove orphaned reservation lock '$entry': $!");
+   }
+   closedir($dh);
+   return;
+}
+_cleanup_orphaned_reservation_locks();
+
+# Finds every reservation with a non-terminal createStatus.stage and hands each one to
+# Reservation->reconcile_one, which decides - via its own per-reservation lock - whether it is
+# abandoned or still live, resuming only the ones that are abandoned (see reconcile_one's own
+# comment for how). Registered, pre-fork, to run once when each worker's own event loop starts
+# and again on appServer.reconcileIntervalSeconds (both registrations are further down,
+# alongside the routes); there is no equivalent manager-side sweep, since a lock taken before any
+# worker forks would be inherited by every forked worker and never released.
 #
-# Callers must ensure only one of them is ever calling this at a time - it does no claiming or
-# locking of its own. The startup sweep (below) is inherently safe (runs solo, before any
-# worker forks); the periodic reconciler (further down) wraps its own call in
-# _with_reconcile_lock, since it fires independently in every worker (confirmed live - see that
-# doc's Open Questions #4) and two workers finding the same stuck reservation on the same tick
-# would otherwise both try to reconcile it.
-sub _reconcile_stuck_reservations ($onDone = sub {}) {
+# Re-loads reservations.json first to build this pass's own candidate list - a sibling worker or
+# docker-event-daemon may have mutated it since this worker's last refresh - but the list is only
+# ever a snapshot; reconcile_one decides ownership from its own fresh reload, not from this list.
+sub _reconcile_pass {
    try {
-      # A non-terminal stage means "no process is driving this chain any more" only for a chain
-      # this process is not itself driving right now: create() writes its stage before any
-      # Docker call and leaves it non-terminal for the chain's whole duration, so a
-      # legitimately-running create - an image pull can outlast reconcileIntervalSeconds
-      # comfortably - looks identical on disk to an abandoned one. create_in_flight tells the
-      # two apart for this process's own chains, which is what a worker's own timer tick would
-      # otherwise trip over. It is per-process state, so it says nothing about a sibling
-      # worker's chains; every stage is individually re-enterable and the creating stage
-      # tolerates a name conflict, which is what keeps that case harmless.
-      my @stuck = grep {
+      Data::load('reservations.json');
+
+      my @candidates = grep {
          my $stage = ( $_->{'createStatus'} // {} )->{'stage'} // '';
-         $stage =~ /^(?:pulling|creating|starting)$/ && !Reservation->create_in_flight( $_->id() );
+         $stage =~ /^(?:pulling|creating|starting)$/;
       } @{ Reservation->load() };
 
-      flog(sprintf("app-server: reconcile sweep: %d reservation(s) have a create still in progress", scalar @stuck))
-         if @stuck;
+      return unless @candidates;
 
-      my $outstanding = scalar @stuck;
-      return $onDone->() unless $outstanding;
-
-      for my $reservation (@stuck) {
-         $reservation->reconcile_create( sub ( $reconciled, $err ) {
-            flog("app-server: reconcile of reservation '" . $reservation->id() . "' failed: " . $err->msg) if $err;
-            $onDone->() unless --$outstanding;
+      for my $candidate (@candidates) {
+         Reservation->reconcile_one( $candidate->id(), sub ( $reconciled = undef, $err = undef ) {
+            flog("app-server: reconcile of reservation '" . $candidate->id() . "' failed: " . $err->msg) if $err;
          } );
       }
    }
    catch {
-      flog("app-server: reconcile sweep failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
-      $onDone->();
+      flog("app-server: reconcile pass failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
    };
    return;
 }
-
-# Ensures at most one of this app-server's own N workers runs a reconciliation sweep at a
-# time (see _reconcile_stuck_reservations's own comment on why) - a single process-wide lock,
-# not a per-reservation claim: the concern is N workers racing the *same* stuck reservation,
-# which needs only "one sweep at a time", not per-reservation granularity. A real OS-level
-# flock gets crash-safety for free - released automatically the instant the holding process's
-# fd closes, for any reason, with no manual staleness bookkeeping needed. `LOCK_EX | LOCK_NB`:
-# a worker that can't acquire it immediately just skips this tick - not an error, the next tick
-# (this worker's own, 5 minutes later by default) tries again regardless of who won this one.
-sub _with_reconcile_lock ($cb) {
-   mkpath( [ $CONFIG->{'tmpPath'} ], 0, 0755 ) unless -d $CONFIG->{'tmpPath'};
-   open( my $fh, '>>', "$CONFIG->{'tmpPath'}/create-reconcile.lock" ) or do {
-      flog("app-server: could not open reconcile sweep lock: $!");
-      return;
-   };
-   unless ( flock( $fh, LOCK_EX | LOCK_NB ) ) {
-      close($fh);
-      return;   # another worker is already sweeping - skip this tick, try again next time
-   }
-   $cb->();
-   flock( $fh, LOCK_UN );
-   close($fh);
-   return;
-}
-
-# Restart-recovery: create()'s own chain may have been abandoned mid-flight by a previous
-# process - see docs/adr/0007-create-restart-recovery.md. Runs once, here, in the manager,
-# before any worker forks (a replacement worker forked later, mid-lifetime, does NOT re-run
-# this - see the per-worker periodic reconciler registered further down for that case). Pumps
-# the reactor just long enough for this sweep's own async work to settle, the same "run the
-# IOLoop just long enough" idiom docker-event-daemon's own initial containers.json write
-# already uses (docker-event-daemon:985-987) - nothing else is happening on this process yet
-# to lose concurrency with by waiting.
-_reconcile_stuck_reservations( sub { Mojo::IOLoop->stop } );
-Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
 
 my $port    = $CONFIG->{'appServer'}{'port'};
 my $workers = $CONFIG->{'appServer'}{'workers'};
@@ -1122,16 +1088,13 @@ $routes->any( '/*whatever' => { whatever => '' } => sub ($c) {
    return _redirect( $c, 302, '/' );
 } );
 
-# Per-worker periodic reconciler - covers a single worker dying mid-create while its siblings
-# and the manager stay up (the startup sweep above only catches a whole-process restart - see
-# docs/adr/0007-create-restart-recovery.md's own "Context" section). Registered once, pre-fork,
-# on the shared Mojo::IOLoop->singleton - fires independently inside every forked worker. Re-loads
-# reservations.json first - sibling workers/processes may have mutated it since this worker's
-# own last refresh (_authenticate's own per-request Data::load() doesn't fire on a timer tick).
-Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => sub (@) {
-   Data::load('reservations.json');
-   _with_reconcile_lock( \&_reconcile_stuck_reservations );
-} );
+# Registers _reconcile_pass (defined above, see its own comment) to run once when each forked
+# worker's own event loop starts, then again on the interval - both pre-fork, on the shared
+# Mojo::IOLoop->singleton, so each forked worker's own copy of the reactor ticks them
+# independently; the manager itself never runs the reactor past this point, so neither fires
+# there.
+Mojo::IOLoop->timer( 0 => \&_reconcile_pass );
+Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => \&_reconcile_pass );
 
 # Graceful exit handler - refuses new creates (the /containers/create route's own
 # $shuttingDown check above) and gives an in-flight one a bounded chance to reach a stable
