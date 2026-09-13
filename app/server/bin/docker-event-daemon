@@ -299,10 +299,11 @@ sub _launch_deps_cleared ($reservation, $stage) {
 # running (not reset) is correctly excluded from this sync too - its true current state is
 # whatever the concurrent invocation that owns it last wrote, not something this process knows.
 sub launch_reset_stages ($reservation) {
-   my $written = launch_reset_stages_if_idle(
+   my ( $written, $startCount ) = launch_reset_stages_if_idle(
       $reservation->id(), \@LAUNCH_STAGE_NAMES, $Reservation::HOOK_HISTORY_MAX );
    my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
    %$status = ( %$status, %$written );
+   $reservation->{'data'}{'startCount'} = $startCount if defined $startCount;
 
    # A launch-version-0 profile's own launch.sh (Profile::ide_launch_version) predates the
    # launch:prep/launch:git split - it has no launch_prep/launch_git functions for those stages

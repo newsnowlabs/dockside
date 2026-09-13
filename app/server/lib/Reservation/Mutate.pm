@@ -575,11 +575,11 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
 # elsewhere), but would corrupt the status record's own accuracy for the duration - checked the
 # same way for all 5 names here rather than special-casing which two actually need it.
 #
-# Returns the entries actually written (a hashref, name => entry) - the caller must sync these
-# onto its own in-memory Reservation, exactly as hook_claim_if_not_running's callers do (mutate()
-# only ever operates on a fresh, separately-loaded copy, never the caller's own object).
+# Returns ($written, $startCount). The caller must sync both onto its in-memory Reservation:
+# healing a previous prep can advance the count used by the next launch's dispatch.
 sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
    my $written = {};
+   my $startCount;
    my @healedEntries;
 
    mutate(
@@ -600,12 +600,13 @@ sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
             push( @healedEntries, _resolve_hook_entry( $data, $name, $healedFields ) ) if $healedFields;
             $status->{$name} = $written->{$name} = { 'name' => $name, 'state' => 'pending' };
          }
+         $startCount = $data->{'startCount'};
          return 1;
       }
    );
 
    record_hook_history( $id, { %$_ }, $cap ) for @healedEntries;
-   return $written;
+   return ( $written, $startCount );
 }
 
 1;
