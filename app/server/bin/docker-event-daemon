@@ -387,11 +387,18 @@ sub launch_maybe_dispatch ($reservation, $stage) {
 #      indefinitely, either overwritten by the next restart's fresh dispatch or lazily
 #      self-healed by the restart-recovery sweep.
 #   extra_env  => [...]    "KEY=VALUE" strings specific to this stage, on top of the base env.
-#   on_success => sub ($reservation) { ... }   optional, called (only on real, confirmed
-#      success) after the exec completes but before launch_resolve_stage - synchronous, not
-#      given its own callback: increment_start_count (the only current user) is a fast,
-#      synchronous file write like every other Reservation.pm state operation, not a Docker
-#      socket call, so it needs no async treatment of its own.
+#   pending_fields => {...}   merged onto the entry hook_status_started records for this
+#      dispatch - see _launch_dispatch_prep's own comment on 'pendingStartCount', its one
+#      current use. Only meaningful for the non-Detach path: a field here is committed once
+#      this entry resolves to 'done' (see Reservation::Mutate::_resolve_hook_entry), which
+#      Detach's own entry never does in the normal case (see 'detach' above) - a Detach
+#      caller with a pending commit still needs on_success below instead.
+#   on_success => sub ($reservation) { ... }   optional, called only for Detach, once dispatch
+#      is confirmed to have started (Detach has no later, real-exit-code moment to hook a
+#      commit onto instead - see 'detach' above) - synchronous, not given its own callback:
+#      increment_start_count (the only current user) is a fast, synchronous file write like
+#      every other Reservation.pm state operation, not a Docker socket call, so it needs no
+#      async treatment of its own.
 #   $cb->()    called exactly once, once this stage has been resolved (or, for Detach, once
 #      dispatch is confirmed to have at least started) - drives launch_advance's own re-scan.
 sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
@@ -429,7 +436,7 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
 
    # Synchronous, before any async I/O begins - see launch_maybe_dispatch's own comment on why
    # that alone is what makes a re-entrant launch_advance call safe.
-   $reservation->hook_status_started($stage, $logPath);
+   $reservation->hook_status_started($stage, $logPath, $opts->{'pending_fields'} // {});
 
    flog( "docker-event-daemon::_launch_dispatch_exec: DISPATCHING '$stage' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
@@ -462,7 +469,9 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
          my $timedOut = $result->{'timedOut'} ? 1 : 0;
          my $success = !$timedOut && defined($rc) && $rc == 0;
 
-         $opts->{'on_success'}->($reservation) if $success && $opts->{'on_success'};
+         # A 'pendingStartCount' passed via pending_fields, if any, is committed inside this
+         # call - see Reservation::Mutate::_resolve_hook_entry - not via on_success, which is
+         # for Detach only (see this sub's own header comment).
          launch_resolve_stage( $reservation, $stage, $timedOut ? 'timedOut' : ( $success ? 'done' : 'failed' ) );
          $cb->();
       }
@@ -506,12 +515,16 @@ sub _launch_prep_env ($reservation, $userObj) {
 # launch:prep's own dispatch - not just a plain _launch_dispatch_exec call, because this stage
 # carries two things specific to it alone: (1) _launch_prep_env's own SSH/owner env; (2)
 # DOCKSIDE_START_COUNT's compute-before/persist-after-confirmed-success dance - computed here as
-# a *prospective* value (purely informational for the container), but only ever persisted via
-# on_success once _launch_dispatch_exec confirms real success - never on a failed or merely-
-# attempted dispatch, which would otherwise burn a count on a launch that never actually
-# happened. This is exactly the moment data('startCount') becomes the value launch:git's own
-# dispatch and the lifecycle:launch/lifecycle:start 'applicable' predicates read afterward - by
-# the time either dispatches, launch:prep has already succeeded, so the count is already final.
+# a *prospective* value (purely informational for the container), attached to the dispatched
+# entry as 'pendingStartCount' via pending_fields, and only ever committed to data.startCount
+# once this entry actually resolves 'done' (see Reservation::Mutate::_resolve_hook_entry) -
+# never on a failed or merely-attempted dispatch, which would otherwise burn a count on a
+# launch that never actually happened, and never lost if something other than this dispatch's
+# own continuation is what ends up resolving the entry (a restart-recovery/on-claim/reset-cycle
+# heal finding it already finished, rather than this process's own docker_exec callback firing).
+# This is exactly the moment data('startCount') becomes the value launch:git's own dispatch and
+# the lifecycle:launch/lifecycle:start 'applicable' predicates read afterward - by the time
+# either dispatches, launch:prep has already succeeded, so the count is already final.
 sub _launch_dispatch_prep ($reservation, $cb) {
    my $owner = $reservation->owner('username');
    my $userObj = User->load($owner);
@@ -533,8 +546,8 @@ sub _launch_dispatch_prep ($reservation, $cb) {
    my $startCount = ( $reservation->data('startCount') // 0 ) + 1;
 
    return _launch_dispatch_exec( $reservation, 'launch:prep', 'launch_prep', $ROOT_USER->($reservation), {
-      'extra_env'  => [ @env, "DOCKSIDE_START_COUNT=$startCount" ],
-      'on_success' => sub ($reservation) { $reservation->increment_start_count(); },
+      'extra_env'      => [ @env, "DOCKSIDE_START_COUNT=$startCount" ],
+      'pending_fields' => { 'pendingStartCount' => $startCount },
    }, $cb );
 }
 

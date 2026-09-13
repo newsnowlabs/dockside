@@ -4,7 +4,7 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
+our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field resolve_hook_status hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
 
 use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync);
 use Exception;
@@ -394,10 +394,13 @@ sub replace_router ($id, $name, $routerDef, $explicitAccessLevel, $defaultAccess
 # for its duration - only on that path, never on the common "nothing recorded" path, which this
 # returns from after a single hash lookup.
 #
-# Returns ($isLive, $healedEntry): $isLive true means genuinely still running - the caller must
-# not touch this slot. $healedEntry is a resolved entry (done/failed/aborted), for the caller to
-# persist and record_hook_history, if $existing was stale and needed self-healing; undef if
-# $existing was already terminal, absent, or genuinely live (nothing to heal either way).
+# Returns ($isLive, $healedFields): $isLive true means genuinely still running - the caller must
+# not touch this slot. $healedFields is the ('state', and 'exitCode' where known) fields
+# describing how a stale $existing actually ended, for the caller to apply via
+# _resolve_hook_entry below and record_hook_history; undef if $existing was already terminal,
+# absent, or genuinely live (nothing to heal either way). Deliberately not a full merged entry -
+# only _resolve_hook_entry ever combines these fields with $existing, so there is exactly one
+# place that does, and it's the one place that also knows about a pending startCount commit.
 sub _hook_entry_liveness ($existing) {
    return ( 0, undef ) unless $existing && ( $existing->{'state'} // '' ) eq 'running';
 
@@ -411,13 +414,68 @@ sub _hook_entry_liveness ($existing) {
       return ( 1, undef ) if $info->{'Running'};   # genuinely still running
 
       if ( defined $info->{'ExitCode'} ) {
-         return ( 0, { %$existing,
+         return ( 0, {
             'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
             'exitCode' => $info->{'ExitCode'},
          } );
       }
    }
-   return ( 0, { %$existing, 'state' => 'aborted' } );   # signal not conclusive - self-heal
+   return ( 0, { 'state' => 'aborted' } );   # signal not conclusive - self-heal
+}
+
+# The one place a hooks.status.$name entry is ever transitioned into a terminal state
+# ('done'/'failed'/'timedOut'/'aborted'/'skipped') - called from inside each of this module's
+# own mutate() closures (never on its own, since it needs the lock already held), by
+# resolve_hook_status below, hook_claim_if_not_running, and launch_reset_stages_if_idle. $data
+# is the reservation's own already-locked 'data' hashref; $fields (must include 'state') is
+# merged onto whatever's currently persisted for $name, exactly as
+# Reservation::hook_status_completed's own merge used to do - the only difference is this reads
+# $existing fresh from $data rather than from a caller's possibly-stale in-memory copy, the same
+# correctness reasoning record_hook_history already relies on for the same class of risk.
+#
+# If $existing carries 'pendingStartCount' (set by docker-event-daemon's own
+# _launch_dispatch_prep at dispatch time - see its comment) and $fields resolves the entry to
+# 'done', data.startCount is raised to at least that value in this same write - never
+# incremented again from whatever it currently holds, because the dispatched container was
+# already told this exact value via DOCKSIDE_START_COUNT before this exec ever ran, and nothing
+# that happens afterward can make a different number correct. This makes the commit idempotent:
+# applying it twice (e.g. a future caller resolving the same already-resolved entry again) can
+# only ever raise data.startCount to the same value, never bump it twice. 'pendingStartCount' is
+# never itself persisted onward - it is a one-shot instruction consumed here, not part of the
+# entry's own terminal vocabulary.
+sub _resolve_hook_entry ($data, $name, $fields) {
+   my $status = ( $data->{'hooks'} //= {} )->{'status'} //= {};
+   my $existing = $status->{$name} // { 'name' => $name };
+
+   my $resolved = { %$existing, %$fields };
+   my $pendingStartCount = delete $resolved->{'pendingStartCount'};
+   if ( defined($pendingStartCount) && ($fields->{'state'} // '') eq 'done' &&
+        ( $data->{'startCount'} // 0 ) < $pendingStartCount ) {
+      $data->{'startCount'} = $pendingStartCount;
+   }
+
+   return $status->{$name} = $resolved;
+}
+
+# Reservation::hook_status_completed's own locked mutator - see _resolve_hook_entry above for
+# what "resolve" means here, including the pending startCount commit. Returns ($entry,
+# $startCount): $entry for the caller to sync onto its own in-memory copy and pass to
+# record_hook_history (a separate, sequential mutate() call - see hook_claim_if_not_running's
+# own comment on why a second one can't nest inside this one); $startCount (the record's current
+# value once this call returns, whether or not it just changed) for the caller to sync onto its
+# own in-memory copy too, mirroring increment_start_count's existing discipline.
+sub resolve_hook_status ($id, $name, $fields) {
+   my ( $resolved, $startCount );
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $data = $reservation->{'data'} //= {};
+         $resolved = _resolve_hook_entry( $data, $name, $fields );
+         $startCount = $data->{'startCount'};
+         return 1;
+      }
+   );
+   return ( $resolved, $startCount );
 }
 
 # Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely
@@ -463,13 +521,13 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
    mutate(
       sub ($by_id, $by_name) {
          my $reservation = $by_id->{$id} or return 0;
-         my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+         my $data = $reservation->{'data'} //= {};
+         my $status = ( $data->{'hooks'} //= {} )->{'status'} //= {};
 
-         my ( $isLive, $healed ) = _hook_entry_liveness( $status->{$name} );
+         my ( $isLive, $healedFields ) = _hook_entry_liveness( $status->{$name} );
          return 0 if $isLive;
-         if ( $healed ) {
-            $healedEntry = $healed;
-            $status->{$name} = $healed;
+         if ( $healedFields ) {
+            $healedEntry = _resolve_hook_entry( $data, $name, $healedFields );
             # Falls through to claim the now-free slot below.
          }
 
@@ -514,13 +572,19 @@ sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
    mutate(
       sub ($by_id, $by_name) {
          my $reservation = $by_id->{$id} or return 0;
-         my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+         my $data = $reservation->{'data'} //= {};
+         my $status = ( $data->{'hooks'} //= {} )->{'status'} //= {};
 
          for my $name (@$stageNames) {
-            my ( $isLive, $healed ) = _hook_entry_liveness( $status->{$name} );
+            my ( $isLive, $healedFields ) = _hook_entry_liveness( $status->{$name} );
             next if $isLive;   # leave it running, untouched - not ours to reset
 
-            push( @healedEntries, $healed ) if $healed;
+            # A stale entry resolved here still commits its own pending startCount (see
+            # _resolve_hook_entry) even though $status->{$name} is about to be overwritten below
+            # for the fresh cycle - the history row this produces is the only lasting record of
+            # that invocation's own outcome, but the startCount side effect isn't allowed to
+            # depend on anything ever reading it back from history.
+            push( @healedEntries, _resolve_hook_entry( $data, $name, $healedFields ) ) if $healedFields;
             $status->{$name} = $written->{$name} = { 'name' => $name, 'state' => 'pending' };
          }
          return 1;

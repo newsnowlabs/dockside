@@ -9,7 +9,7 @@ use Tie::File;
 use Storable qw(dclone);
 use URI::Escape;
 use Mojo::Promise;
-use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running);
+use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field resolve_hook_status hook_claim_if_not_running);
 # Not imported: Reservation::Mutate's own add_router/remove_router/replace_router - Reservation.pm
 # defines its OWN methods of the same name below (the public API other code calls), which call
 # Reservation::Mutate's versions fully-qualified. Importing both under the same bare names into
@@ -1989,14 +1989,20 @@ sub hook_status ($self, $name) {
 # instead), to record that $name has started, so a poller sees 'running' immediately rather
 # than a gap where the record doesn't exist yet. execId is deliberately undef at this point -
 # it only exists once docker_exec's own on_created callback fires - see
-# hook_status_set_running_details, called from that callback once it's known.
-sub hook_status_started ($self, $name, $logPath) {
+# hook_status_set_running_details, called from that callback once it's known. $extraFields
+# merges onto the entry as-is - docker-event-daemon's own _launch_dispatch_prep uses this to
+# attach 'pendingStartCount', so whichever code eventually resolves this entry to 'done' (the
+# live dispatch, or either restart-recovery/on-claim heal path - see
+# Reservation::Mutate::_resolve_hook_entry) can commit it, without needing to be that same
+# invocation.
+sub hook_status_started ($self, $name, $logPath, $extraFields = {}) {
    $self->_hook_status_store_one( $name, {
       'name'      => $name,
       'state'     => 'running',
       'execId'    => undef,
       'logPath'   => $logPath,
       'startTime' => YYYYMMDDHHMMSS(time),
+      %$extraFields,
    } );
 }
 
@@ -2011,9 +2017,16 @@ sub hook_status_set_running_details ($self, $name, $execId) {
 # outcome on both the master record and the bounded history array. $fields must include
 # 'state' explicitly ('done' or 'aborted') - never defaulted, so a caller can never
 # accidentally leave a completed entry reading 'running' by omission.
+#
+# Goes through Reservation::Mutate::resolve_hook_status, not _hook_status_store_one - the merge
+# against the entry's prior fields happens fresh under the reservations-db lock, not against
+# this process's own possibly-stale in-memory copy, and any 'pendingStartCount' the entry
+# carries (see hook_status_started) is committed in that same locked write, not as a second,
+# separate one that could land only one side of if a crash landed between them.
 sub hook_status_completed ($self, $name, $fields) {
-   my $entry = { %{ $self->_hook_status_all->{$name} // { 'name' => $name } }, %$fields };
-   $self->_hook_status_store_one( $name, $entry );
+   my ( $entry, $startCount ) = resolve_hook_status( $self->id(), $name, $fields );
+   ( $self->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $entry;
+   $self->{'data'}{'startCount'} = $startCount if defined $startCount;
 
    record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
 }
