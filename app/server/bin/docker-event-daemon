@@ -606,8 +606,12 @@ sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
          return if $claimedEntry;   # claimed - dispatch_hook_exec continues on its own
          flog( "docker-event-daemon::_launch_dispatch_hook_stage: '$name' already claimed by a "
              . "concurrent on-demand invocation - deferring to launchRecovering" );
-         $launchRecovering{ $reservation->containerId } = 1;
-         $cb->();
+         # Not $cb->(): $reservation's in-memory hooks.status.$name was never told about the
+         # winner's claim, so re-running launch_advance against it here would see 'pending'
+         # again and recurse with no yield to the event loop - until the winner's own exec
+         # finishes, at which point the same stale retry would win the now-free slot and
+         # re-dispatch this stage a second time. %launchRecovering's on_tick pass re-loads a
+         # fresh Reservation before calling launch_advance, so it isn't fooled this way.
       },
       sub ( $outcome, $err ) {
          launch_resolve_stage( $reservation, $name, $outcome // 'failed' );
