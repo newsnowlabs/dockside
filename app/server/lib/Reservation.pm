@@ -1311,11 +1311,11 @@ sub _create_lock_path ($id) {
 # Forces this worker's own reservation cache to catch up with whatever another process (a
 # sibling worker, docker-event-daemon) has written to reservations.json since this worker's own
 # copy was last loaded, then returns the current Reservation object for $id, or undef if it no
-# longer exists. Reuses Data::load()'s own mtime-gated refresh and Reservation::Load::load's own
-# parsing - the same path every request already takes via _authenticate's own Data::load() call
-# - rather than re-reading or re-parsing reservations.json independently.
+# longer exists. Uses Data's normal locked read and parsing, but bypasses its timestamp
+# cache: two writes can have identical mtimes even with fractional-second stat. A cached
+# non-terminal stage must never authorize a new driver after the prior one has settled.
 sub _reservation_reloaded ($id) {
-   Data::load('reservations.json');
+   Data::load_fresh('reservations.json');
    return $Reservation::BY_ID->{$id};
 }
 

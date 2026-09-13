@@ -382,6 +382,15 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
    }
 }
 
+# Reload without trusting modification timestamps. Ownership checks need this even
+# with fractional-second stat: separate writes can still have identical timestamps.
+sub load_fresh (@configFiles) {
+   for my $p ( @configFiles ? @configFiles : keys %$CONFIG_FILES ) {
+      $CONFIG_FILES->{$p}{'lastModified'} = -1 if $CONFIG_FILES->{$p};
+   }
+   load(@configFiles);
+}
+
 # Force the profile glob to reload on the next Data::load call.
 # Needed after profile file deletion or rename, where the mtime of the remaining
 # files does not change and the cache would otherwise not detect the update.
