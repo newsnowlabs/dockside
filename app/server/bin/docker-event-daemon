@@ -622,12 +622,9 @@ sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
          }
          flog( "docker-event-daemon::_launch_dispatch_hook_stage: '$name' already claimed by a "
              . "concurrent on-demand invocation - deferring to launchRecovering" );
-         # Not $cb->(): $reservation's in-memory hooks.status.$name was never told about the
-         # winner's claim, so re-running launch_advance against it here would see 'pending'
-         # again and recurse with no yield to the event loop - until the winner's own exec
-         # finishes, at which point the same stale retry would win the now-free slot and
-         # re-dispatch this stage a second time. %launchRecovering's on_tick pass re-loads a
-         # fresh Reservation before calling launch_advance, so it isn't fooled this way.
+         $launchRecovering{ $reservation->containerId } = 1;
+         # The winner owns completion. The recovery tick reloads its status before advancing
+         # dependents; calling $cb here would recurse against this object's pending entry.
       },
       sub ( $outcome, $err ) {
          # A second, independently-necessary fence on the same invocation:
@@ -966,9 +963,9 @@ sub eventHandler {
       # Re-check any reservation restart-recovery found still genuinely in-flight after its own
       # first pass - see %launchRecovering's own comment for why this, and only this, case needs
       # per-tick polling under the async model. Self-limiting: each entry removes itself the
-      # moment launch_in_flight() says there's nothing left to recover, and nothing is ever added
-      # here except by the startup sweep - an empty %launchRecovering (the overwhelmingly common
-      # case) costs this tick nothing beyond the truth test below.
+      # moment launch_in_flight() says there's nothing left to recover. Both the startup sweep
+      # and a lost lifecycle-hook claim enqueue reservations here. An empty recovery set costs
+      # this tick nothing beyond the truth test below.
       if (%launchRecovering) {
          try {
             for my $cid (keys %launchRecovering) {
