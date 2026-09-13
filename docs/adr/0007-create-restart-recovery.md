@@ -82,7 +82,12 @@ the lock, but nothing wrote a terminal stage, so the reload still shows the same
 stage). Reading the stage only *after* acquiring the lock, from a fresh, direct reload (not the
 pass's own candidate snapshot, and not the calling worker's cached copy - see
 `Reservation::_reservation_reloaded`), is what tells these two cases apart; the snapshot a pass
-iterates from is never trusted to still be current by the time a lock is acquired.
+iterates from is never trusted to still be current by the time a lock is acquired. That reload
+must also bypass `Data::load`'s own timestamp-gated cache (`Data::load_fresh`, not `Data::load`):
+two separate writes to `reservations.json` can share an identical modification timestamp even
+with the fractional-second `stat` `Data::load` otherwise relies on, so a worker's cached copy of
+a since-settled `pulling`/`creating`/`starting` stage can survive an ordinary, cache-respecting
+reload and be mistaken for the current state.
 
 This is the only sweep app-server runs: a whole-process restart is just every worker's own first
 pass, arbitrated by the same per-reservation locks, with nothing run in the manager beyond the
