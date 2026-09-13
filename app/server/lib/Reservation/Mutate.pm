@@ -405,7 +405,14 @@ sub _hook_entry_liveness ($existing) {
    return ( 0, undef ) unless $existing && ( $existing->{'state'} // '' ) eq 'running';
 
    if ( !defined( $existing->{'execId'} ) ) {
-      return ( 1, undef );   # newly-started elsewhere, the signal doesn't exist yet - genuinely live
+      # Normally live: newly-started elsewhere, the execId signal doesn't exist yet. Stale only
+      # past $Reservation::HOOK_CLAIM_STALE_SECONDS with still no execId at all - the one gap
+      # Reservation::dispatch_hook_exec's own try/catch around this exact window cannot close
+      # (its owning process dying outright, not an exception it could catch and settle itself) -
+      # see that package variable's own comment for why this lives there, not here.
+      my $staleBefore = YYYYMMDDHHMMSS( time - $Reservation::HOOK_CLAIM_STALE_SECONDS );
+      return ( 1, undef ) if ( $existing->{'startTime'} // '' ) ge $staleBefore;
+      return ( 0, { 'state' => 'aborted' } );
    }
 
    my $res = call_socket_api_sync( $CONFIG->{'docker'}{'socket'}, "/exec/$existing->{'execId'}/json", {} );

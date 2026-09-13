@@ -410,6 +410,83 @@ class HooksTests(TestCase):
             f'expected exactly one hook execution on the container itself, found {len(lines)}: {lines!r}',
         )
 
+    def test_14_manual_run_settles_cleanly_if_owner_removed_before_dispatch(self):
+        """A manual hook run whose owning user account has since been deleted must not
+        strand the claim it makes. Reservation::dispatch_hook_exec claims the slot, then
+        loads the owner's User record (to build the hook's env) before ever asking Docker to
+        do anything; if that load fails, the claim it just made must be released right there,
+        not left 'running' with no execId assigned forever - which would report every future
+        run of this hook, on this devtainer, as permanently 'busy'.
+
+        Uses a dedicated throwaway owner (never a shared fixture user), since deleting it
+        mid-test is the point; admin drives every subsequent step, since the true owner no
+        longer exists to act as itself.
+        """
+        owner_name = self._sfx('inttest-hook-orphan-owner')
+        owner_password = 'inttest-hook-orphan-pass'
+        # Matches dev1/dev2's own per-user resource overrides (run_tests_main.py's
+        # _dev_resources) - test_role_developer alone doesn't grant use of any profile;
+        # that's a resource constraint set on the user, not the role.
+        self.admin._run('user', 'create', owner_name,
+                        '--role', self.test_role_developer,
+                        '--user-password', owner_password,
+                        '--set', 'resources.profiles=["*"]',
+                        '--set', 'resources.networks=["*"]',
+                        '--set', 'resources.runtimes=["runc"]',
+                        '--set', 'resources.IDEs=["*"]',
+                        '--set', 'resources.images=["*"]',
+                        '--set', 'resources.auth=["*"]')
+        try:
+            owner_client = self.admin.with_credentials(owner_name, owner_password)
+
+            name = self._sfx('inttest-hook-orphan')
+            self.register_cleanup(name)   # admin's own stop/remove in tearDown works regardless of owner
+            result = owner_client.create(profile=self.test_profile_hook, name=name,
+                                          options=json.dumps({'marker': 'orphan'}))
+            self.assert_true(result is not None)
+            self.wait_running(owner_client, name, timeout=90)
+
+            # Read hooks.status directly (Reservation.pm's 'data' field, sanitised in for a
+            # developer/admin caller - see cloneWithConstraints) rather than this file's own
+            # _inspect/_wait_hook_settled helpers, which hardcode self.dev1 to exec into the
+            # container - no use here, since dev1 has no visibility into a devtainer it neither
+            # owns nor is named on.
+            def _status(client):
+                data = client.get_container(name)
+                hooks_status = ((data.get('data') or {}).get('hooks') or {}).get('status') or {}
+                return hooks_status.get('lifecycle:launch') or {}
+
+            # Let the auto-invoked 'lifecycle:launch' settle before the owner is removed - a
+            # manual re-invoke racing it could otherwise see a legitimate 'busy' first, rather
+            # than what this test means to check.
+            self.wait_until(
+                lambda: _status(owner_client).get('state') in ('done', 'failed', 'aborted', 'timedOut'),
+                timeout=60, interval=1,
+                timeout_msg="auto-invoked 'lifecycle:launch' never settled",
+            )
+
+            # Delete the owning account outright while its devtainer is still live -
+            # User::Manage::removeUser has no guard against this.
+            self.admin._run('user', 'remove', '--force', owner_name)
+
+            self.assert_api_error(lambda: self.admin.hook_run(name, 'lifecycle:launch'))
+            status = _status(self.admin)
+            self.assert_equal(status.get('state'), 'aborted',
+                              f'claim was not released after the owner-load failure; status={status!r}')
+
+            # The real proof this isn't just labelled 'aborted' but genuinely free again: a
+            # second attempt fails the exact same clean way, rather than reporting 'busy'
+            # forever - the actual symptom a stranded claim would produce.
+            self.assert_api_error(lambda: self.admin.hook_run(name, 'lifecycle:launch'))
+            status2 = _status(self.admin)
+            self.assert_equal(status2.get('state'), 'aborted',
+                              f'second attempt did not settle cleanly either; status={status2!r}')
+        finally:
+            try:
+                self.admin._run('user', 'remove', '--force', owner_name)
+            except Exception:
+                pass
+
 
 class HookNamingValidationTests(TestCase):
     """Profile-level validation of hook names and each hook entry's `manual` field,

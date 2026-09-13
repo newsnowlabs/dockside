@@ -1900,6 +1900,21 @@ sub _hook_env ($self, $user) {
 # $Reservation::HOOK_HISTORY_MAX without a second, independently-drifting constant.
 our $HOOK_HISTORY_MAX = 100;
 
+# How long a 'running' hook-status entry may sit with no execId assigned yet before this being
+# genuinely still live stops being assumed and self-healing takes over instead - shared, for the
+# same reason as $HOOK_HISTORY_MAX above, between this file's own hook_is_running and
+# Reservation::Mutate's _hook_entry_liveness (used by hook_claim_if_not_running and
+# launch_reset_stages_if_idle), which each independently make this same "is it still genuinely
+# running" decision rather than one calling the other (one runs locked, one deliberately
+# doesn't - see hook_is_running's own comment). Bounds a different window than
+# $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} (a hook's own configured execution time, once
+# actually running): this is purely the gap between a claim being persisted and Docker handing
+# back an execId for it, normally sub-second, so a generous multiple of ordinary latency is
+# already ample - it exists only to eventually self-heal a claim whose owning process died
+# outright before ever reaching that point (dispatch_hook_exec's own try/catch around this same
+# window already handles every other way it can fail to get there).
+our $HOOK_CLAIM_STALE_SECONDS = 60;
+
 # Internal helpers isolating hooks.status's read/write boilerplate.
 sub _hook_status_all ($self) {
    return ($self->data('hooks') // {})->{'status'} // {};
@@ -1927,10 +1942,18 @@ sub hook_is_running ($self, $name) {
    my $status = $self->_hook_status_all->{$name};
    return 0 unless $status && ($status->{'state'} // '') eq 'running';
 
-   # Newly-started, before docker_exec()'s own on_created callback has fired yet
-   # (see hook_status_started/hook_status_set_running_details below) - the execId doesn't
-   # exist yet, so there is nothing to check; it is, definitionally, still running.
-   return 1 unless defined($status->{'execId'});
+   # Newly-started, before docker_exec()'s own on_created callback has fired yet (see
+   # hook_status_started/hook_status_set_running_details below) - the execId doesn't exist yet,
+   # so there is nothing to check against Docker. Still counted as running unless it's been that
+   # way for longer than $HOOK_CLAIM_STALE_SECONDS - past that, dispatch_hook_exec's own
+   # try/catch around this exact window would already have settled anything it could catch, so
+   # what's left with no execId this long is a claim whose owning process died outright.
+   unless ( defined($status->{'execId'}) ) {
+      my $staleBefore = YYYYMMDDHHMMSS( time - $HOOK_CLAIM_STALE_SECONDS );
+      return 1 if ( $status->{'startTime'} // '' ) ge $staleBefore;
+      $self->hook_status_completed( $name, { 'state' => 'aborted' } );
+      return 0;
+   }
 
    # Stale-running detection, mirroring run_hook()'s own kill -0 reclaim for its in-container
    # lock: an app-server/docker-event-daemon process that died before this dispatch's own
@@ -2044,11 +2067,14 @@ sub hook_status_completed ($self, $name, $fields) {
 #      owns $name (busy) - the caller must not treat this as an error, and dispatch stops here.
 #      A caller that needs to return "started"/"busy" immediately without waiting for the hook to
 #      actually finish (run_hook_manual - matching the fork model's own fire-and-forget shape
-#      exactly, just without the fork) hooks in here only.
-#   $on_settled->($outcome, $err) - fires once dispatch has fully finished: $outcome is one of
-#      hook_status's own state values ('done'/'failed'/'aborted') once the exec resolves, or
-#      $err is set (and $outcome undef) if dispatch couldn't even be attempted. A caller that
-#      needs to know the final result (docker-event-daemon's launch DAG, to call
+#      exactly, just without the fork) hooks in here only, and answers its own caller from here
+#      alone - anything that fails after this point (prep below, or dispatch itself) is reported
+#      only via $on_settled, exactly like a genuine docker_exec dispatch failure already is;
+#      run_hook_manual's own such caller discovers it only by polling
+#      User::runContainerHookStatus, never via the original request.
+#   $on_settled->($outcome, $err) - fires once dispatch has fully finished, or could not even be
+#      attempted: $outcome is one of hook_status's own state values ('done'/'failed'/'aborted').
+#      A caller that needs to know the final result (docker-event-daemon's launch DAG, to call
 #      launch_resolve_stage) hooks in here.
 #
 # Deliberately does NOT repeat run_hook_manual's own on-demand-specific validation gates
@@ -2070,25 +2096,45 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
    ( $self->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $claimedEntry;
    $on_claimed->($claimedEntry);
 
-   my @Command = $self->ide_command();
-   die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::dispatch_hook_exec: ide_command() returned empty' ) unless @Command;
-   $Command[-1] = 'run_hook';
-   push( @Command, $name, $script );
+   # A claimed slot with no execId ever assigned: with no exec dispatched, there is nothing
+   # left running that could ever settle it on its own, so a failure here must be settled in
+   # this same try/catch, the one place that notices it - unlike a failure once docker_exec
+   # itself has been called below, which settles inside its own async completion callback.
+   my ( @Command, $user, @env, $timeout, $containerId, $log );
+   my $prepared = try {
+      @Command = $self->ide_command();
+      die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'Reservation::dispatch_hook_exec: ide_command() returned empty' ) unless @Command;
+      $Command[-1] = 'run_hook';
+      push( @Command, $name, $script );
 
-   my $owner = $self->owner('username');
-   my $user  = User->load($owner);
-   die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $user;
+      my $owner = $self->owner('username');
+      $user = User->load($owner);
+      die Exception->new( 'msg' => "The owner of this devtainer ('$owner') no longer exists", 'status' => 400 ) unless $user;
 
-   my @env = map { my $e = $_; $e =~ s/^--env=//; $e } $self->_hook_env($user);
+      @env = map { my $e = $_; $e =~ s/^--env=//; $e } $self->_hook_env($user);
 
-   my $timeout     = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
-   my $containerId = $self->containerId();
+      $timeout     = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+      $containerId = $self->containerId();
+
+      open( $log, '>>', $logPath )
+         or die Exception->new( 'dbg' => "Reservation::dispatch_hook_exec: cannot open log '$logPath': $!" );
+      $log->autoflush(1);
+      1;
+   }
+   catch {
+      # Mirrors the docker_exec-itself-failed branch below exactly (settle 'aborted', notify via
+      # $on_settled) - $on_claimed has already fired by this point (same as it does for that
+      # branch too), so there is nothing left to retract; the caller already knows to discover
+      # the real outcome via polling, same as for any other post-claim failure.
+      my $dbg = ref($_) ? $_->dbg() : $_;
+      flog("Reservation::dispatch_hook_exec: '$name' failed before dispatch could begin: $dbg");
+      $self->hook_status_completed( $name, { 'state' => 'aborted' } );
+      $on_settled->( 'aborted', $dbg );
+      0;
+   };
+   return unless $prepared;
 
    flog( "Reservation::dispatch_hook_exec: DISPATCHING (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
-
-   open( my $log, '>>', $logPath )
-      or die Exception->new( 'dbg' => "Reservation::dispatch_hook_exec: cannot open log '$logPath': $!" );
-   $log->autoflush(1);
 
    docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
       'Cmd' => \@Command, 'User' => $args->{'user'} // $self->unixuser(), 'Env' => \@env,
