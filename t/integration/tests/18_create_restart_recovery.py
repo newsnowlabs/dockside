@@ -34,6 +34,9 @@ create() path's own fail-closed behaviour, docs/adr/0007-create-restart-recovery
     than adopting it.
   - a reservation named after an unrelated container's hex id prefix creates and adopts only
     its own container, never resolving the name as an id-prefix match against the other.
+  - a reservation name that is itself a bare 12- or 64-character hex string is rejected at
+    validation, before any container is created - the same short/full ID shape Docker resolves
+    a name against ahead of an ID prefix.
 """
 
 import os
@@ -397,3 +400,30 @@ class CreateNameCollisionTests(TestCase):
             )
         finally:
             subprocess.run(['docker', 'rm', '-f', other_id], capture_output=True, text=True, timeout=30)
+
+    def test_03_bare_hex_name_rejected_at_validation(self):
+        """A reservation name that is itself a bare 12- or 64-character hex string is rejected
+        by Reservation::validate before create() ever runs - that shape is exactly what Docker
+        would resolve as a container's own short or full ID, ahead of an ID prefix, so a
+        container actually given such a name could capture another container's containerId-
+        addressed calls. Unlike test_01/test_02, no other container is involved: the name alone
+        is the defect, so this needs no low-level docker fabrication or cleanup."""
+        # uuid4().hex is already lowercase hex; forcing the first character to 'a' guarantees
+        # the base name grammar's own "begin with a letter" rule is satisfied too, so the
+        # rejection below is attributable to the hex-length check, not the pre-existing grammar
+        # check (which fails names starting 0-9 for an unrelated reason).
+        name_12 = 'a' + uuid.uuid4().hex[:11]
+        name_64 = 'a' + uuid.uuid4().hex + uuid.uuid4().hex[:31]
+
+        for name in (name_12, name_64):
+            try:
+                self.admin.create(profile=self.test_profile_alpine, name=name)
+            except APIError as e:
+                self.assert_in(
+                    'must not be a bare 12- or 64-character hexadecimal string', str(e),
+                    f'{name!r} was rejected, but not for being a bare hex string: {e!r}',
+                )
+            else:
+                raise AssertionError(f'create with bare hex name {name!r} was accepted, not rejected')
+
+            self.assert_api_error(lambda n=name: self.admin.get_container(n))
