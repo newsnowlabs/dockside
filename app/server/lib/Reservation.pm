@@ -2043,7 +2043,12 @@ sub _hook_status_store_one ($self, $name, $entry) {
 # item B's auto-invoke exception), so a false "not running" is possible and expected in that
 # specific race. The in-container mkdir lock (run_hook() in launch.sh) remains the actual
 # safety net regardless, exactly as it already is today - this only ever saves a wasted
-# round-trip in the common case, it was never the thing overlap-safety depends on.
+# round-trip in the common case, it was never the thing overlap-safety depends on. Each self-heal
+# write below passes $status->{'invocationId'} back to hook_status_completed as the invocation it
+# believes it's resolving; if a newer claim has since superseded it, that write is rejected and
+# this still reports not-running regardless - the same already-tolerated imprecision as the
+# auto-invoke race above, not a new one, and the corrected in-memory entry hook_status_completed
+# syncs on rejection is what a subsequent call sees.
 sub hook_is_running ($self, $name) {
    my $status = $self->_hook_status_all->{$name};
    return 0 unless $status && ($status->{'state'} // '') eq 'running';
@@ -2057,7 +2062,7 @@ sub hook_is_running ($self, $name) {
    unless ( defined($status->{'execId'}) ) {
       my $staleBefore = YYYYMMDDHHMMSS( time - $HOOK_CLAIM_STALE_SECONDS );
       return 1 if ( $status->{'startTime'} // '' ) ge $staleBefore;
-      $self->hook_status_completed( $name, { 'state' => 'aborted' } );
+      $self->hook_status_completed( $name, { 'state' => 'aborted' }, $status->{'invocationId'} );
       return 0;
    }
 
@@ -2077,7 +2082,7 @@ sub hook_is_running ($self, $name) {
          $self->hook_status_completed( $name, {
             'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
             'exitCode' => $info->{'ExitCode'},
-         } );
+         }, $status->{'invocationId'} );
          return 0;
       }
    }
@@ -2085,7 +2090,7 @@ sub hook_is_running ($self, $name) {
    # No conclusive answer from the daemon - self-heal the record (so a future check, and any
    # status-read caller, sees 'aborted' rather than a misleadingly eternal 'running') and
    # report not-running.
-   $self->hook_status_completed($name, { 'state' => 'aborted' });
+   $self->hook_status_completed($name, { 'state' => 'aborted' }, $status->{'invocationId'});
    return 0;
 }
 
@@ -2152,12 +2157,29 @@ sub hook_status_set_running_details ($self, $name, $execId) {
 # this process's own possibly-stale in-memory copy, and any 'pendingStartCount' the entry
 # carries (see hook_status_started) is committed in that same locked write, not as a second,
 # separate one that could land only one side of if a crash landed between them.
-sub hook_status_completed ($self, $name, $fields) {
-   my ( $entry, $startCount ) = resolve_hook_status( $self->id(), $name, $fields );
+#
+# $expectedInvocationId, when the caller was resolving a claim it made earlier (see
+# hook_claim_if_not_running/hook_status_started), fences this write against a claim it no longer
+# owns - see Reservation::Mutate::_resolve_hook_entry. Returns true if the write was applied,
+# false if rejected as stale. Either way, $self's own in-memory copy is synced to whatever is now
+# genuinely current - on rejection that's the superseding invocation's own entry, not $fields -
+# but the history append and the caller's own post-completion continuation (an $on_settled or
+# $cb) apply only when the write itself was applied: a rejected write has nothing of this
+# invocation's own left to report.
+sub hook_status_completed ($self, $name, $fields, $expectedInvocationId = undef) {
+   my ( $applied, $entry, $startCount ) = resolve_hook_status( $self->id(), $name, $fields, $expectedInvocationId );
    ( $self->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $entry;
    $self->{'data'}{'startCount'} = $startCount if defined $startCount;
 
+   unless ($applied) {
+      flog( "Reservation::hook_status_completed: '$name' resolve rejected for reservationId="
+          . $self->id() . " - expected invocationId '" . ( $expectedInvocationId // '(none)' )
+          . "', current is '" . ( $entry->{'invocationId'} // '(none)' ) . "'" );
+      return 0;
+   }
+
    record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
+   return 1;
 }
 
 # The one canonical async hook-dispatch core - claims, dispatches via the exec API, and
@@ -2192,7 +2214,7 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
    my $invocationId = sprintf( "%08x", int( rand(0xffffffff) ) );
    my $logPath = "$CONFIG->{'tmpPath'}/r-" . $self->id() . "-hook-$invocationId.log";
 
-   my $claimedEntry = hook_claim_if_not_running( $self->id(), $name, $logPath, $HOOK_HISTORY_MAX );
+   my $claimedEntry = hook_claim_if_not_running( $self->id(), $name, $logPath, $HOOK_HISTORY_MAX, $invocationId );
    unless ($claimedEntry) {
       $on_claimed->(undef);
       return;
@@ -2234,8 +2256,9 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
       # the real outcome via polling, same as for any other post-claim failure.
       my $dbg = ref($_) ? $_->dbg() : $_;
       flog("Reservation::dispatch_hook_exec: '$name' failed before dispatch could begin: $dbg");
-      $self->hook_status_completed( $name, { 'state' => 'aborted' } );
-      $on_settled->( 'aborted', $dbg );
+      if ( $self->hook_status_completed( $name, { 'state' => 'aborted' }, $invocationId ) ) {
+         $on_settled->( 'aborted', $dbg );
+      }
       0;
    };
    return unless $prepared;
@@ -2255,8 +2278,9 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
 
          if ( !$result ) {
             flog("Reservation::dispatch_hook_exec: '$name' failed to dispatch: $err");
-            $self->hook_status_completed( $name, { 'state' => 'aborted' } );
-            $on_settled->( 'aborted', $err );
+            if ( $self->hook_status_completed( $name, { 'state' => 'aborted' }, $invocationId ) ) {
+               $on_settled->( 'aborted', $err );
+            }
             return;
          }
 
@@ -2264,13 +2288,14 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
          my $timedOut = $result->{'timedOut'} ? 1 : 0;
          my $busy     = ( defined($rc) && $rc == 2 && !$timedOut ) ? 1 : 0;
 
-         $self->hook_status_completed( $name, {
+         if ( $self->hook_status_completed( $name, {
             'state'    => 'done',
             'exitCode' => $rc,
             'timedOut' => $timedOut,
             'busy'     => $busy,
-         } );
-         $on_settled->( _hook_outcome_state( $self->hook_status($name) ), undef );
+         }, $invocationId ) ) {
+            $on_settled->( _hook_outcome_state( $self->hook_status($name) ), undef );
+         }
       }
       catch {
          flog("Reservation::dispatch_hook_exec: caught exception resolving '$name': " . ( ref($_) ? $_->dbg : $_ ));

@@ -462,9 +462,24 @@ sub _hook_entry_liveness ($existing) {
 # only ever raise data.startCount to the same value, never bump it twice. 'pendingStartCount' is
 # never itself persisted onward - it is a one-shot instruction consumed here, not part of the
 # entry's own terminal vocabulary.
-sub _resolve_hook_entry ($data, $name, $fields) {
+#
+# $expectedInvocationId, when given, fences the write against a claim $existing no longer
+# belongs to: if $existing already carries an 'invocationId' and it differs, the merge is
+# skipped entirely and ($existing) is returned unchanged - a delayed completion from a
+# superseded invocation must never overwrite (or consume the pendingStartCount of) whatever a
+# newer claim has since written there. Omitting it, or an $existing with no 'invocationId' yet
+# (a claim made before this fencing existed), applies the merge unconditionally, exactly as
+# before - every claiming caller (hook_claim_if_not_running, Reservation::hook_status_started)
+# stamps a fresh 'invocationId' onto the entry it claims, so this gap closes on its own as each
+# name is next claimed. Returns ($applied, $entry): $applied is false only on a rejected write.
+sub _resolve_hook_entry ($data, $name, $fields, $expectedInvocationId = undef) {
    my $status = ( $data->{'hooks'} //= {} )->{'status'} //= {};
    my $existing = $status->{$name} // { 'name' => $name };
+
+   if ( defined($expectedInvocationId) && defined($existing->{'invocationId'})
+        && $existing->{'invocationId'} ne $expectedInvocationId ) {
+      return ( 0, $existing );
+   }
 
    my $resolved = { %$existing, %$fields };
    my $pendingStartCount = delete $resolved->{'pendingStartCount'};
@@ -473,28 +488,31 @@ sub _resolve_hook_entry ($data, $name, $fields) {
       $data->{'startCount'} = $pendingStartCount;
    }
 
-   return $status->{$name} = $resolved;
+   return ( 1, $status->{$name} = $resolved );
 }
 
 # Reservation::hook_status_completed's own locked mutator - see _resolve_hook_entry above for
-# what "resolve" means here, including the pending startCount commit. Returns ($entry,
-# $startCount): $entry for the caller to sync onto its own in-memory copy and pass to
-# record_hook_history (a separate, sequential mutate() call - see hook_claim_if_not_running's
-# own comment on why a second one can't nest inside this one); $startCount (the record's current
-# value once this call returns, whether or not it just changed) for the caller to sync onto its
-# own in-memory copy too, mirroring increment_start_count's existing discipline.
-sub resolve_hook_status ($id, $name, $fields) {
-   my ( $resolved, $startCount );
+# what "resolve" means here, including the pending startCount commit and $expectedInvocationId
+# fencing. Returns ($applied, $entry, $startCount): $applied is false when the write was
+# rejected as stale, in which case $entry is whatever is genuinely current, not this call's own
+# $fields; $entry is for the caller to sync onto its own in-memory copy, and (only when
+# $applied) to pass to record_hook_history (a separate, sequential mutate() call - see
+# hook_claim_if_not_running's own comment on why a second one can't nest inside this one);
+# $startCount (the record's current value once this call returns, whether or not it just
+# changed) for the caller to sync onto its own in-memory copy too, mirroring
+# increment_start_count's existing discipline.
+sub resolve_hook_status ($id, $name, $fields, $expectedInvocationId = undef) {
+   my ( $applied, $resolved, $startCount );
    mutate(
       sub ($by_id, $by_name) {
          my $reservation = $by_id->{$id} or return 0;
          my $data = $reservation->{'data'} //= {};
-         $resolved = _resolve_hook_entry( $data, $name, $fields );
+         ( $applied, $resolved ) = _resolve_hook_entry( $data, $name, $fields, $expectedInvocationId );
          $startCount = $data->{'startCount'};
          return 1;
       }
    );
-   return ( $resolved, $startCount );
+   return ( $applied, $resolved, $startCount );
 }
 
 # Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely
@@ -533,7 +551,14 @@ sub resolve_hook_status ($id, $name, $fields) {
 # onto its own in-memory Reservation, exactly mirroring _hook_status_store_one's existing
 # discipline, or its own subsequent hook_status_set_running_details call would merge execId
 # onto stale (pre-claim) in-memory state instead of this fresh entry.
-sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
+#
+# $invocationId is stamped onto the claimed entry as-is, uninterpreted here - it is the token
+# the caller must present back to _resolve_hook_entry (via resolve_hook_status/
+# hook_status_completed) to resolve this exact claim later, so a completion belonging to a since-
+# superseded claim of the same $name is rejected rather than overwriting the winner. The heal
+# call below needs no token of its own - it reads $status->{$name} fresh, under this same lock,
+# so it can never be stale by construction.
+sub hook_claim_if_not_running ($id, $name, $logPath, $cap, $invocationId) {
    my $claimedEntry;
    my $healedEntry;
 
@@ -546,16 +571,17 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
          my ( $isLive, $healedFields ) = _hook_entry_liveness( $status->{$name} );
          return 0 if $isLive;
          if ( $healedFields ) {
-            $healedEntry = _resolve_hook_entry( $data, $name, $healedFields );
+            ( undef, $healedEntry ) = _resolve_hook_entry( $data, $name, $healedFields );
             # Falls through to claim the now-free slot below.
          }
 
          $status->{$name} = $claimedEntry = {
-            'name'      => $name,
-            'state'     => 'running',
-            'execId'    => undef,
-            'logPath'   => $logPath,
-            'startTime' => YYYYMMDDHHMMSS(time),
+            'name'         => $name,
+            'state'        => 'running',
+            'execId'       => undef,
+            'logPath'      => $logPath,
+            'startTime'    => YYYYMMDDHHMMSS(time),
+            'invocationId' => $invocationId,
          };
          return 1;
       }
@@ -603,7 +629,10 @@ sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
             # for the fresh cycle - the history row this produces is the only lasting record of
             # that invocation's own outcome, but the startCount side effect isn't allowed to
             # depend on anything ever reading it back from history.
-            push( @healedEntries, _resolve_hook_entry( $data, $name, $healedFields ) ) if $healedFields;
+            if ( $healedFields ) {
+               ( undef, my $healedEntry ) = _resolve_hook_entry( $data, $name, $healedFields );
+               push( @healedEntries, $healedEntry );
+            }
             $status->{$name} = $written->{$name} = { 'name' => $name, 'state' => 'pending' };
          }
          $startCount = $data->{'startCount'};
