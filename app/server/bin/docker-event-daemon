@@ -264,8 +264,8 @@ my %LAUNCH_STAGES = (
 
 my @LAUNCH_STAGE_NAMES = keys %LAUNCH_STAGES;
 
-sub launch_resolve_stage ($reservation, $stage, $state) {
-   $reservation->hook_status_completed( $stage, { 'state' => $state } );
+sub launch_resolve_stage ($reservation, $stage, $state, $expectedInvocationId = undef) {
+   return $reservation->hook_status_completed( $stage, { 'state' => $state }, $expectedInvocationId );
 }
 
 sub _launch_deps_cleared ($reservation, $stage) {
@@ -420,6 +420,13 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
    my $timeout = $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    my $containerId = $reservation->containerId();
 
+   # A fresh invocationId, stamped onto the entry below and presented back to launch_resolve_stage
+   # once this dispatch settles - see Reservation::Mutate::_resolve_hook_entry. Minted
+   # unconditionally, including for Detach, which never resolves via launch_resolve_stage at all
+   # (see this sub's header comment) and so never needs to present it back - kept uniform rather
+   # than special-cased, so every 'running' entry always carries one.
+   my $invocationId = sprintf( "%08x", int( rand(0xffffffff) ) );
+
    # logPath: same convention as Reservation::dispatch_hook_exec (a host-side file under
    # tmpPath, named by reservation id + a random invocation id), so this stage's own output
    # becomes readable via the exact same load_hook_log($stage)/hook/status route that manually-
@@ -428,7 +435,6 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
    # so there is no bounded "this invocation's output" to capture - undef here, as before.
    my ($log, $logPath);
    unless ( $opts->{'detach'} ) {
-      my $invocationId = sprintf( "%08x", int( rand(0xffffffff) ) );
       $logPath = "$CONFIG->{'tmpPath'}/r-" . $reservation->id() . "-hook-$invocationId.log";
       open( $log, '>>', $logPath )
          or die Exception->new( 'dbg' => "docker-event-daemon::_launch_dispatch_exec: cannot open log '$logPath': $!" );
@@ -437,7 +443,8 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
 
    # Synchronous, before any async I/O begins - see launch_maybe_dispatch's own comment on why
    # that alone is what makes a re-entrant launch_advance call safe.
-   $reservation->hook_status_started($stage, $logPath, $opts->{'pending_fields'} // {});
+   $reservation->hook_status_started($stage, $logPath,
+      { %{ $opts->{'pending_fields'} // {} }, 'invocationId' => $invocationId });
 
    flog( "docker-event-daemon::_launch_dispatch_exec: DISPATCHING '$stage' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
@@ -455,8 +462,9 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
 
          if ( !$result ) {
             flog("docker-event-daemon::_launch_dispatch_exec: '$stage' failed to dispatch: $err");
-            launch_resolve_stage($reservation, $stage, 'failed');
-            $cb->();
+            if ( launch_resolve_stage( $reservation, $stage, 'failed', $invocationId ) ) {
+               $cb->();
+            }
             return;
          }
 
@@ -473,8 +481,10 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
          # A 'pendingStartCount' passed via pending_fields, if any, is committed inside this
          # call - see Reservation::Mutate::_resolve_hook_entry - not via on_success, which is
          # for Detach only (see this sub's own header comment).
-         launch_resolve_stage( $reservation, $stage, $timedOut ? 'timedOut' : ( $success ? 'done' : 'failed' ) );
-         $cb->();
+         if ( launch_resolve_stage( $reservation, $stage,
+               $timedOut ? 'timedOut' : ( $success ? 'done' : 'failed' ), $invocationId ) ) {
+            $cb->();
+         }
       }
       catch {
          flog("docker-event-daemon::_launch_dispatch_exec: caught exception resolving '$stage': " . (ref($_) ? $_->dbg : $_));
@@ -599,11 +609,17 @@ sub _launch_dispatch_legacy_ide ($reservation, $cb) {
 # which must never affect DAG state.
 sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
    my $script = $reservation->hook_script($name);
+   my $invocationId;
 
    $reservation->dispatch_hook_exec(
       $name, $script, {},
       sub ($claimedEntry) {
-         return if $claimedEntry;   # claimed - dispatch_hook_exec continues on its own
+         if ($claimedEntry) {
+            # dispatch_hook_exec's own claim - the invocationId this stage's own resolve, below,
+            # must still hold when it settles.
+            $invocationId = $claimedEntry->{'invocationId'};
+            return;
+         }
          flog( "docker-event-daemon::_launch_dispatch_hook_stage: '$name' already claimed by a "
              . "concurrent on-demand invocation - deferring to launchRecovering" );
          # Not $cb->(): $reservation's in-memory hooks.status.$name was never told about the
@@ -614,8 +630,15 @@ sub _launch_dispatch_hook_stage ($reservation, $name, $cb) {
          # fresh Reservation before calling launch_advance, so it isn't fooled this way.
       },
       sub ( $outcome, $err ) {
-         launch_resolve_stage( $reservation, $name, $outcome // 'failed' );
-         $cb->();
+         # A second, independently-necessary fence on the same invocation:
+         # dispatch_hook_exec's own resolve (recording the generic 'done'/'aborted' outcome this
+         # $outcome is derived from) already fenced on this same invocationId and can itself have
+         # been rejected; this call re-maps that outcome into the DAG's own 'done'/'failed'/
+         # 'timedOut' vocabulary and must not apply that mapping - or drive $cb's re-scan - for a
+         # claim this invocation no longer holds either.
+         if ( launch_resolve_stage( $reservation, $name, $outcome // 'failed', $invocationId ) ) {
+            $cb->();
+         }
       }
    );
 }
