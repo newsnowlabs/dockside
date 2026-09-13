@@ -520,7 +520,7 @@ export default defineComponent({
      // b-form-invalid-feedback this replaces (see RoleDetail.vue's own
      // nameErrorText for the same pattern).
      nameErrorText() {
-        return "Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens) and begin with a letter";
+        return "Name must be lower case, consist only of letters, digits and hyphens (but not successive hyphens), begin with a letter, and not be a bare 12- or 64-character hexadecimal string";
      },
      // -3 (Reservation.pm's own status derivation) means the reservation's container has
      // already been destroyed but the reservation itself hasn't been reclaimed yet -
@@ -656,7 +656,8 @@ export default defineComponent({
         return `${window.location.protocol}//${window.location.host}/container/${this.container.name}`;
      },
      validName() {
-        return this.form.name.match('^(?:[a-z](?:-[a-z0-9]+|[a-z0-9]+)+|)$');
+        return this.form.name.match('^(?:[a-z](?:-[a-z0-9]+|[a-z0-9]+)+|)$') &&
+           !this.form.name.match('^(?:[0-9a-f]{12}|[0-9a-f]{64})$');
      },
      gitURLs() {
         return (this.profile && this.profile.gitURLs) ? this.profile.gitURLs.filter(x => !x.includes("*")) : [];
