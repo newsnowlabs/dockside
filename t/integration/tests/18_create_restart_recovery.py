@@ -1,32 +1,39 @@
 """
-18_create_restart_recovery.py — app-server restart recovery mid-create().
+18_create_restart_recovery.py — app-server restart recovery and fresh-create fail-closed
+behaviour for create().
 
-Coverage:
+CreateRestartRecoveryTests coverage (requires can_restart_services() ==
+True / DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1 - skipped entirely otherwise, mirroring
+16_ded_restart_recovery.py's own reasoning exactly - see its docstring, the same
+mountIDE:false/sudo/s6 access requirement applies here):
   - restarting app-server (`sudo s6-svc -t`, a genuinely non-graceful signal - standing in for
     a real crash/OOM kill; see docs/adr/0007-create-restart-recovery.md's "Decision" section
     on what that signal actually does to Mojo::Server::Prefork, and on why the documented
-    day-to-day `-r` command is deliberately not used here) while a devtainer's
-    create() chain is still genuinely in flight (createStatus.stage non-terminal, with real
-    progress recorded - not "started a moment ago") does not strand it forever: the startup
-    reconcile sweep and per-worker periodic reconciler (Reservation::reconcile_create, both
-    under a single process-wide flock - see that ADR's "Per-worker periodic reconciler"
-    section) pick it back up and it eventually reaches a terminal createStatus.stage ('done'),
-    with the container actually running - not just "the process didn't crash".
-  - the same under N concurrent in-flight creates at once, exercising the reconcile-sweep lock
-    under real concurrent load - the condition a naive (unlocked) version of this mechanism
-    would have raced under, per that ADR's own "Decision" section.
+    day-to-day `-r` command is deliberately not used here) while a devtainer's create() chain
+    is still genuinely in flight (createStatus.stage non-terminal, with real progress recorded
+    - not "started a moment ago") does not strand it forever: each worker's own reconcile pass
+    (Reservation->reconcile_one, gated by a per-reservation lock rather than a single
+    process-wide one - see that ADR's "Decision" section) picks it back up, and it eventually
+    reaches a terminal createStatus.stage ('done'), with the container actually running - not
+    just "the process didn't crash".
+  - the same under N concurrent in-flight creates at once, exercising the per-reservation locks
+    under real concurrent load.
+  - a graceful restart draining an in-flight create instead of abandoning it to the reconciler.
 
-Requires can_restart_services() == True (DOCKSIDE_TEST_ALLOW_SERVICE_RESTART=1) - skipped
-entirely otherwise, mirroring 16_ded_restart_recovery.py's own reasoning exactly (see its
-docstring - the same mountIDE:false/sudo/s6 access requirement applies here).
+Deliberately removes a real Docker image before each of the above (a genuine, low-level
+`docker rmi`, not a CLI action - permitted under CLAUDE.md's t/integration hard rules, point 5,
+the same allowance create_and_attach_test_network's own direct `docker network` calls already
+rely on) to force a real, multi-second pull window every run - without this, a second/subsequent
+run would find the image already cached and race an effectively-instant create, making the
+restart timing unreliable rather than deterministic.
 
-Deliberately removes a real Docker image before each test (a genuine, low-level `docker rmi`,
-not a CLI action - permitted under CLAUDE.md's t/integration hard rules, point 5, the same
-allowance create_and_attach_test_network's own direct `docker network` calls already rely on)
-to force a real, multi-second pull window every run - without this, a second/subsequent run
-would find the image already cached and race an effectively-instant create, making the restart
-timing unreliable rather than deterministic.
-
+CreateNameCollisionTests coverage (no restart, no special permission needed - the ordinary
+create() path's own fail-closed behaviour, docs/adr/0007-create-restart-recovery.md's
+"Decision" section, mechanism 3):
+  - a fresh create() against a container already holding its exact name fails closed rather
+    than adopting it.
+  - a reservation named after an unrelated container's hex id prefix creates and adopts only
+    its own container, never resolving the name as an id-prefix match against the other.
 """
 
 import os
@@ -34,6 +41,7 @@ import sys
 import json
 import subprocess
 import tempfile
+import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
@@ -57,6 +65,30 @@ PULL_IMAGE = 'node:22'
 
 def _create_status(container_data):
     return (container_data or {}).get('createStatus') or {}
+
+
+def _wait_create_settled(test, name, timeout=120):
+    """Shared by every TestCase below (both restart-driven and not) - polls until $name's
+    createStatus.stage reaches a terminal value. `test` is the calling TestCase instance,
+    passed explicitly since this is a plain function, not a method, on none of them."""
+    def _check():
+        try:
+            data = test.admin.get_container(name)
+        except APIError:
+            return False
+        stage = _create_status(data).get('stage')
+        return data if stage in ('done', 'failed') else False
+
+    return test.wait_until(
+        _check, timeout=timeout, interval=1,
+        timeout_msg=f'{name!r} createStatus.stage did not reach a terminal state',
+    )
+
+
+def _assert_recovered(test, name, data):
+    stage = _create_status(data).get('stage')
+    test.assert_equal(stage, 'done', f'{name!r} createStatus never reached done: {data.get("createStatus")!r}')
+    test.assert_equal(data.get('status'), 1, f'{name!r} did not end up running: {data!r}')
 
 
 class CreateRestartRecoveryTests(TestCase):
@@ -139,25 +171,6 @@ class CreateRestartRecoveryTests(TestCase):
             timeout_msg=f'{name!r} createStatus never reached pulling with real progress',
         )
 
-    def _wait_create_settled(self, name, timeout=120):
-        def _check():
-            try:
-                data = self.admin.get_container(name)
-            except APIError:
-                return False
-            stage = _create_status(data).get('stage')
-            return data if stage in ('done', 'failed') else False
-
-        return self.wait_until(
-            _check, timeout=timeout, interval=1,
-            timeout_msg=f'{name!r} createStatus.stage did not reach a terminal state',
-        )
-
-    def _assert_recovered(self, name, data):
-        stage = _create_status(data).get('stage')
-        self.assert_equal(stage, 'done', f'{name!r} createStatus never reached done: {data.get("createStatus")!r}')
-        self.assert_equal(data.get('status'), 1, f'{name!r} did not end up running: {data!r}')
-
     def test_01_single_create_restart_mid_pull(self):
         """Isolates the mechanism: one create, interrupted deterministically mid-pull -
         polled until real layer progress is observed, not a guessed sleep."""
@@ -170,8 +183,8 @@ class CreateRestartRecoveryTests(TestCase):
 
         restart_app_server()
 
-        data = self._wait_create_settled(name)
-        self._assert_recovered(name, data)
+        data = _wait_create_settled(self, name)
+        _assert_recovered(self, name, data)
 
     def test_02_concurrent_creates_restart_mid_flight(self):
         """The condition the atomic reconciliation claim actually exists for: several
@@ -206,8 +219,8 @@ class CreateRestartRecoveryTests(TestCase):
         restart_app_server()
 
         for name in names:
-            data = self._wait_create_settled(name)
-            self._assert_recovered(name, data)
+            data = _wait_create_settled(self, name)
+            _assert_recovered(self, name, data)
 
     def _log_contains_since(self, offset, needle, timeout=120):
         """Poll app-server's log, from byte `offset`, for `needle`. The drain line is written as
@@ -264,5 +277,123 @@ class CreateRestartRecoveryTests(TestCase):
             "period",
         )
 
-        data = self._wait_create_settled(name)
-        self._assert_recovered(name, data)
+        data = _wait_create_settled(self, name)
+        _assert_recovered(self, name, data)
+
+
+class CreateNameCollisionTests(TestCase):
+    """A fresh create() must never adopt a container it didn't create itself - docs/adr/
+    0007-create-restart-recovery.md's "Decision" section, mechanism 3. Unlike
+    CreateRestartRecoveryTests above, these exercise only the ordinary (non-recovery) create
+    path: no restart, no special permission, no slow-pull profile - the shared alpine fixture
+    is enough."""
+
+    def _low_level_create(self, name=None):
+        """Creates a container directly via `docker create` - not through the CLI/API - the
+        one way to get a container Dockside had no part in creating, standing in for "an
+        unrelated container" in each test below; there's no CLI command that could produce
+        one, since Dockside's own create always tracks what it makes. This suite already
+        reaches past the CLI the same way for networks and images
+        (create_and_attach_test_network, _ensure_image_absent), but always for scaffolding
+        around a container, never the container itself - this is the first place one is
+        fabricated directly, extending that same allowance to a new resource type.
+
+        Always given an identifiable name (`name`, or a random inttest-container-<hex> one),
+        matching create_and_attach_test_network's own inttest-net-<hex> convention, rather than
+        Docker's own random generator - the point being that a container this test's cleanup
+        misses (its process killed before `finally` runs, a leak nothing here currently sweeps
+        for automatically) is still recognisable as test debris rather than a real container.
+
+        Returns the container's full 64-char id, as `docker create` itself prints to stdout."""
+        container_name = name or f'inttest-container-{uuid.uuid4().hex[:8]}'
+        args = ['docker', 'create', '--name', container_name, self.test_image_alpine, 'sleep', 'infinity']
+        result = subprocess.run(args, capture_output=True, text=True, timeout=30, check=True)
+        return result.stdout.strip()
+
+    def _docker_inspect(self, container_id, go_format):
+        result = subprocess.run(
+            ['docker', 'inspect', container_id, '--format', go_format],
+            capture_output=True, text=True, timeout=30, check=True,
+        )
+        return result.stdout.strip()
+
+    def test_01_fresh_create_fails_closed_against_same_name_container(self):
+        """A container already holding a fresh reservation's exact name is never adopted -
+        the ordinary create path's own 409 handling fails the chain closed instead of looking
+        the container up and adopting it, the way only a recovery re-entry is allowed to."""
+        name = self._sfx('inttest-namecollision-exact')
+        other_id = self._low_level_create(name=name)
+        try:
+            self.admin.create(profile=self.test_profile_alpine, name=name, no_wait=True)
+            data = _wait_create_settled(self, name)
+
+            self.assert_equal(
+                _create_status(data).get('stage'), 'failed',
+                f'{name!r} createStatus did not fail closed against a pre-existing container: '
+                f'{data.get("createStatus")!r}',
+            )
+            self.assert_in(
+                'already in use by a container this reservation does not own',
+                _create_status(data).get('error') or '',
+            )
+
+            self.assert_equal(
+                self._docker_inspect(name, '{{.State.Running}}'), 'false',
+                f'pre-existing container {name!r} was started by the failed create',
+            )
+            labels = json.loads(self._docker_inspect(name, '{{json .Config.Labels}}') or 'null') or {}
+            self.assert_not_in(
+                'dev.dockside.reservation.id', labels,
+                f'pre-existing container {name!r} was unexpectedly labelled by the failed create: {labels!r}',
+            )
+        finally:
+            subprocess.run(['docker', 'rm', '-f', name], capture_output=True, text=True, timeout=30)
+            try:
+                self.admin.remove(name, wait=False)
+            except APIError:
+                pass
+
+    def test_02_hex_prefix_name_never_resolves_by_id(self):
+        """A reservation named after another container's hex id prefix must create and adopt
+        only its own container, never resolve the name against the other by id-prefix match -
+        the behaviour Docker's single-container GET endpoint has and the anchored
+        collection-filter lookup this design uses instead does not share."""
+        # Reservation names must start with a letter (Reservation::validate's own naming
+        # regex); a docker id is random hex, so a leading digit is retried rather than trusted
+        # on the first attempt - roughly 3 in 8 attempts already start with a-f.
+        other_id = None
+        for _ in range(20):
+            candidate = self._low_level_create()
+            if candidate[0] in 'abcdef':
+                other_id = candidate
+                break
+            subprocess.run(['docker', 'rm', '-f', candidate], capture_output=True, text=True, timeout=30)
+        if other_id is None:
+            raise AssertionError('could not obtain a docker container id starting with a letter after 20 attempts')
+
+        name = self._sfx(other_id[:12])
+        self.register_cleanup(name)
+        try:
+            self.admin.create(profile=self.test_profile_alpine, name=name, no_wait=True)
+            data = _wait_create_settled(self, name)
+            _assert_recovered(self, name, data)
+
+            own_id = data.get('containerId')
+            self.assert_true(
+                own_id and own_id != other_id[:len(own_id)],
+                f'{name!r} adopted the unrelated container {other_id!r} instead of creating its own '
+                f'(own containerId: {own_id!r})',
+            )
+
+            labels = json.loads(self._docker_inspect(own_id, '{{json .Config.Labels}}') or 'null') or {}
+            self.assert_equal(
+                labels.get('dev.dockside.reservation.id'), data.get('id'),
+                f'{name!r}\'s own container is missing or has the wrong reservation id label: {labels!r}',
+            )
+
+            self.assert_equal(
+                self._docker_inspect(other_id, '{{.State.Running}}'), 'false',
+                f'unrelated container {other_id!r} was started by an unrelated create',
+            )
+        finally:
+            subprocess.run(['docker', 'rm', '-f', other_id], capture_output=True, text=True, timeout=30)
