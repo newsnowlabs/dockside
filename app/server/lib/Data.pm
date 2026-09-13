@@ -124,9 +124,6 @@ $CONFIG_FILES = {
          $CONFIG->{'appServer'}{'port'} //= 8100;
          $CONFIG->{'appServer'}{'workers'} //= 4;
          $CONFIG->{'appServer'}{'maxRequestSize'} //= 0;
-         # Static root for /docs, served by bin/app-server via this explicit config point,
-         # matching the value nginx's own `root` directive uses for it (sites-available/default).
-         $CONFIG->{'appServer'}{'docsPath'} //= '/home/dockside/dockside/app/server/nginx/html';
          # create's own restart-recovery/graceful-exit design - see
          # docs/adr/0007-create-restart-recovery.md. reconcileIntervalSeconds is the per-worker
          # periodic reconciler's own recheck cadence (each tick re-runs the same sweep under a

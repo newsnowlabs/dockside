@@ -344,7 +344,7 @@ check_json() {
 
   # YAML
   if python3 -c "import yaml" 2>/dev/null; then
-    for f in mkdocs.yml; do
+    for f in docker-compose.yml; do
       if [[ ! -f "$f" ]]; then continue; fi
       if python3 -c "import yaml, sys; yaml.safe_load(open('$f'))" 2>&1; then
         echo "  OK (YAML): $f"
