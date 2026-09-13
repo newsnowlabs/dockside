@@ -1121,9 +1121,10 @@ sub removeContainerRouter ($self, $args) {
 }
 
 # Atomically replaces router $args->{'name'} with $args->{'router'} (a convenience wrapper -
-# same-name remove+add under one lock, carrying meta.access forward). Needs both permissions -
-# the add half and the remove half are each exactly as gated as their standalone counterparts
-# above, so replace needs no permission or profile-gate of its own beyond the union of the two.
+# same-name remove+add under one lock, carrying meta.access forward when $args->{'access'} is
+# omitted). Needs both permissions - the add half and the remove half are each exactly as gated
+# as their standalone counterparts above, so replace needs no permission or profile-gate of its
+# own beyond the union of the two.
 sub replaceContainerRouter ($self, $args) {
    my $reservation = $self->reservation( $args->{'id'} );
    unless($reservation) {
@@ -1143,9 +1144,16 @@ sub replaceContainerRouter ($self, $args) {
    my $routerDef = _decode_router_arg( $args->{'router'} );
    $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
    $self->_constrainRouterAuth($routerDef);
-   my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
 
-   $reservation->replace_router( $args->{'name'}, $routerDef, $accessLevel );
+   # $args->{'access'} is passed through undefined when omitted, rather than being defaulted
+   # here as addContainerRouter's own $accessLevel is - replace_router must be able to tell an
+   # explicit request apart from an omitted one, since an explicit request always overrides the
+   # router's own pre-existing access level, while an omitted one may carry it forward instead.
+   # $defaultAccessLevel is only the fallback for when neither an explicit request nor a legal
+   # carried-forward value applies.
+   my $defaultAccessLevel = $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
+
+   $reservation->replace_router( $args->{'name'}, $routerDef, $args->{'access'}, $defaultAccessLevel );
 
    return $self->createClientReservation($reservation);
 }

@@ -970,16 +970,17 @@ sub remove_router ($self, $name) {
 }
 
 # Atomically replaces router $name with $routerDef (a convenience wrapper - remove+add under one
-# lock, carrying meta.access[$name] forward when the name is unchanged). $accessLevel is the
-# fallback initial value to use only when that carry-forward isn't legal under the router's final
-# auth list (User.pm resolves it exactly as add_router's own $accessLevel is resolved). Gated by
-# both addContainerRouter and removeContainerRouter in User.pm, same hard ide/ssh block as
+# lock, carrying meta.access[$name] forward when the name is unchanged). $explicitAccessLevel,
+# if defined, is the caller's own explicit request and always wins; otherwise the carried-forward
+# value is used when still legal under the router's final auth list, else $defaultAccessLevel
+# (User.pm resolves both exactly as add_router's own $accessLevel is resolved). Gated by both
+# addContainerRouter and removeContainerRouter in User.pm, same hard ide/ssh block as
 # remove_router.
-sub replace_router ($self, $name, $routerDef, $accessLevel) {
-   # The actually-assigned level is decided inside the lock (carried forward from the fresh
-   # on-disk meta.access[$name] when the name is unchanged and still legal, else $accessLevel) -
-   # see Reservation::Mutate::replace_router's own comment.
-   my ($normalised, $resolvedAccessLevel) = Reservation::Mutate::replace_router( $self->id(), $name, $routerDef, $accessLevel );
+sub replace_router ($self, $name, $routerDef, $explicitAccessLevel, $defaultAccessLevel) {
+   # The actually-assigned level is decided inside the lock (explicit, else carried forward from
+   # the fresh on-disk meta.access[$name] when the name is unchanged and still legal, else
+   # $defaultAccessLevel) - see Reservation::Mutate::replace_router's own comment.
+   my ($normalised, $resolvedAccessLevel) = Reservation::Mutate::replace_router( $self->id(), $name, $routerDef, $explicitAccessLevel, $defaultAccessLevel );
    $self->{'profileObject'}{'routers'} = [
       grep { $_->{'name'} ne $name } @{ $self->{'profileObject'}{'routers'} }
    ];

@@ -562,9 +562,10 @@ class AccessAndHttpTests(TestCase):
                           "('developer') once the carried-forward value ('owner') became illegal")
 
     def test_58_router_replace_explicit_access_used_when_carry_forward_invalid(self):
-        """--access on replace is only consulted once carry-forward is ruled out (the old value
-        is no longer legal under the new --auth); it then picks the specific level requested,
-        not just the owner/developer default."""
+        """--access on replace picks the specific level requested, not just the owner/developer
+        default, in the case where carry-forward is ruled out anyway (the old value is no longer
+        legal under the new --auth) - see test_59 for the case where carry-forward would
+        otherwise have been legal."""
         self.dev1.add_router(self.ROUTER_CONTAINER, prefix='replaceexplicit', port=9113,
                              router_name='replaceexplicit')
         self.dev1.replace_router(self.ROUTER_CONTAINER, 'replaceexplicit', prefix='replaceexplicit',
@@ -573,3 +574,26 @@ class AccessAndHttpTests(TestCase):
         access = (data.get('meta') or {}).get('access') or {}
         self.assert_equal(access.get('replaceexplicit'), 'public',
                           "--access on replace was not honoured once carry-forward became invalid")
+
+    def test_59_router_replace_explicit_access_overrides_valid_carry_forward(self):
+        """--access on replace always wins over the router's own pre-existing access level, even
+        when that old value would otherwise still be legal under the new --auth and so could
+        have been carried forward. A caller naming a level by hand is a more specific instruction
+        than 'leave it as it was' - if it silently lost to carry-forward instead, deliberately
+        narrowing a router's access (e.g. locking a public router down to 'owner') would appear
+        to succeed while leaving the router exactly as exposed as before."""
+        self.dev1.add_router(self.ROUTER_CONTAINER, prefix='replaceoverride', port=9114,
+                             router_name='replaceoverride', auth=['owner', 'developer', 'public'],
+                             access='public')
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('replaceoverride'), 'public', 'unexpected starting access level')
+        # 'owner' stays legal under the unchanged --auth list, so a precedence bug that lets
+        # carry-forward beat an explicit request would leave this at 'public' instead.
+        self.dev1.replace_router(self.ROUTER_CONTAINER, 'replaceoverride', prefix='replaceoverride',
+                                 port=9114, auth=['owner', 'developer', 'public'], access='owner')
+        data = self.dev1.get_container(self.ROUTER_CONTAINER)
+        access = (data.get('meta') or {}).get('access') or {}
+        self.assert_equal(access.get('replaceoverride'), 'owner',
+                          "explicit --access on replace was overridden by the router's own "
+                          "still-legal pre-existing access level instead of being honoured")

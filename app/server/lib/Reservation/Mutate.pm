@@ -334,16 +334,23 @@ sub remove_router ($id, $name) {
 }
 
 # Atomically replaces router $name with $routerDef - same-name remove+add under one lock, so a
-# rename-in-place never has a window where the router is simply gone. Carries meta.access[$name]
-# forward when $routerDef's (possibly caller-supplied) name is unchanged *and* that carried value
-# is still legal under the new (possibly caller-narrowed) auth list; otherwise falls back to
-# $accessLevel - already resolved by User.pm exactly as add_router's own $accessLevel is, not
-# decided here. Returns ($normalised, $accessLevel) - the caller (Reservation.pm's own
-# replace_router) needs both to keep its in-memory copy in sync. Same hard ide/ssh block as
+# rename-in-place never has a window where the router is simply gone. The resulting
+# meta.access[$name] is resolved in this order: $explicitAccessLevel, if defined, always wins
+# (the caller asked for it by name, so it's checked for legality and used, full stop - it must
+# never be silently overridden by the router's own pre-existing access level); otherwise the old
+# meta.access[$name] is carried forward, but only when $routerDef's (possibly caller-supplied)
+# name is unchanged *and* that carried value is still legal under the new (possibly
+# caller-narrowed) auth list - e.g. replacing a 'public' router with one whose auth has been
+# narrowed to ['owner'] must not silently keep 'public' just because the name matched; otherwise
+# $defaultAccessLevel is used. Both $explicitAccessLevel and $defaultAccessLevel are resolved by
+# User.pm exactly as add_router's own $accessLevel is (owner/developer default, or the caller's
+# explicit override) - this function only picks between them and the carried value, it decides
+# none of the three itself. Returns ($normalised, $accessLevel) - the caller (Reservation.pm's
+# own replace_router) needs both to keep its in-memory copy in sync. Same hard ide/ssh block as
 # remove_router; collision-checked against the router list with the old entry already excluded,
 # so replacing a router with an unchanged definition of the same name never spuriously collides
 # with itself.
-sub replace_router ($id, $name, $routerDef, $accessLevel) {
+sub replace_router ($id, $name, $routerDef, $explicitAccessLevel, $defaultAccessLevel) {
    my ( $normalised, $resolvedAccessLevel );
    mutate(
       sub ($by_id, $by_name) {
@@ -362,15 +369,12 @@ sub replace_router ($id, $name, $routerDef, $accessLevel) {
          push( @remaining, $normalised );
          $reservation->{'profileObject'}{'routers'} = \@remaining;
 
-         # Carry the old level forward only if it's still legal under the (possibly caller-
-         # narrowed) new auth list - e.g. replacing a 'public' router with one whose auth has been
-         # narrowed to ['owner'] must not silently keep 'public' just because the name matched.
-         # Otherwise fall back to $accessLevel, which is still checked for legality either way.
          my $carried = $reservation->{'meta'}{'access'}{$name};
-         $resolvedAccessLevel = ( $normalised->{'name'} eq $name && defined($carried) &&
-                                   grep { $_ eq $carried } @{ $normalised->{'auth'} } )
-            ? $carried
-            : $accessLevel;
+         $resolvedAccessLevel =
+              defined($explicitAccessLevel) ? $explicitAccessLevel
+            : ( $normalised->{'name'} eq $name && defined($carried) &&
+                grep { $_ eq $carried } @{ $normalised->{'auth'} } ) ? $carried
+            : $defaultAccessLevel;
          _check_router_access_level( $resolvedAccessLevel, $normalised->{'auth'} );
          delete $reservation->{'meta'}{'access'}{$name} unless $normalised->{'name'} eq $name;
          $reservation->{'meta'}{'access'}{ $normalised->{'name'} } = $resolvedAccessLevel;
