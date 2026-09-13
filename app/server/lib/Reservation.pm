@@ -268,6 +268,15 @@ sub validate ($self) {
       unless( $self->{'name'} =~ /^[a-z](?:-[a-z0-9]+|[a-z0-9]+)+$/ ) {
          die Exception->new( 'msg' => "Failed to create Reservation with invalid name '$self->{'name'}'" );
       }
+
+      # Docker's single-container endpoints match an exact ID before an exact name, but an exact
+      # name before an ID *prefix* - so a container named as a bare 12/64-char hex string can
+      # capture containerId-addressed calls meant for another container whose ID happens to
+      # equal this name.
+      if( $self->{'name'} =~ /^[0-9a-f]{12}$/ || $self->{'name'} =~ /^[0-9a-f]{64}$/ ) {
+         die Exception->new( 'msg' => "Failed to create Reservation with invalid name '$self->{'name'}': "
+            . "must not be a bare 12- or 64-character hexadecimal string" );
+      }
    }
    else {
       # Assign auto-generated name
