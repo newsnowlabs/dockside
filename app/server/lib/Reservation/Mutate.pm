@@ -6,7 +6,7 @@ use v5.36;
 use Exporter qw(import);
 our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field resolve_hook_status hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
 
-use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync);
+use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync tryLockFile);
 use Exception;
 use Data qw($CONFIG);
 use JSON;
@@ -106,6 +106,11 @@ sub load_clean_map ($class, @containerIds) {
    my $now = YYYYMMDDHHMMSS(time);
    my $expireTime = YYYYMMDDHHMMSS(time - 30);
 
+   # Keep deletion guards through the database write, not just through the callback.
+   # Acquisition is non-blocking: a create driver may hold its reservation lock while
+   # waiting for this database lock, so waiting here would deadlock.
+   my @deletionLocks;
+
    return mutate(
       sub ($by_id, $by_name) {
 
@@ -141,16 +146,17 @@ sub load_clean_map ($class, @containerIds) {
             # For container reservations, and failed launch reservations:
             # - If expiryTime exists and is old enough, delete the reservation db entry.
             if( $reservation->{'expiryTime'} && $reservation->{'expiryTime'} lt $expireTime ) {
+               my $lock = tryLockFile("$CONFIG->{'tmpPath'}/r-$id.lock");
+               next unless $lock;   # an outstanding create can still update this record
+               push @deletionLocks, $lock;
                flog("load_clean_map: deleting reservation $id");
                delete $by_name->{ $by_id->{$id}{'name'} };
                delete $by_id->{$id};
                $Updates++;
 
-               # The only place a reservation record is ever removed, and therefore the only
-               # place its per-reservation create() ownership lock file (docs/adr/0007-create-
-               # restart-recovery.md's "Lock-file lifecycle and constraints" section) can be unlinked safely - a live
-               # holder can only exist for a reservation that still exists.
-               unlink("$CONFIG->{'tmpPath'}/r-$id.lock");
+               # Retain the inode until app-server's pre-fork orphan cleanup. Another
+               # process may already have opened this path before trying its flock;
+               # unlinking here would allow it and a later opener to own different inodes.
             }
          }
 

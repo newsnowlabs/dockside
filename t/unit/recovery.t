@@ -5,9 +5,10 @@ use Reservation;
 use File::Temp qw(tempdir);
 use JSON qw(encode_json decode_json);
 use Mojo::Message::Response;
+use POSIX qw(_exit);
 use Test::More;
 
-# Exercise real database mutations with disposable data; no Docker required.
+# Exercise real database mutations and flock with disposable data; no Docker required.
 my $tmp = tempdir(CLEANUP => 1);
 $Data::CONFIG = {
    tmpPath => $tmp, reservationsPath => "$tmp/reservations.json",
@@ -49,6 +50,37 @@ subtest 'a fresh launch receives the count committed by recovery' => sub {
    my (undef, $again) = Reservation::Mutate::launch_reset_stages_if_idle(
       'review', ['launch:prep'], 100);
    is($again, 1, 'repeating reset does not count the same exec twice');
+};
+
+subtest 'expiry cleanup cannot delete a live create or replace its lock inode' => sub {
+   write_record({ id => 'review', name => 'review', containerId => 'gone',
+      createStatus => { stage => 'starting' },
+      expiryTime => Util::YYYYMMDDHHMMSS(time - 90),
+   });
+   my $path = Reservation::_create_lock_path('review');
+   my $lock = Util::tryLockFile($path);
+   ok($lock, 'create driver acquires lock');
+   my $inode = (stat($lock))[1];
+
+   my $pid = fork();
+   die "fork: $!" unless defined $pid;
+   if (!$pid) {
+      close $lock;   # cleaner must not retain the inherited driver descriptor
+      Reservation::Mutate->load_clean_map();
+      _exit(read_record() && -e $path ? 0 : 1);
+   }
+   waitpid($pid, 0);
+   is($?, 0, 'sibling cleaner retains the active reservation and lock');
+   is((stat($path))[1], $inode, 'lock inode is unchanged');
+   ok(!Util::tryLockFile($path), 'second driver remains excluded');
+
+   close $lock;
+   Reservation::Mutate->load_clean_map();
+   ok(!read_record(), 'expired record is deleted after create releases its lock');
+   is((stat($path))[1], $inode, 'orphan inode remains until startup cleanup');
+   my $next = Util::tryLockFile($path);
+   ok($next, 'deletion guard is released after database write');
+   close $next;
 };
 
 done_testing;

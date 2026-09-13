@@ -124,15 +124,13 @@ container instead). A match is adopted only if its `dev.dockside.reservation.id`
 this reservation's id; any other or missing label fails the chain closed exactly like the
 fresh-create case, without ever attempting a create call that would only `409` anyway.
 
-**4. Lock-file hygiene.** A lock file is never unlinked while its reservation exists - two
-processes holding locks on different inodes under the same path would both believe they own the
-reservation. `Reservation::Mutate::load_clean_map` unlinks a reservation's lock file at the point
-it deletes the reservation record (the only place a record is ever removed, and therefore the
-only place this is safe). A one-time pass in the manager, before any worker forks
-(`_cleanup_orphaned_reservation_locks`), unlinks any lock file with no matching reservation -
-covering a file left behind by a reservation removed by some other means, or from before this
-mechanism existed. Lock state is kernel state on the descriptor, not file content, so a wiped or
-freshly-created file is acquired correctly either way.
+**4. Lock-file hygiene.** `Reservation::Mutate::load_clean_map` takes the reservation lock
+non-blockingly before deleting an expired record, and holds it through the database write.
+It skips a record while a create driver owns the lock: that driver can still write to the
+record. The cleaner retains the lock file even after deletion, because another process may
+already have opened it before attempting its flock. Unlinking would allow two processes to
+lock different inodes under the same path. A one-time pass in the manager, before any worker
+forks (`_cleanup_orphaned_reservation_locks`), removes files with no matching reservation.
 
 **5. `starting` accepts `304`.** A repeat start on an already-running container - the case a
 resumed chain hits whenever recovery re-enters at `starting` - returns Docker's own idempotent
@@ -200,11 +198,12 @@ between a fresh create and a recovery re-entry, per mechanism 3 above.
   content. After any restart no process holds a lock, so a surviving file is acquired by the
   first attempt and a wiped file is recreated by it; both give the correct answer. `tmpPath` is
   therefore fine whether or not it is a tmpfs.
-- **Never unlink a lock file while its reservation exists.** Two processes holding locks on
-  different inodes under the same name would both believe they own the reservation. Files are
-  removed only when the reservation is deleted, and by the manager's pre-fork startup cleanup,
-  which unlinks any `r-<id>.lock` with no matching reservation - safe only there, because no
-  worker exists yet to hold one.
+- **Never unlink a lock file during online record deletion.** Even an unlocked file can
+  already be open in a worker waiting to attempt its flock. Retain it until the manager's
+  pre-fork startup cleanup, which removes `r-<id>.lock` files with no matching reservation.
+  Before deleting an expired record, acquire its reservation lock non-blockingly and retain
+  it through the database write. Never wait for it while holding the database lock: a create
+  driver can hold the reservation lock while waiting for the database lock.
 - **No `fork` without `exec` while holding a lock.** An inherited descriptor keeps the lock alive
   for the child's lifetime after the parent dies. Perl's default `$^F` marks descriptors above 2
   close-on-exec, so `system`-style children do not inherit it; a bare `fork` in a worker would.
