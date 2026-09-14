@@ -10,7 +10,7 @@
 `lifecycle:launch` → `lifecycle:start`) and on-demand hook runs (`dockside hook run`,
 `Reservation::run_hook_manual`) both dispatch into `app/scripts/container/launch.sh` via
 `docker exec`, and both rely on `Reservation::dispatch_hook_exec`/
-`docker-event-daemon::_launch_dispatch_exec` capturing that exec's real stdout/stderr into a
+`EventDaemon::LaunchDispatch::_launch_dispatch_exec` capturing that exec's real stdout/stderr into a
 host-side `logPath` file — the same file `load_hook_log`/`dockside get`/the Vue UI's `Show log`
 all read back.
 

@@ -89,6 +89,10 @@ check_perl() {
     app/server/lib/App/Metadata.pm
     app/server/lib/Containers.pm
     app/server/lib/Data.pm
+    app/server/lib/EventDaemon/ContainerSync.pm
+    app/server/lib/EventDaemon/LaunchDispatch.pm
+    app/server/lib/EventDaemon/LaunchReadiness.pm
+    app/server/lib/EventDaemon/LaunchRecovery.pm
     app/server/lib/Exception.pm
     app/server/lib/Profile.pm
     app/server/lib/Proxy.pm

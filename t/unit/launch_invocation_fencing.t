@@ -24,17 +24,8 @@ sub read_record {
    return decode_json(<$fh>);
 }
 
-# Extract the dispatch function to avoid the daemon's file-scope I/O and event loop.
-open my $fh, '<', "$FindBin::Bin/../../app/server/bin/docker-event-daemon" or die $!;
-my $source = do { local $/; <$fh> };
-my ($dispatch_source) = $source =~ /(sub _launch_dispatch_exec .*?)\n# SSH-related env/s;
-die 'Cannot locate launch dispatch' unless $dispatch_source;
-sub docker_exec;
-sub launch_resolve_stage ($r, $name, $state, $token) {
-   return $r->hook_status_completed($name, { state => $state }, $token);
-}
-my $dispatch = eval $dispatch_source . '\&_launch_dispatch_exec';
-die $@ if $@;
+use EventDaemon::LaunchDispatch;
+my $dispatch = \&EventDaemon::LaunchDispatch::_launch_dispatch_exec;
 
 {
    package DispatchReservation;
@@ -58,7 +49,7 @@ for my $mode ('manual', 'attached', 'detached') {
          };
          no warnings qw(redefine once);
          local *User::load = sub { bless {}, 'User' };
-         local *main::docker_exec = $capture;
+         local *EventDaemon::LaunchDispatch::docker_exec = $capture;
          local *Reservation::docker_exec = $capture;
          my $continuations = 0;
          if ($mode eq 'manual') {
