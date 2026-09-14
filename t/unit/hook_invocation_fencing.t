@@ -2,6 +2,7 @@ use v5.36;
 use FindBin;
 use lib "$FindBin::Bin/../../app/server/lib", "$FindBin::Bin/../stubs";
 use Reservation;
+use Exception;
 use File::Temp qw(tempdir);
 use JSON qw(encode_json decode_json);
 use Mojo::Message::Response;
@@ -177,7 +178,7 @@ subtest 'docker_exec does not start an exec whose claim was rejected' => sub {
 
 subtest 'docker_exec starts accepted dispatches and reports callback exceptions' => sub {
    for my $detach (0, 1) {
-      for my $authorization ('accept', 'absent', 'exception') {
+      for my $authorization ('accept', 'absent', 'exception', 'exception_hash', 'exception_msg_only') {
          my (@requests, @settled);
          no warnings 'redefine';
          local *Util::call_socket_api = sub ($socket, $path, $args, $cb) {
@@ -185,15 +186,29 @@ subtest 'docker_exec starts accepted dispatches and reports callback exceptions'
             my $body = $path =~ m{/containers/} ? { Id => 'exec' } : { ExitCode => 0 };
             $cb->(Mojo::Message::Response->new->code($path =~ m{/containers/} ? 201 : 200)->body(encode_json($body)), undef);
          };
+         my $onCreated = sub {
+            die "fixture failure" if $authorization eq 'exception';
+            die { message => 'fixture hash' } if $authorization eq 'exception_hash';   # unblessed reference
+            die Exception->new('msg' => 'fixture msg') if $authorization eq 'exception_msg_only';   # no dbg set
+            1;
+         };
          Util::docker_exec('unused', 'container', { Cmd => ['true'] }, {
             Detach => $detach,
-            ($authorization eq 'absent' ? () : (on_created => sub { die "fixture failure" if $authorization eq 'exception'; 1 })),
+            ($authorization eq 'absent' ? () : (on_created => $onCreated)),
          }, sub { push @settled, [@_] });
+         my $isException = $authorization =~ /^exception/;
          is(scalar @settled, 1, "$authorization callback settles once (detach=$detach)");
-         is(scalar @requests, $authorization eq 'exception' ? 1 : $detach ? 2 : 3, 'only accepted dispatch reaches start');
-         is(defined($settled[0][0]) ? 1 : 0, $authorization eq 'exception' ? 0 : 1, 'result matches authorization');
-         like($settled[0][1], qr/fixture failure/, 'the exception detail reaches the caller, not just a fixed string')
-            if $authorization eq 'exception';
+         is(scalar @requests, $isException ? 1 : $detach ? 2 : 3, 'only accepted dispatch reaches start');
+         is(defined($settled[0][0]) ? 1 : 0, $isException ? 0 : 1, 'result matches authorization');
+         if ($authorization eq 'exception') {
+            like($settled[0][1], qr/fixture failure/, 'a string exception reaches the caller, not just a fixed string');
+         }
+         elsif ($authorization eq 'exception_hash') {
+            like($settled[0][1], qr/start authorization failed/, 'an unblessed-reference exception still settles, without crashing formatting');
+         }
+         elsif ($authorization eq 'exception_msg_only') {
+            like($settled[0][1], qr/fixture msg/, 'a dbg-less Exception falls back to its own msg');
+         }
       }
    }
 };

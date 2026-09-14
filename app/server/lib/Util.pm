@@ -30,6 +30,7 @@ use Mojo::Util qw(b64_decode);
 use Digest::SHA qw(sha256_hex);
 use Exception;
 use Crypt::Rijndael;
+use Scalar::Util qw(blessed);
 
 ####################################################################################################
 
@@ -376,8 +377,9 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 #   on_created         => sub ($execId) { ... }  optional, called once the exec exists but
 #      *before* it is started - lets a caller persist the exec id (for later abort/liveness
 #      detection) right away. It must return true to authorize starting the exec; false or
-#      an exception reports a dispatch failure through $cb without starting the exec, with the
-#      exception's own message included in $error when it threw rather than just returning false.
+#      an exception reports a dispatch failure through $cb without starting the exec. When it
+#      threw, $error includes a rendering of whatever was thrown - see _format_caught_error's
+#      own comment for exactly what shape of thrown value renders to what.
 #   on_output          => sub ($stream, $bytes) { ... }  optional, called for each frame of
 #      output as it arrives (not buffered/batched) - $stream is 'stdout' or 'stderr'. Omit to
 #      discard output entirely (the caller only wants the final exit code).
@@ -395,6 +397,27 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 # request_timeout. Every failure path reports via $cb rather than dying: an async caller has no
 # surrounding try/catch frame by the time any of this runs, so dying here would be an uncaught
 # exception inside a Mojo completion callback, not something any caller could catch.
+# Safely renders a value caught via eval (an Exception object, some other blessed exception, an
+# unblessed reference, or a plain string) into a short string for inclusion in an error/log
+# message - never dies itself, whatever the shape of $err, so a caller reporting a real failure
+# can never lose that report just because the exception describing it wasn't what was expected.
+# '' for a false/empty $err (an ordinary failure with nothing thrown). Prefers a blessed object's
+# own dbg (falling back to msg when dbg is unset), then a plain string as-is, then Perl's own
+# default stringification (e.g. 'HASH(0x...)') for anything else.
+sub _format_caught_error ($err) {
+   return '' unless $err;
+   my $formatted = eval {
+      if ( !ref($err) ) { $err }
+      else {
+         my $class = blessed($err);
+         if ( $class && $class->can('dbg') && defined $err->dbg ) { $err->dbg }
+         elsif ( $class && $class->can('msg') && defined $err->msg ) { $err->msg }
+         else { "$err" }
+      }
+   };
+   return ( defined($formatted) && length($formatted) ) ? $formatted : 'unformattable error';
+}
+
 sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
    call_socket_api( $socket, "/containers/$containerId/exec", {
       'method' => 'POST',
@@ -419,10 +442,10 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
       my $execId = decode_json($createRes->body)->{'Id'};
       if ( $opts->{'on_created'} ) {
          my $accepted = eval { $opts->{'on_created'}->($execId) };
-         my $authError = $@;
+         my $detail = _format_caught_error($@);
          unless ($accepted) {
             $cb->( undef, "docker_exec: execId=$execId start authorization failed"
-               . ( $authError ? ': ' . ( ref($authError) ? $authError->dbg : $authError ) : '' ) );
+               . ( $detail ne '' ? ": $detail" : '' ) );
             return;
          }
       }
