@@ -2062,7 +2062,7 @@ sub hook_is_running ($self, $name) {
    unless ( defined($status->{'execId'}) ) {
       my $staleBefore = YYYYMMDDHHMMSS( time - $HOOK_CLAIM_STALE_SECONDS );
       return 1 if ( $status->{'startTime'} // '' ) ge $staleBefore;
-      $self->hook_status_completed( $name, { 'state' => 'aborted' }, $status->{'invocationId'} );
+      $self->hook_status_completed( $name, { 'state' => 'aborted' }, ($status->{'invocationId'} // '') );
       return 0;
    }
 
@@ -2082,7 +2082,7 @@ sub hook_is_running ($self, $name) {
          $self->hook_status_completed( $name, {
             'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
             'exitCode' => $info->{'ExitCode'},
-         }, $status->{'invocationId'} );
+         }, ($status->{'invocationId'} // '') );
          return 0;
       }
    }
@@ -2090,7 +2090,7 @@ sub hook_is_running ($self, $name) {
    # No conclusive answer from the daemon - self-heal the record (so a future check, and any
    # status-read caller, sees 'aborted' rather than a misleadingly eternal 'running') and
    # report not-running.
-   $self->hook_status_completed($name, { 'state' => 'aborted' }, $status->{'invocationId'});
+   $self->hook_status_completed($name, { 'state' => 'aborted' }, ($status->{'invocationId'} // ''));
    return 0;
 }
 
@@ -2140,11 +2140,26 @@ sub hook_status_started ($self, $name, $logPath, $extraFields = {}) {
    } );
 }
 
-# Called from docker_exec's own on_created callback once the exec id is known - see
-# hook_status_started above for why it can't be known any earlier.
-sub hook_status_set_running_details ($self, $name, $execId) {
-   my $existing = $self->_hook_status_all->{$name} or return;
-   $self->_hook_status_store_one( $name, { %$existing, 'execId' => $execId } );
+# Persist only this invocation's progress, under the same lock as its ownership check.
+# Rejection refreshes the caller's local view and prevents a superseded exec from starting.
+sub hook_status_set_running_details ($self, $name, $execId, $expectedInvocationId) {
+   return $self->_hook_status_update_running($name, $expectedInvocationId, { 'execId' => $execId });
+}
+
+# Detached dispatch has no terminal completion. Confirm its start and any legacy launch
+# count increment atomically while it still owns the running slot.
+sub hook_status_dispatch_started ($self, $name, $expectedInvocationId, $incrementStartCount = 0) {
+   return $self->_hook_status_update_running(
+      $name, $expectedInvocationId, { 'dispatchStarted' => 1 }, $incrementStartCount );
+}
+
+sub _hook_status_update_running ($self, $name, $expectedInvocationId, $fields, $incrementStartCount = 0) {
+   my ( $applied, $entry, $startCount ) = Reservation::Mutate::update_running_hook(
+      $self->id(), $name, $expectedInvocationId, $fields, $incrementStartCount );
+   ( $self->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $entry;
+   $self->{'data'}{'startCount'} = $startCount if defined $startCount;
+   flog("Reservation: '$name' dispatch progress rejected for reservationId=" . $self->id()) unless $applied;
+   return $applied;
 }
 
 # Called once the hook has finished, timed out, or been confirmed aborted, recording the
@@ -2203,7 +2218,7 @@ sub hook_status_completed ($self, $name, $fields, $expectedInvocationId = undef)
 #   $on_settled->($outcome, $err) - fires once dispatch has fully finished, or could not even be
 #      attempted: $outcome is one of hook_status's own state values ('done'/'failed'/'aborted').
 #      A caller that needs to know the final result (docker-event-daemon's launch DAG, to call
-#      launch_resolve_stage) hooks in here.
+#      launch_resolve_stage) hooks in here. A rejected ownership check suppresses this callback.
 #
 # Deliberately does NOT repeat run_hook_manual's own on-demand-specific validation gates
 # (declared? implemented? manual?) - a different caller may have entirely different gating;
@@ -2270,7 +2285,7 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
    }, {
       'inactivity_timeout' => $timeout + 30,
       'request_timeout'    => $timeout,
-      'on_created' => sub ($execId) { $self->hook_status_set_running_details( $name, $execId ); },
+      'on_created' => sub ($execId) { $self->hook_status_set_running_details( $name, $execId, $invocationId ); },
       'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
    }, sub ( $result, $err ) {
       try {

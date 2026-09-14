@@ -463,21 +463,17 @@ sub _hook_entry_liveness ($existing) {
 # never itself persisted onward - it is a one-shot instruction consumed here, not part of the
 # entry's own terminal vocabulary.
 #
-# $expectedInvocationId, when given, fences the write against a claim $existing no longer
-# belongs to: if $existing already carries an 'invocationId' and it differs, the merge is
-# skipped entirely and ($existing) is returned unchanged - a delayed completion from a
-# superseded invocation must never overwrite (or consume the pendingStartCount of) whatever a
-# newer claim has since written there. Omitting it, or an $existing with no 'invocationId' yet
-# (a claim made before this fencing existed), applies the merge unconditionally, exactly as
-# before - every claiming caller (hook_claim_if_not_running, Reservation::hook_status_started)
-# stamps a fresh 'invocationId' onto the entry it claims, so this gap closes on its own as each
-# name is next claimed. Returns ($applied, $entry): $applied is false only on a rejected write.
+# A supplied token must match the persisted entry, including when that entry has no token.
+# An empty string identifies an observed legacy entry with no token; undef is reserved for
+# same-lock healers and synchronous DAG decisions. A pending stage has
+# no invocation and cannot accept a completion carrying a token. Returns ($applied, $entry).
 sub _resolve_hook_entry ($data, $name, $fields, $expectedInvocationId = undef) {
    my $status = ( $data->{'hooks'} //= {} )->{'status'} //= {};
    my $existing = $status->{$name} // { 'name' => $name };
 
-   if ( defined($expectedInvocationId) && defined($existing->{'invocationId'})
-        && $existing->{'invocationId'} ne $expectedInvocationId ) {
+   if ( defined($expectedInvocationId)
+        && ( ( $existing->{'invocationId'} // '' ) ne $expectedInvocationId
+             || ($expectedInvocationId eq '' && ($existing->{'state'} // '') ne 'running') ) ) {
       return ( 0, $existing );
    }
 
@@ -513,6 +509,32 @@ sub resolve_hook_status ($id, $name, $fields, $expectedInvocationId = undef) {
       }
    );
    return ( $applied, $resolved, $startCount );
+}
+
+# Writes dispatch progress only while the caller owns a running invocation. Exec creation
+# and detached-start confirmation use the same locked identity check. A detached launch may
+# commit one start-count increment with its first confirmation. Returns current state even
+# on rejection so the caller can synchronize its in-memory view.
+sub update_running_hook ($id, $name, $expectedInvocationId, $fields, $incrementStartCount = 0) {
+   my ( $applied, $entry, $startCount ) = ( 0, undef, undef );
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $data = $reservation->{'data'} //= {};
+         $entry = $data->{'hooks'}{'status'}{$name};
+         $startCount = $data->{'startCount'};
+         return 0 unless $entry && ($entry->{'state'} // '') eq 'running'
+            && defined($expectedInvocationId)
+            && ($entry->{'invocationId'} // '') eq $expectedInvocationId;
+         if ( $incrementStartCount && !$entry->{'dispatchStarted'} ) {
+            $startCount = $data->{'startCount'} = ($startCount // 0) + 1;
+         }
+         $entry = $data->{'hooks'}{'status'}{$name} = { %$entry, %$fields };
+         $applied = 1;
+         return 1;
+      }
+   );
+   return ( $applied, $entry, $startCount );
 }
 
 # Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely

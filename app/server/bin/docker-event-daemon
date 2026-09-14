@@ -393,15 +393,11 @@ sub launch_maybe_dispatch ($reservation, $stage) {
 #      current use. Only meaningful for the non-Detach path: a field here is committed once
 #      this entry resolves to 'done' (see Reservation::Mutate::_resolve_hook_entry), which
 #      Detach's own entry never does in the normal case (see 'detach' above) - a Detach
-#      caller with a pending commit still needs on_success below instead.
-#   on_success => sub ($reservation) { ... }   optional, called only for Detach, once dispatch
-#      is confirmed to have started (Detach has no later, real-exit-code moment to hook a
-#      commit onto instead - see 'detach' above) - synchronous, not given its own callback:
-#      increment_start_count (the only current user) is a fast, synchronous file write like
-#      every other Reservation.pm state operation, not a Docker socket call, so it needs no
-#      async treatment of its own.
-#   $cb->()    called exactly once, once this stage has been resolved (or, for Detach, once
-#      dispatch is confirmed to have at least started) - drives launch_advance's own re-scan.
+#      caller uses increment_start_count below instead.
+#   increment_start_count => 1   commit one start-count increment when a detached dispatch
+#      confirms its start, under the same lock that verifies invocation ownership.
+#   $cb->()    advances the DAG after this invocation resolves or confirms detached start.
+#      A rejected ownership check suppresses the continuation.
 sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
    my @Command = $reservation->ide_command();
    die Exception->new( 'msg' => 'Internal error - no IDE command configured', 'dbg' => 'docker-event-daemon::_launch_dispatch_exec: ide_command() returned empty' ) unless @Command;
@@ -420,11 +416,8 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
    my $timeout = $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
    my $containerId = $reservation->containerId();
 
-   # A fresh invocationId, stamped onto the entry below and presented back to launch_resolve_stage
-   # once this dispatch settles - see Reservation::Mutate::_resolve_hook_entry. Minted
-   # unconditionally, including for Detach, which never resolves via launch_resolve_stage at all
-   # (see this sub's header comment) and so never needs to present it back - kept uniform rather
-   # than special-cased, so every 'running' entry always carries one.
+   # Each dispatch carries one token through exec creation and outcome resolution. Detached
+   # dispatch presents it when confirming start, including any legacy start-count increment.
    my $invocationId = sprintf( "%08x", int( rand(0xffffffff) ) );
 
    # logPath: same convention as Reservation::dispatch_hook_exec (a host-side file under
@@ -454,7 +447,7 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
       ( $opts->{'detach'}
          ? ( 'Detach' => 1 )
          : ( 'inactivity_timeout' => $timeout + 30, 'request_timeout' => $timeout ) ),
-      'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($stage, $execId); },
+      'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($stage, $execId, $invocationId); },
       ( $log ? ( 'on_output' => sub ($stream, $bytes) { print $log $bytes; } ) : () ),
    }, sub ($result, $err) {
       try {
@@ -469,7 +462,8 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
          }
 
          if ( $opts->{'detach'} ) {
-            $opts->{'on_success'}->($reservation) if $opts->{'on_success'};
+            return unless $reservation->hook_status_dispatch_started(
+               $stage, $invocationId, $opts->{'increment_start_count'} // 0 );
             $cb->();
             return;
          }
@@ -479,8 +473,8 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
          my $success = !$timedOut && defined($rc) && $rc == 0;
 
          # A 'pendingStartCount' passed via pending_fields, if any, is committed inside this
-         # call - see Reservation::Mutate::_resolve_hook_entry - not via on_success, which is
-         # for Detach only (see this sub's own header comment).
+         # call - see Reservation::Mutate::_resolve_hook_entry. Detached dispatch instead
+         # commits its increment when hook_status_dispatch_started confirms ownership.
          if ( launch_resolve_stage( $reservation, $stage,
                $timedOut ? 'timedOut' : ( $success ? 'done' : 'failed' ), $invocationId ) ) {
             $cb->();
@@ -572,7 +566,7 @@ sub _launch_dispatch_prep ($reservation, $cb) {
 # root exactly as launch:prep does, unlike a slimmed-down launch_ide that only needs the
 # nonroot user launch:prep already created.
 #
-# on_success here fires once dispatch starts (not once the launch has actually finished) -
+# The count increment commits once dispatch starts (not once launch has finished) -
 # see _launch_dispatch_exec's own comment on why Detach never resolves via a real exit code.
 # There is no separate bounded stage to observe real completion on, since this container's own
 # launch_ide covers everything in one perpetual call.
@@ -595,7 +589,7 @@ sub _launch_dispatch_legacy_ide ($reservation, $cb) {
          "DEVCONTAINER_VSCODE_EXTENSIONS=" . encode_json( $reservation->data('vscode') ),
          "IDE=" . $reservation->meta('IDE'),
       ],
-      'on_success' => sub ($reservation) { $reservation->increment_start_count(); },
+      'increment_start_count' => 1,
    }, $cb );
 }
 

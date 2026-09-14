@@ -375,7 +375,8 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 #      for the container's whole life.
 #   on_created         => sub ($execId) { ... }  optional, called once the exec exists but
 #      *before* it is started - lets a caller persist the exec id (for later abort/liveness
-#      detection) right away.
+#      detection) right away. It must return true to authorize starting the exec; false or
+#      an exception reports a dispatch failure through $cb without starting the exec.
 #   on_output          => sub ($stream, $bytes) { ... }  optional, called for each frame of
 #      output as it arrives (not buffered/batched) - $stream is 'stdout' or 'stderr'. Omit to
 #      discard output entirely (the caller only wants the final exit code).
@@ -415,7 +416,13 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
       }
 
       my $execId = decode_json($createRes->body)->{'Id'};
-      $opts->{'on_created'}->($execId) if $opts->{'on_created'};
+      if ( $opts->{'on_created'} ) {
+         my $accepted = eval { $opts->{'on_created'}->($execId) };
+         unless ($accepted) {
+            $cb->( undef, "docker_exec: execId=$execId start authorization failed" );
+            return;
+         }
+      }
 
       if( $opts->{'Detach'} ) {
          call_socket_api( $socket, "/exec/$execId/start", {

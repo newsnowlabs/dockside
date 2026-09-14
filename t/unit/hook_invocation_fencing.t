@@ -99,4 +99,101 @@ subtest 'a delayed hook_is_running self-heal cannot overwrite a reclaimed slot' 
       'the rejected write is logged once, naming both invocations' );
 };
 
+subtest 'late exec assignment preserves a replacement claim and its count' => sub {
+   my $old = { name => 'launch:prep', state => 'running', invocationId => 'old', pendingStartCount => 2 };
+   my $new = { name => 'launch:prep', state => 'running', invocationId => 'new', execId => 'new-exec', pendingStartCount => 3 };
+   write_record({ id => 'review', name => 'review', data => {
+      startCount => 1, hooks => { status => { 'launch:prep' => $new } },
+   } });
+   my $stale = bless { id => 'review', data => { hooks => { status => { 'launch:prep' => $old } } } }, 'Reservation';
+   ok(!$stale->hook_status_set_running_details('launch:prep', 'old-exec', 'old'), 'late assignment rejected');
+   is_deeply(read_record()->{data}{hooks}{status}{'launch:prep'}, $new, 'replacement entry unchanged');
+   ok(!$stale->hook_status_completed('launch:prep', { state => 'done' }, 'old'), 'old completion still rejected after local refresh');
+   is(read_record()->{data}{startCount}, 1, 'replacement prospective count uncommitted');
+   ok($stale->hook_status_set_running_details('launch:prep', 'current-exec', 'new'), 'owner can assign exec');
+   is(read_record()->{data}{hooks}{status}{'launch:prep'}{pendingStartCount}, 3, 'progress write retains pending count');
+};
+
+subtest 'reset and legacy entries require the observed identity' => sub {
+   write_record({ id => 'review', name => 'review', data => { hooks => { status => {
+      foo => { name => 'foo', state => 'done', invocationId => 'old' },
+   } } } });
+   Reservation::Mutate::launch_reset_stages_if_idle('review', ['foo'], 100);
+   my $r = bless { id => 'review' }, 'Reservation';
+   ok(!$r->hook_status_completed('foo', { state => 'done' }, 'old'), 'reset pending slot rejects old completion');
+   is(read_record()->{data}{hooks}{status}{foo}{state}, 'pending', 'next cycle remains pending');
+   ok(!$r->hook_status_completed('foo', { state => 'done' }, ''), 'legacy observer cannot complete a reset slot');
+   ok(!$r->hook_status_set_running_details('foo', 'old-exec', 'old'), 'reset slot rejects exec assignment');
+
+   write_record({ id => 'review', name => 'review', data => { hooks => { status => {
+      foo => { name => 'foo', state => 'running', invocationId => 'new' },
+   } } } });
+   my $legacy = bless { id => 'review', data => { hooks => { status => {
+      foo => { name => 'foo', state => 'running', startTime => '20000101000000' },
+   } } } }, 'Reservation';
+   $legacy->hook_is_running('foo');
+   is(read_record()->{data}{hooks}{status}{foo}{invocationId}, 'new', 'legacy observer cannot overwrite new claim');
+   is(read_record()->{data}{hooks}{status}{foo}{state}, 'running', 'legacy observer leaves winner running');
+
+   write_record({ id => 'review', name => 'review', data => { hooks => { status => {
+      foo => { name => 'foo', state => 'running', startTime => '20000101000000' },
+   } } } });
+   my $current = bless { id => 'review', data => read_record()->{data} }, 'Reservation';
+   $current->hook_is_running('foo');
+   is(read_record()->{data}{hooks}{status}{foo}{state}, 'aborted', 'current legacy claim can still self-heal');
+};
+
+subtest 'detached start confirmation is fenced and counts once' => sub {
+   write_record({ id => 'review', name => 'review', data => {
+      startCount => 4, hooks => { status => {
+         'launch:ide' => { name => 'launch:ide', state => 'running', invocationId => 'new' },
+      } },
+   } });
+   my $r = bless { id => 'review' }, 'Reservation';
+   ok(!$r->hook_status_dispatch_started('launch:ide', 'old', 1), 'superseded detached start rejected');
+   is(read_record()->{data}{startCount}, 4, 'stale detached start cannot increment count');
+   ok($r->hook_status_dispatch_started('launch:ide', 'new', 1), 'current detached start accepted');
+   is(read_record()->{data}{startCount}, 5, 'current start increments count');
+   ok($r->hook_status_dispatch_started('launch:ide', 'new', 1), 'repeat confirmation accepted');
+   is(read_record()->{data}{startCount}, 5, 'confirmation counts once');
+};
+
+subtest 'docker_exec does not start an exec whose claim was rejected' => sub {
+   for my $detach (0, 1) {
+      my (@requests, @settled);
+      no warnings 'redefine';
+      local *Util::call_socket_api = sub ($socket, $path, $args, $cb) {
+         push @requests, $path;
+         $cb->(Mojo::Message::Response->new->code(201)->body(encode_json({ Id => 'old-exec' })), undef);
+      };
+      Util::docker_exec('unused', 'container', { Cmd => ['true'] }, {
+         Detach => $detach, on_created => sub { 0 },
+      }, sub { push @settled, [@_] });
+      is_deeply(\@requests, ['/containers/container/exec'], "rejected exec never starts (detach=$detach)");
+      is(scalar @settled, 1, 'failure callback fires once');
+      ok(!defined($settled[0][0]), 'failure has no successful result');
+   }
+};
+
+subtest 'docker_exec starts accepted dispatches and reports callback exceptions' => sub {
+   for my $detach (0, 1) {
+      for my $authorization ('accept', 'absent', 'exception') {
+         my (@requests, @settled);
+         no warnings 'redefine';
+         local *Util::call_socket_api = sub ($socket, $path, $args, $cb) {
+            push @requests, $path;
+            my $body = $path =~ m{/containers/} ? { Id => 'exec' } : { ExitCode => 0 };
+            $cb->(Mojo::Message::Response->new->code($path =~ m{/containers/} ? 201 : 200)->body(encode_json($body)), undef);
+         };
+         Util::docker_exec('unused', 'container', { Cmd => ['true'] }, {
+            Detach => $detach,
+            ($authorization eq 'absent' ? () : (on_created => sub { die "fixture failure" if $authorization eq 'exception'; 1 })),
+         }, sub { push @settled, [@_] });
+         is(scalar @settled, 1, "$authorization callback settles once (detach=$detach)");
+         is(scalar @requests, $authorization eq 'exception' ? 1 : $detach ? 2 : 3, 'only accepted dispatch reaches start');
+         is(defined($settled[0][0]) ? 1 : 0, $authorization eq 'exception' ? 0 : 1, 'result matches authorization');
+      }
+   }
+};
+
 done_testing;
