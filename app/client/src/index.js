@@ -44,7 +44,6 @@ const routes = [
    { path: '/admin/:type/:id', name: 'adminDetail', component: App, beforeEnter: adminTypeGuard },
    { path: '/account',         name: 'account',     component: App },
    { path: '/', component: App },
-   { path: '/docs', name: 'docs', beforeEnter() { window.open("/docs/", "docs"); } },
    { path: '/docksideio', name: 'docksideio', beforeEnter() { window.open("https://dockside.io/", "docksideio"); } },
    { path: '/dockside-github', name: 'dockside-github', beforeEnter() { window.open("https://github.com/newsnowlabs/dockside", "dockside-github"); } },
    { path: '/newsnow', name: 'newsnow', beforeEnter() { window.open("https://www.newsnow.co.uk/about", "newsnow"); } },

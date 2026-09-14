@@ -36,7 +36,7 @@
             <li>Professional IDE, complete with syntax highlighting, terminals with root access, and support for VS Code extensions, for every devtainer.</li>
             <li>Stage any devtainer, either privately or on the public internet, for review, sign-off or testing, by colleagues, clients or management.</li>
          </ul>
-         <p>For more information, visit <a v-on:click.prevent="go('/docksideio')" href="https://dockside.io/">Dockside.io</a>. For installing/configuring <Dockside/>, read <a v-on:click="goDocs()" href="javascript:">the docs</a>.</p>
+         <p>For more information, visit <a v-on:click.prevent="go('/docksideio')" href="https://dockside.io/">Dockside.io</a>. For installing/configuring <Dockside/>, read <a href="https://github.com/newsnowlabs/dockside/tree/main/docs" target="_blank" rel="noopener">the docs</a>.</p>
 
          <h5>First time using <Dockside/>?</h5>
 

@@ -104,9 +104,6 @@ const routing = {
          this.$router.push({ path: path }).catch(() => {});
          return false;
       },
-      goDocs: function () {
-         this.$router.push({ path: '/docs' }).catch(() => {});
-      },
       goHome: function (withQuery) {
          this.$router.push({ path: '/', query: (withQuery ? this.$route.query : undefined) }).catch(() => {});
       },
