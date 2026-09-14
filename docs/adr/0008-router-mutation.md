@@ -106,7 +106,7 @@ consistency over a marginal naming improvement.
 is an array, a pure leaf overwrite. Computing a new array in the request process and writing it
 back would lose a concurrent second add. Instead, `add_router`/`remove_router`/`replace_router`
 each run their whole read-validate-mutate-write cycle inside `Reservation::Mutate`'s own `flock`,
-against the freshly-reread on-disk record — the same shape `increment_data_field` already
+against the freshly-reread on-disk record — the same shape `record_hook_history` already
 established for this class of problem. Permission/profile-gate checks happen once in `User.pm`,
 before the lock; only the array mutation itself, plus the absolute `ide`/`ssh` block, needs the
 lock's protection.

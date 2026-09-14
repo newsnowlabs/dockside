@@ -9,7 +9,7 @@ use Tie::File;
 use Storable qw(dclone);
 use URI::Escape;
 use Mojo::Promise;
-use Reservation::Mutate qw(update load_clean_map record_hook_history increment_data_field resolve_hook_status hook_claim_if_not_running);
+use Reservation::Mutate qw(update load_clean_map record_hook_history resolve_hook_status hook_claim_if_not_running);
 # Not imported: Reservation::Mutate's own add_router/remove_router/replace_router - Reservation.pm
 # defines its OWN methods of the same name below (the public API other code calls), which call
 # Reservation::Mutate's versions fully-qualified. Importing both under the same bare names into
@@ -1212,21 +1212,12 @@ sub store ($self) {
 # all, so cloneHash never touches it.
 #
 # Only safe for "authoritative overwrite" values - ones that don't need reading their own prior
-# persisted value to compute (see Reservation::Mutate::increment_data_field for that case,
-# e.g. startCount).
+# persisted value to compute (see Reservation::Mutate::update_running_hook for that case,
+# e.g. the detached-launch startCount increment it commits under the same lock as its
+# ownership check).
 sub store_fields ($self, $fields) {
    $self->update( { 'id' => $self->id(), %$fields } );
    return $self;
-}
-
-# Atomically increments data.startCount and returns the new value - see
-# Reservation::Mutate::increment_data_field's own comment for why this needs a genuine
-# read-under-lock, not just a narrowly-scoped store_fields call. Also updates this process's
-# own in-memory copy, so a later read in the same process sees the value it just committed.
-sub increment_start_count ($self) {
-   my $newValue = increment_data_field( $self->id(), 'startCount' );
-   $self->{'data'}{'startCount'} = $newValue;
-   return $newValue;
 }
 
 # Fetches the devcontainer.json for this reservation's gitURL, if it points at a GitHub repo:
