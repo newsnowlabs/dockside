@@ -192,6 +192,8 @@ subtest 'docker_exec starts accepted dispatches and reports callback exceptions'
          is(scalar @settled, 1, "$authorization callback settles once (detach=$detach)");
          is(scalar @requests, $authorization eq 'exception' ? 1 : $detach ? 2 : 3, 'only accepted dispatch reaches start');
          is(defined($settled[0][0]) ? 1 : 0, $authorization eq 'exception' ? 0 : 1, 'result matches authorization');
+         like($settled[0][1], qr/fixture failure/, 'the exception detail reaches the caller, not just a fixed string')
+            if $authorization eq 'exception';
       }
    }
 };
