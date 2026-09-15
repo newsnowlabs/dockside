@@ -272,7 +272,21 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
    die Exception->new( 'dbg' => "call_socket_api: unsupported method '$method' for $path" )
       unless $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE';
 
-   my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
+   my $body;
+   if ( defined $opts->{'json'} ) {
+      $body = eval { encode_json($opts->{'json'}) };
+      unless ( defined $body ) {
+         # Synchronous, before $ua->start (and so before any of this function's own callback
+         # machinery exists) - a caller with in-flight bookkeeping keyed on $cb actually firing
+         # (e.g. docker_exec's own in-flight dispatch counters) would otherwise never see this
+         # request settle at all. Same failure channel as the transport-level branch below.
+         $cb->( undef, "call_socket_api: failed to encode request body for $path: $@" );
+         return;
+      }
+   }
+   else {
+      $body = '';
+   }
    my $tx = $method eq 'POST'
       ? $ua->build_tx( POST => $uri => $headers => $body )
       : $ua->build_tx( $method => $uri => $headers );
@@ -439,7 +453,12 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
          return;
       }
 
-      my $execId = decode_json($createRes->body)->{'Id'};
+      my $execId = eval { decode_json($createRes->body)->{'Id'} };
+      unless ( defined $execId ) {
+         $cb->( undef, "docker_exec: malformed create response for containerId=$containerId: "
+            . ( $@ || 'missing Id' ) );
+         return;
+      }
       if ( $opts->{'on_created'} ) {
          my $accepted = eval { $opts->{'on_created'}->($execId) };
          my $detail = _format_caught_error($@);
@@ -513,7 +532,8 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
          call_socket_api( $socket, "/exec/$execId/json", {}, sub ($inspectRes, $inspectErr) {
             my $exitCode;
             if( $inspectRes && $inspectRes->is_success ) {
-               $exitCode = decode_json($inspectRes->body)->{'ExitCode'};
+               $exitCode = eval { decode_json($inspectRes->body)->{'ExitCode'} };
+               flog("docker_exec: malformed inspect response for execId=$execId: $@") if $@;
             }
             else {
                flog("docker_exec: post-run inspect of execId=$execId failed; exitCode unavailable");

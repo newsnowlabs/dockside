@@ -7,6 +7,7 @@ use Util qw(flog sanitize_sensitive_text);
 use Try::Tiny;
 use File::Temp qw(tempdir);
 use JSON qw(encode_json decode_json);
+use Mojo::Message::Response;
 use Test::More;
 
 my $tmp = tempdir(CLEANUP => 1);
@@ -159,6 +160,64 @@ subtest 'hook dispatch in-flight counter clears even when resolving the outcome 
    $settle->({ exitCode => 0, timedOut => 0 }, undef);
    is(Reservation->hook_dispatch_in_flight_count(), 0, 'cleared even though resolving the outcome threw');
    is($settled, 1, "the callback's own catch block still drives on_settled once");
+};
+
+subtest 'drain_complete reflects both in-flight counters, not just one' => sub {
+   seed({ name => 'foo', state => 'pending' });
+   my $rLaunch = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   my ($opts, $settle);
+   my $capture = sub ($socket, $container, $args, $options, $cb) { ($opts, $settle) = ($options, $cb); };
+   no warnings qw(redefine once);
+   local *User::load = sub { bless {}, 'User' };
+
+   ok(EventDaemon::LaunchDispatch::drain_complete(), 'nothing in flight to begin with');
+
+   local *EventDaemon::LaunchDispatch::docker_exec = $capture;
+   $dispatch->($rLaunch, 'foo', 'launch', 'root', {}, sub {});
+   ok(!EventDaemon::LaunchDispatch::drain_complete(), 'a non-detached DAG dispatch alone is enough to block drain');
+   $settle->({ exitCode => 0, timedOut => 0 }, undef);
+   ok(EventDaemon::LaunchDispatch::drain_complete(), 'clears once that dispatch settles');
+
+   seed({ name => 'foo', state => 'pending' });
+   my $rHook = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   local *Reservation::docker_exec = $capture;
+   $rHook->dispatch_hook_exec('foo', 'true', {}, sub {}, sub {});
+   ok(!EventDaemon::LaunchDispatch::drain_complete(), 'a manual/lifecycle hook dispatch alone is also enough to block drain');
+   $settle->({ exitCode => 0, timedOut => 0 }, undef);
+   ok(EventDaemon::LaunchDispatch::drain_complete(), 'clears once that dispatch settles too');
+};
+
+subtest 'in-flight counter does not leak when the real docker_exec hits a malformed create response' => sub {
+   seed({ name => 'foo', state => 'pending' });
+   my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   no warnings qw(redefine once);
+   local *User::load = sub { bless {}, 'User' };
+   # Deliberately not stubbing EventDaemon::LaunchDispatch::docker_exec here - this exercises the
+   # real Util::docker_exec, stubbing only the transport layer beneath it, so a leak from an
+   # exception inside docker_exec's own internals (not caught by this test file's usual
+   # $capture-based stub) would actually show up here.
+   local *Util::call_socket_api = sub ($socket, $path, $args, $cb) {
+      $cb->(Mojo::Message::Response->new->code(201)->body('{not valid json'), undef);
+   };
+   my $continuations = 0;
+   $dispatch->($r, 'foo', 'launch', 'root', {}, sub { $continuations++ });
+   is(EventDaemon::LaunchDispatch::in_flight_count(), 0, 'a malformed create response does not leak the counter');
+   is($continuations, 1, 'the dispatch still settles (as failed) via the real docker_exec');
+   is(read_record()->{data}{hooks}{status}{foo}{state}, 'failed', 'the stage itself resolves failed, not stuck running');
+};
+
+subtest 'hook dispatch in-flight counter does not leak when the real docker_exec hits a malformed create response' => sub {
+   seed({ name => 'foo', state => 'pending' });
+   my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   no warnings qw(redefine once);
+   local *User::load = sub { bless {}, 'User' };
+   local *Util::call_socket_api = sub ($socket, $path, $args, $cb) {
+      $cb->(Mojo::Message::Response->new->code(201)->body('{not valid json'), undef);
+   };
+   my $settled = 0;
+   $r->dispatch_hook_exec('foo', 'true', {}, sub {}, sub { $settled++; });
+   is(Reservation->hook_dispatch_in_flight_count(), 0, 'a malformed create response does not leak the counter');
+   is($settled, 1, 'on_settled still fires via the real docker_exec');
 };
 
 done_testing;

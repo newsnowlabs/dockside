@@ -213,4 +213,50 @@ subtest 'docker_exec starts accepted dispatches and reports callback exceptions'
    }
 };
 
+subtest 'call_socket_api reports a synchronous JSON-encode failure through $cb, not an uncaught exception' => sub {
+   my @settled;
+   Util::call_socket_api('unused', '/containers/x/exec', {
+      'method' => 'POST', 'json' => { 'bad' => sub { 1 } },   # a coderef - encode_json cannot serialize this
+   }, sub { push @settled, [@_] });
+   is(scalar @settled, 1, 'callback fires exactly once');
+   ok(!defined($settled[0][0]), 'no successful result');
+   like($settled[0][1], qr/failed to encode request body/, 'failure explains what went wrong');
+};
+
+subtest 'docker_exec reports a malformed create response through $cb, not an uncaught exception' => sub {
+   my (@requests, @settled);
+   no warnings 'redefine';
+   local *Util::call_socket_api = sub ($socket, $path, $args, $cb) {
+      push @requests, $path;
+      $cb->(Mojo::Message::Response->new->code(201)->body('{not valid json'), undef);
+   };
+   Util::docker_exec('unused', 'container', { Cmd => ['true'] }, {}, sub { push @settled, [@_] });
+   is(scalar @requests, 1, 'never proceeds past the malformed create response');
+   is(scalar @settled, 1, 'callback settles exactly once');
+   ok(!defined($settled[0][0]), 'malformed create response is a reported failure');
+   like($settled[0][1], qr/malformed create response/, 'failure explains what went wrong');
+};
+
+subtest 'docker_exec degrades a malformed inspect response to an unavailable exit code, not an uncaught exception' => sub {
+   my (@requests, @settled);
+   no warnings 'redefine';
+   local *Util::call_socket_api = sub ($socket, $path, $args, $cb) {
+      push @requests, $path;
+      if ($path =~ m{/containers/}) {
+         $cb->(Mojo::Message::Response->new->code(201)->body(encode_json({ Id => 'exec' })), undef);
+      }
+      elsif ($path =~ m{/start$}) {
+         $cb->(Mojo::Message::Response->new->code(200)->body(''), undef);
+      }
+      else {   # inspect
+         $cb->(Mojo::Message::Response->new->code(200)->body('{not valid json'), undef);
+      }
+   };
+   Util::docker_exec('unused', 'container', { Cmd => ['true'] }, {}, sub { push @settled, [@_] });
+   is(scalar @requests, 3, 'create, start, and inspect are all reached');
+   is(scalar @settled, 1, 'callback settles exactly once');
+   ok(defined($settled[0][0]), 'a malformed inspect response is not treated as a hard dispatch failure');
+   ok(!defined($settled[0][0]{exitCode}), 'exit code is left unavailable rather than guessed at - the same already-correct shape an unreachable inspect endpoint produces');
+};
+
 done_testing;

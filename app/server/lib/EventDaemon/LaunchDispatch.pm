@@ -23,7 +23,7 @@ use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = qw(launch_resolve_stage launch_reset_stages launch_in_flight launch_advance
-   @LAUNCH_STAGE_NAMES begin_shutdown is_shutting_down in_flight_count);
+   @LAUNCH_STAGE_NAMES begin_shutdown is_shutting_down in_flight_count drain_complete);
 
 use Try::Tiny;
 use JSON;
@@ -115,6 +115,16 @@ sub is_shutting_down () { return $SHUTTING_DOWN; }
 my %DISPATCH_IN_FLIGHT;
 
 sub in_flight_count () { return scalar keys %DISPATCH_IN_FLIGHT; }
+
+# True once nothing this process needs to preserve is still in flight - the one condition that
+# actually needs to gate the daemon's own process exit (see docker-event-daemon's own outer
+# while(1) loop, the only caller). Deliberately just this one conditional, pulled out of what
+# used to be $STOP_EVENT_LOOP's own gated body: Mojo::IOLoop->stop itself never needed gating -
+# it doesn't sever a live connection (confirmed against Mojo::IOLoop's own POD/source: "this
+# will not interrupt any existing connections and the event loop can be restarted by running
+# start again") - only the *process actually exiting* does, so this belongs at the one place
+# that decides that, not at every caller of stop.
+sub drain_complete () { return !in_flight_count() && !Reservation->hook_dispatch_in_flight_count(); }
 
 sub launch_resolve_stage ($reservation, $stage, $state, $expectedInvocationId = undef) {
    return $reservation->hook_status_completed( $stage, { 'state' => $state }, $expectedInvocationId );
