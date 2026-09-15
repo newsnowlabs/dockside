@@ -92,38 +92,27 @@ my %LAUNCH_STAGES = (
 
 our @LAUNCH_STAGE_NAMES = keys %LAUNCH_STAGES;
 
-# Set once, by the daemon's own shutdown signal handler, to stop the DAG driver from starting
-# any *new* dispatch - see launch_maybe_dispatch's own gate below. Never cleared: this process
-# is exiting, not pausing. A stage refused this way simply stays 'pending' - indistinguishable
-# from one that hasn't become eligible yet - so the next process's own restart_recovery_sweep/
-# launch_advance re-scan picks it up fresh, with a full new timeout budget. No separate
-# recovery bookkeeping is needed for this case.
+# Set by the daemon's shutdown signal handler to stop the DAG driver from starting any *new*
+# dispatch - see launch_maybe_dispatch's own gate below. Never cleared. A refused stage just
+# stays 'pending', picked up fresh by the next process's own restart_recovery_sweep.
 my $SHUTTING_DOWN = 0;
 
 sub begin_shutdown () { $SHUTTING_DOWN = 1; }
 sub is_shutting_down () { return $SHUTTING_DOWN; }
 
 # Every non-detached dispatch still awaiting its own docker_exec completion callback, keyed by
-# invocationId - see _launch_dispatch_exec's own increment/decrement sites for the discipline
-# this depends on (increment as the last synchronous step before docker_exec is called;
-# decrement as the first statement of its completion callback, outside that callback's own
-# try/catch, so every exit path - success, failure, timeout, an exception inside the callback -
-# decrements exactly once). A detached dispatch (launch:ide) never participates: it returns
-# near-instantly and holds no long-lived connection for a restart to sever, so there is nothing
-# here worth waiting for. Read by the daemon's own shutdown gate (see docker-event-daemon's own
-# $STOP_EVENT_LOOP) to know whether it's safe to actually stop the reactor yet.
+# invocationId - detached dispatch (launch:ide) never participates, since it holds no long-lived
+# connection worth waiting for. Increment is the last synchronous step before docker_exec is
+# called; decrement is the first statement of its completion callback, outside that callback's
+# own try/catch, so every exit path decrements exactly once.
 my %DISPATCH_IN_FLIGHT;
 
 sub in_flight_count () { return scalar keys %DISPATCH_IN_FLIGHT; }
 
 # True once nothing this process needs to preserve is still in flight - the one condition that
-# actually needs to gate the daemon's own process exit (see docker-event-daemon's own outer
-# while(1) loop, the only caller). Deliberately just this one conditional, pulled out of what
-# used to be $STOP_EVENT_LOOP's own gated body: Mojo::IOLoop->stop itself never needed gating -
-# it doesn't sever a live connection (confirmed against Mojo::IOLoop's own POD/source: "this
-# will not interrupt any existing connections and the event loop can be restarted by running
-# start again") - only the *process actually exiting* does, so this belongs at the one place
-# that decides that, not at every caller of stop.
+# gates the daemon's own process exit (see docker-event-daemon's outer while(1) loop). Confirmed
+# against Mojo::IOLoop's own POD that stop() itself never severs a connection - only the process
+# exiting does - so this is the one real gate, not every caller of stop.
 sub drain_complete () { return !in_flight_count() && !Reservation->hook_dispatch_in_flight_count(); }
 
 sub launch_resolve_stage ($reservation, $stage, $state, $expectedInvocationId = undef) {
@@ -227,9 +216,8 @@ sub launch_advance ($reservation) {
 # triggered call) to race against. This is a direct, structural consequence of there being
 # only one process, not a guard bolted on afterward.
 sub launch_maybe_dispatch ($reservation, $stage) {
-   # Refuse all new dispatch once shutdown has begun - including the synchronous 'skipped'
-   # path just below, which is not I/O-bound but is still new work this process shouldn't be
-   # starting. See $SHUTTING_DOWN's own comment for why leaving $stage 'pending' is sufficient.
+   # Refuse all new dispatch once shutdown has begun, including the synchronous 'skipped' path
+   # just below - not I/O-bound, but still new work this process shouldn't start.
    return if is_shutting_down();
 
    my $status = $reservation->hook_status($stage);
@@ -309,10 +297,8 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
 
    flog( "EventDaemon::LaunchDispatch::_launch_dispatch_exec: DISPATCHING '$stage' (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
-   # Last synchronous step before docker_exec's own async call begins - see %DISPATCH_IN_FLIGHT's
-   # own comment for why this exact placement (and the unconditional decrement as this
-   # callback's very first statement below, outside its own try/catch) is what makes the count
-   # reliable. Detached dispatch never participates - see the same comment.
+   # Last synchronous step before docker_exec's own async call - see %DISPATCH_IN_FLIGHT's own
+   # comment for why this placement (and the decrement's) is what makes the count reliable.
    $DISPATCH_IN_FLIGHT{$invocationId} = 1 unless $opts->{'detach'};
 
    docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
@@ -324,10 +310,8 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
       'on_created' => sub ($execId) { $reservation->hook_status_set_running_details($stage, $execId, $invocationId); },
       ( $log ? ( 'on_output' => sub ($stream, $bytes) { print $log $bytes; } ) : () ),
    }, sub ($result, $err) {
-      # Unconditional and first, deliberately outside the try/catch below - every exit path
-      # (success, failure, timeout, an exception caught inside this same callback) must
-      # decrement exactly once, or the count could wedge non-zero forever with no timeout
-      # backstop to eventually override it. See %DISPATCH_IN_FLIGHT's own comment.
+      # Unconditional and first, outside the try/catch below - every exit path must decrement
+      # exactly once, or the count could wedge shutdown forever with no timeout backstop.
       delete $DISPATCH_IN_FLIGHT{$invocationId} unless $opts->{'detach'};
       try {
          close($log) if $log;

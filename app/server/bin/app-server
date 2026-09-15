@@ -566,11 +566,9 @@ $routes->post('/containers/:id/hook')->to(
       $c->render_later;
       my $id = $c->stash('id');
       try {
-         # Same belt-and-braces rejection as /containers/create above, for the same reason:
-         # dispatch_hook_exec holds a non-detached, live-streamed docker_exec connection open
-         # for however long the hook runs, exactly like create()'s own chain - a request that
-         # slips in right as this worker starts exiting would otherwise start a dispatch this
-         # worker cannot see through to completion. See docs/adr/0007-create-restart-recovery.md.
+         # Same belt-and-braces rejection as /containers/create above: dispatch_hook_exec holds
+         # a non-detached, live-streamed docker_exec connection open for however long the hook
+         # runs, just like create()'s own chain. See docs/adr/0007-create-restart-recovery.md.
          return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
             if $shuttingDown;
 
@@ -1058,15 +1056,12 @@ Mojo::IOLoop->timer( 0 => \&_reconcile_pass );
 Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => \&_reconcile_pass );
 
 # Graceful exit handler - refuses new creates and manually-invoked hook runs (the
-# /containers/create and /containers/:id/hook routes' own $shuttingDown checks above) and gives
-# in-flight ones a bounded chance to reach a stable state before this worker actually exits,
-# rather than relying solely on the startup sweep/periodic reconciler above to clean up
-# afterwards. Mojo::Server::Prefork's own graceful shutdown (SIGQUIT, not the SIGTERM this
-# repo's restart matrix sends today - see that doc's own "What Mojo::Server::Prefork already
-# gives you" section) only waits for the HTTP connection to close, not for create()'s own
-# detached chain or a hook's own non-detached docker_exec call, both of which by design outlive
-# it - this closes that gap for both. Registered once, pre-fork, on the shared singleton -
-# confirmed live (Open Questions #4) that this fires exactly once per worker, not once total.
+# /containers/create and /containers/:id/hook routes' own $shuttingDown checks) and gives
+# in-flight ones a bounded chance to settle before this worker exits, rather than relying
+# solely on the startup sweep/periodic reconciler. Mojo::Server::Prefork's own graceful
+# shutdown only waits for the HTTP connection to close, not for either kind of chain's own
+# work, which outlives it - this closes that gap. Registered once, pre-fork, on the shared
+# singleton; fires exactly once per worker.
 Mojo::IOLoop->singleton->on( finish => sub (@) {
    # A second QUIT re-emits this event (Mojo::IOLoop::stop_gracefully emits it on every call),
    # and a second, nested drain would wait a second full grace period on top of the first.
@@ -1111,15 +1106,11 @@ Mojo::IOLoop->singleton->on( finish => sub (@) {
    my $remainingCreates = Reservation->create_in_flight_count();
    my $remainingHooks   = Reservation->hook_dispatch_in_flight_count();
    if ( $remainingCreates || $remainingHooks ) {
-      # create()'s own startup sweep/periodic reconciler genuinely recovers a create chain left
-      # here (see _reconcile_pass above) - it has no equivalent awareness of hooks.status, so a
-      # hook run still genuinely executing past this deadline is abandoned with no proactive
-      # recovery, only hook_is_running's own lazy, pull-based self-heal on a later status read
-      # or re-invocation (narrower still for lifecycle:launch/lifecycle:start specifically,
-      # which docker-event-daemon's own restart_recovery_sweep/check_launch_recovering already
-      # re-polls regardless of which process originally dispatched them). Pre-existing gap, not
-      # introduced by this wait - today's behaviour for the same scenario is strictly worse
-      # (abandoned immediately, with no wait at all).
+      # create()'s own startup sweep/periodic reconciler recovers a chain left here; hooks have
+      # no equivalent beyond hook_is_running's own lazy self-heal on a later read (narrower
+      # still for lifecycle:launch/lifecycle:start, which docker-event-daemon's own sweep does
+      # re-poll). A pre-existing gap, not introduced by this wait - today's behaviour is
+      # strictly worse (abandoned immediately, no wait at all).
       flog("app-server: worker $$ reached its ${grace}s shutdown grace period with " .
            "$remainingCreates create chain(s) (recovered by the startup sweep/periodic " .
            "reconciler) and $remainingHooks hook run(s) (recovered only lazily, if at all) " .

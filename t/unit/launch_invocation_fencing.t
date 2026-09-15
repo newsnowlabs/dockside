@@ -192,10 +192,8 @@ subtest 'in-flight counter does not leak when the real docker_exec hits a malfor
    my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
    no warnings qw(redefine once);
    local *User::load = sub { bless {}, 'User' };
-   # Deliberately not stubbing EventDaemon::LaunchDispatch::docker_exec here - this exercises the
-   # real Util::docker_exec, stubbing only the transport layer beneath it, so a leak from an
-   # exception inside docker_exec's own internals (not caught by this test file's usual
-   # $capture-based stub) would actually show up here.
+   # Deliberately not stubbing docker_exec itself - this exercises the real Util::docker_exec,
+   # so a leak from an exception inside its own internals would actually show up here.
    local *Util::call_socket_api = sub ($socket, $path, $args, $cb) {
       $cb->(Mojo::Message::Response->new->code(201)->body('{not valid json'), undef);
    };

@@ -6,21 +6,17 @@ use File::Temp qw(tempdir);
 use EventDaemon::LaunchDispatch;
 use Test::More;
 
-# begin_shutdown() is deliberately one-way (see its own comment - this process is exiting, not
-# pausing), so this file tests both sides of it in one place, in the only order that makes
-# sense: everything that must still work *before* shutdown, then the shutdown itself, then
-# everything that must be refused *after* it. Order matters here in a way it doesn't in most
-# test files.
+# begin_shutdown() is deliberately one-way, so this file tests both sides in one place, in the
+# only order that makes sense: what works *before* shutdown, then the shutdown itself, then
+# what's refused *after* it. Order matters here unlike most test files.
 
 my $tmp = tempdir(CLEANUP => 1);
 flog({ file => "$tmp/log" });
 
 {
    package TouchReservation;
-   # No methods beyond what each subtest below stubs in - if launch_maybe_dispatch's own
-   # shutdown gate ever stopped being the very first thing it checks, a test here would fail
-   # loudly (either the call count would be wrong, or a missing-method exception would fire),
-   # not silently.
+   # No methods beyond what each subtest stubs in - if the shutdown gate ever stopped being the
+   # first thing checked, a test here would fail loudly, not silently.
 }
 
 subtest 'launch_maybe_dispatch reaches the reservation normally before shutdown' => sub {

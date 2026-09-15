@@ -1300,15 +1300,10 @@ sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
 sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 
 # invocationId => 1, while dispatch_hook_exec's own docker_exec call is still awaiting its
-# completion callback in *this* process - the same shape and purpose as %CREATE_IN_FLIGHT just
-# above, for the one other kind of non-detached, long-held exec connection a process restart
-# can sever mid-flight (see docker-event-daemon's own $STOP_EVENT_LOOP gate and bin/app-server's
-# exit handler, both of which query hook_dispatch_in_flight_count below before letting their
-# process actually exit). dispatch_hook_exec has no detach option at all - every call
-# participates. Process-local like %CREATE_IN_FLIGHT: docker-event-daemon (dispatching
-# lifecycle:launch/lifecycle:start) and bin/app-server (dispatching a manually-invoked hook)
-# each see only their own in-memory copy of this hash, despite both calling the same function
-# defined once here.
+# completion callback in *this* process - same shape and purpose as %CREATE_IN_FLIGHT above, for
+# the other non-detached exec connection a restart can sever mid-flight. Process-local like
+# %CREATE_IN_FLIGHT: docker-event-daemon and bin/app-server each see only their own copy despite
+# calling the same function defined once here.
 my %HOOK_DISPATCH_IN_FLIGHT;
 
 sub hook_dispatch_in_flight_count ($class) { return scalar keys %HOOK_DISPATCH_IN_FLIGHT; }
@@ -2285,10 +2280,8 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
 
    flog( "Reservation::dispatch_hook_exec: DISPATCHING (via exec API): " . join( '|', map { sanitize_sensitive_text($_) } @Command ) );
 
-   # Last synchronous step before docker_exec's own async call begins - see
-   # %HOOK_DISPATCH_IN_FLIGHT's own comment for why this placement, and the unconditional
-   # decrement as this callback's very first statement below (outside its own try/catch),
-   # is what makes the count reliable across every exit path.
+   # Last synchronous step before docker_exec's own async call - see %HOOK_DISPATCH_IN_FLIGHT's
+   # own comment for why this placement (and the decrement's) is what makes the count reliable.
    $HOOK_DISPATCH_IN_FLIGHT{$invocationId} = 1;
 
    docker_exec( $CONFIG->{'docker'}{'socket'}, $containerId, {
@@ -2299,9 +2292,8 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
       'on_created' => sub ($execId) { $self->hook_status_set_running_details( $name, $execId, $invocationId ); },
       'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
    }, sub ( $result, $err ) {
-      # Unconditional and first, deliberately outside the try/catch below - see
-      # %HOOK_DISPATCH_IN_FLIGHT's own comment on why every exit path must decrement exactly
-      # once, with no timeout backstop to override a leaked count.
+      # Unconditional and first, outside the try/catch below - every exit path must decrement
+      # exactly once, with no timeout backstop to override a leaked count.
       delete $HOOK_DISPATCH_IN_FLIGHT{$invocationId};
       try {
          close($log);
