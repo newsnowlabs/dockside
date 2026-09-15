@@ -46,9 +46,13 @@
 # Lifecycle:
 # - Runs in an outer while(1) loop: if eventHandler crashes or the /events stream closes (Docker
 #   restart, connection error, etc.), it restarts automatically after 1 second.
-# - Handles SIGTERM/SIGINT/SIGQUIT cleanly: sets a flag and stops the reactor
-#   (Mojo::IOLoop->stop cleanly interrupts an in-flight streamed request with no hang and no
-#   completion callback firing); the process then just exits.
+# - Handles SIGTERM/SIGINT/SIGQUIT by refusing any new DAG dispatch
+#   (EventDaemon::LaunchDispatch::begin_shutdown) and asking to stop, but the reactor only
+#   actually stops (Mojo::IOLoop->stop) once no non-detached hook exec is genuinely still in
+#   flight - EventDaemon::LaunchDispatch::in_flight_count/Reservation::hook_dispatch_in_flight_count.
+#   No new timeout governs this wait: every such exec already carries its own, so the count is
+#   guaranteed to reach zero on its own. See $STOP_EVENT_LOOP's own comment for the single
+#   gated chokepoint this relies on.
 
 use v5.36;
 
@@ -62,7 +66,9 @@ use Mojo::IOLoop;
 
 use Util qw(flog call_socket_api);
 use Data qw($CONFIG);
+use Reservation;
 use EventDaemon::ContainerSync qw(update onEvent);
+use EventDaemon::LaunchDispatch qw(begin_shutdown in_flight_count);
 use EventDaemon::LaunchReadiness qw(check_pending_launches);
 use EventDaemon::LaunchRecovery qw(check_launch_recovering restart_recovery_sweep);
 
@@ -70,10 +76,16 @@ my $SIGNAL_RECEIVED = 0;
 my $STOP_EVENT_LOOP = sub { };
 
 $SIG{'INT'} = $SIG{'QUIT'} = $SIG{'TERM'} = sub {
-   # This will stop the Mojo::IOLoop reactor - see eventHandler's own comment on why that's a
-   # clean, sufficient shutdown now, with no subprocess to separately terminate.
+   # Refuse any new DAG dispatch from this point on (EventDaemon::LaunchDispatch::
+   # is_shutting_down - a refused stage just stays 'pending' for the next process's own
+   # restart_recovery_sweep to pick up), then ask to stop - $STOP_EVENT_LOOP itself (see
+   # eventHandler's own assignment below) is what actually decides whether that's safe yet,
+   # by checking whether any non-detached hook exec is still genuinely in flight. This call is
+   # what gives the common case (nothing in flight) today's same immediate shutdown latency;
+   # the recurring timer's own periodic call is what eventually stops it otherwise.
    flog("eventHandler: Received SIGTERM; preparing to exit.");
    $SIGNAL_RECEIVED = 1;
+   begin_shutdown();
    $STOP_EVENT_LOOP->();
 };
 
@@ -132,6 +144,14 @@ sub eventHandler {
       # enqueued by a lost lifecycle-hook claim - see
       # EventDaemon::LaunchRecovery::check_launch_recovering's own comment.
       check_launch_recovering();
+
+      # Once shutdown has been requested, keep asking to stop every tick until it's actually
+      # safe - $STOP_EVENT_LOOP's own body (see its assignment below) is a no-op for as long as
+      # a non-detached hook exec is still genuinely in flight, and only actually stops the
+      # reactor once every such call has resolved via its own pre-existing timeout. Cheap and
+      # idempotent; this is what makes the signal handler's own one-shot call to it sufficient
+      # rather than needing a bespoke wait loop.
+      $STOP_EVENT_LOOP->() if $SIGNAL_RECEIVED;
    } );
 
    # Persistent, non-blocking streamed GET /events - see this file's own header comment for the
@@ -174,15 +194,33 @@ sub eventHandler {
          # Fires exactly once, whenever the stream ends for any reason - graceful EOF,
          # connection error, or - notably NOT - our own shutdown: Mojo::IOLoop->stop
          # interrupts the stream without ever calling this back. So reaching here always means
-         # "the stream ended on its own" - stop the reactor so eventHandler returns and the
-         # outer while(1) loop below reconnects, exactly as it already did for the old
-         # subprocess's on_read_eof/on_closed.
+         # "the stream ended on its own" - ask to stop (via $STOP_EVENT_LOOP, not
+         # Mojo::IOLoop->stop directly - see its own comment: a stream drop can coincide with
+         # exactly the kind of Docker-daemon hiccup a restart also causes, so this path must
+         # defer to the same in-flight check or it reopens the same abandonment this guards
+         # against) so eventHandler returns and the outer while(1) loop below reconnects,
+         # exactly as it already did for the old subprocess's on_read_eof/on_closed - or, if a
+         # non-detached hook exec is genuinely still in flight, waits for it exactly as a
+         # signal-triggered shutdown would.
          flog("docker events: stream ended" . ( $err ? " with error: $err" : ( $result ? sprintf(" (code=%d)", $result->code) : '' ) ));
-         Mojo::IOLoop->stop;
+         $STOP_EVENT_LOOP->();
       }
    );
 
-   $STOP_EVENT_LOOP = sub { Mojo::IOLoop->stop; };
+   # The one gated chokepoint every caller (the signal handler above, the recurring timer's own
+   # periodic call, and the events-stream-ended callback above) defers to - Mojo::IOLoop->stop
+   # is a full, unconditional reactor teardown that abandons any in-flight, non-detached hook
+   # exec's own still-open docker_exec connection (in-flight completion callbacks are not
+   # guaranteed to fire once it's called) - the exact mechanism that let a restart kill a
+   # genuinely-running launch:prep exec outright rather than merely orphaning its callback.
+   # Deliberately no deadline here: every non-detached dispatch already carries its own
+   # inactivity_timeout/request_timeout (EventDaemon::LaunchDispatch::_launch_dispatch_exec,
+   # Reservation::dispatch_hook_exec), so both counts below are guaranteed to reach zero on
+   # their own without one.
+   $STOP_EVENT_LOOP = sub {
+      return if in_flight_count() || Reservation->hook_dispatch_in_flight_count();
+      Mojo::IOLoop->stop;
+   };
 
    try {
       Mojo::IOLoop->start;

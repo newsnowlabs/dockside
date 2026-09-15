@@ -83,4 +83,82 @@ for my $mode ('manual', 'attached', 'detached') {
       };
    }
 }
+subtest 'in-flight counter tracks a non-detached dispatch and clears on settle' => sub {
+   seed({ name => 'foo', state => 'pending' });
+   my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   my ($opts, $settle);
+   my $capture = sub ($socket, $container, $args, $options, $cb) { ($opts, $settle) = ($options, $cb); };
+   no warnings qw(redefine once);
+   local *User::load = sub { bless {}, 'User' };
+   local *EventDaemon::LaunchDispatch::docker_exec = $capture;
+   is(EventDaemon::LaunchDispatch::in_flight_count(), 0, 'nothing in flight before dispatch');
+   $dispatch->($r, 'foo', 'launch', 'root', {}, sub {});
+   is(EventDaemon::LaunchDispatch::in_flight_count(), 1, 'one non-detached dispatch in flight');
+   $settle->({ exitCode => 0, timedOut => 0 }, undef);
+   is(EventDaemon::LaunchDispatch::in_flight_count(), 0, 'cleared once settled');
+};
+
+subtest 'in-flight counter never counts a detached dispatch' => sub {
+   seed({ name => 'foo', state => 'pending' });
+   my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   my ($opts, $settle);
+   my $capture = sub ($socket, $container, $args, $options, $cb) { ($opts, $settle) = ($options, $cb); };
+   no warnings qw(redefine once);
+   local *User::load = sub { bless {}, 'User' };
+   local *EventDaemon::LaunchDispatch::docker_exec = $capture;
+   $dispatch->($r, 'foo', 'launch', 'root', { detach => 1, increment_start_count => 1 }, sub {});
+   is(EventDaemon::LaunchDispatch::in_flight_count(), 0, 'a detached dispatch never registers as in flight');
+   $settle->({}, undef);
+   is(EventDaemon::LaunchDispatch::in_flight_count(), 0, 'still zero after settling');
+};
+
+subtest 'in-flight counter clears even when resolving the outcome throws' => sub {
+   seed({ name => 'foo', state => 'pending' });
+   my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   my ($opts, $settle);
+   my $capture = sub ($socket, $container, $args, $options, $cb) { ($opts, $settle) = ($options, $cb); };
+   no warnings qw(redefine once);
+   local *User::load = sub { bless {}, 'User' };
+   local *EventDaemon::LaunchDispatch::docker_exec = $capture;
+   local *DispatchReservation::hook_status_completed = sub { die "boom - resolution blew up\n"; };
+   my $continuations = 0;
+   $dispatch->($r, 'foo', 'launch', 'root', {}, sub { $continuations++ });
+   is(EventDaemon::LaunchDispatch::in_flight_count(), 1, 'in flight while awaiting settle');
+   $settle->({ exitCode => 0, timedOut => 0 }, undef);
+   is(EventDaemon::LaunchDispatch::in_flight_count(), 0, 'cleared even though resolving the outcome threw');
+   is($continuations, 1, "the callback's own catch block still drives the continuation once");
+};
+
+subtest 'hook dispatch in-flight counter tracks a manual invocation and clears on settle' => sub {
+   seed({ name => 'foo', state => 'pending' });
+   my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   my ($opts, $settle);
+   my $capture = sub ($socket, $container, $args, $options, $cb) { ($opts, $settle) = ($options, $cb); };
+   no warnings qw(redefine once);
+   local *User::load = sub { bless {}, 'User' };
+   local *Reservation::docker_exec = $capture;
+   is(Reservation->hook_dispatch_in_flight_count(), 0, 'nothing in flight before dispatch');
+   $r->dispatch_hook_exec('foo', 'true', {}, sub {}, sub {});
+   is(Reservation->hook_dispatch_in_flight_count(), 1, 'one hook dispatch in flight');
+   $settle->({ exitCode => 0, timedOut => 0 }, undef);
+   is(Reservation->hook_dispatch_in_flight_count(), 0, 'cleared once settled');
+};
+
+subtest 'hook dispatch in-flight counter clears even when resolving the outcome throws' => sub {
+   seed({ name => 'foo', state => 'pending' });
+   my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
+   my ($opts, $settle);
+   my $capture = sub ($socket, $container, $args, $options, $cb) { ($opts, $settle) = ($options, $cb); };
+   no warnings qw(redefine once);
+   local *User::load = sub { bless {}, 'User' };
+   local *Reservation::docker_exec = $capture;
+   local *DispatchReservation::hook_status_completed = sub { die "boom - resolution blew up\n"; };
+   my $settled = 0;
+   $r->dispatch_hook_exec('foo', 'true', {}, sub {}, sub { $settled++; });
+   is(Reservation->hook_dispatch_in_flight_count(), 1, 'in flight while awaiting settle');
+   $settle->({ exitCode => 0, timedOut => 0 }, undef);
+   is(Reservation->hook_dispatch_in_flight_count(), 0, 'cleared even though resolving the outcome threw');
+   is($settled, 1, "the callback's own catch block still drives on_settled once");
+};
+
 done_testing;
