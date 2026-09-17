@@ -19,7 +19,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api_sync call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text tryLockFile);
+use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api_sync call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text format_caught_error tryLockFile);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
@@ -1299,11 +1299,15 @@ my %CREATE_IN_FLIGHT;
 sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
 sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 
-# invocationId => 1, while dispatch_hook_exec's own docker_exec call is still awaiting its
-# completion callback in *this* process - same shape and purpose as %CREATE_IN_FLIGHT above, for
-# the other non-detached exec connection a restart can sever mid-flight. Process-local like
-# %CREATE_IN_FLIGHT: docker-event-daemon and bin/app-server each see only their own copy despite
-# calling the same function defined once here.
+# invocationId => 1, from just before dispatch_hook_exec hands its docker_exec call over until
+# that invocation's outcome is durably recorded in *this* process - same shape and purpose as
+# %CREATE_IN_FLIGHT above, for the other non-detached exec connection a restart can sever
+# mid-flight. The obligation deliberately outlives the exec's own completion callback: what a
+# draining worker must wait for is the outcome reaching disk, not the connection closing, so it
+# is released by _hook_settle_outcome once the write has been applied, fenced, or established as
+# unwritable - see that function's own comment. Process-local like %CREATE_IN_FLIGHT:
+# docker-event-daemon and bin/app-server each see only their own copy despite calling the same
+# function defined once here.
 my %HOOK_DISPATCH_IN_FLIGHT;
 
 sub hook_dispatch_in_flight_count ($class) { return scalar keys %HOOK_DISPATCH_IN_FLIGHT; }
@@ -1439,7 +1443,17 @@ sub _create_stage_creating ($self, $body, $isRecovery = 0) {
          '/containers/json?all=1&filters=' . uri_escape( encode_json( { 'name' => [ '^/' . $self->name . '$' ] } ) ),
          {}, sub ($result, $err) {
          return $cb->( undef, $err ) if $err;
-         my $matches = ( $result && $result->code == 200 ) ? decode_json( $result->body ) : [];
+         # A 200 whose body will not decode into a list leaves the name's ownership unknown.
+         # Reporting that through $cb is what keeps the enclosing promise settling: an exception
+         # raised here escapes into the reactor instead of the promise (unlike one raised in a
+         # ->then callback), leaving the chain unsettled and its ownership lock held for the
+         # lifetime of the process.
+         my $matches = eval { ( $result && $result->code == 200 ) ? decode_json( $result->body ) : [] };
+         unless ( ref($matches) eq 'ARRAY' ) {
+            $cb->( undef, "malformed container list looking up name '" . $self->name . "': "
+               . ( format_caught_error($@) || 'response is not a JSON array' ) );
+            return;
+         }
          $cb->( $matches->[0], undef );
       } );
    };
@@ -1465,7 +1479,18 @@ sub _create_stage_creating ($self, $body, $isRecovery = 0) {
                $reject->( $err // ( $result ? $result->body : 'no response' ) );
                return;
             }
-            $resolve->( decode_json( $result->body )->{'Id'} );
+            # A success response carrying no usable Id is a rejection, not a resolution: the
+            # container's own existence is unknown, and resolving would persist an empty
+            # containerId and drive the start stage against nothing. Decoding here must not be
+            # allowed to throw for the same reason as the name lookup above - the exception
+            # would bypass this promise entirely rather than rejecting it.
+            my $containerId = eval { decode_json( $result->body )->{'Id'} };
+            unless ( defined($containerId) && length($containerId) ) {
+               $reject->( "malformed create response for name '" . $self->name . "': "
+                  . ( format_caught_error($@) || 'no Id in response' ) );
+               return;
+            }
+            $resolve->($containerId);
          } );
       } );
    };
@@ -1483,13 +1508,21 @@ sub _create_stage_creating ($self, $body, $isRecovery = 0) {
               # reservation's own name is adopted only if it also carries this reservation's own
               # id under that label; any other or missing label fails the chain closed exactly
               # like the create-path 409 above, without ever attempting the create call (which
-              # would only 409 anyway, since the name is taken).
-              if ( ( $found->{'Labels'}{'dev.dockside.reservation.id'} // '' ) eq $self->id() ) {
-                 $resolve->( $found->{'Id'} );
-              }
-              else {
+              # would only 409 anyway, since the name is taken). Both reads are total: an entry
+              # shaped unlike Docker's own container list (a 'Labels' that is not a hash, an
+              # absent 'Id') fails closed rather than throwing past this promise, and adopting
+              # an entry with no id would persist an empty containerId.
+              my $label = eval { $found->{'Labels'}{'dev.dockside.reservation.id'} // '' };
+              unless ( defined($label) && $label eq $self->id() ) {
                  $reject->( "name '" . $self->name . "' is already in use by a container this reservation does not own" );
+                 return;
               }
+              my $foundId = eval { $found->{'Id'} };
+              unless ( defined($foundId) && length($foundId) ) {
+                 $reject->( "container holding name '" . $self->name . "' carries this reservation's own label but no id" );
+                 return;
+              }
+              $resolve->($foundId);
            } );
         } )
       : $createContainer->();
@@ -2197,6 +2230,81 @@ sub hook_status_completed ($self, $name, $fields, $expectedInvocationId = undef)
    return 1;
 }
 
+# How many times a finished invocation's outcome write is attempted before the entry is left to
+# the self-heal path described in _hook_settle_outcome below.
+sub _HOOK_PERSIST_ATTEMPTS () { return 3; }
+
+# Persists a finished invocation's outcome, then releases its %HOOK_DISPATCH_IN_FLIGHT
+# obligation, then notifies the caller once - in that order. The obligation is what a draining
+# worker waits on, so it is held until the outcome is durable rather than dropped as soon as the
+# exec connection closes. Three distinct outcomes:
+#
+#   applied      - the write landed. Release, then notify exactly once.
+#   fenced       - resolve_hook_status rejected the write because a newer invocation owns the
+#                  entry now, or the reservation is gone. Nothing of this invocation's own is
+#                  left to persist or report, so release and stay silent - hook_status_completed
+#                  already specifies that a rejected write suppresses the caller's continuation.
+#   write failed - an exception rather than a rejection: the outcome is still unpersisted, so the
+#                  obligation stays held and the write is retried with the same $fields and the
+#                  same $invocationId, never a fresh dispatch. Passing $invocationId is what
+#                  keeps a retry fenced - a newer invocation claiming $name in between makes the
+#                  retry a rejection instead of an overwrite.
+#
+# Retries are immediate and bounded. The failure worth absorbing is a signal-interrupted lock
+# acquisition - Util::cacheReadWrite takes a blocking flock, which a QUIT arriving mid-write can
+# fail with EINTR - and retrying at once is the correct response to that. A delay would instead
+# block this process's reactor over the failures no delay can fix, a full or failing disk being
+# the obvious one.
+#
+# Once the attempts are spent the outcome cannot be recorded from here at all. The entry is left
+# 'running' with its execId, which Reservation::Mutate::_hook_entry_liveness resolves from the
+# exec's own real exit code the next time the entry is read - the same self-heal that covers a
+# process dying outright. The obligation is released at that point regardless, so a draining
+# worker is never held open by a disk that cannot be written to.
+#
+# $outcome, when set, is the settlement state to report as-is; undef derives it from the
+# persisted entry. A dispatch that never ran reports 'aborted', which _hook_outcome_state would
+# otherwise flatten to the less specific 'failed'.
+#
+# A retry can re-apply a write that already landed, when it was the history append following it
+# that threw. _resolve_hook_entry is idempotent for exactly this case, at the cost of at most one
+# duplicate history row - preferred over discarding a real outcome.
+sub _hook_settle_outcome ($self, $name, $fields, $invocationId, $outcome, $err, $on_settled) {
+   my ( $applied, $writeErr );
+
+   for my $attempt ( 1 .. _HOOK_PERSIST_ATTEMPTS ) {
+      $writeErr = undef;
+      my $written = try {
+         $applied = $self->hook_status_completed( $name, $fields, $invocationId );
+         1;
+      }
+      catch {
+         $writeErr = $_;
+         flog( "Reservation::_hook_settle_outcome: '$name' could not persist its outcome (attempt $attempt of "
+             . _HOOK_PERSIST_ATTEMPTS . "): " . format_caught_error($_) );
+         0;
+      };
+      last if $written;
+   }
+
+   # After the durability decision and before the one notification: an exception thrown by
+   # $on_settled itself can then neither leak the count nor produce a second notification.
+   delete $HOOK_DISPATCH_IN_FLIGHT{$invocationId};
+
+   if ($writeErr) {
+      wlog( "Reservation::_hook_settle_outcome: '$name' outcome left to recovery for reservationId="
+          . $self->id() . " after " . _HOOK_PERSIST_ATTEMPTS . " failed writes: "
+          . format_caught_error($writeErr) );
+      $on_settled->( undef, $writeErr );
+      return;
+   }
+
+   return unless $applied;
+
+   $on_settled->( $outcome // _hook_outcome_state( $self->hook_status($name) ), $err );
+   return;
+}
+
 # The one canonical async hook-dispatch core - claims, dispatches via the exec API, and
 # records the outcome start to finish (hook_claim_if_not_running -> hook_status_set_running_
 # details -> hook_status_completed). Both remaining dispatch paths - this on-demand entry
@@ -2268,12 +2376,12 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
       # Mirrors the docker_exec-itself-failed branch below exactly (settle 'aborted', notify via
       # $on_settled) - $on_claimed has already fired by this point (same as it does for that
       # branch too), so there is nothing left to retract; the caller already knows to discover
-      # the real outcome via polling, same as for any other post-claim failure.
-      my $dbg = ref($_) ? $_->dbg() : $_;
+      # the real outcome via polling, same as for any other post-claim failure. Settled through
+      # the same helper as that branch, so this path gets the same write-failure handling and a
+      # failed write is reported via $on_settled rather than escaping to this function's caller.
+      my $dbg = format_caught_error($_);
       flog("Reservation::dispatch_hook_exec: '$name' failed before dispatch could begin: $dbg");
-      if ( $self->hook_status_completed( $name, { 'state' => 'aborted' }, $invocationId ) ) {
-         $on_settled->( 'aborted', $dbg );
-      }
+      $self->_hook_settle_outcome( $name, { 'state' => 'aborted' }, $invocationId, 'aborted', $dbg, $on_settled );
       0;
    };
    return unless $prepared;
@@ -2292,37 +2400,27 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
       'on_created' => sub ($execId) { $self->hook_status_set_running_details( $name, $execId, $invocationId ); },
       'on_output'  => sub ($stream, $bytes) { print $log $bytes; },
    }, sub ( $result, $err ) {
-      # Unconditional and first, outside the try/catch below - every exit path must decrement
-      # exactly once, with no timeout backstop to override a leaked count.
-      delete $HOOK_DISPATCH_IN_FLIGHT{$invocationId};
-      try {
-         close($log);
+      close($log);
 
-         if ( !$result ) {
-            flog("Reservation::dispatch_hook_exec: '$name' failed to dispatch: $err");
-            if ( $self->hook_status_completed( $name, { 'state' => 'aborted' }, $invocationId ) ) {
-               $on_settled->( 'aborted', $err );
-            }
-            return;
-         }
-
+      # Derived before any write is attempted, so a retry inside _hook_settle_outcome replays
+      # exactly this result rather than re-deriving it from state that has since moved on.
+      my ( $fields, $outcome );
+      if ( !$result ) {
+         flog("Reservation::dispatch_hook_exec: '$name' failed to dispatch: $err");
+         ( $fields, $outcome ) = ( { 'state' => 'aborted' }, 'aborted' );
+      }
+      else {
          my $rc       = $result->{'exitCode'};
          my $timedOut = $result->{'timedOut'} ? 1 : 0;
-         my $busy     = ( defined($rc) && $rc == 2 && !$timedOut ) ? 1 : 0;
-
-         if ( $self->hook_status_completed( $name, {
+         $fields = {
             'state'    => 'done',
             'exitCode' => $rc,
             'timedOut' => $timedOut,
-            'busy'     => $busy,
-         }, $invocationId ) ) {
-            $on_settled->( _hook_outcome_state( $self->hook_status($name) ), undef );
-         }
+            'busy'     => ( defined($rc) && $rc == 2 && !$timedOut ) ? 1 : 0,
+         };
       }
-      catch {
-         flog("Reservation::dispatch_hook_exec: caught exception resolving '$name': " . ( ref($_) ? $_->dbg : $_ ));
-         $on_settled->( undef, $_ );
-      };
+
+      $self->_hook_settle_outcome( $name, $fields, $invocationId, $outcome, $err, $on_settled );
    } );
 }
 

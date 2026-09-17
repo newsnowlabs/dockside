@@ -10,7 +10,7 @@ our @EXPORT_OK = ( qw(
    call_socket_api_sync call_socket_api call_socket_json_api docker_container_path_exists docker_exec
    get_uri
    run run_system clean_pty run_pty
-   sanitize_sensitive_text
+   sanitize_sensitive_text format_caught_error
    YYYYMMDDHHMMSS TO_JSON
    cacheReadWrite cloneHash lockFile tryLockFile
    encrypt_password generate_auth_cookie_values validate_auth_cookie
@@ -233,6 +233,10 @@ sub call_socket_api_sync ($socket, $path, $opts = {}) {
 # connection had even finished being established.
 my %ASYNC_UA_IN_FLIGHT;
 
+# The size of that registry. A non-zero count with no request outstanding is a leaked user agent,
+# which the hash being lexical otherwise makes unobservable from outside this module.
+sub async_ua_in_flight_count () { return scalar keys %ASYNC_UA_IN_FLIGHT; }
+
 # Non-blocking sibling of call_socket_api_sync above - never blocks the caller's own event loop.
 # Same $opts/conventions (method/json/inactivity_timeout/request_timeout/headers/http+unix://
 # transport) - this replicates call_socket_api_sync's own behavior for a non-blocking caller, it does
@@ -266,51 +270,99 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
 
    flog("call_socket_api: $method $uri");
 
-   # DELETE added for Reservation::action's 'remove' (DELETE /containers/{id}?v=true) -
+   # The exactly-once guarantee this function's header comment promises, enforced in one place
+   # rather than asserted by each branch below. Callers register in-flight bookkeeping keyed on
+   # $cb firing exactly once (docker_exec's dispatch counters, Reservation's create-chain promise
+   # executors, Reservation::dispatch_hook_exec's %HOOK_DISPATCH_IN_FLIGHT), so a second call
+   # would release an obligation twice and a missing call would hold one until the process exits.
+   # An exception raised by $cb itself is deliberately not caught: it belongs to the caller, and
+   # swallowing it here would hide a real caller bug. $settled also makes a caller exception
+   # distinguishable from a setup failure at the $ua->start guard below.
+   my $settled = 0;
+   my $settle = sub ( $result, $error ) {
+      return if $settled++;
+      $cb->( $result, $error );
+      return;
+   };
+
+   # Every setup failure from here on is reported through $settle rather than as an exception,
+   # for the same reason: a caller that has already registered an obligation cannot discover a
+   # synchronous throw as a settlement, and nothing else would ever settle the request.
+   #
+   # DELETE is here for Reservation::action's 'remove' (DELETE /containers/{id}?v=true) -
    # no body, same as GET/HEAD below - Docker's remove-container endpoint takes its options
    # (v/force) as query params, not a body.
-   die Exception->new( 'dbg' => "call_socket_api: unsupported method '$method' for $path" )
-      unless $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE';
+   unless ( $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE' ) {
+      $settle->( undef, "call_socket_api: unsupported method '$method' for $path" );
+      return;
+   }
 
    my $body;
    if ( defined $opts->{'json'} ) {
       $body = eval { encode_json($opts->{'json'}) };
       unless ( defined $body ) {
-         # Synchronous, before $ua->start (and so before any of this function's own callback
-         # machinery exists) - a caller with in-flight bookkeeping keyed on $cb actually firing
-         # (e.g. docker_exec's own in-flight dispatch counters) would otherwise never see this
-         # request settle at all. Same failure channel as the transport-level branch below.
-         $cb->( undef, "call_socket_api: failed to encode request body for $path: $@" );
+         $settle->( undef, "call_socket_api: failed to encode request body for $path: $@" );
          return;
       }
    }
    else {
       $body = '';
    }
-   my $tx = $method eq 'POST'
-      ? $ua->build_tx( POST => $uri => $headers => $body )
-      : $ua->build_tx( $method => $uri => $headers );
+
+   # build_tx parses $uri, so a malformed socket path or $path throws here rather than failing
+   # at the transport level later.
+   my $tx = eval {
+      $method eq 'POST'
+         ? $ua->build_tx( POST => $uri => $headers => $body )
+         : $ua->build_tx( $method => $uri => $headers );
+   };
+   unless ($tx) {
+      $settle->( undef, "call_socket_api: failed to build request for $path: "
+         . ( format_caught_error($@) || 'no transaction' ) );
+      return;
+   }
 
    if( my $onRead = $opts->{'on_read'} ) {
       $tx->res->content->unsubscribe('read')->on(read => sub ($content, $bytes) {
-         $onRead->($bytes);
+         # A streamed-response consumer's exception must not escape into the reactor's own read
+         # event: it would abort the connection without settling $cb, holding the caller's
+         # obligation open. The response still runs to completion and settles below, so the
+         # consumer's failure is reported here and nowhere else.
+         my $consumed = eval { $onRead->($bytes); 1 };
+         flog("call_socket_api: on_read consumer failed for $path: " . format_caught_error($@))
+            unless $consumed;
       });
    }
 
    $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;   # see %ASYNC_UA_IN_FLIGHT's own comment
 
-   $ua->start( $tx => sub ($ua, $tx) {
-      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+   my $started = eval {
+      $ua->start( $tx => sub ($ua, $tx) {
+         delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
 
-      my $err = $tx->error;
-      if( $err && !defined($err->{'code'}) ) {
-         # Transport-level failure - see this function's own header comment for why ->result
-         # would throw here rather than just being undef, and why that's not tested for.
-         $cb->( undef, $err->{'message'} );
-         return;
-      }
-      $cb->( $tx->result, undef );
-   } );
+         my $err = $tx->error;
+         if( $err && !defined($err->{'code'}) ) {
+            # Transport-level failure - see this function's own header comment for why ->result
+            # would throw here rather than just being undef, and why that's not tested for.
+            $settle->( undef, $err->{'message'} );
+            return;
+         }
+         $settle->( $tx->result, undef );
+      } );
+      1;
+   };
+   unless ($started) {
+      my $startErr = $@;
+      # start() can deliver an immediate failure straight to the completion callback, so a throw
+      # here may be $cb's own, raised after the request already settled. That exception is the
+      # caller's to handle - rethrow it rather than reporting it as a setup failure. Otherwise
+      # nothing was ever queued, so this is the only place the request can be settled from, and
+      # the UA reference has to be dropped by hand since no completion callback will run.
+      die $startErr if $settled;
+      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+      $settle->( undef, "call_socket_api: failed to start request for $path: "
+         . ( format_caught_error($startErr) || 'start failed' ) );
+   }
 
    return $tx;   # so a caller with a long-held stream (e.g. /events) can retain/abort it later
 }
@@ -392,7 +444,7 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 #      *before* it is started - lets a caller persist the exec id (for later abort/liveness
 #      detection) right away. It must return true to authorize starting the exec; false or
 #      an exception reports a dispatch failure through $cb without starting the exec. When it
-#      threw, $error includes a rendering of whatever was thrown - see _format_caught_error's
+#      threw, $error includes a rendering of whatever was thrown - see format_caught_error's
 #      own comment for exactly what shape of thrown value renders to what.
 #   on_output          => sub ($stream, $bytes) { ... }  optional, called for each frame of
 #      output as it arrives (not buffered/batched) - $stream is 'stdout' or 'stderr'. Omit to
@@ -418,7 +470,7 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 # '' for a false/empty $err (an ordinary failure with nothing thrown). Prefers a blessed object's
 # own dbg (falling back to msg when dbg is unset), then a plain string as-is, then Perl's own
 # default stringification (e.g. 'HASH(0x...)') for anything else.
-sub _format_caught_error ($err) {
+sub format_caught_error ($err) {
    return '' unless $err;
    my $formatted = eval {
       if ( !ref($err) ) { $err }
@@ -461,7 +513,7 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
       }
       if ( $opts->{'on_created'} ) {
          my $accepted = eval { $opts->{'on_created'}->($execId) };
-         my $detail = _format_caught_error($@);
+         my $detail = format_caught_error($@);
          unless ($accepted) {
             $cb->( undef, "docker_exec: execId=$execId start authorization failed"
                . ( $detail ne '' ? ": $detail" : '' ) );
