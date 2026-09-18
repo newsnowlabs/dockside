@@ -59,7 +59,11 @@ sub dispatch (%opt) {
    my $failing = $opt{'failing'};
 
    no warnings qw(redefine once);
-   local *Reservation::ide_command = sub { return ( '/opt/dockside/bin/launch.sh', 'placeholder' ) };
+   # An empty ide_command is what dispatch_hook_exec's own preparation step rejects, so this
+   # fails before any exec is dispatched while still leaving a claim that owes an outcome.
+   local *Reservation::ide_command = $opt{'prep_fails'}
+      ? sub { return () }
+      : sub { return ( '/opt/dockside/bin/launch.sh', 'placeholder' ) };
    local *Reservation::owner       = sub { return 'someone' };
    local *Reservation::unixuser    = sub { return 'devuser' };
    local *Reservation::_hook_env   = sub { return () };
@@ -136,6 +140,36 @@ subtest 'an outcome that will not write keeps the dispatch counted in flight' =>
          is( $run->{'settled'}[0][0], 'done', 'with the real outcome' );
          is( $run->{'dispatches'}, 1, 'still without ever rerunning the hook' );
          is( entry()->{'state'}, 'done', 'and the outcome reaches disk' );
+      },
+   );
+};
+
+subtest 'a failure before dispatch is counted in flight while it still owes a write' => sub {
+   my $failing = 1;
+   dispatch(
+      'prep_fails' => 1,
+      'failing'    => \$failing,
+      'body'       => sub ($run) {
+         is( $run->{'dispatches'}, 0, 'no exec was ever dispatched' );
+         is( scalar @{ $run->{'claimed'} }, 1, 'but the invocation was claimed and acknowledged' );
+         is( $run->{'in_flight_after_dispatch'}, 1,
+            'so its unwritten outcome is counted, even though nothing registered it before this point' );
+         is( scalar @{ $run->{'settled'} }, 0, 'nothing is reported as settled yet' );
+
+         pump_until( sub { scalar @{ $run->{'writes'} } >= 3 }, 3 );
+
+         cmp_ok( scalar @{ $run->{'writes'} }, '>=', 3, 'the aborted write is retried' );
+         is( Reservation->hook_dispatch_in_flight_count(), 1,
+            'and stays counted throughout, so a drain cannot exit and discard the retry' );
+         is( entry()->{'state'}, 'running', 'the claim is still unresolved on disk' );
+
+         $failing = 0;
+         pump_until( sub { Reservation->hook_dispatch_in_flight_count() == 0 }, 3 );
+
+         is( Reservation->hook_dispatch_in_flight_count(), 0, 'released once the write lands' );
+         is( entry()->{'state'}, 'aborted', 'and the claim is resolved rather than left running' );
+         is( scalar @{ $run->{'settled'} }, 1, 'the caller is notified exactly once' );
+         is( $run->{'settled'}[0][0], 'aborted', 'with the outcome that was recorded' );
       },
    );
 };

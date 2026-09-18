@@ -1300,8 +1300,9 @@ my %CREATE_IN_FLIGHT;
 sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
 sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 
-# invocationId => 1, from just before dispatch_hook_exec hands its docker_exec call over until
-# that invocation's outcome is durably recorded in *this* process - same shape and purpose as
+# invocationId => 1, from just before dispatch_hook_exec hands its docker_exec call over - or
+# from the point a failure before that owes an outcome write instead - until that invocation's
+# outcome is durably recorded in *this* process. Same shape and purpose as
 # %CREATE_IN_FLIGHT above, for the other non-detached exec connection a restart can sever
 # mid-flight. The obligation deliberately outlives the exec's own completion callback: what a
 # draining worker must wait for is the outcome reaching disk, not the connection closing, so it
@@ -2262,7 +2263,9 @@ sub _hook_persist_retry_delay ($n) {
 }
 
 # Persists a finished invocation's outcome, and only then releases its %HOOK_DISPATCH_IN_FLIGHT
-# obligation and notifies the caller, once. The obligation is what a draining worker waits on, so
+# obligation and notifies the caller, once. It takes that obligation on itself, so every route
+# into this function is counted for as long as it owes a write - including a failure that
+# happens before any exec is dispatched. The obligation is what a draining worker waits on, so
 # it is held until the outcome is durable rather than dropped when the exec connection closes.
 # Two terminal outcomes release it:
 #
@@ -2293,6 +2296,15 @@ sub _hook_persist_retry_delay ($n) {
 # that threw. _resolve_hook_entry is idempotent for exactly this case, at the cost of at most one
 # duplicate history row - preferred over discarding a real outcome.
 sub _hook_settle_outcome ($self, $name, $fields, $invocationId, $outcome, $err, $on_settled) {
+   # Registered here rather than relied upon from the caller, and idempotent because it is keyed
+   # by invocation: a dispatched hook is already counted for the exec it is awaiting, while a
+   # failure before dispatch reaches this point with nothing counted at all. Either way the
+   # obligation has to exist before the first write is attempted, or a write that throws would
+   # schedule its retries against a count that never rose - and a drain reading zero would let
+   # the worker exit, discarding the retry and leaving an acknowledged invocation recorded as
+   # still running.
+   $HOOK_DISPATCH_IN_FLIGHT{$invocationId} = 1;
+
    my $attempt = 0;
    my $persist;
 
