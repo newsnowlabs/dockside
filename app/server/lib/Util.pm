@@ -260,24 +260,15 @@ sub async_ua_in_flight_count () { return scalar keys %ASYNC_UA_IN_FLIGHT; }
 # anything usable returned at all" is $tx->error's own ->{'code'} being defined or not, not
 # whether ->error is set at all.
 sub call_socket_api ($socket, $path, $opts, $cb) {
-   my $ua = Mojo::UserAgent->new();
-   $ua->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
-   $ua->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
-
-   my $method = uc($opts->{'method'} // 'GET');
-   my $uri = 'http+unix://' . uri_escape($socket) . $path;
-   my $headers = {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'};
-
-   flog("call_socket_api: $method $uri");
-
-   # The exactly-once guarantee this function's header comment promises, enforced in one place
-   # rather than asserted by each branch below. Callers register in-flight bookkeeping keyed on
-   # $cb firing exactly once (docker_exec's dispatch counters, Reservation's create-chain promise
-   # executors, Reservation::dispatch_hook_exec's %HOOK_DISPATCH_IN_FLIGHT), so a second call
-   # would release an obligation twice and a missing call would hold one until the process exits.
-   # An exception raised by $cb itself is deliberately not caught: it belongs to the caller, and
-   # swallowing it here would hide a real caller bug. $settled also makes a caller exception
-   # distinguishable from a setup failure at the $ua->start guard below.
+   # Established before anything that can fail, including the user agent itself: the exactly-once
+   # guarantee this function's header comment promises is enforced in this one place rather than
+   # asserted by each branch below. Callers register in-flight bookkeeping keyed on $cb firing
+   # exactly once (docker_exec's dispatch counters, Reservation's create-chain promise executors,
+   # Reservation::dispatch_hook_exec's %HOOK_DISPATCH_IN_FLIGHT), so a second call would release
+   # an obligation twice and a missing call would hold one until the process exits. An exception
+   # raised by $cb itself is deliberately not caught: it belongs to the caller, and swallowing it
+   # here would hide a real caller bug. $settled also makes a caller exception distinguishable
+   # from a setup failure at the $ua->start guard below.
    my $settled = 0;
    my $settle = sub ( $result, $error ) {
       return if $settled++;
@@ -285,9 +276,28 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
       return;
    };
 
-   # Every setup failure from here on is reported through $settle rather than as an exception,
-   # for the same reason: a caller that has already registered an obligation cannot discover a
-   # synchronous throw as a settlement, and nothing else would ever settle the request.
+   # Constructing and configuring the user agent is inside the guard for the same reason every
+   # other setup step below is: a caller that has already registered an obligation cannot
+   # discover a synchronous throw as a settlement, and nothing else would ever settle the
+   # request. Reading $opts here is part of what is being guarded.
+   my $ua = eval {
+      my $agent = Mojo::UserAgent->new();
+      $agent->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
+      $agent->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
+      $agent;
+   };
+   unless ($ua) {
+      $settle->( undef, "call_socket_api: failed to create user agent for $path: "
+         . ( format_caught_error($@) || 'no user agent' ) );
+      return;
+   }
+
+   my $method = uc($opts->{'method'} // 'GET');
+   my $uri = 'http+unix://' . uri_escape($socket) . $path;
+   my $headers = {'Content-Type' => 'application/json', 'Host' => 'Dockside-1.00'};
+
+   flog("call_socket_api: $method $uri");
+
    #
    # DELETE is here for Reservation::action's 'remove' (DELETE /containers/{id}?v=true) -
    # no body, same as GET/HEAD below - Docker's remove-container endpoint takes its options
@@ -322,15 +332,21 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
       return;
    }
 
+   # The first exception raised by a streamed-response consumer, if any. It must not escape into
+   # the reactor's own read event, where it would abort the connection without settling $cb and
+   # leave the caller's obligation open - but it must not be discarded either. A consumer that
+   # threw has not seen the rest of that chunk, so whatever it derives from the stream (a pull's
+   # per-layer progress and, critically, Docker's own mid-stream error events) is incomplete, and
+   # reporting HTTP success would present a failed transfer as a successful one. It is therefore
+   # held here and reported at completion below, in place of the response.
+   my $consumerError;
+
    if( my $onRead = $opts->{'on_read'} ) {
       $tx->res->content->unsubscribe('read')->on(read => sub ($content, $bytes) {
-         # A streamed-response consumer's exception must not escape into the reactor's own read
-         # event: it would abort the connection without settling $cb, holding the caller's
-         # obligation open. The response still runs to completion and settles below, so the
-         # consumer's failure is reported here and nowhere else.
          my $consumed = eval { $onRead->($bytes); 1 };
-         flog("call_socket_api: on_read consumer failed for $path: " . format_caught_error($@))
-            unless $consumed;
+         return if $consumed;
+         $consumerError //= $@;
+         flog("call_socket_api: on_read consumer failed for $path: " . format_caught_error($@));
       });
    }
 
@@ -345,6 +361,13 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
             # Transport-level failure - see this function's own header comment for why ->result
             # would throw here rather than just being undef, and why that's not tested for.
             $settle->( undef, $err->{'message'} );
+            return;
+         }
+         # Checked before the response is handed over: a stream the consumer could not finish
+         # reading is not a usable result, whatever status the transfer itself ended with.
+         if ( defined $consumerError ) {
+            $settle->( undef, "call_socket_api: streamed-response consumer failed for $path: "
+               . ( format_caught_error($consumerError) || 'consumer failed' ) );
             return;
          }
          $settle->( $tx->result, undef );

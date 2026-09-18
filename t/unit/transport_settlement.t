@@ -122,6 +122,50 @@ subtest 'a streamed-response consumer that throws cannot escape into the reactor
    is( scalar @settled, 0, 'a consumer failure is not itself a settlement' );
 };
 
+subtest 'a stream whose consumer failed is reported as a failure, not a success' => sub {
+   my @settled;
+   my $completed;
+   no warnings 'redefine';
+   # A transfer that ends with an ordinary HTTP success after its consumer has already thrown.
+   # The consumer never saw the rest of that chunk, so the response cannot be handed over as a
+   # usable result - anything the caller derives from the stream is incomplete.
+   local *Mojo::UserAgent::start = sub ( $ua, $tx, $cb ) {
+      $tx->res->content->emit( read => 'some bytes' );
+      $completed = sub { $cb->( $ua, $tx ) };
+      return $tx;
+   };
+
+   my $tx = Util::call_socket_api( 'unused', '/images/create', {
+      'method'  => 'POST',
+      'on_read' => sub (@) { die "fixture consumer failure\n" },
+   }, sub (@a) { push @settled, [@a] } );
+
+   is( scalar @settled, 0, 'nothing settles while the transfer is still running' );
+   $completed->();
+
+   is( scalar @settled, 1, 'the callback fires exactly once' );
+   ok( !defined( $settled[0][0] ), 'no response is handed over for a stream that was not fully read' );
+   like( $settled[0][1], qr/streamed-response consumer failed/, 'the failure says what went wrong' );
+   like( $settled[0][1], qr/fixture consumer failure/, 'and carries the consumer error itself' );
+};
+
+subtest 'a user agent that cannot be constructed settles once' => sub {
+   my @settled;
+   no warnings 'redefine';
+   local *Mojo::UserAgent::new = sub { die "fixture user agent failure\n" };
+
+   my $returned = eval {
+      Util::call_socket_api( 'unused', '/containers/x', {}, sub (@a) { push @settled, [@a] } );
+      1;
+   };
+
+   ok( $returned, 'a construction failure is not an exception to the caller' );
+   is( scalar @settled, 1,
+      'the callback still fires exactly once, so a registered obligation is not stranded' );
+   like( $settled[0][1], qr/failed to create user agent/, 'the failure says what stage it was at' );
+   like( $settled[0][1], qr/fixture user agent failure/, 'and includes what actually went wrong' );
+};
+
 subtest 'a genuine transport failure settles once and cleans up after itself' => sub {
    my @settled;
    my $before = Util::async_ua_in_flight_count();

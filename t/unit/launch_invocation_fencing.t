@@ -7,8 +7,20 @@ use Util qw(flog sanitize_sensitive_text);
 use Try::Tiny;
 use File::Temp qw(tempdir);
 use JSON qw(encode_json decode_json);
+use Mojo::IOLoop;
 use Mojo::Message::Response;
 use Test::More;
+
+# Retries of an outcome write that threw are scheduled on the event loop, so anything past the
+# first attempt needs the loop run to be observable.
+sub pump_until ( $cond, $limit = 5 ) {
+   return if $cond->();
+   my $deadline = Mojo::IOLoop->timer( $limit => sub { Mojo::IOLoop->stop } );
+   my $poll = Mojo::IOLoop->recurring( 0.005 => sub { Mojo::IOLoop->stop if $cond->() } );
+   Mojo::IOLoop->start;
+   Mojo::IOLoop->remove($_) for $deadline, $poll;
+   return;
+}
 
 my $tmp = tempdir(CLEANUP => 1);
 $CONFIG = { tmpPath => $tmp, reservationsPath => "$tmp/reservations.json", docker => { socket => 'unused' } };
@@ -145,7 +157,7 @@ subtest 'hook dispatch in-flight counter tracks a manual invocation and clears o
    is(Reservation->hook_dispatch_in_flight_count(), 0, 'cleared once settled');
 };
 
-subtest 'hook dispatch in-flight counter clears even when resolving the outcome throws' => sub {
+subtest 'hook dispatch in-flight counter is held until the outcome is actually written' => sub {
    seed({ name => 'foo', state => 'pending' });
    my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
    my ($opts, $settle);
@@ -153,13 +165,31 @@ subtest 'hook dispatch in-flight counter clears even when resolving the outcome 
    no warnings qw(redefine once);
    local *User::load = sub { bless {}, 'User' };
    local *Reservation::docker_exec = $capture;
-   local *DispatchReservation::hook_status_completed = sub { die "boom - resolution blew up\n"; };
+
+   my ( $failing, $writes ) = ( 1, 0 );
+   local *DispatchReservation::hook_status_completed = sub ( $self, @args ) {
+      $writes++;
+      die "boom - resolution blew up\n" if $failing;
+      return Reservation::hook_status_completed( $self, @args );
+   };
+
    my $settled = 0;
    $r->dispatch_hook_exec('foo', 'true', {}, sub {}, sub { $settled++; });
    is(Reservation->hook_dispatch_in_flight_count(), 1, 'in flight while awaiting settle');
+
    $settle->({ exitCode => 0, timedOut => 0 }, undef);
-   is(Reservation->hook_dispatch_in_flight_count(), 0, 'cleared even though resolving the outcome threw');
-   is($settled, 1, "the callback's own catch block still drives on_settled once");
+   is(Reservation->hook_dispatch_in_flight_count(), 1,
+      'still in flight while the outcome cannot be written - this count is what a drain reads, '
+      . 'and an unrecorded outcome is not a settled one');
+   is($settled, 0, 'no settlement is reported for an outcome that was never recorded');
+
+   pump_until(sub { $writes >= 3 }, 3);
+   cmp_ok($writes, '>=', 3, 'the write is retried rather than abandoned');
+
+   $failing = 0;
+   pump_until(sub { Reservation->hook_dispatch_in_flight_count() == 0 }, 3);
+   is(Reservation->hook_dispatch_in_flight_count(), 0, 'cleared once the outcome is finally written');
+   is($settled, 1, 'and on_settled is driven exactly once, at that point');
 };
 
 subtest 'drain_complete reflects both in-flight counters, not just one' => sub {

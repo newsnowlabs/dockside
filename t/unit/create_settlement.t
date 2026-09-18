@@ -188,6 +188,32 @@ subtest 'the start stage settles once, accepting an already-started container' =
    }
 };
 
+subtest 'a failed progress write cannot hide a pull error later in the same chunk' => sub {
+   my @paths;
+   no warnings 'redefine';
+   # Docker reports per-layer progress and a mid-stream failure for the same pull in one chunk.
+   # The progress line is what triggers the debounced write; the error line after it is the one
+   # that decides the pull's outcome, so the write failing must not stop it being read.
+   local *Reservation::update = sub (@) { die Exception->new( 'dbg' => 'fixture progress write failure' ) };
+   local *Reservation::call_socket_api = sub ($socket, $path, $args, $cb) {
+      push @paths, $path;
+      return $cb->( response( 404, '' ), undef ) if $path =~ m{/json$};   # image not present yet
+      $args->{'on_read'}->(
+           encode_json({ id => 'layer1', status => 'Downloading',
+                         progressDetail => { current => 1, total => 2 } } ) . "\n"
+         . encode_json({ error => 'manifest unknown' }) . "\n" );
+      $cb->( response( 200, '' ), undef );
+   };
+
+   my $r = reservation();
+   my $settled = settle( Reservation::_create_stage_pulling( $r, 'img:1' ) );
+
+   is( scalar @$settled, 1, 'settles exactly once' );
+   is( $settled->[0][0], 'reject', 'a pull Docker reported as failed is not a success' );
+   like( $settled->[0][1], qr/manifest unknown/,
+      'and it fails with the error Docker reported, not the progress write failure' );
+};
+
 subtest 'a transport failure at any stage is a single clean rejection' => sub {
    for my $stage ( 'pulling', 'creating', 'starting' ) {
       no warnings 'redefine';

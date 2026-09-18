@@ -8,6 +8,7 @@ use Try::Tiny;
 use Tie::File;
 use Storable qw(dclone);
 use URI::Escape;
+use Mojo::IOLoop;
 use Mojo::Promise;
 use Reservation::Mutate qw(update load_clean_map record_hook_history resolve_hook_status hook_claim_if_not_running);
 # Not imported: Reservation::Mutate's own add_router/remove_router/replace_router - Reservation.pm
@@ -1304,8 +1305,9 @@ sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 # %CREATE_IN_FLIGHT above, for the other non-detached exec connection a restart can sever
 # mid-flight. The obligation deliberately outlives the exec's own completion callback: what a
 # draining worker must wait for is the outcome reaching disk, not the connection closing, so it
-# is released by _hook_settle_outcome once the write has been applied, fenced, or established as
-# unwritable - see that function's own comment. Process-local like %CREATE_IN_FLIGHT:
+# is released by _hook_settle_outcome only once the write has been applied or fenced, and is
+# held across retries for as long as it is neither - see that function's own comment for why an
+# unwritten outcome must keep a drain incomplete. Process-local like %CREATE_IN_FLIGHT:
 # docker-event-daemon and bin/app-server each see only their own copy despite calling the same
 # function defined once here.
 my %HOOK_DISPATCH_IN_FLIGHT;
@@ -1392,10 +1394,18 @@ sub _create_stage_pulling ($self, $image) {
                   # large pull. At most once/second is a reasonable default, not a
                   # precisely-tuned one - revisit if a real client ends up wanting smoother
                   # progress than that; the in-memory copy above is always current regardless.
+                  #
+                  # The write is contained because it is the one recoverable failure in this
+                  # loop: losing a progress snapshot costs a client some smoothness, whereas
+                  # letting it abort the loop would skip the remainder of this chunk, which is
+                  # where Docker reports a mid-stream pull error for this same transfer. A pull
+                  # that actually failed would then be reported as having succeeded.
                   my $now = time();
                   if ( $now > $lastPersist ) {
                      $lastPersist = $now;
-                     $self->update( { 'createStatus' => $cs } );
+                     my $persisted = eval { $self->update( { 'createStatus' => $cs } ); 1 };
+                     flog( "Reservation::_create_stage_pulling: progress write failed for reservationId="
+                         . $self->id() . ": " . format_caught_error($@) ) unless $persisted;
                   }
                }
             },
@@ -1666,9 +1676,11 @@ sub _create_track ($self, $promise, $onSettled = sub {}, $lock = undef) {
 # in this file (image check -> optional pull -> create -> start). This is a deliberate, scoped
 # exception to this file otherwise having no Mojolicious-framework dependency at all (no $c, no
 # ->render, no routes) - chosen here specifically because this is the one multi-step chain in
-# the whole file; the alternative (nested callbacks) would be a four-deep pyramid. Not precedent
-# for reaching for Mojo::Promise/Mojo::IOLoop elsewhere in this file - every other async method
-# here stays on the plain ($self, ..., $cb) single-callback convention.
+# the whole file; the alternative (nested callbacks) would be a four-deep pyramid. It is not
+# precedent for giving another method a promise-shaped interface: every other async method here
+# presents the plain ($self, ..., $cb) single-callback convention to its callers, whatever it
+# uses internally (_hook_settle_outcome drives its retries off a Mojo::IOLoop timer and still
+# reports through a single callback).
 sub create ($self, $cb) {
    my $id = $self->id();
 
@@ -2054,6 +2066,15 @@ our $HOOK_HISTORY_MAX = 100;
 # window already handles every other way it can fail to get there).
 our $HOOK_CLAIM_STALE_SECONDS = 60;
 
+# Longest gap between retries of a hook outcome write that will not go through, and the attempt
+# at which the retrying starts being reported as a stuck drain rather than a hiccup - see
+# _hook_settle_outcome. The ceiling keeps an unwritable disk from being retried in a tight loop
+# while still recovering promptly once it can be written to again; the warning threshold sits
+# past the immediate retries, so an interrupted lock that succeeds on its second attempt never
+# raises one.
+our $HOOK_PERSIST_RETRY_CEILING = 30;
+our $HOOK_PERSIST_WARN_AFTER_ATTEMPTS = 5;
+
 # Internal helpers isolating hooks.status's read/write boilerplate.
 sub _hook_status_all ($self) {
    return ($self->data('hooks') // {})->{'status'} // {};
@@ -2230,37 +2251,39 @@ sub hook_status_completed ($self, $name, $fields, $expectedInvocationId = undef)
    return 1;
 }
 
-# How many times a finished invocation's outcome write is attempted before the entry is left to
-# the self-heal path described in _hook_settle_outcome below.
-sub _HOOK_PERSIST_ATTEMPTS () { return 3; }
+# Delay in seconds before retry number $n of an outcome write. The first two are immediate: the
+# failure most likely to be transient is a signal-interrupted lock acquisition, which succeeds as
+# soon as it is retried. Past that the wait doubles up to a ceiling, so a disk that stays
+# unwritable is retried indefinitely without spinning on it.
+sub _hook_persist_retry_delay ($n) {
+   return 0 if $n <= 2;
+   my $delay = 0.5 * ( 2 ** ( $n - 3 ) );
+   return $delay > $HOOK_PERSIST_RETRY_CEILING ? $HOOK_PERSIST_RETRY_CEILING : $delay;
+}
 
-# Persists a finished invocation's outcome, then releases its %HOOK_DISPATCH_IN_FLIGHT
-# obligation, then notifies the caller once - in that order. The obligation is what a draining
-# worker waits on, so it is held until the outcome is durable rather than dropped as soon as the
-# exec connection closes. Three distinct outcomes:
+# Persists a finished invocation's outcome, and only then releases its %HOOK_DISPATCH_IN_FLIGHT
+# obligation and notifies the caller, once. The obligation is what a draining worker waits on, so
+# it is held until the outcome is durable rather than dropped when the exec connection closes.
+# Two terminal outcomes release it:
 #
-#   applied      - the write landed. Release, then notify exactly once.
-#   fenced       - resolve_hook_status rejected the write because a newer invocation owns the
-#                  entry now, or the reservation is gone. Nothing of this invocation's own is
-#                  left to persist or report, so release and stay silent - hook_status_completed
-#                  already specifies that a rejected write suppresses the caller's continuation.
-#   write failed - an exception rather than a rejection: the outcome is still unpersisted, so the
-#                  obligation stays held and the write is retried with the same $fields and the
-#                  same $invocationId, never a fresh dispatch. Passing $invocationId is what
-#                  keeps a retry fenced - a newer invocation claiming $name in between makes the
-#                  retry a rejection instead of an overwrite.
+#   applied - the write landed. Release, then notify exactly once.
+#   fenced  - resolve_hook_status rejected the write because a newer invocation owns the entry
+#             now, or the reservation is gone. Nothing of this invocation's own is left to
+#             persist or report, so release and stay silent - hook_status_completed already
+#             specifies that a rejected write suppresses the caller's continuation.
 #
-# Retries are immediate and bounded. The failure worth absorbing is a signal-interrupted lock
-# acquisition - Util::cacheReadWrite takes a blocking flock, which a QUIT arriving mid-write can
-# fail with EINTR - and retrying at once is the correct response to that. A delay would instead
-# block this process's reactor over the failures no delay can fix, a full or failing disk being
-# the obvious one.
+# A thrown write is neither. The outcome is still unrecorded, so the obligation stays held and
+# the write is retried - same $fields, same $invocationId, never a fresh dispatch - until it
+# applies or is fenced. Passing $invocationId is what keeps a retry fenced: a newer invocation
+# claiming $name in between makes the retry a rejection rather than an overwrite.
 #
-# Once the attempts are spent the outcome cannot be recorded from here at all. The entry is left
-# 'running' with its execId, which Reservation::Mutate::_hook_entry_liveness resolves from the
-# exec's own real exit code the next time the entry is read - the same self-heal that covers a
-# process dying outright. The obligation is released at that point regardless, so a draining
-# worker is never held open by a disk that cannot be written to.
+# Retrying indefinitely is the point rather than a hazard. A drain must not report success for an
+# outcome that was never written, and an entry left 'running' for a later reader to repair is not
+# a recorded outcome - it is a repair that has not happened yet, and may never happen if nothing
+# reads the entry again. Bounding how long a worker may wait for its obligations is the shutdown
+# policy's concern, not this function's; this function's job is to not claim settlement it
+# cannot back. A worker that exits first loses the retry with the process, which is the same
+# position a process killed outright is already in.
 #
 # $outcome, when set, is the settlement state to report as-is; undef derives it from the
 # persisted entry. A dispatch that never ran reports 'aborted', which _hook_outcome_state would
@@ -2270,38 +2293,49 @@ sub _HOOK_PERSIST_ATTEMPTS () { return 3; }
 # that threw. _resolve_hook_entry is idempotent for exactly this case, at the cost of at most one
 # duplicate history row - preferred over discarding a real outcome.
 sub _hook_settle_outcome ($self, $name, $fields, $invocationId, $outcome, $err, $on_settled) {
-   my ( $applied, $writeErr );
+   my $attempt = 0;
+   my $persist;
 
-   for my $attempt ( 1 .. _HOOK_PERSIST_ATTEMPTS ) {
-      $writeErr = undef;
+   $persist = sub {
+      $attempt++;
+      my ( $applied, $failed );
       my $written = try {
          $applied = $self->hook_status_completed( $name, $fields, $invocationId );
          1;
       }
       catch {
-         $writeErr = $_;
-         flog( "Reservation::_hook_settle_outcome: '$name' could not persist its outcome (attempt $attempt of "
-             . _HOOK_PERSIST_ATTEMPTS . "): " . format_caught_error($_) );
+         $failed = $_;
          0;
       };
-      last if $written;
-   }
 
-   # After the durability decision and before the one notification: an exception thrown by
-   # $on_settled itself can then neither leak the count nor produce a second notification.
-   delete $HOOK_DISPATCH_IN_FLIGHT{$invocationId};
+      unless ($written) {
+         my $delay = _hook_persist_retry_delay($attempt);
+         flog( "Reservation::_hook_settle_outcome: '$name' could not persist its outcome for reservationId="
+             . $self->id() . " (attempt $attempt, retrying in ${delay}s, dispatch still counted in flight): "
+             . format_caught_error($failed) );
+         # Once, at the point this stops looking like a momentary interruption - the drain this
+         # is holding open is otherwise indistinguishable from a hook that is simply slow.
+         wlog( "Reservation::_hook_settle_outcome: '$name' outcome still unwritten for reservationId="
+             . $self->id() . " after $attempt attempts; this worker cannot finish draining until "
+             . "it is written: " . format_caught_error($failed) )
+            if $attempt == $HOOK_PERSIST_WARN_AFTER_ATTEMPTS;
+         Mojo::IOLoop->timer( $delay => sub (@) { $persist->() } );
+         return;
+      }
 
-   if ($writeErr) {
-      wlog( "Reservation::_hook_settle_outcome: '$name' outcome left to recovery for reservationId="
-          . $self->id() . " after " . _HOOK_PERSIST_ATTEMPTS . " failed writes: "
-          . format_caught_error($writeErr) );
-      $on_settled->( undef, $writeErr );
+      # Released here, after the durability decision and before the one notification, so an
+      # exception thrown by $on_settled itself can neither leak the count nor produce a second
+      # notification. $persist is cleared to break its own reference cycle.
+      delete $HOOK_DISPATCH_IN_FLIGHT{$invocationId};
+      $persist = undef;
+
+      return unless $applied;
+
+      $on_settled->( $outcome // _hook_outcome_state( $self->hook_status($name) ), $err );
       return;
-   }
+   };
 
-   return unless $applied;
-
-   $on_settled->( $outcome // _hook_outcome_state( $self->hook_status($name) ), $err );
+   $persist->();
    return;
 }
 
