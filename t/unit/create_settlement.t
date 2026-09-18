@@ -56,7 +56,18 @@ sub settle ($promise) {
    return \@settled;
 }
 
-subtest 'a create response that decodes but carries no usable Id is rejected, not resolved' => sub {
+# A stage rejects with a plain string when it has established that the mutation did not happen,
+# and with an Exception carrying 'unresolved' when it could not establish that - so a test reading
+# the reason has to handle both, and asserting which one it got is the point of several below.
+sub reason ($err) {
+   return ref($err) eq 'Exception' ? $err->msg : "$err";
+}
+
+sub unresolved ($err) {
+   return ( ref($err) eq 'Exception' && $err->unresolved ) ? 1 : 0;
+}
+
+subtest 'a create response that decodes but carries no usable Id is unresolved, not resolved' => sub {
    for my $body ( '{not valid json', encode_json({}), encode_json({ Id => '' }) ) {
       my @paths;
       no warnings 'redefine';
@@ -70,7 +81,10 @@ subtest 'a create response that decodes but carries no usable Id is rejected, no
 
       is( scalar @$settled, 1, "settles exactly once for body '$body'" );
       is( $settled->[0][0], 'reject', 'an unusable create response is a rejection' );
-      like( $settled->[0][1], qr/malformed create response/, 'rejection names the real problem' );
+      like( reason( $settled->[0][1] ), qr/no usable id/, 'rejection names the real problem' );
+      # Docker accepted the create: a body this side could not read is not evidence that no
+      # container exists, so this must stay recoverable rather than expiring the reservation.
+      ok( unresolved( $settled->[0][1] ), 'and reports the outcome as unresolved' );
       is( scalar @paths, 1, 'nothing is issued after the unusable response' );
       ok( !defined( read_record()->{'containerId'} ), 'no containerId is persisted' );
    }
@@ -103,36 +117,46 @@ subtest 'a recovery name lookup that will not decode is rejected, not left unset
 
    is( scalar @$settled, 1, 'settles exactly once' );
    is( $settled->[0][0], 'reject', 'an undecodable lookup is a rejection' );
-   like( $settled->[0][1], qr/malformed container list/, 'rejection names the real problem' );
+   like( reason( $settled->[0][1] ), qr/malformed container list/, 'rejection names the real problem' );
+   ok( unresolved( $settled->[0][1] ), 'an unreadable lookup establishes nothing, so it is unresolved' );
    is( scalar @paths, 1, 'no create is issued when ownership of the name is unknown' );
 };
 
-subtest 'recovery adoption requires both this reservation label and a usable id' => sub {
+subtest 'recovery adopts only on this reservation own label and a usable id' => sub {
+   # A valid record that names another owner - or no owner - is evidence of a genuine collision,
+   # so it fails definitively. A record this side cannot read is evidence of nothing, so it stays
+   # unresolved: expiring a reservation on the strength of unreadable data would delete a record
+   # whose container may be its own.
    my @cases = (
       {
-         name    => 'an entry shaped unlike a container list entry',
-         entry   => 'not-a-hash',
-         pattern => qr/does not own/,
+         name       => 'an entry shaped unlike a container list entry',
+         entry      => 'not-a-hash',
+         pattern    => qr/is not a record/,
+         unresolved => 1,
       },
       {
-         name    => 'labels belonging to another reservation',
-         entry   => { Id => 'b' x 64, Labels => { 'dev.dockside.reservation.id' => 'other' } },
-         pattern => qr/does not own/,
+         name       => 'labels belonging to another reservation',
+         entry      => { Id => 'b' x 64, Labels => { 'dev.dockside.reservation.id' => 'other' } },
+         pattern    => qr/does not own/,
+         unresolved => 0,
       },
       {
-         name    => 'no labels at all',
-         entry   => { Id => 'b' x 64 },
-         pattern => qr/does not own/,
+         name       => 'no labels at all',
+         entry      => { Id => 'b' x 64 },
+         pattern    => qr/does not own/,
+         unresolved => 0,
       },
       {
-         name    => 'a Labels field that is not a hash',
-         entry   => { Id => 'b' x 64, Labels => 'broken' },
-         pattern => qr/does not own/,
+         name       => 'a Labels field that is not a hash',
+         entry      => { Id => 'b' x 64, Labels => 'broken' },
+         pattern    => qr/labels are not a set/,
+         unresolved => 1,
       },
       {
-         name    => 'this reservation label but no id',
-         entry   => { Labels => { 'dev.dockside.reservation.id' => 'rid' } },
-         pattern => qr/carries this reservation's own label but no id/,
+         name       => 'this reservation label but no id',
+         entry      => { Labels => { 'dev.dockside.reservation.id' => 'rid' } },
+         pattern    => qr/own label but no usable id/,
+         unresolved => 1,
       },
    );
 
@@ -148,8 +172,10 @@ subtest 'recovery adoption requires both this reservation label and a usable id'
       my $settled = settle( Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 1 ) );
 
       is( scalar @$settled, 1, "settles exactly once: $case->{'name'}" );
-      is( $settled->[0][0], 'reject', "fails closed: $case->{'name'}" );
-      like( $settled->[0][1], $case->{'pattern'}, "rejection is specific: $case->{'name'}" );
+      is( $settled->[0][0], 'reject', "does not adopt: $case->{'name'}" );
+      like( reason( $settled->[0][1] ), $case->{'pattern'}, "rejection is specific: $case->{'name'}" );
+      is( unresolved( $settled->[0][1] ), $case->{'unresolved'},
+         "classified on the evidence available: $case->{'name'}" );
       is( scalar @paths, 1, "no create is attempted against a taken name: $case->{'name'}" );
    }
 };
@@ -229,7 +255,11 @@ subtest 'a transport failure at any stage is a single clean rejection' => sub {
 
       is( scalar @$settled, 1, "$stage settles exactly once on a transport failure" );
       is( $settled->[0][0], 'reject', "$stage rejects rather than hanging" );
-      like( $settled->[0][1], qr/connection refused/, "$stage reports the transport error" );
+      like( reason( $settled->[0][1] ), qr/connection refused/, "$stage reports the transport error" );
+      # A pull that never completed created nothing, so it is a definitive failure. A create or
+      # start whose transport died may well have been carried out by Docker regardless.
+      is( unresolved( $settled->[0][1] ), ( $stage eq 'pulling' ? 0 : 1 ),
+         "$stage classifies the transport failure by whether it could have mutated anything" );
    }
 };
 

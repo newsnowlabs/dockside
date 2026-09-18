@@ -183,19 +183,56 @@ needed its own, separately-verified mechanism to reach the same graceful path. `
 flag whose signal `down-signal` actually governs, unlike `-t`/`-q`, which are hard-coded to their
 one named signal regardless of any per-service file.
 
+### Known and unknown outcomes
+
+A create chain issues mutations it may not learn the result of. The ownership lock is this
+process's state and dies with it; a request already accepted by Docker is not this process's state
+and may be carried out regardless. So the exit of the process that issued a request is not
+evidence that the request had no effect, and every outcome falls on two axes, not one:
+
+| Outcome | Meaning | Recorded as | Reconciled again? |
+|---|---|---|---|
+| Success | The mutation took effect | the stage advances, ultimately `done` | no |
+| Resolved failure | Docker refused the request, so nothing took effect | `stage: failed`, `failed: 1`, an `expiryTime` | no |
+| Unresolved | It may or may not have taken effect | the stage is kept, `failed: 0`, a `createStatus.unresolved` diagnostic, **no** `expiryTime` | yes |
+
+**Anything not positively identified is unresolved.** The two directions are not symmetric:
+treating an unknown outcome as unresolved costs one later lookup, while treating it as a failure
+records an expiry that deletes the reservation - and with it the only record of a container that
+may be running. Concretely, unresolved covers a lost or timed-out response, a `2xx` whose body
+cannot be read (Docker accepted the mutation; only the id was lost), a `5xx`, any status not
+listed below, a name lookup that establishes nothing, and a Docker call that succeeded whose
+result could not be written to disk.
+
+An unresolved reservation keeps a non-terminal stage, so `reconcile_one` still resumes it, and
+carries `attempts`, `since` and `retryAfter` in its diagnostic. `retryAfter` paces the retries:
+the lock excludes a second simultaneous driver but says nothing about how soon the next may
+start, so without it a sibling worker's sweep would retry the instant the previous holder
+released the lock. Such a record is never expired or deleted by `load_clean_map`, including at
+`starting`, where a container id is already recorded and a Docker snapshot that has not caught up
+would otherwise start a deletion clock against a live container. Reconciliation is what ends the
+state - by completing the chain, or by recording a definitive failure, after which the ordinary
+cleanup rules apply.
+
 ### Ground truth per stage
 
 Each non-terminal stage has a real Docker-side signal to reconcile against - no stage needs an
-ongoing "is this still happening" poll the way a live hook `execId` does; every reconciliation
-below is a single synchronous check followed by a one-shot action. The `creating` row differs
-between a fresh create and a recovery re-entry, per mechanism 3 above.
+ongoing "is this still happening" poll the way a live hook `execId` does. The `creating` row
+differs between a fresh create and a recovery re-entry, per mechanism 3 above.
 
 | `createStatus.stage` freshly read while holding the reservation lock | Reconciliation check | Safe action |
 |---|---|---|
-| `pulling` | `GET /images/{image}/json` | Present → proceed to `creating`. Absent → re-`POST /images/create` (killing the client mid-pull aborts it server-side too - Docker does not keep pulling after the initiating connection drops - so no "pull already in progress" check is ever needed) |
-| `creating` (fresh create) | none - `POST /containers/create` is the check | `409` → `failed`, user-facing conflict reason. Otherwise proceed to `starting` with the returned id |
-| `creating` (recovery re-entry) | `GET /containers/json?all=1&filters={"name":["^/<name>$"]}` | Present **and** `Labels."dev.dockside.reservation.id"` equals this reservation's id → proceed to `starting` with its id. Present with any other or no label → `failed`, user-facing conflict reason. Absent → run the create call; a `409` here is likewise `failed` |
-| `starting` | none needed | `POST /containers/{id}/start`; `204` or `304` both proceed to `done` |
+| `pulling` | `GET /images/{image}/json` | Present → proceed to `creating`. Absent → re-`POST /images/create` (killing the client mid-pull aborts it server-side too - Docker does not keep pulling after the initiating connection drops - so no "pull already in progress" check is ever needed). A pull that fails created nothing, so its failure is definitive |
+| `creating` (fresh create) | `POST /containers/create`, with `409` confirmed by the lookup below | `2xx` with a usable id → proceed to `starting`. `400`/`404`/`422` → `failed`, user-facing reason. `409` → confirm ownership, never infer it |
+| `creating` (recovery re-entry) | `GET /containers/json?all=1&filters={"name":["^/<name>$"]}` | Present **and** `Labels."dev.dockside.reservation.id"` equals this reservation's id → proceed to `starting` with its id. A valid record with any other or no label → `failed`, user-facing conflict reason. Absent → run the create call. Only a validated `200` list establishes absence: a failed, unreadable, non-list or multiply-matching lookup, or a record whose shape cannot be read, is unresolved and must not authorize a create |
+| `creating`, `409` from the create call | the same name lookup, polled on a bounded budget | Owned by this reservation → adopt its id and proceed to `starting`. A valid record owned by anything else → `failed`. Nothing holding the name → unresolved: Docker takes a name early in create and releases it if that create fails, so an empty lookup here is a transient state and not a verdict |
+| `starting` | none needed | `POST /containers/{id}/start`; `204` or `304` both proceed to `done` (`304` is Docker's already-running answer, which re-entry depends on). `404` → `failed`, the container is confirmed gone. A `409` carries no name-collision meaning here and never enters the create path's adoption |
+
+Resuming `starting` needs only the container id already on disk, so it never compiles a create
+body. That is not an optimisation: `cmdline_json()` reads the reservation's profile, and
+compiling one here would let an unrelated profile change terminate a reservation whose container
+exists and only needs starting. A `creating` re-entry whose body cannot be compiled likewise
+establishes ownership first, since adopting a container needs no body either.
 
 ## Lock-file lifecycle and constraints
 

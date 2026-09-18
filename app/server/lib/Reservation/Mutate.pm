@@ -120,6 +120,26 @@ sub load_clean_map ($class, @containerIds) {
          # Loop through reservation db entries
          while( my ( $id, $reservation ) = each %$by_id ) {
 
+            # A reservation whose create chain is still recoverable - a non-terminal stage that
+            # has not been recorded as failed - is neither expired nor deleted here. Its container
+            # may exist: a create that could not establish its own outcome deliberately keeps this
+            # stage so that a later reconciliation pass can find out, and expiring the record
+            # would delete the only thing that remembers to ask. This matters most at 'starting',
+            # where a containerId is already recorded, so the branch below would otherwise expire
+            # the record on the strength of a Docker snapshot that simply has not caught up.
+            # Reconciliation is what ends this state: it either completes the chain, or records a
+            # definitive failure, after which the ordinary rules below apply.
+            my $createStatus = $reservation->{'createStatus'};
+            if ( ref($createStatus) eq 'HASH' && !$createStatus->{'failed'}
+                 && ( $createStatus->{'stage'} // '' ) =~ /^(?:pulling|creating|starting)$/ ) {
+               # An expiry recorded before the record reached this state would otherwise outlive it.
+               if ( $reservation->{'expiryTime'} ) {
+                  delete $reservation->{'expiryTime'};
+                  $Updates++;
+               }
+               next;
+            }
+
             # If the reservation already has a containerId:
             if( my $containerId = $reservation->{'containerId'} ) {
 

@@ -53,8 +53,11 @@ subtest 'a fresh launch receives the count committed by recovery' => sub {
 };
 
 subtest 'expiry cleanup cannot delete a live create or replace its lock inode' => sub {
+   # Terminally failed, so the ownership lock below is the only thing standing between this
+   # record and deletion - a record still at a recoverable stage is retained for its own
+   # reasons (the next subtest), which would make this one pass without testing the lock.
    write_record({ id => 'review', name => 'review', containerId => 'gone',
-      createStatus => { stage => 'starting' },
+      createStatus => { stage => 'failed', failed => 1, error => 'create refused' },
       expiryTime => Util::YYYYMMDDHHMMSS(time - 90),
    });
    my $path = Reservation::_create_lock_path('review');
@@ -81,6 +84,30 @@ subtest 'expiry cleanup cannot delete a live create or replace its lock inode' =
    my $next = Util::tryLockFile($path);
    ok($next, 'deletion guard is released after database write');
    close $next;
+};
+
+subtest 'expiry cleanup retains a reservation whose create is still recoverable' => sub {
+   # No lock is held here: what protects this record is its own stage. A create that could not
+   # establish whether its container exists keeps a non-terminal stage precisely so a later
+   # reconciliation pass can find out, and deleting the record would discard the only thing that
+   # remembers to ask - leaving the container running with nothing referring to it.
+   for my $stage ( 'pulling', 'creating', 'starting' ) {
+      write_record({ id => 'review', name => 'review', containerId => 'gone',
+         createStatus => { stage => $stage, failed => 0, layers => {}, unresolved => {
+            reason => 'create reported no usable outcome', attempts => 3,
+         } },
+         expiryTime => Util::YYYYMMDDHHMMSS(time - 90),
+      });
+
+      Reservation::Mutate->load_clean_map();
+
+      my $record = read_record();
+      ok( $record, "a reservation at '$stage' survives expiry cleanup" );
+      ok( !$record->{'expiryTime'},
+         "and its stale expiry is cleared, so nothing counts down against it at '$stage'" );
+      is( $record->{'createStatus'}{'unresolved'}{'attempts'}, 3,
+         "while its own record of what is unresolved is left intact at '$stage'" );
+   }
 };
 
 done_testing;
