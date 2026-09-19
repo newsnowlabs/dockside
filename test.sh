@@ -5,6 +5,7 @@
 # Usage:
 #   bash test.sh                  # run all checks
 #   bash test.sh --only perl      # run one category
+#   bash test.sh --only unit
 #   bash test.sh --only vue
 #   bash test.sh --only vuetest
 #   bash test.sh --only eslint
@@ -29,6 +30,9 @@ fi
 
 # ── State ────────────────────────────────────────────────────────────────────
 declare -A RESULTS=()
+# Every check that ran or was skipped, in the order it was reached. The summary walks this rather
+# than a fixed list, so a check cannot fail without also failing the run.
+CHECKS=()
 ONLY="${2:-}"   # set by --only flag below
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -44,6 +48,7 @@ run_check() {
   local name="$1"; shift
   [[ -n "$ONLY" && "$ONLY" != "$name" ]] && return 0
 
+  CHECKS+=("$name")
   echo ""
   echo -e "${BOLD}━━━ $name ━━━${RESET}"
   if "$@"; then
@@ -58,6 +63,7 @@ run_check() {
 skip_check() {
   local name="$1"; local reason="$2"
   [[ -n "$ONLY" && "$ONLY" != "$name" ]] && return 0
+  CHECKS+=("$name")
   RESULTS["$name"]="SKIP"
   echo ""
   echo -e "${YELLOW}⚠ $name skipped: $reason${RESET}"
@@ -131,6 +137,26 @@ check_perl() {
   done
 
   return $failed
+}
+
+# ── 1b. Perl unit tests ──────────────────────────────────────────────────────
+# Every t/unit/*.t stubs its own external transport and uses disposable temporary storage, so the
+# suite needs no running service. Each test adds app/server/lib and t/stubs to @INC itself; the
+# -I flags here keep that true for a test invoked through a different working directory. prove
+# exits nonzero if any test file fails, which is what propagates a failure to the runner.
+check_unit() {
+  if ! command -v prove &>/dev/null; then
+    echo "prove not found (part of the perl package)"
+    return 1
+  fi
+  shopt -s nullglob
+  local tests=(t/unit/*.t)
+  shopt -u nullglob
+  if [[ ${#tests[@]} -eq 0 ]]; then
+    echo "  (no unit tests found under t/unit)"
+    return 0
+  fi
+  prove -I app/server/lib -I t/stubs "${tests[@]}" 2>&1
 }
 
 # ── 2. Vue / JS production build ────────────────────────────────────────────
@@ -405,6 +431,7 @@ echo -e "${BOLD}Dockside test suite${RESET}"
 echo "Repo: $REPO_ROOT"
 
 run_check "perl"       check_perl
+run_check "unit"       check_unit
 run_check "vue"        check_vue
 run_check "vuetest"    check_vuetest
 run_check "eslint"     check_eslint
@@ -423,8 +450,12 @@ echo ""
 echo -e "${BOLD}━━━ Summary ━━━${RESET}"
 
 overall=0
-for name in perl vue vuetest eslint stylelint shellcheck json perltidy; do
-  result="${RESULTS[$name]:-SKIP}"
+if [[ ${#CHECKS[@]} -eq 0 ]]; then
+  echo -e "  ${RED}✗ no such check: ${ONLY}${RESET}"
+  overall=1
+fi
+for name in "${CHECKS[@]}"; do
+  result="${RESULTS[$name]}"
   case "$result" in
     PASS) echo -e "  ${GREEN}✓ PASS${RESET}  $name" ;;
     FAIL) echo -e "  ${RED}✗ FAIL${RESET}  $name"; overall=1 ;;
