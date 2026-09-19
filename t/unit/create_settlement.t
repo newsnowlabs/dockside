@@ -155,7 +155,7 @@ subtest 'recovery adopts only on this reservation own label and a usable id' => 
       {
          name       => 'this reservation label but no id',
          entry      => { Labels => { 'dev.dockside.reservation.id' => 'rid' } },
-         pattern    => qr/own label but no usable id/,
+         pattern    => qr/no usable id/,
          unresolved => 1,
       },
    );

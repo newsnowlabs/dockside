@@ -221,7 +221,28 @@ subtest 'a 409 answered by another reservation container is a definitive failure
    }
 };
 
-subtest 'a create Docker refuses outright is a definitive failure' => sub {
+subtest 'a 409 answered by an unreadable container record stays unresolved' => sub {
+   # A record with no usable id is not a container Docker actually reported - it confirms nothing,
+   # least of all foreign ownership. Reading its absent label as proof of a collision would fail
+   # and expire a reservation on the strength of a record that never established anything.
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'lookup' => [ holds(undef), holds( {} ) ],
+      'create' => [ responds( 409, '' ) ],
+   );
+   seed('creating');
+
+   my $run = reconcile();
+   ok( unresolved( $run->{'settled'}[0]{'err'} ), 'an unreadable record is not a confirmed collision' );
+   is_recoverable( 'creating', 'unreadable container record' );
+};
+
+subtest 'a create Docker refuses outright during recovery stays unresolved until confirmed' => sub {
+   # The retry is not the reservation's first attempt: an earlier one, whose outcome this process
+   # never learned, may have been issued by a worker that has since died and gone on to create a
+   # container regardless. This retry's own refusal - whatever Docker's reason - says nothing
+   # about that earlier request, so it must not terminalize the reservation until ownership is
+   # actually confirmed, exactly as an unresolved 409 does not.
    for my $code ( 400, 404 ) {
       my @calls;
       local *Reservation::call_socket_api = docker( \@calls,
@@ -231,12 +252,43 @@ subtest 'a create Docker refuses outright is a definitive failure' => sub {
       seed('creating');
 
       my $run = reconcile();
-      is( unresolved( $run->{'settled'}[0]{'err'} ), 0,
-         "HTTP $code: Docker refused the request, so nothing was created" );
-      is( status()->{'stage'}, 'failed', "HTTP $code: recorded as failed" );
-      ok( read_record()->{'expiryTime'}, "HTTP $code: and expired" );
-      like( status()->{'error'}, qr/no such image/, "HTTP $code: keeping Docker's own reason" );
+      ok( unresolved( $run->{'settled'}[0]{'err'} ),
+         "HTTP $code: Docker's own refusal is not trusted over an unresolved predecessor" );
+      like( reason( $run->{'settled'}[0]{'err'} ), qr/no such image/,
+         "HTTP $code: keeping Docker's own reason" );
+      is_recoverable( 'creating', "HTTP $code" );
+      is( scalar( grep { m{^/containers/create} } @calls ), 1, "HTTP $code: exactly one create is POSTed" );
+      is( scalar( grep { m{^/containers/json} } @calls ), 4,
+         "HTTP $code: one lookup before the create, then the bounded ownership confirmation" );
    }
+};
+
+subtest 'a create Docker refuses outright on the first attempt is a definitive failure' => sub {
+   # A fresh, non-recovery create has no predecessor request to account for: this attempt is the
+   # only one that could have created anything, so its own refusal is the whole story.
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'create' => [ responds( 400, encode_json({ message => 'no such image: img:1' }) ) ],
+   );
+   seed('creating');
+   my $reservation = Reservation::_reservation_reloaded('rid');
+
+   my @settled;
+   $reservation->_create_track(
+      $reservation->_create_run_from_creating( { Image => 'img:1' }, 0 ),
+      sub ( $ok = undef, $err = undef ) {
+         push @settled, { 'ok' => $ok, 'err' => $err };
+         Mojo::IOLoop->stop;
+      } );
+   my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
+   Mojo::IOLoop->start;
+   Mojo::IOLoop->remove($timeout);
+
+   is( scalar @settled, 1, 'settles exactly once' );
+   is( unresolved( $settled[0]{'err'} ), 0, 'a first attempt is failed without any ownership check' );
+   is( status()->{'stage'}, 'failed', 'recorded as failed' );
+   ok( read_record()->{'expiryTime'}, 'and expired' );
+   is( scalar( grep { m{^/containers/json} } @calls ), 0, 'no lookup is issued at all' );
 };
 
 subtest 'a create success carrying no usable id keeps the reservation recoverable' => sub {
@@ -252,6 +304,26 @@ subtest 'a create success carrying no usable id keeps the reservation recoverabl
       'Docker accepted the create, so an unreadable body is not proof nothing exists' );
    is_recoverable( 'creating', 'unusable create response' );
    ok( !defined( read_record()->{'containerId'} ), 'unusable create response: no id is invented' );
+};
+
+subtest 'a create success carrying a malformed id keeps the reservation recoverable' => sub {
+   # The body decodes cleanly this time, unlike the previous case, but 'garbage' is not a shape
+   # Docker's own container ids ever take. Trusting it would persist an id nothing can start or
+   # look up, and drive the start stage against a container that does not exist under it.
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'lookup' => [ holds(undef) ],
+      'create' => [ responds( 201, encode_json({ Id => 'garbage' }) ) ],
+   );
+   seed('creating');
+
+   my $run = reconcile();
+   ok( unresolved( $run->{'settled'}[0]{'err'} ),
+      'an id that is not Docker\'s own hex form is not proof nothing exists' );
+   is_recoverable( 'creating', 'malformed create response id' );
+   ok( !defined( read_record()->{'containerId'} ), 'malformed create response id: no id is invented' );
+   is( scalar( grep { m{/start$} } @calls ), 0,
+      'malformed create response id: no start is issued against an unusable id' );
 };
 
 subtest 'a lookup that establishes nothing never authorizes a create' => sub {
@@ -395,6 +467,29 @@ subtest 'a container created but not recorded is recovered, not failed' => sub {
       'unrecorded container id: no start is issued against a transition nothing recorded' );
 };
 
+subtest 'a write failure recording done does not overwrite what was actually persisted' => sub {
+   # Docker has already started the container - only the write recording that this reservation
+   # reached 'done' fails. The unresolved outcome recorded next must describe the stage still on
+   # disk ('starting'), not the stage this attempt only tried and failed to reach: a record left
+   # at 'done' with an unresolved diagnostic is not a stage anything ever resumes.
+   my @calls;
+   my $realUpdate = \&Reservation::update;
+   local *Reservation::update = sub ( $self, $fields, @rest ) {
+      die Exception->new( 'dbg' => 'fixture write failure' )
+         if ref( $fields->{'createStatus'} ) eq 'HASH'
+         && ( $fields->{'createStatus'}{'stage'} // '' ) eq 'done';
+      return $realUpdate->( $self, $fields, @rest );
+   };
+   local *Reservation::call_socket_api = docker( \@calls, 'start' => [ responds(204) ] );
+   seed( 'starting', containerId => 'c' x 12 );
+
+   my $run = reconcile();
+   ok( unresolved( $run->{'settled'}[0]{'err'} ), 'the caller is told completion could not be recorded' );
+   is( status()->{'stage'}, 'starting', 'the record still shows the last stage that actually reached disk' );
+   ok( ref( status()->{'unresolved'} ) eq 'HASH', 'and records why' );
+   ok( !read_record()->{'expiryTime'}, 'so nothing counts down to deletion' );
+};
+
 subtest 'a settlement consumer that throws cannot rewrite the outcome or run twice' => sub {
    my @calls;
    local *Reservation::call_socket_api = docker( \@calls,
@@ -453,7 +548,10 @@ subtest 'a resumed chain does not need a create body it cannot use' => sub {
    is( scalar( grep { m{^/containers/create} } @adopt ), 0, 'without attempting a create' );
 };
 
-subtest 'a reservation that owns no container is failed when its body cannot be built' => sub {
+subtest 'a reservation with no container to adopt and a broken body stays unresolved until confirmed' => sub {
+   # A body that cannot be compiled says nothing about whether a container was already created,
+   # and neither does a single absent snapshot: the create that would have made one may have been
+   # issued by a worker that has since died, whose request Docker went on processing regardless.
    local *Reservation::cmdline_json = sub (@) { die Exception->new( 'msg' => 'profile is unusable' ); };
 
    my @calls;
@@ -461,9 +559,26 @@ subtest 'a reservation that owns no container is failed when its body cannot be 
    seed('creating');
 
    my $run = reconcile();
-   is( unresolved( $run->{'settled'}[0]{'err'} ), 0,
-      'nothing was created and nothing can be, so this is definitive' );
+   ok( unresolved( $run->{'settled'}[0]{'err'} ),
+      'an absent snapshot does not rule out a predecessor still completing' );
    like( reason( $run->{'settled'}[0]{'err'} ), qr/profile is unusable/, 'reporting the real reason' );
+   is_recoverable( 'creating', 'broken body, nothing found yet' );
+   is( scalar( grep { m{^/containers/create} } @calls ), 0, 'no create is attempted' );
+   is( scalar( grep { m{^/containers/json} } @calls ), 3, 'the bounded ownership confirmation runs' );
+};
+
+subtest 'a reservation confirmed to own no container is failed when its body cannot be built' => sub {
+   local *Reservation::cmdline_json = sub (@) { die Exception->new( 'msg' => 'profile is unusable' ); };
+
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'lookup' => [ holds(undef), holds( owned_by('other') ) ] );
+   seed('creating');
+
+   my $run = reconcile();
+   is( unresolved( $run->{'settled'}[0]{'err'} ), 0,
+      'a confirmed foreign container settles the question definitively' );
+   like( reason( $run->{'settled'}[0]{'err'} ), qr/owns no container/, 'reporting the real reason' );
    is( status()->{'stage'}, 'failed', 'recorded as failed' );
    ok( read_record()->{'expiryTime'}, 'and expired' );
 };

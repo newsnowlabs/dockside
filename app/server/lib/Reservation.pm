@@ -1274,15 +1274,24 @@ sub getGitDevContainer ($self, $cb) {
    return;
 }
 
-# Updates createStatus both in-memory (so this same process's own later reads - including
-# cloneWithConstraints/sanitise, and hence anything that returns $self to a client after this
-# point - see it immediately) and on disk (so a later poller reading a *fresh* Reservation->load()
-# sees it too) - the same "set in-memory, then persist" shape containerId's own accessor +
-# update() call already uses. $extra merges in any other top-level fields that need to change
+# Persists createStatus, then updates the in-memory copy so this same process's own later reads
+# (including cloneWithConstraints/sanitise, and hence anything that returns $self to a client
+# after this point) see it too. $extra merges in any other top-level fields that need to change
 # atomically with it (currently only 'expiryTime', on the failure paths below).
+#
+# Persisting first, and only then mutating $self, is load-bearing: update() writes $value
+# unconditionally from its argument, never from $self's own copy, so a failed write leaves $self
+# holding the same createStatus it held before the call. A caller that goes on to record a
+# different outcome (e.g. _create_status_enter's own failure path, which reports the entry
+# unresolved) reads $self->{'createStatus'} to preserve what that outcome inherits - layers,
+# stage, attempts - and must see the last state that actually reached disk, not one this call
+# failed to persist. Mutating $self first would let that outcome carry forward a stage nothing
+# ever recorded, and a later definitive failure would then persist final diagnostics against it
+# while leaving the record parked at that unrecorded, non-terminal stage - one reconciliation
+# never revisits, because it isn't 'failed' and isn't the stage anything is actually resuming.
 sub _create_status_set ($self, $value, $extra = {}) {
-   $self->{'createStatus'} = $value;
    $self->update( { 'createStatus' => $value, %$extra } );
+   $self->{'createStatus'} = $value;
    return $self;
 }
 
@@ -1371,7 +1380,7 @@ sub _create_response_error ($result) {
 # the reservation does next:
 #   success    - it took effect
 #   failed     - Docker understood the request and refused it, so nothing took effect
-#   conflict   - the name is already taken; by what is a separate question (_create_inspect_conflict)
+#   conflict   - the name is already taken; by what is a separate question (_create_confirm_ownership)
 #   unresolved - it may or may not have taken effect
 #
 # Anything not positively identified is unresolved, because the two directions are not symmetric:
@@ -1495,6 +1504,14 @@ sub _create_lookup_by_name ($self, $timeout, $cb) {
 sub _create_entry_ownership ($self, $entry) {
    return ( 'unknown', 'container list entry is not a record' ) unless ref($entry) eq 'HASH';
 
+   # Checked before ownership, and regardless of which way ownership will go: a record with no
+   # usable id is not confirmed evidence of anything, and reading its absent/mismatched label as
+   # proof of foreign ownership would record a definitive failure - and an expiry - against a
+   # container that may be this reservation's own, on the strength of a malformed entry.
+   my $id = $entry->{'Id'};
+   return ( 'unknown', 'container list entry has no usable id' )
+      unless defined($id) && !ref($id) && $id =~ /^[0-9a-f]{12,64}$/;
+
    my $labels = $entry->{'Labels'};
    return ( 'unknown', "container's labels are not a set" )
       if defined($labels) && ref($labels) ne 'HASH';
@@ -1504,27 +1521,33 @@ sub _create_entry_ownership ($self, $entry) {
    return ( 'unrelated', 'a container this reservation does not own already holds the name' )
       unless defined($owner) && $owner eq $self->id();
 
-   my $id = $entry->{'Id'};
-   return ( 'unknown', "container carries this reservation's own label but no usable id" )
-      unless defined($id) && !ref($id) && $id =~ /^[0-9a-f]{12,64}$/;
-
    return ( 'ours', $id );
 }
 
-# Establishes what a 409 from POST /containers/create actually means, reporting the same three
-# ownership states as _create_entry_ownership above.
+# Establishes what currently holds this reservation's name, reporting the same three ownership
+# states as _create_entry_ownership above (a bare 'no container holds the name' outcome is
+# reported as 'unknown', not a fourth state - see below). Called wherever a single, one-shot
+# lookup would not be trustworthy evidence that nothing needs adopting:
 #
-# Docker reserves a container's name early in create and releases it again if that create then
-# fails, so an empty lookup straight after a 409 is a transient state rather than a verdict: the
-# request that took the name may still be completing, or may have just rolled back. This polls for
-# it, then gives up unresolved rather than concluding anything - nothing observed here proves the
-# collision is permanent, and the reservation's own earlier create, issued by a worker that has
-# since died, collides exactly as an unrelated container does.
+# - straight after a 409 from POST /containers/create, where Docker reserves a container's name
+#   early and releases it again if that create then fails, so an empty lookup immediately after is
+#   a transient state rather than a verdict;
+# - before a recovery retry concludes that a definitive-looking rejection (400/404/422) means this
+#   reservation owns nothing, or that a create it cannot even attempt (a broken create body) has
+#   nothing to adopt.
+#
+# In every one of these cases, the reservation's own earlier create - issued by a worker that has
+# since died - may still be completing at Docker, independently of whatever this process just
+# observed: the ownership lock is process state, and the request it no longer bounds is not. This
+# polls for the name to resolve, then gives up unresolved rather than concluding anything - nothing
+# observed here proves a collision is permanent, or that no container will ever appear, and
+# reporting 'unknown' for a call site that treats it as unresolved is what keeps a genuinely
+# still-in-flight predecessor's container from being orphaned by an expiry.
 #
 # The whole inspection is bounded, and each lookup's own request timeout is capped to what remains
 # of that budget, because the reservation's ownership lock is held throughout: a stalled GET would
 # otherwise hold it, and a draining worker waiting on it, for as long as the socket stayed open.
-sub _create_inspect_conflict ($self, $cb) {
+sub _create_confirm_ownership ($self, $cb) {
    my $deadline = steady_time() + $CREATE_CONFLICT_POLL_BUDGET_SECONDS;
    my @delays = @{$CREATE_CONFLICT_POLL_DELAYS};
    my $reason = 'no container holds the name';
@@ -1679,7 +1702,25 @@ sub _create_stage_creating ($self, $body, $isRecovery = 0) {
             my ( $state, $detail ) = _create_classify( 'create', $result, $err );
 
             if ( $state eq 'failed' ) {
-               $reject->( "create refused for name '" . $self->name . "': $detail" );
+               my $refusal = "create refused for name '" . $self->name . "': $detail";
+
+               # A recovery retry issuing this create is not the reservation's first attempt: an
+               # earlier one, whose outcome this process never learned, may have been issued by a
+               # worker that has since died and gone on to create a container regardless - Docker
+               # went on processing it, since the ownership lock is process state and the
+               # in-flight request is not. This retry's own refusal says nothing about that
+               # earlier request, so it is not trusted as a verdict until ownership is confirmed.
+               # A fresh, non-recovery create has no such predecessor to account for.
+               if ($isRecovery) {
+                  _create_confirm_ownership( $self, sub ( $owner, $ownerDetail ) {
+                     return $resolve->($ownerDetail) if $owner eq 'ours';
+                     return $reject->($refusal) if $owner eq 'unrelated';
+                     $reject->( _create_unresolved_error( "$refusal, and what holds name '"
+                        . $self->name . "' could not be established: $ownerDetail" ) );
+                  } );
+                  return;
+               }
+               $reject->($refusal);
                return;
             }
             if ( $state eq 'unresolved' ) {
@@ -1693,7 +1734,7 @@ sub _create_stage_creating ($self, $body, $isRecovery = 0) {
                # whose request Docker went on processing regardless, since the ownership lock
                # is process state and the in-flight request is not - collides with this one
                # exactly as an unrelated container does. Ownership is established by looking.
-               _create_inspect_conflict( $self, sub ( $owner, $ownerDetail ) {
+               _create_confirm_ownership( $self, sub ( $owner, $ownerDetail ) {
                   return $resolve->($ownerDetail) if $owner eq 'ours';
                   return $reject->( "name '" . $self->name
                      . "' is already in use by a container this reservation does not own" )
@@ -1706,12 +1747,14 @@ sub _create_stage_creating ($self, $body, $isRecovery = 0) {
 
             # Docker accepted the create, so a response carrying no usable Id leaves the
             # container's existence unknown rather than disproved. Resolving would persist an
-            # empty containerId and drive the start stage against nothing, so this reports an
-            # unresolved outcome and lets a later pass find the container by name. Decoding must
-            # not be allowed to throw, for the same reason as the name lookup - the exception
-            # would bypass this promise entirely rather than rejecting it.
+            # unusable containerId and drive the start stage against nothing, so this reports an
+            # unresolved outcome and lets a later pass find the container by name instead.
+            # Decoding must not be allowed to throw, for the same reason as the name lookup - the
+            # exception would bypass this promise entirely rather than rejecting it. The id is held
+            # to the same hex-id shape _create_entry_ownership requires: a 201 whose body does not
+            # actually carry a real Docker id is exactly the case this must not trust.
             my $containerId = eval { decode_json( $result->body )->{'Id'} };
-            unless ( defined($containerId) && !ref($containerId) && length($containerId) ) {
+            unless ( defined($containerId) && !ref($containerId) && $containerId =~ /^[0-9a-f]{12,64}$/ ) {
                $reject->( _create_unresolved_error( "create for name '" . $self->name
                   . "' returned no usable id: "
                   . ( format_caught_error($@) || 'no Id in response' ) ) );
@@ -2137,28 +2180,23 @@ sub reconcile_create ($self, $cb, $lock = undef) {
 
 # Resumes a reservation stuck at 'creating' whose create body cannot be rebuilt. Adoption needs no
 # body, so a container this reservation already owns still reaches 'starting'. Anything else keeps
-# the preparation failure - definitive where the lookup positively establishes that this
-# reservation owns no container, unresolved where it establishes nothing, since a body that cannot
-# be compiled says nothing about whether a container was already created.
+# the preparation failure - definitive where a confirmed record establishes that a container this
+# reservation does not own already holds the name, unresolved otherwise. A body that cannot be
+# compiled says nothing about whether a container was already created, and neither does a single
+# absent snapshot: the create that would have made one may have been issued by a worker that has
+# since died, whose request Docker went on processing regardless (the ownership lock is process
+# state; the in-flight request is not) - so, like the 409 and recovery-retry cases,
+# _create_confirm_ownership's bounded poll is what this waits on before concluding either way.
 sub _create_adopt_only ($self, $prepError) {
    my $prepMsg = ( ref($prepError) eq 'Exception' ) ? $prepError->msg : "$prepError";
    my $context = "cannot rebuild the create request for reservation '" . $self->id() . "' ($prepMsg)";
 
    return Mojo::Promise->new( sub ( $resolve, $reject ) {
-      _create_lookup_by_name( $self, undef, sub ($lookup) {
-         if ( $lookup->{'state'} eq 'unknown' ) {
-            $reject->( _create_unresolved_error(
-               "$context, and what holds name '" . $self->name . "' is unknown: "
-               . $lookup->{'reason'} ) );
-            return;
-         }
-         if ( $lookup->{'state'} eq 'present' ) {
-            my ( $owner, $detail ) = _create_entry_ownership( $self, $lookup->{'entry'} );
-            return $resolve->($detail) if $owner eq 'ours';
-            return $reject->( _create_unresolved_error( "$context, and the container holding name '"
-               . $self->name . "' could not be identified: $detail" ) ) if $owner eq 'unknown';
-         }
-         $reject->("$context, and it owns no container to adopt");
+      _create_confirm_ownership( $self, sub ( $owner, $detail ) {
+         return $resolve->($detail) if $owner eq 'ours';
+         return $reject->("$context, and it owns no container to adopt") if $owner eq 'unrelated';
+         $reject->( _create_unresolved_error(
+            "$context, and what holds name '" . $self->name . "' could not be established: $detail" ) );
       } );
    } )->then( sub ($containerId) {
       my $shortId = substr( $containerId, 0, 12 );
