@@ -1786,7 +1786,11 @@ sub _create_stage_creating ($self, $body, $priorCreatePossible = 0) {
                  return;
               }
               unless ( $lookup->{'state'} eq 'present' ) {
-                 $createContainer->()->then( $resolve, $reject );
+                 # Resolving with the create's own promise adopts its outcome either way. Chaining
+                 # it through $resolve/$reject as handlers would instead leave a derived promise
+                 # following the rejection with nothing attached, and Mojo::Promise reports every
+                 # such promise as unhandled when it is freed.
+                 $resolve->( $createContainer->() );
                  return;
               }
               my ( $owner, $detail ) = _create_entry_ownership( $self, $lookup->{'entry'} );

@@ -39,6 +39,15 @@ local $Reservation::CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS = 0;
 
 my $OWN_ID = 'c' x 64;
 
+# Every rejection on the chain must reach a handler. A rejected promise dropped without one is
+# reported by Mojo::Promise as a warning at destruction, so the whole file counts those and
+# asserts none at the end: such a promise is a rejection nothing recorded and nothing acted on.
+my @unhandled;
+$SIG{__WARN__} = sub ($warning) {
+   push @unhandled, $warning if $warning =~ /Unhandled rejected promise/;
+   warn $warning;
+};
+
 sub write_record ($record) {
    open my $fh, '>', $Data::CONFIG->{reservationsPath} or die $!;
    print $fh encode_json($record), "\n";
@@ -605,5 +614,185 @@ subtest 'a reservation confirmed to own no container is failed when its body can
    is( status()->{'stage'}, 'failed', 'recorded as failed' );
    ok( read_record()->{'expiryTime'}, 'and expired' );
 };
+
+subtest 'a fresh create whose outcome is lost is accounted for by the next attempt' => sub {
+   # The handover between the two kinds of create attempt. A fresh create() records 'creating'
+   # before posting, so when its post's outcome is lost the record left behind is exactly the one
+   # a later pass reads as "a prior create may have been issued": that pass looks the name up
+   # first and adopts the container the lost request made, rather than posting a second create.
+   my @calls;
+   my $reservation;
+   {
+      local *Reservation::call_socket_api = docker( \@calls,
+         'image'  => [ responds( 200, '{}' ) ],
+         'create' => [ fails('connection reset by peer') ],
+      );
+      write_record({ id => 'rid', name => 'devt', version => 2, data => { image => 'img:1' } });
+      $reservation = Reservation::_reservation_reloaded('rid');
+
+      my @acked;
+      $reservation->create( sub ( $ok = undef, $err = undef ) { push @acked, { 'ok' => $ok, 'err' => $err }; } );
+      is( scalar @acked, 1, 'create() acknowledges once, immediately' );
+      ok( $acked[0]{'ok'}, 'and successfully' );
+
+      my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
+      Mojo::IOLoop->recurring( 0.05 => sub { Mojo::IOLoop->stop unless Reservation->create_in_flight_count() } );
+      Mojo::IOLoop->start;
+      Mojo::IOLoop->remove($timeout);
+
+      is( Reservation->create_in_flight_count(), 0, 'the fresh chain settles' );
+      is_recoverable( 'creating', 'fresh create with a lost outcome' );
+      is( scalar( grep { m{^/containers/json} } @calls ), 0, 'a first create looks nothing up beforehand' );
+   }
+
+   my @next;
+   local *Reservation::call_socket_api = docker( \@next,
+      'lookup' => [ holds( owned_by('rid') ) ],
+      'start'  => [ responds(204) ],
+   );
+   my $run = reconcile();
+   ok( $run->{'settled'}[0]{'ok'}, 'the next pass adopts the container the lost request made' );
+   is( status()->{'stage'}, 'done', 'and reaches done' );
+   is( scalar( grep { m{^/containers/create} } @next ), 0, 'without posting a second create' );
+};
+
+subtest 'a server error answering a create or start with a possible predecessor is unresolved' => sub {
+   # A 5xx says Docker failed somewhere, not where: the mutation may have been committed before
+   # whatever failed. With a prior create possibly outstanding, or a container that certainly
+   # exists, nothing here justifies a definitive failure.
+   {
+      my @calls;
+      local *Reservation::call_socket_api = docker( \@calls,
+         'lookup' => [ holds(undef) ],
+         'create' => [ responds( 500, encode_json({ message => 'internal error' }) ) ],
+      );
+      seed('creating');
+      my $run = reconcile();
+      ok( unresolved( $run->{'settled'}[0]{'err'} ), 'create 500: unresolved' );
+      is_recoverable( 'creating', 'create 500' );
+      is( scalar( grep { m{^/containers/create} } @calls ), 1, 'create 500: exactly one create is POSTed' );
+   }
+   {
+      my @calls;
+      local *Reservation::call_socket_api = docker( \@calls, 'start' => [ responds( 500, 'internal error' ) ] );
+      seed( 'starting', containerId => 'c' x 12 );
+      my $run = reconcile();
+      ok( unresolved( $run->{'settled'}[0]{'err'} ), 'start 500: unresolved' );
+      is_recoverable( 'starting', 'start 500' );
+      is( scalar( grep { m{^/containers/json} } @calls ), 0, 'start 500: no name inspection' );
+   }
+};
+
+subtest 'a stage entry that cannot be recorded issues no mutation' => sub {
+   # 'creating' and 'starting' are written before their mutation is posted, and that write is what
+   # lets any later pass account for the mutation. A post made after a failed write would be one no
+   # record anywhere admits was attempted.
+   my $realUpdate = \&Reservation::update;
+   {
+      local *Reservation::update = sub ( $self, $fields, @rest ) {
+         die Exception->new( 'dbg' => 'fixture write failure' )
+            if ref( $fields->{'createStatus'} ) eq 'HASH'
+            && ( $fields->{'createStatus'}{'stage'} // '' ) eq 'creating';
+         return $realUpdate->( $self, $fields, @rest );
+      };
+      my @calls;
+      local *Reservation::call_socket_api = docker( \@calls, 'image' => [ responds( 200, '{}' ) ] );
+      seed('pulling');
+      my $run = reconcile();
+      ok( unresolved( $run->{'settled'}[0]{'err'} ), 'creating unrecorded: reported unresolved' );
+      is( status()->{'stage'}, 'pulling', 'creating unrecorded: the record shows the last stage that reached disk' );
+      ok( !read_record()->{'expiryTime'}, 'creating unrecorded: nothing is expired' );
+      is( scalar( grep { m{^/containers/create} } @calls ), 0, 'creating unrecorded: no create is posted' );
+      ok( Util::tryLockFile( Reservation::_create_lock_path('rid') ), 'creating unrecorded: the lock is released' );
+   }
+   {
+      local *Reservation::update = sub ( $self, $fields, @rest ) {
+         die Exception->new( 'dbg' => 'fixture write failure' )
+            if ref( $fields->{'createStatus'} ) eq 'HASH'
+            && ( $fields->{'createStatus'}{'stage'} // '' ) eq 'starting';
+         return $realUpdate->( $self, $fields, @rest );
+      };
+      my @calls;
+      local *Reservation::call_socket_api = docker( \@calls,
+         'lookup' => [ holds(undef) ],
+         'create' => [ responds( 201, encode_json({ Id => $OWN_ID }) ) ],
+      );
+      seed('creating');
+      my $run = reconcile();
+      ok( unresolved( $run->{'settled'}[0]{'err'} ), 'starting unrecorded: reported unresolved' );
+      is( status()->{'stage'}, 'creating', 'starting unrecorded: the record shows the last stage that reached disk' );
+      is( read_record()->{'containerId'}, 'c' x 12, 'starting unrecorded: but the container id it did record' );
+      is( scalar( grep { m{/start$} } @calls ), 0, 'starting unrecorded: no start is posted' );
+   }
+};
+
+subtest 'an outcome that cannot be recorded is reported unresolved, whatever it was' => sub {
+   # If the write recording an outcome fails, the record still says what it said before the
+   # attempt: as far as any other process can tell, the attempt has not concluded. That is what
+   # the consumer is told, and the cleanup still happens, so the next pass simply tries again.
+   my $realUpdate = \&Reservation::update;
+   local *Reservation::update = sub ( $self, $fields, @rest ) {
+      die Exception->new( 'dbg' => 'fixture write failure' )
+         if ref( $fields->{'createStatus'} ) eq 'HASH'
+         && ( ref( $fields->{'createStatus'}{'unresolved'} ) eq 'HASH'
+              || ( $fields->{'createStatus'}{'stage'} // '' ) eq 'failed' );
+      return $realUpdate->( $self, $fields, @rest );
+   };
+   for my $case (
+      { 'name' => 'an unresolved outcome', 'create' => fails('connection reset by peer') },
+      { 'name' => 'a definitive failure',  'create' => responds( 400, encode_json({ message => 'bad request' }) ) },
+   ) {
+      my @calls;
+      local *Reservation::call_socket_api = docker( \@calls, 'create' => [ $case->{'create'} ] );
+      seed('creating');
+      my $reservation = Reservation::_reservation_reloaded('rid');
+      my @settled;
+      $reservation->_create_track(
+         $reservation->_create_run_from_creating( { Image => 'img:1' }, 0 ),
+         sub ( $ok = undef, $err = undef ) { push @settled, { 'ok' => $ok, 'err' => $err }; Mojo::IOLoop->stop; } );
+      my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
+      Mojo::IOLoop->start;
+      Mojo::IOLoop->remove($timeout);
+
+      is( scalar @settled, 1, "$case->{'name'} unrecorded: settles exactly once" );
+      ok( unresolved( $settled[0]{'err'} ), "$case->{'name'} unrecorded: reported unresolved" );
+      is( status()->{'stage'}, 'creating', "$case->{'name'} unrecorded: the record is unchanged" );
+      ok( !status()->{'failed'} && !read_record()->{'expiryTime'},
+         "$case->{'name'} unrecorded: neither failed nor expired" );
+      is( Reservation->create_in_flight_count(), 0, "$case->{'name'} unrecorded: the chain is released" );
+   }
+};
+
+subtest 'a preflight lookup finding another owner is a definitive failure without a create' => sub {
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls, 'lookup' => [ holds( owned_by('other') ) ] );
+   seed('creating');
+   my $run = reconcile();
+   is( unresolved( $run->{'settled'}[0]{'err'} ), 0, 'a confirmed foreign owner is definitive' );
+   is( status()->{'stage'}, 'failed', 'recorded as failed' );
+   ok( read_record()->{'expiryTime'}, 'and expired' );
+   is( scalar( grep { m{^/containers/create} } @calls ), 0, 'no create is posted against a taken name' );
+};
+
+subtest 'each ownership-confirmation lookup is capped to what remains of the inspection budget' => sub {
+   # The ownership lock is held for the whole inspection, so a lookup that stalls must be cut off
+   # by the budget rather than by the transport's own default. That is enforced by handing each
+   # request a timeout no larger than the budget left when it is issued.
+   local $Reservation::CREATE_CONFLICT_POLL_BUDGET_SECONDS = 2;
+   my @timeouts;
+   local *Reservation::call_socket_api = sub ( $socket, $path, $args, $cb ) {
+      push @timeouts, $args->{'request_timeout'} if $path =~ m{^/containers/json};
+      return $path =~ m{^/containers/create} ? responds( 409, '' )->($cb) : holds(undef)->($cb);
+   };
+   seed('creating');
+   reconcile();
+   is( scalar @timeouts, 4, 'one preflight lookup, then the bounded inspection issues its three' );
+   ok( !defined( $timeouts[0] ), 'the preflight lookup runs under no inspection budget' );
+   ok( ( grep { defined($_) && $_ > 0 && $_ <= 2 } @timeouts[ 1 .. 3 ] ) == 3,
+      'every inspection lookup carries a positive timeout within the budget' );
+};
+
+is( scalar @unhandled, 0, 'no rejection on any chain was dropped without a handler' )
+   or diag( join( '', @unhandled ) );
 
 done_testing;
