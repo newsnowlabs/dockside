@@ -291,6 +291,29 @@ subtest 'a create Docker refuses outright on the first attempt is a definitive f
    is( scalar( grep { m{^/containers/json} } @calls ), 0, 'no lookup is issued at all' );
 };
 
+subtest 'a create Docker refuses outright after a resumed pull is a definitive failure' => sub {
+   # A record at 'pulling' has never issued a create: 'creating' is written to disk before any
+   # create is posted. So the create that follows a resumed pull is this reservation's first, has
+   # no predecessor whose container could be waiting under the name, and Docker's refusal of it
+   # is the whole story - the reservation must fail and expire, not sit at 'launching' retrying an
+   # invalid configuration for ever.
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'image'  => [ responds( 200, '{}' ) ],
+      'create' => [ responds( 400, encode_json({ message => 'invalid configuration' }) ) ],
+   );
+   seed('pulling');
+
+   my $run = reconcile();
+   is( scalar @{ $run->{'settled'} }, 1, 'settles exactly once' );
+   is( unresolved( $run->{'settled'}[0]{'err'} ), 0, 'a first attempt is failed without any ownership check' );
+   like( reason( $run->{'settled'}[0]{'err'} ), qr/invalid configuration/, "keeping Docker's own reason" );
+   is( status()->{'stage'}, 'failed', 'recorded as failed' );
+   ok( read_record()->{'expiryTime'}, 'and expired' );
+   is( scalar( grep { m{^/containers/create} } @calls ), 1, 'exactly one create is POSTed' );
+   is( scalar( grep { m{^/containers/json} } @calls ), 0, 'no lookup is issued at all' );
+};
+
 subtest 'a create success carrying no usable id keeps the reservation recoverable' => sub {
    my @calls;
    local *Reservation::call_socket_api = docker( \@calls,

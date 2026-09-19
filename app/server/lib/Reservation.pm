@@ -1690,7 +1690,13 @@ sub _create_stage_pulling ($self, $image) {
    } );
 }
 
-sub _create_stage_creating ($self, $body, $isRecovery = 0) {
+# $priorCreatePossible says whether a create request for this reservation may already have been
+# issued by some earlier driver whose outcome was never learned. It is true for exactly one entry:
+# a record read at stage 'creating' under the ownership lock, since 'creating' is persisted before
+# the create is posted and nothing else ever posts one. A fresh create(), and a chain resumed from
+# 'pulling', have no such predecessor - a record at 'pulling' has never reached the write that
+# precedes a post - so for those this stage's own result is the whole story.
+sub _create_stage_creating ($self, $body, $priorCreatePossible = 0) {
    my $socket = $CONFIG->{'docker'}{'socket'};
 
    my $createContainer = sub {
@@ -1704,14 +1710,14 @@ sub _create_stage_creating ($self, $body, $isRecovery = 0) {
             if ( $state eq 'failed' ) {
                my $refusal = "create refused for name '" . $self->name . "': $detail";
 
-               # A recovery retry issuing this create is not the reservation's first attempt: an
-               # earlier one, whose outcome this process never learned, may have been issued by a
-               # worker that has since died and gone on to create a container regardless - Docker
-               # went on processing it, since the ownership lock is process state and the
-               # in-flight request is not. This retry's own refusal says nothing about that
-               # earlier request, so it is not trusted as a verdict until ownership is confirmed.
-               # A fresh, non-recovery create has no such predecessor to account for.
-               if ($isRecovery) {
+               # Where a prior create may have been issued, this retry is not the reservation's
+               # first attempt: the earlier one, whose outcome this process never learned, may have
+               # been issued by a worker that has since died and gone on to create a container
+               # regardless - Docker went on processing it, since the ownership lock is process
+               # state and the in-flight request is not. This retry's own refusal says nothing
+               # about that earlier request, so it is not trusted as a verdict until ownership is
+               # confirmed. With no possible predecessor, the refusal is definitive.
+               if ($priorCreatePossible) {
                   _create_confirm_ownership( $self, sub ( $owner, $ownerDetail ) {
                      return $resolve->($ownerDetail) if $owner eq 'ours';
                      return $reject->($refusal) if $owner eq 'unrelated';
@@ -1765,14 +1771,13 @@ sub _create_stage_creating ($self, $body, $isRecovery = 0) {
       } );
    };
 
-   # A recovery re-entry (this stage found already persisted for $self, i.e. reconcile_create()
-   # resuming a chain some other process left mid-flight) looks the name up before creating
-   # anything: the container it is about to create may already exist, made by the request whose
+   # Where a prior create may have been issued, the name is looked up before creating anything:
+   # the container this stage is about to create may already exist, made by the request whose
    # outcome was lost. A container under this reservation's own name is adopted only if it also
    # carries this reservation's own id label, and only a lookup that positively establishes the
    # name is free may fall through to a create - an inconclusive lookup must not authorize one,
    # since it cannot tell "nothing holds this name" apart from "Docker did not answer".
-   my $lookupOrCreate = $isRecovery
+   my $lookupOrCreate = $priorCreatePossible
       ? Mojo::Promise->new( sub ($resolve, $reject) {
            _create_lookup_by_name( $self, undef, sub ($lookup) {
               if ( $lookup->{'state'} eq 'unknown' ) {
@@ -1897,18 +1902,21 @@ sub _create_run_from_starting ($self) {
    } );
 }
 
-sub _create_run_from_creating ($self, $body, $isRecovery = 0) {
+sub _create_run_from_creating ($self, $body, $priorCreatePossible = 0) {
    return _create_rejected( _create_unresolved_error( "could not record the create stage of "
       . "reservation '" . $self->id() . "'" ) ) unless $self->_create_status_enter('creating');
 
-   return _create_stage_creating( $self, $body, $isRecovery )->then( sub (@) {
+   return _create_stage_creating( $self, $body, $priorCreatePossible )->then( sub (@) {
       return $self->_create_run_from_starting();
    } );
 }
 
-sub _create_run_from_pulling ($self, $body, $isRecovery = 0) {
+# A chain at 'pulling' has never issued a create - 'creating' is written to disk before any create
+# is posted - so the create that follows the pull is always this reservation's first, whether the
+# chain is fresh or resumed, and is never told to account for a predecessor.
+sub _create_run_from_pulling ($self, $body) {
    return _create_stage_pulling( $self, $self->data('image') )->then( sub (@) {
-      return $self->_create_run_from_creating( $body, $isRecovery );
+      return $self->_create_run_from_creating( $body, 0 );
    } );
 }
 
@@ -2115,11 +2123,11 @@ sub create ($self, $cb) {
 # one worker) that was driving it - reads createStatus.stage to decide where to resume, per
 # docs/adr/0007-create-restart-recovery.md's own "Ground truth per stage" table.
 # $self must already be a freshly-read, lock-held snapshot - see reconcile_one below, the one
-# real caller, for both. The two stages that need a create body resume with $isRecovery true (the
-# 'creating' stage's own label-checked adoption - see _create_stage_creating), including one
-# resumed from 'pulling': a chain that only ever reached 'pulling' before being abandoned never
-# attempted a create, so the ground-truth-by-name lookup comes back empty and falls through to a
-# plain create - one always-empty extra GET, rather than a second recovery shape to maintain.
+# real caller, for both. Only a record read at 'creating' resumes with a possible prior create
+# (the label-checked adoption and ownership confirmation in _create_stage_creating): 'creating' is
+# persisted before any create is posted, so that is the one stage at which a predecessor's create
+# may exist. A chain resumed from 'pulling' never reached that write, so its create is a first
+# attempt and Docker's refusal of it is definitive, exactly as for a fresh create().
 #
 # 'starting' resumes from the container id already on disk and needs no create body, so it never
 # compiles one. That is not an optimisation: cmdline_json() reads the reservation's profile, so an
@@ -2172,7 +2180,7 @@ sub reconcile_create ($self, $cb, $lock = undef) {
    }
 
    $self->_create_track(
-      ( $stage eq 'pulling' ? $self->_create_run_from_pulling( $body, 1 )
+      ( $stage eq 'pulling' ? $self->_create_run_from_pulling($body)
                             : $self->_create_run_from_creating( $body, 1 ) ),
       $cb, $lock );
    return;
