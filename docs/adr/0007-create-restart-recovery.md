@@ -282,11 +282,13 @@ establishes ownership first, since adopting a container needs no body either.
   filter Dockside-managed containers by label (`docker ps --filter label=dev.dockside.reservation.id`).
 - `create()`'s own body is a set of unconditionally re-enterable `_create_stage_*` functions
   chained by stage-specific `_create_run_from_*` glue - `create()` always starts at
-  `_create_run_from_pulling` with `$isRecovery` false, `reconcile_one`/`reconcile_create` start
-  wherever `createStatus.stage` says, with `$isRecovery` true. `$isRecovery` only changes
-  behaviour at the `creating` stage (mechanism 3's lookup); every other stage runs identical code
-  either way. This is the only way to avoid a second, parallel copy of the pull/create/start
-  logic existing solely for recovery.
+  `_create_run_from_pulling`; `reconcile_one`/`reconcile_create` start wherever
+  `createStatus.stage` says. The one flag that changes behaviour, `$priorCreatePossible`, is true
+  only for a record read at `creating` under the lock, and only affects that stage (mechanism 3's
+  lookup, and ownership confirmation before a refusal is trusted); a chain resumed from `pulling`
+  runs the same code as a fresh one, since no create can have been posted for it. This is the
+  only way to avoid a second, parallel copy of the pull/create/start logic existing solely for
+  recovery.
 
 ## Rollout and unlabelled containers
 
