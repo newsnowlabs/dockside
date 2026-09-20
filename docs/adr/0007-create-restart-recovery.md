@@ -344,7 +344,10 @@ exercised.
 
 - **Record.** A reservation's entry in `reservations.json`. Its `createStatus.stage` is the
   reservation's **stage**; `createStatus.failed`, `createStatus.unresolved`, `containerId` and
-  `expiryTime` are the other fields the model reads.
+  `expiryTime` are the other fields the model reads. `createStatus.entered`, stage name to the
+  fractional epoch of the stage's first entry, is written by the stage write and read by the
+  client and by an operator; the model never reads it, since liveness is decided by the
+  ownership lock, not by elapsed time.
 - **Driver.** The process, or `Mojo::Server::Prefork` worker, currently running a reservation's
   create chain. There is at most one at a time, guaranteed by the ownership lock (mechanism 1).
 - **Attempt.** One run of the chain by one driver, from acquiring the lock to releasing it. A
@@ -409,7 +412,9 @@ of a `409` body; a name match without the id label; a lookup that is anything bu
 - **I1. The stage is written before its mutation is posted.** `creating` reaches disk before a
   create is posted, `starting` before a start. A driver whose stage write fails posts nothing and
   ends the attempt unresolved. Consequently a record at `pulling` has never had a create posted
-  for it, and a record at `starting` always carries a `containerId`.
+  for it, and a record at `starting` always carries a `containerId`. The stage write also
+  records the stage's first-entry time in `createStatus.entered`; a re-entry keeps the time
+  already there.
 - **I2. One live driver per reservation.** The lock is taken before the first write of an attempt
   and released only after every callback that could write for that attempt has settled.
 - **I3. Adoption needs the exact name, this reservation's id label and a usable id.** Never any
@@ -546,7 +551,7 @@ consumer told a definitive failure.
 | the write recording an unresolved or failed outcome fails | consumer told unresolved; record unchanged; lock and in-flight entry released |
 | consecutive unresolved attempts at one stage | `attempts` increments, `since` is kept, `retryAfter` refreshed to now plus `$CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS`; a warning is logged at `$CREATE_UNRESOLVED_WARN_AFTER_ATTEMPTS` |
 | a reconcile pass arrives before `retryAfter` | skipped under the lock, no Docker request, not counted. `retryAfter` paces the retries: the lock excludes a second simultaneous driver but says nothing about how soon the next may start |
-| a later attempt advances the stage | the diagnostic is cleared |
+| a later attempt advances the stage | the diagnostic is cleared; the entry map is kept |
 | the consumer throws | entered once; outcome unchanged; in-flight entry released |
 | cleanup runs against a resumable record | record retained, no expiry (I6) |
 | any continuation on the chain | called exactly once; a second call is logged and ignored (I7) |

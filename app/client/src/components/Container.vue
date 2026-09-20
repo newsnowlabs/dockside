@@ -347,6 +347,10 @@
                            {{ completedLayerCount }}/{{ launchLayers.length }} layers
                         </span>
                      </div>
+                     <div v-if="launchTimings" class="stage-timings">
+                        <template v-for="(d, i) in launchTimings.durations" v-bind:key="d.stage">{{ i ? ' · ' : '' }}{{ d.stage }} {{ d.text }}</template>
+                        <template v-if="launchTimings.elapsed">{{ launchTimings.durations.length ? ' · ' : '' }}{{ launchStage }} {{ launchTimings.elapsed }}</template>
+                     </div>
                      <div v-if="launchStage === 'failed'" class="launch-error">
                         {{ container.createStatus.error }}
                      </div>
@@ -464,6 +468,17 @@ import ConfirmModal from '@/components/shared/ConfirmModal';
 import DetailField from '@/components/shared/DetailField';
 import { putContainer, controlContainer, getReservationLogsUri, getHookStatus, formToQuery } from '@/services/container';
 import ChoiceInput from '@/components/ChoiceInput';
+
+// A launch-progress duration, as `12s` or `1m 05s`. `fine` keeps one decimal below
+// 10 s, so a sub-second stage reads as the fraction of a second it took rather than
+// as `0s`.
+function formatSeconds(seconds, fine) {
+   const value = Math.max(0, seconds);
+   if(fine && value < 10) return (Math.round(value * 10) / 10) + 's';
+   const whole = Math.round(value);
+   if(whole < 60) return whole + 's';
+   return Math.floor(whole / 60) + 'm ' + String(whole % 60).padStart(2, '0') + 's';
+}
 
 export default defineComponent({
   name: 'Container',
@@ -605,6 +620,28 @@ export default defineComponent({
      },
      completedLayerCount() {
         return this.launchLayers.filter(l => l.percent >= 100).length;
+     },
+     // How long each stage the launch has already left took, plus how long it has so far
+     // spent in the stage it is in now (none for the terminal 'done'/'failed' stages).
+     // createStatus.entered maps a stage name to the fractional epoch seconds at which the
+     // record first entered it, and carries only the stages actually reached - a record
+     // with no entry for its own current stage yields null, leaving just the stage chip.
+     // The elapsed time advances because each containers poll (see Main.vue's refresh)
+     // replaces the container prop, so this component keeps no timer of its own.
+     launchTimings() {
+        const STAGE_SEQUENCE = ['pulling', 'creating', 'starting', 'done', 'failed'];
+        const entered = (this.container.createStatus && this.container.createStatus.entered) || {};
+        const stage = this.launchStage;
+        if(!entered[stage]) return null;
+        const reached = STAGE_SEQUENCE.filter(s => entered[s]);
+        return {
+           durations: reached.slice(0, -1).map((s, i) => ({
+              stage: s,
+              text: formatSeconds(entered[reached[i + 1]] - entered[s], true)
+           })),
+           elapsed: (stage === 'done' || stage === 'failed') ? null :
+              formatSeconds(Date.now() / 1000 - entered[stage])
+        };
      },
      // The 5 launch:-/lifecycle:-DAG stage names docker-event-daemon dispatches after
      // container create/start succeeds (mirrors the CLI's own LAUNCH_DAG_STAGES). Unlike
@@ -1178,6 +1215,12 @@ export default defineComponent({
    .layer-count {
       font-size: 0.8rem;
       color: rgb(var(--v-theme-ink-soft));
+   }
+
+   .stage-timings {
+      font-size: 0.8rem;
+      color: rgb(var(--v-theme-ink-soft));
+      margin-bottom: 0.35rem;
    }
 
    .launch-error {

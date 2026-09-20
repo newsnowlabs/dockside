@@ -1389,6 +1389,21 @@ sub _create_status_set ($self, $value, $extra = {}) {
    return $self;
 }
 
+# createStatus.entered: stage name => the fractional epoch at which the record first entered that
+# stage. Written by every write that sets the stage, from the map the record already carries, so a
+# stage re-entered by a later attempt keeps its first time and the whole stall at a stage, across
+# attempts, is measured from when it began; fractional, so the sub-second create and start stages
+# do not read as zero. Kept through stage advances and terminal stages alike, unlike the unresolved
+# diagnostic and the pull's layer snapshot, which describe one stage's attempts. Read by the client
+# (elapsed time at the current stage, each earlier stage's duration) and by an operator reading the
+# record; nothing on the server decides anything from it - liveness is the ownership lock's answer,
+# never elapsed time.
+sub _create_entered ($cs, $stage) {
+   my %entered = ref( $cs->{'entered'} ) eq 'HASH' ? %{ $cs->{'entered'} } : ();
+   $entered{$stage} //= Time::HiRes::time();
+   return \%entered;
+}
+
 # reservation id => 1, while create()/reconcile_create()'s own chain is actively
 # running in *this* process - queried by bin/app-server's periodic reconciler (skip a
 # reservation this worker already owns, without even attempting a claim) and its exit handler
@@ -2012,6 +2027,7 @@ sub _create_status_enter ($self, $stage) {
          # is what makes the two forms interchangeable. Same reasoning as 'failed' above.
          'unresolved' => ( $resumed && ref( $cs->{'unresolved'} ) eq 'HASH' )
             ? $cs->{'unresolved'} : 0,
+         'entered' => _create_entered( $cs, $stage ),
       } );
       1;
    };
@@ -2078,13 +2094,14 @@ sub _create_run_from_pulling ($self, $body, $cb) {
 sub _create_fail ($self, $err) {
    my $msg = ( ref($err) eq 'Exception' ) ? $err->msg : "$err";
    flog("Reservation::create: reservation '" . $self->id() . "' failed: $msg");
-   my $layers = ( ref($self->{'createStatus'}) eq 'HASH' ? $self->{'createStatus'}{'layers'} : undef ) // {};
+   my $cs = ref( $self->{'createStatus'} ) eq 'HASH' ? $self->{'createStatus'} : {};
+   my $layers = $cs->{'layers'} // {};
    $self->_create_status_set(
       # 'unresolved' is cleared explicitly, for the reason _create_status_enter gives: a
       # definitive failure settles the question an earlier attempt could not, and a persisted
       # createStatus does not lose a key by omission.
       { 'stage' => 'failed', 'failed' => 1, 'error' => $msg, 'layers' => $layers,
-        'unresolved' => 0 },
+        'unresolved' => 0, 'entered' => _create_entered( $cs, 'failed' ) },
       { 'expiryTime' => YYYYMMDDHHMMSS(time) }
    );
    return $msg;
@@ -2248,7 +2265,8 @@ sub create ($self, $cb) {
    };
    return unless $body;   # cmdline_json() threw - already reported, and the lock already released, via $cb above
 
-   $self->_create_status_set( { 'stage' => 'pulling', 'failed' => 0, 'layers' => {} } );
+   $self->_create_status_set( { 'stage' => 'pulling', 'failed' => 0, 'layers' => {},
+                                'entered' => _create_entered( {}, 'pulling' ) } );
    $cb->( $self, undef );
 
    $self->_create_track( sub ($settle) { $self->_create_run_from_pulling( $body, $settle ) }, sub {}, $lock );

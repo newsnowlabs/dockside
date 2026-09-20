@@ -5,6 +5,7 @@ use Reservation;
 use Exception;
 use File::Temp qw(tempdir);
 use JSON qw(encode_json decode_json);
+use Time::HiRes ();
 use Mojo::IOLoop;
 use Mojo::Message::Response;
 use Test::More;
@@ -800,6 +801,70 @@ subtest 'each ownership-confirmation lookup is capped to what remains of the ins
    ok( !defined( $timeouts[0] ), 'the preflight lookup runs under no inspection budget' );
    ok( ( grep { defined($_) && $_ > 0 && $_ <= 2 } @timeouts[ 1 .. 3 ] ) == 3,
       'every inspection lookup carries a positive timeout within the budget' );
+};
+
+subtest 'a chain records when each stage was first entered' => sub {
+   local *Reservation::call_socket_api = docker( [],
+      'image'  => [ responds( 200, '{}' ) ],
+      'create' => [ responds( 201, encode_json({ Id => $OWN_ID }) ) ],
+      'start'  => [ responds(204) ],
+   );
+   write_record({ id => 'rid', name => 'devt', version => 2, data => { image => 'img:1' } });
+   my $before = Time::HiRes::time();
+   Reservation::_reservation_reloaded('rid')->create( sub (@) { } );
+   run_until_settled( sub { !Reservation->create_in_flight_count() } );
+   my $after = Time::HiRes::time();
+
+   is( status()->{'stage'}, 'done', 'the fresh chain reaches done' );
+   my $entered = status()->{'entered'};
+   is_deeply( [ sort keys %{ $entered // {} } ], [qw(creating done pulling starting)],
+      'every stage the chain passed through has an entry' );
+   my @times = @{$entered}{qw(pulling creating starting done)};
+   ok( ( grep { /^\d+\.\d+$/ } @times ) == 4, 'each is a fractional epoch' )
+      or diag( join( ' ', @times ) );
+   ok( $times[0] >= $before && $times[-1] <= $after, 'within the time the chain ran' );
+   ok( ( grep { $times[$_] <= $times[ $_ + 1 ] } 0 .. 2 ) == 3, 'in stage order' );
+};
+
+subtest 'a stage re-entered by a later attempt keeps its first-entry time' => sub {
+   my $original = { pulling => 1000.25, creating => 1012.5 };
+   seed( 'creating', createStatus => { stage => 'creating', failed => 0, layers => {}, entered => {%$original} } );
+
+   {
+      local *Reservation::call_socket_api = docker( [],
+         'lookup' => [ holds(undef) ],
+         'create' => [ fails('connection reset by peer') ],
+      );
+      reconcile();
+      is_recoverable( 'creating', 'unresolved re-entry' );
+      is_deeply( status()->{'entered'}, $original, 'an unresolved attempt at the same stage adds nothing' );
+   }
+
+   local *Reservation::call_socket_api = docker( [],
+      'lookup' => [ holds(undef) ],
+      'create' => [ responds( 201, encode_json({ Id => $OWN_ID }) ) ],
+      'start'  => [ responds(204) ],
+   );
+   reconcile();
+   is( status()->{'stage'}, 'done', 'the next attempt completes the chain' );
+   ok( !ref( status()->{'unresolved'} ), 'and the advance clears the unresolved diagnostic' );
+   my $entered = status()->{'entered'};
+   is( $entered->{$_}, $original->{$_}, "$_ keeps the time it was first entered" ) for qw(pulling creating);
+   ok( $entered->{'starting'} > $original->{'creating'} && $entered->{'done'} >= $entered->{'starting'},
+      'the stages it advanced through are entered after it, in order' );
+};
+
+subtest 'a failed record carries the time it failed' => sub {
+   seed( 'pulling', createStatus => { stage => 'pulling', failed => 0, layers => {}, entered => { pulling => 1000.25 } } );
+   local *Reservation::call_socket_api = docker( [],
+      'image' => [ responds( 404, '' ) ],
+      'other' => [ responds( 404, '{"message":"manifest unknown"}' ) ],
+   );
+   my $run = reconcile();
+   ok( !unresolved( $run->{'settled'}[0]{'err'} ), 'a pull Docker refuses is a definitive failure' );
+   is( status()->{'stage'}, 'failed', 'recorded as failed' );
+   is( status()->{'entered'}{'pulling'}, 1000.25, 'the pull entry is kept' );
+   like( status()->{'entered'}{'failed'} // '', qr/^\d+\.\d+$/, 'and the failure is entered at a fractional epoch' );
 };
 
 my @secondCalls = second_calls();
