@@ -26,6 +26,8 @@ local *Reservation::routers = sub { {} };
 local *Reservation::update_container_info = sub {};
 my $resumed = 0;
 local *Reservation::reconcile_create = sub { $resumed++ };
+# Ownership arbitration needs neither primitive; both are present so the entry is admitted.
+Reservation::provider( 'timer' => sub (@) { }, 'hold' => sub () { return sub { }; } );
 
 write_stage('pulling');
 Data::load('reservations.json');

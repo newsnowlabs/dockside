@@ -15,23 +15,27 @@ my $tmp = tempdir(CLEANUP => 1);
 flog({ file => "$tmp/log" });
 
 # Test-owned drain environment: a clock that only the injected tick advances, an obligations
-# structure the tick mutates, and a collector each subtest resets before it starts.
+# structure the tick mutates, a collector each subtest resets before it starts, and an accept
+# limit the hold reads and sets.
 my $now = 0;
 my %obligations;
 my @logged;
 my $ticks = 0;
+my $limit = 10000;
 
 sub install_environment (%overrides) {
    $now    = 0;
    $ticks  = 0;
    @logged = ();
+   $limit  = 10000;
    App::Shutdown::configure(
       # A ceiling of 20 with App::Shutdown's own 10s margin leaves a 10s wait, which is what the
       # subtests below that do not override it count ticks against.
-      'ceiling'     => 20,
-      'obligations' => sub () { return \%obligations; },
-      'clock'       => sub () { return $now; },
-      'log'         => sub ($message) { push @logged, $message; },
+      'ceiling'      => 20,
+      'obligations'  => sub () { return \%obligations; },
+      'clock'        => sub () { return $now; },
+      'log'          => sub ($message) { push @logged, $message; },
+      'accept_limit' => sub (@set) { $limit = $set[0] if @set; return $limit; },
 
       # One second per tick, settling one obligation - creates first, then hooks - which is the
       # only thing that ever makes the drain's predicate progress here.
@@ -46,10 +50,14 @@ sub install_environment (%overrides) {
    return;
 }
 
-subtest 'drain before configure names configure in its own failure' => sub {
+subtest 'drain and hold before configure name configure in their own failure' => sub {
    my $died = !eval { App::Shutdown::drain(); 1 };
    ok($died, 'drain refuses to run against an unconfigured module');
    like($@, qr/configure/, 'the message names configure, so the caller knows what is missing');
+
+   $died = !eval { App::Shutdown::hold(); 1 };
+   ok($died, 'hold refuses to run against an unconfigured module');
+   like($@, qr/configure/, 'and its message names configure too');
 };
 
 subtest 'drain with nothing in flight returns immediately' => sub {
@@ -229,6 +237,55 @@ subtest 'only ids are ever read out of the obligations structure' => sub {
 
    ok(scalar( grep { /draining for/ } @logged ), 'the long drain did report progress');
    unlike($_, qr/DECOY/, 'no line of a long drain carries anything beyond the ids') for @logged;
+};
+
+subtest 'the first hold stops the accept count and the last release restores it' => sub {
+   install_environment();
+
+   my $first = App::Shutdown::hold();
+   is($limit, 0, 'the first hold reads the limit and sets 0');
+   my $second = App::Shutdown::hold();
+   is($limit, 0, 'a second hold changes nothing');
+   $first->();
+   is($limit, 0, 'the first release changes nothing while a hold remains');
+   $second->();
+   is($limit, 10000, 'the last release restores the limit that was read');
+};
+
+subtest 'a release sub releases once' => sub {
+   install_environment();
+
+   my $first  = App::Shutdown::hold();
+   my $second = App::Shutdown::hold();
+   $first->();
+   $first->();
+   is($limit, 0, 'a second call of one release sub does not release the other hold');
+   $second->();
+   is($limit, 10000, 'the other hold release restores the limit');
+};
+
+subtest 'holds and releases interleaved settle to the limit read' => sub {
+   install_environment();
+
+   my $a = App::Shutdown::hold();
+   my $b = App::Shutdown::hold();
+   $a->();
+   my $c = App::Shutdown::hold();
+   $b->();
+   is($limit, 0, 'one hold outstanding keeps the count stopped');
+   $c->();
+   is($limit, 10000, 'none outstanding restores the limit read by the first');
+
+   $limit = 5000;
+   my $d = App::Shutdown::hold();
+   is($limit, 0, 'a hold taken after a full release stops the count again');
+   $d->();
+   is($limit, 5000, 'and its release restores the limit as it then stood');
+
+   $limit = 0;
+   my $e = App::Shutdown::hold();
+   $e->();
+   is($limit, 0, 'a limit of 0, the count already stopped, is kept and restored as 0');
 };
 
 subtest 'admit accepts every kind while the worker is still serving' => sub {

@@ -9,9 +9,7 @@ use Tie::File;
 use Storable qw(dclone);
 use Time::HiRes ();
 use URI::Escape;
-use Mojo::IOLoop;
 use Mojo::Promise;
-use Mojo::Util qw(steady_time);
 use Reservation::Mutate qw(update load_clean_map record_stop_request release_stop_request resolve_hook_status hook_claim_if_not_running);
 # Not imported: Reservation::Mutate's own add_router/remove_router/replace_router - Reservation.pm
 # defines its OWN methods of the same name below (the public API other code calls), which call
@@ -1446,6 +1444,42 @@ our $CREATE_UNRESOLVED_WARN_AFTER_ATTEMPTS = 5;
 our $CREATE_CONFLICT_POLL_DELAYS = [ 0, 0.5, 1.5 ];
 our $CREATE_CONFLICT_POLL_BUDGET_SECONDS = 5;
 
+# The asynchronous primitives the create chain takes from the process that loads this module,
+# installed once by that process, before it serves, through provider(%entries):
+#   timer => sub ($delay, $cb)   runs $cb once, with no arguments, $delay seconds from now, on
+#                                the process's own event loop, and returns that loop's id for it
+#   hold  => sub ()              takes a hold against this worker being recycled, and returns a
+#                                sub that releases it; a release sub releases once, a later
+#                                call doing nothing
+# provider() with no arguments returns what is installed, or undef. This module schedules
+# nothing on a loop of its own: a process that drives a create chain supplies both entries
+# (bin/app-server), and one that never does supplies what it has (bin/docker-event-daemon a
+# timer; Proxy.pm nothing). A chain entry with no provider, or one lacking either entry, dies
+# before taking the ownership lock or contacting Docker, so a process that cannot drive a chain
+# to the end never starts one.
+my $PROVIDER;
+
+sub provider (%entries) {
+   $PROVIDER = {%entries} if %entries;
+   return $PROVIDER;
+}
+
+sub _create_provider_required () {
+   die "Reservation: no asynchronous provider installed (Reservation::provider), so this process cannot drive a create chain"
+      unless $PROVIDER;
+   my @missing = grep { ref( $PROVIDER->{$_} ) ne 'CODE' } qw(timer hold);
+   die "Reservation: the asynchronous provider installed (Reservation::provider) lacks "
+      . join( ' and ', map { "'$_'" } @missing ) . ", so this process cannot drive a create chain"
+      if @missing;
+   return;
+}
+
+# Monotonic seconds, for a deadline that must not move with the host clock. One sub, so a test
+# can stand in for it.
+sub _create_clock () {
+   return Time::HiRes::clock_gettime( Time::HiRes::CLOCK_MONOTONIC() );
+}
+
 # Path of the per-reservation ownership lock create()/reconcile_one() hold, non-blockingly, for
 # a create() chain's whole lifetime - docs/adr/0007-create-restart-recovery.md's "Decision"
 # section. Lives under tmpPath, alongside hook logs (the established per-reservation-file
@@ -1648,8 +1682,10 @@ sub _create_entry_ownership ($self, $entry) {
 # The whole inspection is bounded, and each lookup's own request timeout is capped to what remains
 # of that budget, because the reservation's ownership lock is held throughout: a stalled GET would
 # otherwise hold it, and a draining worker waiting on it, for as long as the socket stayed open.
+# Each wait between lookups is the provider's timer (provider(), above), and the budget is
+# measured on the monotonic clock.
 sub _create_confirm_ownership ($self, $cb) {
-   my $deadline = steady_time() + $CREATE_CONFLICT_POLL_BUDGET_SECONDS;
+   my $deadline = _create_clock() + $CREATE_CONFLICT_POLL_BUDGET_SECONDS;
    my @delays = @{$CREATE_CONFLICT_POLL_DELAYS};
    my $reason = 'no container holds the name';
    my ( $poll, $finish );
@@ -1665,9 +1701,9 @@ sub _create_confirm_ownership ($self, $cb) {
    $poll = sub {
       return $finish->( 'unknown', "$reason, and no inspection attempts remain" ) unless @delays;
 
-      Mojo::IOLoop->timer( shift(@delays) => sub (@) {
+      $PROVIDER->{'timer'}->( shift(@delays), sub () {
          return unless $finish;
-         my $remaining = $deadline - steady_time();
+         my $remaining = $deadline - _create_clock();
          return $finish->( 'unknown', "$reason within the name-conflict inspection budget" )
             if $remaining <= 0;
 
@@ -2194,6 +2230,8 @@ sub _create_track ($self, $promise, $onSettled = sub {}, $lock = undef) {
 sub create ($self, $cb) {
    my $id = $self->id();
 
+   _create_provider_required();
+
    my $lock = tryLockFile( _create_lock_path($id) );
    unless ($lock) {
       $cb->( undef, Exception->new( 'msg' => "Reservation '$id' already has a create in progress; refusing a duplicate create" ) );
@@ -2341,6 +2379,8 @@ sub _create_adopt_only ($self, $prepError) {
 # later succeeds, which lands in createStatus as always. The lock is held for the resumed
 # chain's whole lifetime by reconcile_create/_create_track, released only when it settles.
 sub reconcile_one ($class, $id, $cb = sub {}) {
+   _create_provider_required();
+
    my $lock = tryLockFile( _create_lock_path($id) );
    unless ($lock) {
       $cb->();

@@ -1087,6 +1087,16 @@ App::Shutdown::configure(
    'clock' => \&steady_time,
    'log'   => sub ($message) { flog($message) },
 
+   # The loop's accept limit: Mojo::Server::Prefork sets it on each worker it spawns, to its own
+   # 'accepts', and the loop counts down from it on every accepted connection, stopping the
+   # worker gracefully at zero. A limit of 0 stops the count. App::Shutdown's hold sets and
+   # restores it.
+   'accept_limit' => sub (@limit) {
+      return Mojo::IOLoop->singleton->max_accepts unless @limit;
+      Mojo::IOLoop->singleton->max_accepts( $limit[0] );
+      return;
+   },
+
    # The drain waits synchronously, by pumping the reactor from inside the finish handler below
    # - not by registering a timer that waits after that handler returns.
    # Mojo::IOLoop::stop_gracefully stops the reactor the moment the handler returns unless an
@@ -1109,6 +1119,14 @@ App::Shutdown::configure(
       Mojo::IOLoop->singleton->reactor->one_tick;
       return;
    },
+);
+
+# The asynchronous primitives Reservation's create chain takes from this process
+# (Reservation::provider): Util's timer on the shared loop, and App::Shutdown's recycling hold.
+# Pre-fork, so every worker inherits the same provider.
+Reservation::provider(
+   'timer' => \&Util::loop_timer,
+   'hold'  => \&App::Shutdown::hold,
 );
 
 # Graceful exit handler - refuses new creates and manually-invoked hook runs (the

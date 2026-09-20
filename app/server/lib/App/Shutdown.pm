@@ -6,15 +6,16 @@
 #
 # Deliberately free of any Mojo dependency: everything time-, reactor- and log-shaped is injected
 # by configure() below. bin/app-server supplies the production implementations (Mojo::Util's
-# steady_time, a reactor tick, Util::flog); a test supplies a synthetic clock and tick and
-# collects the log lines. The module knows only that a tick may make progress and that the clock
-# advances monotonically.
+# steady_time, a reactor tick, the loop's accept limit, Util::flog); a test supplies a synthetic
+# clock, tick and limit and collects the log lines. The module knows only that a tick may make
+# progress, that the clock advances monotonically and that a limit of 0 stops the loop counting
+# accepts.
 package App::Shutdown;
 
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(configure begin_shutdown is_shutting_down admit drain graceful_timeout_for);
+our @EXPORT_OK = qw(configure begin_shutdown is_shutting_down admit drain graceful_timeout_for hold);
 
 # Seconds by which a drain under a finite ceiling stops short of the ceiling itself. The manager
 # kills the worker at the ceiling regardless; stopping this much earlier is what lets the worker
@@ -50,10 +51,37 @@ my $SHUTTING_DOWN = 0;
 # Keys: ceiling (seconds after which the manager kills this worker, or undef for an unlimited
 # drain), obligations (a sub returning { creates => [ids], hooks => [ids] }), clock (a sub
 # returning monotonic seconds), tick (a sub running one round of whatever makes those obligations
-# progress), log (a sub taking one message).
+# progress), log (a sub taking one message), accept_limit (a sub returning the loop's accept
+# limit when called with no argument and setting it when called with one).
 sub configure (%opts) {
    %ENVIRONMENT = %opts;
    return;
+}
+
+# Holds against this worker being recycled, and the loop's accept limit as it stood before the
+# first of them was taken. Mojo::Server::Prefork replaces a worker once its loop has accepted the
+# worker's quota of connections, by having the loop stop gracefully. A hold keeps the loop from
+# counting accepts, so the worker cannot be recycled from under whatever holds it.
+my $HOLDS = 0;
+my $KEPT_LIMIT;
+
+# Takes a hold and returns a sub that releases it. The first hold reads the loop's accept limit,
+# keeps it and sets 0, which stops the loop counting accepts; the last release restores what was
+# kept, and the count the loop had already begun resumes where it stood, so a worker past its
+# quota stops gracefully at its next accept, after the chain. A release sub releases once; a
+# later call does nothing.
+sub hold () {
+   die "App::Shutdown::hold called before configure\n" unless $ENVIRONMENT{'accept_limit'};
+   if ( $HOLDS++ == 0 ) {
+      $KEPT_LIMIT = $ENVIRONMENT{'accept_limit'}->();
+      $ENVIRONMENT{'accept_limit'}->(0);
+   }
+   my $released = 0;
+   return sub () {
+      return if $released++;
+      $ENVIRONMENT{'accept_limit'}->($KEPT_LIMIT) if --$HOLDS == 0;
+      return;
+   };
 }
 
 # The graceful_timeout to give Mojo::Server::Prefork for a worker draining under $ceiling. Both

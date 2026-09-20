@@ -194,9 +194,9 @@ the template for the rest.
 process depends on it. Process memory holds nothing that a later process needs.
 
 **P6. Reservation.pm is domain logic and owns no framework dependency.** Asynchronous primitives
-it needs, a timer and a monotonic clock, are provided to it by the process that loads it. The
-create chain's `Mojo::Promise` spine and its ownership-confirmation `Mojo::IOLoop` timer are the
-current exceptions to this principle.
+it needs, a timer and the recycling hold, are provided to it by the process that loads it
+(`Reservation::provider`); its monotonic clock is Perl's own. The create chain's `Mojo::Promise`
+spine is the current exception to this principle.
 
 ## Decision
 

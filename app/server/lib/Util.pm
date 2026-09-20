@@ -4,7 +4,7 @@ use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = ( qw(
-   flog wlog once
+   flog wlog once loop_timer
    get_config
    trim is_true
    call_socket_api_sync call_socket_api call_socket_json_api docker_container_path_exists docker_exec
@@ -98,6 +98,14 @@ sub once ($label, $cb) {
       wlog($line);
       return;
    };
+}
+
+# Runs $cb once, with no arguments, $delay seconds from now on this process's event loop, and
+# returns the loop's id for the timer. The loop passes its own timer callbacks the loop object;
+# that argument stops here, so a consumer's signature can say it takes nothing. This is the
+# timer a process installs for Reservation's create chain (Reservation::provider).
+sub loop_timer ($delay, $cb) {
+   return Mojo::IOLoop->timer( $delay => sub (@) { $cb->() } );
 }
 
 sub sanitize_sensitive_text ($text) {

@@ -30,9 +30,14 @@ local *Reservation::update_container_info = sub {};
 # deliberately make compiling it fail, which override this themselves.
 local *Reservation::cmdline_json = sub (@) { return { Image => 'img:1' }; };
 
-# What these tests assert about the conflict inspection is how many lookups it makes and what it
-# concludes from them, not how long it waits in between.
-local $Reservation::CREATE_CONFLICT_POLL_DELAYS = [ 0, 0, 0 ];
+# The conflict inspection's waits are the provider's timer. This one records each delay asked
+# for and fires at once, so what these tests assert about the inspection is how many lookups it
+# makes, at what delays, and what it concludes from them, not how long it waits in between.
+my @timerDelays;
+Reservation::provider(
+   'timer' => sub ( $delay, $cb ) { push @timerDelays, $delay; $cb->(); return scalar @timerDelays; },
+   'hold'  => sub () { return sub { }; },
+);
 # Retry immediately by default, so a test driving consecutive attempts does not wait out a real
 # cooldown; the subtest that tests the cooldown itself restores a real one.
 local $Reservation::CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS = 0;
@@ -187,6 +192,7 @@ subtest 'a 409 whose name never appears stays unresolved, then succeeds once fre
          'create' => [ responds( 409, '' ) ],
       );
       seed('creating');
+      @timerDelays = ();
 
       my $run = reconcile();
       ok( unresolved( $run->{'settled'}[0]{'err'} ), 'a rolled-back conflict is unresolved' );
@@ -195,6 +201,8 @@ subtest 'a 409 whose name never appears stays unresolved, then succeeds once fre
          'conflict with no owner: the inspection only looks, it never re-POSTs' );
       is( scalar( grep { m{^/containers/json} } @calls ), 4,
          'conflict with no owner: one lookup before the create, then the bounded inspection' );
+      is_deeply( \@timerDelays, $Reservation::CREATE_CONFLICT_POLL_DELAYS,
+         'conflict with no owner: each inspection lookup waits its configured delay' );
    }
 
    my @retry;
@@ -785,8 +793,10 @@ subtest 'each ownership-confirmation lookup is capped to what remains of the ins
       return $path =~ m{^/containers/create} ? responds( 409, '' )->($cb) : holds(undef)->($cb);
    };
    seed('creating');
+   @timerDelays = ();
    reconcile();
    is( scalar @timeouts, 4, 'one preflight lookup, then the bounded inspection issues its three' );
+   is_deeply( \@timerDelays, $Reservation::CREATE_CONFLICT_POLL_DELAYS, 'each at its configured delay' );
    ok( !defined( $timeouts[0] ), 'the preflight lookup runs under no inspection budget' );
    ok( ( grep { defined($_) && $_ > 0 && $_ <= 2 } @timeouts[ 1 .. 3 ] ) == 3,
       'every inspection lookup carries a positive timeout within the budget' );

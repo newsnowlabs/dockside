@@ -63,10 +63,18 @@ use Mojo::IOLoop;
 
 use Util qw(flog call_socket_api);
 use Data qw($CONFIG);
+use Reservation;   # provider() below only; every reservation read and write goes through the
+                    # EventDaemon modules
 use EventDaemon::ContainerSync qw(update onEvent record_all_started_at);
 use EventDaemon::LaunchDispatch qw(begin_shutdown drain_complete);
 use EventDaemon::LaunchReadiness qw(check_pending_launches);
 use EventDaemon::LaunchRecovery qw(check_launch_recovering restart_recovery_sweep);
+
+# The timer Reservation's timed work takes from this process, Util's timer on this process's
+# own loop (Reservation::provider). No hold is installed: this process is never recycled and
+# never drives a create chain, and a chain entry here dies for the missing entry rather than
+# starting a chain this process could not drive to the end.
+Reservation::provider( 'timer' => \&Util::loop_timer );
 
 my $SIGNAL_RECEIVED = 0;
 my $STOP_EVENT_LOOP = sub { };
