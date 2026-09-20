@@ -11,7 +11,7 @@ use URI::Escape;
 use Mojo::IOLoop;
 use Mojo::Promise;
 use Mojo::Util qw(steady_time);
-use Reservation::Mutate qw(update load_clean_map record_hook_history resolve_hook_status hook_claim_if_not_running);
+use Reservation::Mutate qw(update load_clean_map resolve_hook_status hook_claim_if_not_running);
 # Not imported: Reservation::Mutate's own add_router/remove_router/replace_router - Reservation.pm
 # defines its OWN methods of the same name below (the public API other code calls), which call
 # Reservation::Mutate's versions fully-qualified. Importing both under the same bare names into
@@ -2513,12 +2513,13 @@ sub _hook_env ($self, $user) {
 # name genuinely absent from a writer's own payload is never touched on disk, no matter how
 # stale that writer's own snapshot of it is.
 #
-# hooks.history is a bounded, oldest-first array of past invocations across all names.
-# Deliberately NOT maintained via store()/store_fields at all - cloneHash only recurses into
-# hashes; an array value is compared by reference and replaced wholesale, so two concurrent
-# appends via that path would race and the loser's row would simply be lost. record_hook_history()
-# (Reservation::Mutate) instead re-reads the reservation fresh under its own atomic mutate()
-# lock, appends, evicts, and writes back - safe under genuine concurrency.
+# hooks.history is a bounded, oldest-first array of past invocations across all names, one row
+# per invocation. Deliberately NOT maintained via store()/store_fields at all - cloneHash only
+# recurses into hashes; an array value is compared by reference and replaced wholesale, so two
+# concurrent appends via that path would race and the loser's row would simply be lost. Every
+# row is written by Reservation::Mutate::_append_hook_history inside the same mutate() lock, and
+# the same write, as the status entry it records becoming terminal - safe under genuine
+# concurrency, and never one side of the pair without the other.
 
 # Package (not lexical) so docker-event-daemon's own _launch_dispatch_hook_stage - which needs
 # the identical cap for its own hook_claim_if_not_running call, dispatching the same two
@@ -2698,20 +2699,23 @@ sub _hook_status_update_running ($self, $name, $expectedInvocationId, $fields, $
 #
 # Goes through Reservation::Mutate::resolve_hook_status, not _hook_status_store_one - the merge
 # against the entry's prior fields happens fresh under the reservations-db lock, not against
-# this process's own possibly-stale in-memory copy, and any 'pendingStartCount' the entry
-# carries (see hook_status_started) is committed in that same locked write, not as a second,
-# separate one that could land only one side of if a crash landed between them.
+# this process's own possibly-stale in-memory copy, and the entry's history row and any
+# 'pendingStartCount' it carries (see hook_status_started) are committed in that same locked
+# write, not as a second, separate one that could land only one side of if a crash landed
+# between them. This is the one write an invocation's outcome gets: it either lands whole or
+# throws, and a caller that catches the throw knows nothing of the outcome reached disk.
 #
 # $expectedInvocationId, when the caller was resolving a claim it made earlier (see
 # hook_claim_if_not_running/hook_status_started), fences this write against a claim it no longer
 # owns - see Reservation::Mutate::_resolve_hook_entry. Returns true if the write was applied,
 # false if rejected as stale. Either way, $self's own in-memory copy is synced to whatever is now
 # genuinely current - on rejection that's the superseding invocation's own entry, not $fields -
-# but the history append and the caller's own post-completion continuation (an $on_settled or
-# $cb) apply only when the write itself was applied: a rejected write has nothing of this
-# invocation's own left to report.
+# but the caller's own post-completion continuation (an $on_settled or $cb) applies only when
+# the write itself was applied: a rejected write has nothing of this invocation's own left to
+# report.
 sub hook_status_completed ($self, $name, $fields, $expectedInvocationId = undef) {
-   my ( $applied, $entry, $startCount ) = resolve_hook_status( $self->id(), $name, $fields, $expectedInvocationId );
+   my ( $applied, $entry, $startCount ) =
+      resolve_hook_status( $self->id(), $name, $fields, $HOOK_HISTORY_MAX, $expectedInvocationId );
    ( $self->{'data'}{'hooks'} //= {} )->{'status'}{$name} = $entry;
    $self->{'data'}{'startCount'} = $startCount if defined $startCount;
 
@@ -2722,7 +2726,6 @@ sub hook_status_completed ($self, $name, $fields, $expectedInvocationId = undef)
       return 0;
    }
 
-   record_hook_history($self->id(), { %$entry }, $HOOK_HISTORY_MAX);
    return 1;
 }
 

@@ -4,7 +4,7 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map record_hook_history resolve_hook_status hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
+our @EXPORT_OK = qw(update load_clean_map resolve_hook_status hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
 
 use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync tryLockFile);
 use Exception;
@@ -187,14 +187,28 @@ sub load_clean_map ($class, @containerIds) {
    );
 }
 
-# record_hook_history:
+# _append_hook_history:
 #
-# Atomically append $entry to reservation $id's data.hooks.history array, evicting oldest-first
-# down to at most $cap rows once appending would exceed it - but never a row still recording a
-# running invocation (item B's storage-model rule: an unrelated, more-frequent *other* hook
-# name's invocations must never push a genuinely still-running row out from under it, so the
-# array can transiently exceed $cap while enough invocations are genuinely in flight at once -
-# expected, not a bug).
+# Records $entry, a hooks.status entry that has just been made terminal, in $data's
+# hooks.history array. Called only from inside a mutate() closure, on the locked, freshly re-read
+# $data whose status entry the caller has just resolved, so the row and the terminal entry are
+# one write: a crash or a write failure leaves either both or neither, never a resolved entry
+# with no row for it or a row for an entry still reading 'running'. Nothing outside a mutate()
+# closure appends to this array - Reservation::store()'s cloneHash-based merge (Util.pm)
+# compares an array by reference and replaces it wholesale, so two writers appending through
+# it would race and the loser's row would be lost.
+#
+# The array holds one row per invocation. A row already present for $entry's invocationId is
+# replaced where it stands rather than joined by a second: two writers can resolve the same
+# invocation - a reader that settled it from Docker, and the live completion arriving a moment
+# later - and the row ends up carrying whichever wrote last, which is also what the status entry
+# carries. A row with no invocationId is only ever appended.
+#
+# Evicts oldest-first down to at most $cap rows once appending would exceed it - but never a
+# row still recording a running invocation (item B's storage-model rule: an unrelated,
+# more-frequent *other* hook name's invocations must never push a genuinely still-running row
+# out from under it, so the array can transiently exceed $cap while enough invocations are
+# genuinely in flight at once - expected, not a bug).
 #
 # Eligibility is decided on 'state', which is what that rule is actually about, and not on
 # whether a row carries an exitCode: a row can be perfectly terminal and still have none, and
@@ -203,41 +217,33 @@ sub load_clean_map ($class, @containerIds) {
 # 'timedOut'. Making those ineligible would leave the array unable to shrink whenever they
 # outnumber the rows that do carry an exitCode, which for an ordinary launch cycle they always
 # do, and $cap would then bound nothing.
-#
-# Deliberately its own atomic mutator, bypassing Reservation::store()'s usual whole-record
-# update() - update()'s cloneHash-based merge (Util.pm) recurses safely into nested *hashes*
-# (data.hooks.status, keyed by hook name, merges key-by-key across concurrent dispatches
-# updating different names, each blind to the other's simultaneous write), but an *array*
-# value is only ever compared by reference and replaced wholesale - two concurrent appends
-# via that path would race, and the loser's row would simply be lost. This function instead
-# re-reads the reservation fresh under mutate()'s own exclusive lock, appends, evicts, and
-# writes back - safe under genuine concurrency, unlike a read-append-store() round trip
-# through a possibly-stale in-memory copy of the whole array.
-sub record_hook_history ($id, $entry, $cap) {
-   return mutate(
-      sub ($by_id, $by_name) {
-         my $reservation = $by_id->{$id} or return 0;
-         my $data = $reservation->{'data'} //= {};
-         my $hooks = $data->{'hooks'} //= {};
-         my $history = $hooks->{'history'} //= [];
+sub _append_hook_history ($data, $entry, $cap) {
+   my $history = ( $data->{'hooks'} //= {} )->{'history'} //= [];
 
-         push(@$history, $entry);
-
-         while( @$history > $cap ) {
-            my $evictIndex;
-            for my $i ( 0 .. $#$history ) {
-               if( ( $history->[$i]{'state'} // '' ) ne 'running' ) {
-                  $evictIndex = $i;
-                  last;
-               }
-            }
-            last unless defined $evictIndex;
-            splice(@$history, $evictIndex, 1);
-         }
-
-         return 1;
+   my $invocationId = $entry->{'invocationId'};
+   if ( defined($invocationId) && length($invocationId) ) {
+      for my $i ( 0 .. $#$history ) {
+         next unless ( $history->[$i]{'invocationId'} // '' ) eq $invocationId;
+         $history->[$i] = $entry;
+         return;
       }
-   );
+   }
+
+   push(@$history, $entry);
+
+   while( @$history > $cap ) {
+      my $evictIndex;
+      for my $i ( 0 .. $#$history ) {
+         if( ( $history->[$i]{'state'} // '' ) ne 'running' ) {
+            $evictIndex = $i;
+            last;
+         }
+      }
+      last unless defined $evictIndex;
+      splice(@$history, $evictIndex, 1);
+   }
+
+   return;
 }
 
 ################################################################################
@@ -396,7 +402,7 @@ sub replace_router ($id, $name, $routerDef, $explicitAccessLevel, $defaultAccess
 # Returns ($isLive, $healedFields): $isLive true means genuinely still running - the caller must
 # not touch this slot. $healedFields is the ('state', and 'exitCode' where known) fields
 # describing how a stale $existing actually ended, for the caller to apply via
-# _resolve_hook_entry below and record_hook_history; undef if $existing was already terminal,
+# _resolve_hook_entry below and _append_hook_history; undef if $existing was already terminal,
 # absent, or genuinely live (nothing to heal either way). Deliberately not a full merged entry -
 # only _resolve_hook_entry ever combines these fields with $existing, so there is exactly one
 # place that does, and it's the one place that also knows about a pending startCount commit.
@@ -437,7 +443,7 @@ sub _hook_entry_liveness ($existing) {
 # merged onto whatever's currently persisted for $name, exactly as
 # Reservation::hook_status_completed's own merge used to do - the only difference is this reads
 # $existing fresh from $data rather than from a caller's possibly-stale in-memory copy, the same
-# correctness reasoning record_hook_history already relies on for the same class of risk.
+# correctness reasoning _append_hook_history already relies on for the same class of risk.
 #
 # If $existing carries 'pendingStartCount' (set by docker-event-daemon's own
 # _launch_dispatch_prep at dispatch time - see its comment) and $fields resolves the entry to
@@ -476,20 +482,20 @@ sub _resolve_hook_entry ($data, $name, $fields, $expectedInvocationId = undef) {
 
 # Reservation::hook_status_completed's own locked mutator - see _resolve_hook_entry above for
 # what "resolve" means here, including the pending startCount commit and $expectedInvocationId
-# fencing. Returns ($applied, $entry, $startCount): $applied is false when the write was
-# rejected as stale, in which case $entry is whatever is genuinely current, not this call's own
-# $fields; $entry is for the caller to sync onto its own in-memory copy, and (only when
-# $applied) to pass to record_hook_history (a separate, sequential mutate() call - see
-# hook_claim_if_not_running's own comment on why a second one can't nest inside this one);
-# $startCount (the record's current value once this call returns, whether or not it just
+# fencing. An applied resolution also records its history row (capped at $cap rows, see
+# _append_hook_history) in this same write. Returns ($applied, $entry, $startCount): $applied
+# is false when the write was rejected as stale, in which case $entry is whatever is genuinely
+# current, not this call's own $fields; $entry is for the caller to sync onto its own in-memory
+# copy; $startCount (the record's current value once this call returns, whether or not it just
 # changed) for the caller to sync onto its own in-memory copy too.
-sub resolve_hook_status ($id, $name, $fields, $expectedInvocationId = undef) {
+sub resolve_hook_status ($id, $name, $fields, $cap, $expectedInvocationId = undef) {
    my ( $applied, $resolved, $startCount );
    mutate(
       sub ($by_id, $by_name) {
          my $reservation = $by_id->{$id} or return 0;
          my $data = $reservation->{'data'} //= {};
          ( $applied, $resolved ) = _resolve_hook_entry( $data, $name, $fields, $expectedInvocationId );
+         _append_hook_history( $data, { %$resolved }, $cap ) if $applied;
          $startCount = $data->{'startCount'};
          return 1;
       }
@@ -546,11 +552,9 @@ sub update_running_hook ($id, $name, $expectedInvocationId, $fields, $incrementS
 # too, when a profile's hooks entry sets "manual": true on them).
 #
 # A self-heal here (finding a stale entry and resolving it 'done'/'failed'/'aborted' before
-# claiming the slot fresh) also needs a history-array append, exactly like hook_is_running's own
-# self-heal does via hook_status_completed - done as a separate, sequential record_hook_history
-# call *after* this mutate() returns (nesting a second mutate() call inside this one's own
-# closure would try to flock() the same file twice from this process and deadlock - mutate()'s
-# lock is not reentrant).
+# claiming the slot fresh) records the healed entry's history row inside this same mutate()
+# closure, exactly as hook_is_running's own self-heal does through hook_status_completed, so
+# the heal and the claim that follows it are one write.
 #
 # Returns the claimed entry (a hashref) if this call won and should proceed to dispatch, or
 # undef if another invocation already owns $name. mutate() only ever operates on a fresh,
@@ -568,7 +572,6 @@ sub update_running_hook ($id, $name, $expectedInvocationId, $fields, $incrementS
 # so it can never be stale by construction.
 sub hook_claim_if_not_running ($id, $name, $logPath, $cap, $invocationId) {
    my $claimedEntry;
-   my $healedEntry;
 
    mutate(
       sub ($by_id, $by_name) {
@@ -579,7 +582,8 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap, $invocationId) {
          my ( $isLive, $healedFields ) = _hook_entry_liveness( $status->{$name} );
          return 0 if $isLive;
          if ( $healedFields ) {
-            ( undef, $healedEntry ) = _resolve_hook_entry( $data, $name, $healedFields );
+            ( undef, my $healedEntry ) = _resolve_hook_entry( $data, $name, $healedFields );
+            _append_hook_history( $data, { %$healedEntry }, $cap );
             # Falls through to claim the now-free slot below.
          }
 
@@ -595,7 +599,6 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap, $invocationId) {
       }
    );
 
-   record_hook_history( $id, { %$healedEntry }, $cap ) if $healedEntry;
    return $claimedEntry;
 }
 
@@ -620,7 +623,6 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap, $invocationId) {
 sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
    my $written = {};
    my $startCount;
-   my @healedEntries;
 
    mutate(
       sub ($by_id, $by_name) {
@@ -639,7 +641,7 @@ sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
             # depend on anything ever reading it back from history.
             if ( $healedFields ) {
                ( undef, my $healedEntry ) = _resolve_hook_entry( $data, $name, $healedFields );
-               push( @healedEntries, $healedEntry );
+               _append_hook_history( $data, { %$healedEntry }, $cap );
             }
             $status->{$name} = $written->{$name} = { 'name' => $name, 'state' => 'pending' };
          }
@@ -648,7 +650,6 @@ sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
       }
    );
 
-   record_hook_history( $id, { %$_ }, $cap ) for @healedEntries;
    return ( $written, $startCount );
 }
 

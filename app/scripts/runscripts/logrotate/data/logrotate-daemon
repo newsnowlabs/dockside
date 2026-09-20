@@ -8,7 +8,7 @@
 # Prune old hook-invocation log files (tmpPath/r-<id>-hook-<invocationId>.log). These are
 # one-shot/static, not growing, so logrotate itself is the wrong tool for them - age-based
 # pruning here instead covers both: history-evicted logs from a still-live reservation
-# (Reservation::Mutate's record_hook_history caps the JSON history array, not the log files
+# (Reservation::Mutate's _append_hook_history caps the JSON history array, not the log files
 # evicted entries point at) and logs orphaned by reservation removal (which never touches
 # tmpPath). Glob is narrow enough to leave tmpPath/r-<id>.lock (each reservation's own create()
 # ownership lock file - docs/adr/0007-create-restart-recovery.md's "Revision 1" section, cleaned

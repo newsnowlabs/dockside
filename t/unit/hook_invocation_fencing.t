@@ -45,7 +45,7 @@ subtest 'resolve_hook_status rejects a completion whose invocationId no longer o
    } });
 
    my ( $applied, $entry, $startCount ) = Reservation::Mutate::resolve_hook_status(
-      'review', 'lifecycle:start', { 'state' => 'done', 'exitCode' => 0 }, 'old-invocation' );
+      'review', 'lifecycle:start', { 'state' => 'done', 'exitCode' => 0 }, 100, 'old-invocation' );
    is( $applied, 0, 'a stale invocationId is rejected' );
    is( $entry->{'state'}, 'running', 'the entry returned is the current, unresolved one' );
    is( $entry->{'invocationId'}, 'new-invocation', 'ownership is reported as the current invocation' );
@@ -55,7 +55,7 @@ subtest 'resolve_hook_status rejects a completion whose invocationId no longer o
       'persisted entry is untouched' );
 
    ( $applied, $entry, $startCount ) = Reservation::Mutate::resolve_hook_status(
-      'review', 'lifecycle:start', { 'state' => 'done', 'exitCode' => 0 }, 'new-invocation' );
+      'review', 'lifecycle:start', { 'state' => 'done', 'exitCode' => 0 }, 100, 'new-invocation' );
    is( $applied, 1, 'the current invocationId is accepted' );
    is( $entry->{'state'}, 'done', 'the write is applied' );
    is( $startCount, 2, 'pendingStartCount is committed once the owning invocation resolves it' );
