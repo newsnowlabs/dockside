@@ -145,14 +145,14 @@ sibling directory), whatever it is. If something relevant lives outside this rep
 the point that's actually relevant here directly, in this repo's own words, rather than gesturing
 at such non-repo files.
 
-## Sweep for violations of the two rules above before committing
+## Sweep for violations of the rules above before committing
 
 Before committing non-trivial work — not only for a large branch-landing effort — consider
-running a compliance sweep of the changed files against the two rules above (no narrative
-history in comments; reference only this repo's own files). Judge each file by its actual
-meaning rather than a keyword search: a keyword list misses paraphrased narrative, and can only
-search for an external reference by a name already known in advance, which is exactly the case a
-genuine violation defeats. See `docs/developing/curated-merge-process.md`'s "Compliance sweep"
+running a compliance sweep of the changed files against the rules above (no narrative history in
+comments; reference only this repo's own files; fix commits self-contained). Judge each file by
+its actual meaning rather than a keyword search: a keyword list misses paraphrased narrative, and
+can only search for an external reference by a name already known in advance, which is exactly
+the case a genuine violation defeats. See `docs/developing/curated-merge-process.md`'s "Compliance sweep"
 section for the full methodology — reading full files inside disposable per-subagent context so
 only a compact findings report survives, parallelised by area, on a cheaper model for the bulk
 pass — which applies just as well to an ordinary feature branch as to a large curated landing.
