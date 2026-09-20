@@ -193,8 +193,10 @@ $CONFIG_FILES = {
          $CONFIG->{'appServer'}{'maxRequestSize'} //= 0;
          # create's own restart-recovery/graceful-exit design - see
          # docs/adr/0007-create-restart-recovery.md. reconcileIntervalSeconds is the per-worker
-         # periodic reconciler's own recheck cadence (each tick re-runs the same sweep under a
-         # single process-wide flock, so only one worker's tick actually does the work).
+         # periodic reconciler's own recheck cadence: every worker's tick runs the same candidate
+         # sweep, and each candidate is claimed with its own non-blocking lock
+         # (Reservation::reconcile_one), so whichever worker reaches a reservation first
+         # reconciles it and the others skip it.
          $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 300;
 
          # shutdownGraceSeconds is the ceiling a shutting-down worker's drain waits under, and
