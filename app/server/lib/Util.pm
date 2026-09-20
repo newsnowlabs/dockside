@@ -240,9 +240,10 @@ sub async_ua_in_flight_count () { return scalar keys %ASYNC_UA_IN_FLIGHT; }
 # Non-blocking sibling of call_socket_api_sync above - never blocks the caller's own event loop.
 # Same $opts/conventions (method/json/inactivity_timeout/request_timeout/headers/http+unix://
 # transport) - this replicates call_socket_api_sync's own behavior for a non-blocking caller, it does
-# not redefine it. 'on_read' (streamed consumption) is one exception: only this async form
-# supports it - every real streamed-response caller already goes through here, and the blocking
-# form's own 'on_read' branch was dead code, removed above. $cb->($result, $error) fires exactly
+# not redefine it. 'on_read' (streamed consumption) and 'on_request_sent' (see below) are the two
+# exceptions: only this async form supports them - every real streamed-response caller already
+# goes through here, and the blocking form has no connection to observe before its result.
+# $cb->($result, $error) fires exactly
 # once, whenever the call
 # settles: $result is the response object (call_socket_api_sync's own return value) whenever one
 # exists - including a non-2xx HTTP response, e.g. a 404, exactly as call_socket_api_sync's own
@@ -347,6 +348,38 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
          return if $consumed;
          $consumerError //= $@;
          flog("call_socket_api: on_read consumer failed for $path: " . format_caught_error($@));
+      });
+   }
+
+   # 'on_request_sent' is called once, with no arguments, when every byte of the request has
+   # been written to the socket. The request's 'finish' event (Mojo::Message) is emitted while
+   # its last chunk is being generated, inside the user agent's own write step, which queues that
+   # chunk on the connection's stream only after the event returns; so the check waits for the
+   # next reactor tick, by which time the chunk is queued and, as a rule, written, and then
+   # either fires at once, nothing being left waiting on the stream, or on the stream's 'drain'
+   # event (Mojo::IOLoop::Stream: everything queued has been written). Mojo::Transaction's
+   # 'connection' event is not that point either: it is emitted when a connection is assigned,
+   # before the request is written. For a Unix socket, written means the kernel holds the
+   # request for Docker whatever this process does next. A request that never reaches the
+   # socket, or whose connection fails before the request is written, never fires it: a call
+   # that has settled fires nothing. It is for a caller that answers its own client then rather
+   # than at completion (Reservation::action's stop). A throw from the consumer is logged and
+   # does not escape into the reactor, where it would abort the connection without settling
+   # $cb; the request goes on to settle as usual.
+   if( my $onSent = $opts->{'on_request_sent'} ) {
+      my $fired = 0;
+      my $fire  = sub (@) {
+         return if $fired++ || $settled;
+         eval { $onSent->(); 1 } and return;
+         flog("call_socket_api: on_request_sent consumer failed for $path: " . format_caught_error($@));
+      };
+      $tx->req->on(finish => sub (@) {
+         Mojo::IOLoop->next_tick( sub {
+            return if $settled;
+            my $stream = Mojo::IOLoop->stream( $tx->connection // '' );
+            return $fire->() unless $stream && $stream->bytes_waiting;
+            $stream->once(drain => $fire);
+         } );
       });
    }
 

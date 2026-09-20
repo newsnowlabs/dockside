@@ -166,10 +166,90 @@ subtest 'a user agent that cannot be constructed settles once' => sub {
    like( $settled[0][1], qr/fixture user agent failure/, 'and includes what actually went wrong' );
 };
 
+# A real local socket server for the two handoff tests below. It reads whatever arrives and,
+# once it holds a complete request, answers on a later tick, so the consumer's turn and the
+# reply's are distinct. $received is the request as the server read it.
+my $received;
+sub socket_server ( $path, $onComplete = undef ) {
+   $received = '';
+   return Mojo::IOLoop->server( path => $path, sub ( $loop, $stream, $id ) {
+      $stream->on( read => sub ( $s, $bytes ) {
+         $received .= $bytes;
+         return unless $received =~ /\r\n\r\n\z/ && !$s->{'answered'}++;
+         return $onComplete->() if $onComplete;
+         Mojo::IOLoop->timer( 0.05 => sub {
+            $s->write( "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n" => sub ($s) { $s->close_gracefully } );
+         } );
+      } );
+   } );
+}
+
+sub run_loop ($server) {
+   my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
+   Mojo::IOLoop->start;
+   Mojo::IOLoop->remove($_) for $timeout, $server;
+   return;
+}
+
+subtest 'on_request_sent fires once, with no arguments, before the reply completes the call' => sub {
+   my $server = socket_server("$tmp/server.sock");
+   my @events;
+   Util::call_socket_api( "$tmp/server.sock", '/containers/x/stop', {
+      'method'          => 'POST',
+      'on_request_sent' => sub (@a) { push @events, [ 'sent', @a ]; },
+   }, sub (@a) { push @events, [ 'settled', @a ]; Mojo::IOLoop->stop } );
+   run_loop($server);
+
+   is_deeply( [ map { $_->[0] } @events ], [ 'sent', 'settled' ], 'the consumer is called exactly once, before the completion callback' );
+   is( scalar @{ $events[0] }, 1, 'with no arguments' );
+   is( $events[-1][1] && $events[-1][1]->code, 204, 'and the call completes with the server reply' );
+   like( $received, qr{\APOST /containers/x/stop HTTP/1\.1\r\n.*\r\n\r\n\z}s, 'which answered the complete request' );
+};
+
+subtest 'the request has been handed off when on_request_sent fires: the server gets all of it even if the client then goes away' => sub {
+   # What the consumer may rely on: the kernel holds the whole request for the server. The
+   # consumer closes the client's connection the instant it is called, at once and without
+   # waiting for anything still queued (Mojo::IOLoop::Stream's close, not the loop's remove,
+   # which lets queued data drain first), as a worker exiting then would, and the server must
+   # still read the complete request. The loop runs until the server has, or the timeout gives
+   # up on it.
+   my $server = socket_server( "$tmp/server.sock", sub { Mojo::IOLoop->stop } );
+   my @events;
+   my $tx;
+   $tx = Util::call_socket_api( "$tmp/server.sock", '/containers/x/stop', {
+      'method'          => 'POST',
+      'on_request_sent' => sub { push @events, ['sent']; Mojo::IOLoop->stream( $tx->connection )->close },
+   }, sub (@a) { push @events, [ 'settled', @a ] } );
+   run_loop($server);
+
+   is_deeply( [ map { $_->[0] } @events ], [ 'sent', 'settled' ], 'the consumer fired, then the call settled' );
+   ok( defined( $events[-1][2] ), 'as a transport failure, the connection having been closed' );
+   like( $received, qr{\APOST /containers/x/stop HTTP/1\.1\r\n.*\r\n\r\n\z}s, 'and the server read the complete request regardless' );
+};
+
+subtest 'an on_request_sent consumer that throws does not prevent settlement' => sub {
+   my $server = socket_server("$tmp/server.sock");
+   my @settled;
+   my $calls = 0;
+   Util::call_socket_api( "$tmp/server.sock", '/containers/x/stop', {
+      'method'          => 'POST',
+      'on_request_sent' => sub { $calls++; die "fixture consumer failure\n" },
+   }, sub (@a) { push @settled, [@a]; Mojo::IOLoop->stop } );
+   run_loop($server);
+
+   is( $calls, 1, 'the consumer was called' );
+   is( scalar @settled, 1, 'and the callback still fires exactly once' );
+   is( $settled[0][0] && $settled[0][0]->code, 204, 'with the server reply' );
+   like( read_log(), qr/on_request_sent consumer failed for \/containers\/x\/stop/,
+      'and the failure is reported where it can be diagnosed' );
+};
+
 subtest 'a genuine transport failure settles once and cleans up after itself' => sub {
    my @settled;
+   my $sent = 0;
    my $before = Util::async_ua_in_flight_count();
-   Util::call_socket_api( "$tmp/definitely-not-a-socket", '/containers/json', {},
+   Util::call_socket_api( "$tmp/definitely-not-a-socket", '/containers/json',
+      { 'on_request_sent' => sub { $sent++ } },
       sub (@a) { push @settled, [@a]; Mojo::IOLoop->stop } );
 
    is( Util::async_ua_in_flight_count(), $before + 1,
@@ -182,6 +262,7 @@ subtest 'a genuine transport failure settles once and cleans up after itself' =>
    is( scalar @settled, 1, 'the callback fires exactly once' );
    ok( !defined( $settled[0][0] ), 'an unreachable socket has no usable result' );
    ok( defined( $settled[0][1] ), 'and is reported as an error' );
+   is( $sent, 0, 'on_request_sent never fires for a request that never reached a socket' );
    is( Util::async_ua_in_flight_count(), $before,
       'the user agent is released once the request settles' );
 };
