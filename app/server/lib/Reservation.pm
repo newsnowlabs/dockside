@@ -1085,8 +1085,12 @@ sub action ($self, $action, $args, $cb) {
    my ( $method, $path, $ok, $refusal );
 
    if ( $action eq 'stop' ) {
-      my $t = $args->{'t'} // 10;   # Docker CLI's own default stop grace period
-      ( $method, $path ) = ( 'POST', "/containers/$containerId/stop?t=$t" );
+      # A stop with no 't' of its own leaves the timeout to Docker, which then honours the
+      # container's configured stop timeout (a profile's --stop-timeout, see
+      # Reservation::Launch::cmdline_json) or its own default; 't' is sent only when the
+      # caller supplies one.
+      my $t = $args->{'t'};
+      ( $method, $path ) = ( 'POST', "/containers/$containerId/stop" . ( defined($t) ? "?t=$t" : '' ) );
       # 204 stopped, 304 already stopped, 404 already gone - all mean "not running", the goal.
       $ok = sub ($code) { $code == 204 || $code == 304 || $code == 404 };
    }
