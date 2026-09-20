@@ -134,6 +134,12 @@ $CONFIG_FILES = {
          $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 300;
          $CONFIG->{'appServer'}{'shutdownGracePeriod'} //= 90;
 
+         # A hook run's server-side time limit in seconds when the caller sets none. The only
+         # default for it: every dispatch path reads this key and none carries a fallback of
+         # its own. The container's stop grace (docker-compose.yml's stop_grace_period, or
+         # docker run's --stop-timeout) must exceed it - see docs/upgrading.md.
+         $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} //= 300;
+
          # How long a hook-invocation log file (tmpPath/r-<id>-hook-<invocationId>.log) is kept
          # before logrotate-daemon's age-based sweep deletes it - see
          # app/scripts/runscripts/logrotate/data/logrotate-daemon. Independent of

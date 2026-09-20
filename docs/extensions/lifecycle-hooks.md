@@ -131,7 +131,7 @@ Hook names fall into two kinds:
   ..
   Hook 'lifecycle:launch' on 'my-devtainer' succeeded.
   ```
-  Exit codes: `0` success, `1` the hook script failed (or aborted before it could report an exit code at all — rare, e.g. the server process itself was killed mid-run), `3` a run was already in progress, `4` the hook timed out. Pass `--timeout SECONDS` to raise the server-side time limit for hooks that take a while — the default is 120s (`hooks.defaultTimeoutSeconds` in `config.json`). `HOOK` is required — there is no default hook name.
+  Exit codes: `0` success, `1` the hook script failed (or aborted before it could report an exit code at all — rare, e.g. the server process itself was killed mid-run), `3` a run was already in progress, `4` the hook timed out. Pass `--timeout SECONDS` to raise the server-side time limit for hooks that take a while — the default is 300s (`hooks.defaultTimeoutSeconds` in `config.json`). `HOOK` is required — there is no default hook name.
 
 ### Concurrency
 

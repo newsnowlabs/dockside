@@ -2884,7 +2884,7 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
 
       @env = map { my $e = $_; $e =~ s/^--env=//; $e } $self->_hook_env($user);
 
-      $timeout     = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+      $timeout     = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'};
       $containerId = $self->containerId();
 
       open( $log, '>>', $logPath )
@@ -2960,7 +2960,10 @@ sub _hook_outcome_state ($status) {
 # `dockside hook run`): validates the request, then dispatches via dispatch_hook_exec.
 # $cb fires immediately once the claim resolves - not once the hook itself finishes; the
 # actual dispatch continues in the background, pollable via hook_status/
-# User::runContainerHookStatus.
+# User::runContainerHookStatus. A won claim answers { started => 1, name, timeout }, where
+# timeout is the run limit in force for this invocation - the request's own, or
+# $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} - so a poller sizes its wait from the one value
+# the server is enforcing rather than a default of its own; a lost claim answers { busy => 1 }.
 sub run_hook_manual ($self, $args, $cb) {
    my $name = $args->{'name'};
    die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length( $name // '' );
@@ -2985,7 +2988,7 @@ sub run_hook_manual ($self, $args, $cb) {
          unless $self->profileObject->hooks->{$name}{'manual'};
    }
 
-   my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'};
    die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
       unless $timeout =~ /^[1-9][0-9]*$/;
 
@@ -2993,7 +2996,7 @@ sub run_hook_manual ($self, $args, $cb) {
       $name, $script, { 'timeout' => $timeout },
       sub ($claimedEntry) {
          return $cb->( { 'busy' => 1 }, undef ) unless $claimedEntry;
-         return $cb->( { 'started' => 1, 'name' => $name }, undef );
+         return $cb->( { 'started' => 1, 'name' => $name, 'timeout' => 0 + $timeout }, undef );
       },
       sub ( $outcome, $err ) {
          # Nothing further to do here - dispatch_hook_exec has already persisted the

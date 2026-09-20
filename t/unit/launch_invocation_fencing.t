@@ -23,7 +23,7 @@ sub pump_until ( $cond, $limit = 5 ) {
 }
 
 my $tmp = tempdir(CLEANUP => 1);
-$CONFIG = { tmpPath => $tmp, reservationsPath => "$tmp/reservations.json", docker => { socket => 'unused' } };
+$CONFIG = { tmpPath => $tmp, reservationsPath => "$tmp/reservations.json", docker => { socket => 'unused' }, hooks => { defaultTimeoutSeconds => 5 } };
 flog({ file => "$tmp/log" });
 sub seed ($entry, $count = 1) {
    open my $fh, '>', $CONFIG->{reservationsPath} or die $!;

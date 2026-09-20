@@ -32,7 +32,7 @@
         ]
     },
     "hooks": {
-        "defaultTimeoutSeconds": 120
+        "defaultTimeoutSeconds": 300
     },
     "clientDistPath": "/home/dockside/dockside/app/client/dist",
     "docker": {

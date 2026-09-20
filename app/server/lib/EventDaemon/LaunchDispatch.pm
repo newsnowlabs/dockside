@@ -269,7 +269,7 @@ sub _launch_dispatch_exec ($reservation, $stage, $function, $user, $opts, $cb) {
       @{ $opts->{'extra_env'} // [] },
    );
 
-   my $timeout = $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} || 120;
+   my $timeout = $CONFIG->{'hooks'}{'defaultTimeoutSeconds'};
    my $containerId = $reservation->containerId();
 
    # Each dispatch carries one token through exec creation and outcome resolution. Detached

@@ -859,10 +859,12 @@ def api_control(opener, server, res_id, cmd):
 def api_hook(opener, server, res_id, name, timeout=None):
     """Dispatch a devtainer's profile-declared hook named `name` now. The hook
     runs asynchronously server-side - this call returns almost
-    immediately with the dispatch outcome: {started:1, name} once the hook has
-    been kicked off, or {busy:1} if a previous invocation of the same name was
-    already running (no docker call attempted). Use api_hook_status/
-    wait_for_hook below to learn how it actually turns out."""
+    immediately with the dispatch outcome: {started:1, name, timeout} once the
+    hook has been kicked off (timeout being the server-side run limit in force
+    for this invocation, in seconds - the caller's own if it passed one, else
+    the server's configured default), or {busy:1} if a previous invocation of
+    the same name was already running (no docker call attempted). Use
+    api_hook_status/wait_for_hook below to learn how it actually turns out."""
     url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/hook'
     params = {'name': name}
     if timeout:
@@ -1124,12 +1126,14 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
     return False
 
 
-def wait_for_hook(opener, server, res_id, name, timeout=120, interval=1.0, quiet=False):
+def wait_for_hook(opener, server, res_id, name, timeout, interval=1.0, quiet=False):
     """
     Poll a dispatched hook's status/log (api_hook_status above) until it
-    reaches a terminal state ('done' or 'aborted'), or `timeout` (+ a fixed
-    margin, mirroring the old single-blocking-call client_timeout's margin
-    over the server-side hook timeout) elapses.
+    reaches a terminal state ('done' or 'aborted'), or `timeout` plus a fixed
+    margin elapses. `timeout` is the server-side run limit in force for this
+    invocation - the dispatch response's own `timeout` - so the client never
+    gives up on a hook the server is still allowing to run; the margin covers
+    the server recording the outcome once that limit lands.
 
     Returns the read endpoint's {status, output} dict once terminal, or None
     if the client gave up waiting - a safety net only: the server's own
@@ -2620,8 +2624,12 @@ def cmd_hook_run(args):
         print(f'Hook {hook_name!r} already running on {devtainer_name!r}; try again shortly.', file=sys.stderr)
         sys.exit(3)
 
+    # The wait is sized from the limit the server reports it is enforcing, which is the only
+    # value that stays right when the server's configured default differs from this client's
+    # idea of it; a server that reports none is waited on for the default it ships with.
     try:
-        result = wait_for_hook(opener, server, res_id, hook_name, timeout=args.timeout or 120)
+        result = wait_for_hook(opener, server, res_id, hook_name,
+                               timeout=int(dispatch.get('timeout') or args.timeout or 300))
     except APIError as e:
         die(str(e))
 
@@ -3922,7 +3930,7 @@ def build_parser():
                     help="Name of the hook to run, e.g. 'lifecycle:launch', 'lifecycle:start', "
                          "or a custom hook name")
     sp.add_argument('--timeout', type=int, default=None, metavar='SECONDS',
-                    help='Server-side time limit for the hook to run (default: server-configured, currently 120s)')
+                    help='Server-side time limit for the hook to run (default: server-configured, currently 300s)')
     sp.set_defaults(func=cmd_hook_run)
 
     # ── router ─────────────────────────────────────────────────────────────────
