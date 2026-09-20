@@ -9,22 +9,25 @@
 `Reservation::create` is a three-stage `Mojo::Promise` chain (pull the image if it isn't already
 present → `POST /containers/create` → `POST /containers/{id}/start`), each stage recorded in
 `createStatus.stage` (`pulling` → `creating` → `starting` → `done`, or `failed` at any point).
-`createStatus.stage` is written once, synchronously, at the start of a stage, and never touched
-again until that stage's own async work resolves - so a reservation five minutes into a
-genuinely healthy pull and one whose driving process died four minutes ago are byte-for-byte
-identical on disk. Nothing in the persisted record distinguishes "still running" from
-"abandoned"; that fact exists only in whichever process's memory is actually driving the chain,
-and is lost the instant that process exits without writing a terminal stage. This is a real,
-routinely-triggerable gap in this repo's own normal workflow, not a hypothetical:
-`s6-svc -t /etc/service/app-server` (part of this repo's own restart matrix, run after every
-shared-lib edit), an OOM kill, or a bad deploy all trigger it.
+The stage is written once, synchronously, when a stage begins. While a pull runs the record also
+receives a layer-progress snapshot at most once a second, but that exists for the polling client's
+display: a snapshot that has stopped changing is not evidence that the driver died, since a
+healthy pull can go quiet while it waits on a registry. Nothing in the persisted record says
+whether a process is still driving the chain. That fact exists only in whichever process's memory
+is actually driving it, and is lost the instant that process exits without writing a terminal
+stage. A deliberate restart is closed by mechanism 6 below. What remains is uncontrolled death -
+an OOM kill, an uncaught exception in a worker, `s6-svc -t` or `-k` - and, with the driver alive,
+a reply lost between Docker and the driver (a socket error or timeout, or `dockerd` restarting
+mid-request), after which the driver cannot tell whether its own request took effect.
 
-What's already true independent of any of this, worth noting because it narrows the actual gap:
-the idempotency guard checks the persisted reservation record, not just an in-process flag, so a
-client retrying `dockside create` against the same reservation after a crash+restart is already
-correctly refused a duplicate. The gap is narrower than "duplicate creates are possible" - it's
-"a stuck reservation never gets un-stuck, and a container found during recovery can be adopted
-without any check that it belongs to the reservation adopting it."
+Two things narrow the gap. A client cannot retry against an existing reservation: every create
+request constructs a new reservation with a fresh id and, unless one is given, a fresh name, and a
+name still held by another record is refused by the reservation database before any Docker call
+is made. `create()`'s own refusal of a set `createStatus` is therefore defence in depth against a
+second programmatic call for the same id, not a client-facing idempotency feature. So the gap is
+not "duplicate creates are possible" - it's "a stuck reservation never gets un-stuck, and a
+container found during recovery can be adopted without any check that it belongs to the
+reservation adopting it."
 
 `docker-event-daemon` has an analogous recovery mechanism for its own launch DAG (`hooks.status`,
 a restart-recovery sweep, a recurring check for anything still genuinely in flight). That pattern
@@ -44,16 +47,156 @@ doesn't port directly to `app-server`, for a reason specific to how the two proc
 
 Recovering a stuck reservation safely also has to answer a question distinct from "where did the
 chain get to": whether a container found under the reservation's name during recovery actually
-belongs to it. Dockside-created containers carry no identity of their own beyond the name each
-create call chooses, and Docker enforces name uniqueness only at the exact-string level - so a
-recovery that blindly adopts "whatever holds this name" cannot tell its own abandoned attempt's
-container apart from an unrelated one that happens to share the name (a reservation named after
-an existing, unreserved container, or after a hex prefix of one, if the lookup used resolves id
-prefixes the way Docker's single-container endpoint does). The same ambiguity, applied to a
+belongs to it. Whatever is then done with that container - adopting it, or removing it and failing
+the reservation - begins with the same identification. Dockside-created containers carry no
+identity of their own beyond the name each create call chooses, and Docker enforces name
+uniqueness only at the exact-string level - so a recovery that blindly adopts "whatever holds this
+name" cannot tell its own abandoned attempt's container apart from an unrelated one that happens
+to share the name (a reservation named after an existing, unreserved container, or after a hex
+prefix of one, if the lookup used resolves id prefixes the way Docker's single-container endpoint
+does). The window in which a driver's death leaves such a container behind is small: `creating`
+is written, the create posted, Docker's reply read and the id written within a fraction of a
+second, and only uncontrolled death can fall inside it. A lost reply with the driver alive opens
+the same question without any death, and is the likelier way to reach it. The same ambiguity, applied to a
 chain that's still genuinely running rather than dead, is a second real hazard: every app-server
 worker sees the same on-disk non-terminal stage on every reconcile tick, so a periodic
 reconciler with no way to tell live from abandoned can just as easily misjudge a live chain and
 start a second, concurrent driver for it.
+
+## Glossary
+
+Terms are defined once here and used with exactly this meaning throughout this record. Where a
+term names a thing in the code, the code's name follows in brackets. The create chain's own terms
+(record, stage, driver, attempt, entry, first create, possible prior create, outcome classes,
+evidence) are defined under "Terms" in the state-model section, next to the rules that use them.
+Three terms here (admission, issued tail, suspension) name distinctions the drain in mechanism 6
+does not make; they are defined so that the whole area shares one vocabulary.
+
+**Processes and framework**
+
+- **app-server.** The Mojolicious HTTP service (`app/server/bin/app-server`) behind nginx. It runs
+  under `Mojo::Server::Prefork`: one **manager** process that forks and supervises **workers**;
+  each worker runs its own copy of the event loop and serves requests.
+- **docker-event-daemon.** The single, non-forking process (`app/server/bin/docker-event-daemon`)
+  that consumes Docker's `/events` stream, drives the launch DAG and runs its own event loop.
+- **Event loop / reactor.** `Mojo::IOLoop` and the reactor beneath it. Both binaries run one. All
+  asynchronous work in this area runs on it: HTTP calls to Docker, timers, promise settlement.
+- **Public API (of Mojolicious).** Attributes, events and methods documented in the module's own
+  POD. For `Mojo::Server::Prefork` (installed 9.31) that is: events `finish`, `heartbeat`, `reap`,
+  `spawn`, `wait`; attributes `accepts`, `cleanup`, `graceful_timeout`, `heartbeat_interval`,
+  `heartbeat_timeout`, `pid_file`, `spare`, `workers`; methods `check_pid`, `ensure_pid_file`,
+  `healthy`, `run`. Everything else, including any method whose name begins with an underscore
+  and any key inside the object hash, is **internal**.
+- **Graceful shutdown.** The manager receiving `SIGQUIT`. It sends each worker `SIGQUIT`, which
+  makes the worker's loop stop accepting connections and emit its `finish` event; the manager then
+  waits up to the **graceful ceiling** for each worker to exit before killing it.
+- **Graceful ceiling** (`graceful_timeout`). The one bound the framework provides: the seconds a
+  worker may take to exit after being asked to, measured by the manager, after which it is sent
+  `SIGKILL`. A single number for the whole process.
+- **Immediate stop.** The manager receiving `SIGTERM` or `SIGINT`. Every worker is sent `SIGKILL`
+  at once; nothing drains. This is Prefork's documented behaviour.
+- **Restart, in production.** The whole container stopping or restarting under `docker compose`
+  (an upgrade, a host reboot). `s6-svscan`'s shutdown cascade delivers each service the signal
+  its `down-signal` file names: `SIGQUIT` for app-server, so a graceful shutdown; `SIGTERM` for
+  the daemon, which it treats as a request to drain and exit. No production procedure runs
+  `s6-svc` against a single service.
+- **Restart, in development.** `s6-svc -r <service>` after an edit to what that service loads.
+  The same `down-signal` files apply, so app-server's is graceful here too.
+
+**Work and its accounting**
+
+- **Drain.** What a worker does between its `finish` event and its exit: it stops admitting new
+  work and waits for work it already owes. The **drain predicate** is the condition under which
+  it may exit.
+- **Admission.** The check that decides whether a request or a timer may start new work. A worker
+  that is shutting down refuses admission: the request gets a 503, the timer does nothing.
+- **In-flight registry.** A process-local table of work the process still owes. There are three:
+  create chains (`%CREATE_IN_FLIGHT`, `Reservation.pm`), hook runs whose outcome write has not
+  yet been decided (`%HOOK_DISPATCH_IN_FLIGHT`, `Reservation.pm`; released once the one attempt
+  has applied, been fenced or thrown), and the daemon's DAG dispatches
+  (`%DISPATCH_IN_FLIGHT`, `EventDaemon/LaunchDispatch.pm`). A fourth, `%ASYNC_UA_IN_FLIGHT` in
+  `Util.pm`, only keeps HTTP user agents alive and is diagnostic.
+- **Obligation.** An entry in an in-flight registry: something this process must finish, or hand
+  over durably, before it may exit.
+- **Issued tail.** The part of a create chain after a mutation has been posted to Docker and
+  before its result is durably recorded. Distinct from a pull, which may be abandoned at any time
+  because it changes nothing a later attempt cannot redo.
+- **Durable handover.** Leaving the on-disk record in a state from which any later process can
+  resume correctly, so that this process's exit loses nothing. The record is the queue.
+
+**The create chain**
+
+- **Chain.** The pull → create → start sequence that makes a reservation's container.
+- **Ownership lock.** The per-reservation `flock` (`<tmpPath>/r-<id>.lock`) that guarantees one
+  driver at a time. Kernel state: released the instant the holding process dies.
+- **Reconciler.** The per-worker sweep (`_reconcile_pass` in `bin/app-server`, running
+  `Reservation->reconcile_one`) that resumes abandoned chains every
+  `appServer.reconcileIntervalSeconds` and once at worker start.
+- **Adoption.** A resumed attempt taking over a container that an earlier attempt created, allowed
+  only on exact name plus this reservation's id label plus a usable id.
+- **Unresolved.** An attempt that ended without learning whether its mutation took effect. The
+  record keeps its stage, gains a `createStatus.unresolved` diagnostic (`attempts`, `since`,
+  `retryAfter`, `reason`), and is never expired. The next attempt after `retryAfter` finds out.
+- **Suspension.** A chain ended deliberately at a boundary where nothing has been posted, because
+  the worker is shutting down. Not a failure; the next attempt resumes.
+
+**Hooks**
+
+- **Hook run / invocation.** One execution of a profile hook inside a devtainer via Docker's exec
+  API, identified by an `invocationId`. Dispatched by the daemon (launch DAG stages) or by
+  app-server (manual runs).
+- **Claim.** The `hooks.status` entry that marks an invocation as running. A claim with no
+  `execId` older than `$HOOK_CLAIM_STALE_SECONDS` is self-healed by the next reader, which is what
+  makes a hook run survive the death of its dispatching process.
+- **Outcome write.** Persisting the invocation's final state and its history row, in one locked
+  write, attempted once. An obligation is held while the attempt is being decided and released
+  whatever its result: **applied** means it was written; **fenced** means a newer invocation
+  superseded it and the write was correctly skipped; **threw** means nothing reached disk, the
+  entry stays `running` with its `execId`, and the next reader of that entry (the status read a
+  poller repeats, the daemon's recovery sweep, or the next claim of the name) settles it from
+  Docker's exec inspection, or records `aborted` where Docker no longer has the exec.
+
+**Robustness**
+
+- **Crash safety.** The property that a process may die at any instruction without loss beyond
+  what a later process can recover from the durable record. Crash safety is the primary
+  guarantee; the drain is an optimisation of the deliberate-restart case (P1).
+- **Graceful failure.** A launch that ends in a user-visible `failed` state with a reason, leaving
+  the user to inspect and relaunch. It is the alternative to automatic recovery, not a lesser
+  outcome.
+
+## Principles
+
+**P1. Crash safety first; drain second.** The system must be correct if any process is killed at
+any moment. Given that, the drain exists only so that a routine, deliberate restart usually costs
+the user nothing. A drain that is occasionally cut short is acceptable, because what it cuts
+short is recovered by the same machinery that handles a crash.
+
+**P2. Mojolicious is used through its public API only.** Admissibility test for any code that
+touches the framework's process management: it may set documented attributes, subscribe to
+documented events and call documented methods. It may not override a method whose name begins
+with an underscore, read or write keys of the server object, or depend on the order of operations
+inside a framework method. A small subclass that meets this test is acceptable; one that does not
+is not, however useful the behaviour it buys. Where the public API cannot express a wanted
+behaviour, the behaviour is redesigned or dropped, not the rule.
+
+**P3. Every edge case gets an explicit outcome decision.** Automatic recovery is chosen only where
+its cost in code and in operator confusion is justified by how often the case occurs and how bad
+the alternative is for the user. "Fail with a clear reason and let the user relaunch" is a valid
+outcome.
+
+**P4. Model before code; tests from the model.** A change to this area produces a short model
+(states, evidence, invariants, transitions) before implementation, and its tests are derived from
+the model's transition rows. The state-model section below is the model for the create chain and
+the template for the rest.
+
+**P5. The record is the queue.** Anything a process must not lose is written to disk before the
+process depends on it. Process memory holds nothing that a later process needs.
+
+**P6. Reservation.pm is domain logic and owns no framework dependency.** Asynchronous primitives
+it needs, a timer and a monotonic clock, are provided to it by the process that loads it. The
+create chain's `Mojo::Promise` spine and its ownership-confirmation `Mojo::IOLoop` timer are the
+current exceptions to this principle.
 
 ## Decision
 
@@ -143,10 +286,11 @@ response for a container that's already running; `_create_stage_starting` accept
 `304`, matching `Reservation::action`'s own convention for the same case.
 
 **6. Graceful exit handler** (prevention, not cure - closes the gap the other mechanisms only
-clean up after). Given how routinely `app-server` gets restarted *on purpose* in this repo's
-normal workflow, refusing new creates and giving existing ones a bounded chance to finish
-reduces how often 1/2 even need to fire, for the one failure mode entirely under this codebase's
-own control.
+clean up after). A deliberate restart is the one stop entirely under this codebase's own
+control. In production it is the container stopping or restarting under `docker compose`,
+reaching `app-server` through `s6-svscan`'s shutdown cascade; in development it is a per-service
+`s6-svc -r` after a shared-lib edit. Refusing new creates and letting existing ones finish
+means 1/2 are needed only for a death nobody chose.
 
 Verified against the actual installed `Mojo::Server::Prefork`/`Mojo::IOLoop` source, not
 documentation guesswork: a **non-graceful** shutdown (`SIGTERM`/`SIGINT` to the manager) kills
@@ -160,80 +304,251 @@ original `POST /containers/create` closes almost instantly and Mojo considers th
 **while the detached promise chain is still actively running** on that worker's event loop.
 Mojo's graceful shutdown has no visibility into work that outlives the request that started it.
 
-The handler tracks in-flight `create()` chains (`Reservation->create_in_flight_count`) and, on
-the worker's `finish` event, waits up to `appServer.shutdownGracePeriod` (default 90s) for that
-count to reach zero before letting the worker actually stop; the `/containers/create` route
-itself checks a `$shuttingDown` flag at its own top and returns a clean `503` rather than
-starting a chain about to be abandoned. `shutdownGracePeriod` is deliberately coordinated
-against `Mojo::Server::Prefork`'s own `graceful_timeout` - raised from its 120s default to 150s
-in `bin/app-server`'s own construction - so the exit handler's bounded wait never races the
-manager's hard force-kill ceiling (60s of headroom).
+`App::Shutdown` tracks the worker's in-flight `create()` chains and hook runs
+(`Reservation->create_in_flight_ids`, `->hook_dispatch_in_flight_ids`) and, on the worker's
+`finish` event, drains: it waits for them to settle before letting the worker actually stop,
+with no configured ceiling by default, or up to `appServer.shutdownGraceSeconds` less a fixed
+margin when a finite ceiling is configured, logging what it is still waiting for every 30 s; the
+`/containers/create` route itself asks `App::Shutdown` for admission at its own top and returns
+a clean `503` rather than starting a chain about to be abandoned. The same value is passed to
+`Mojo::Server::Prefork`'s own `graceful_timeout`, computed once before the workers fork, so the
+worker's wait and the manager's force-kill ceiling cannot disagree. With no configured ceiling
+that timeout is a one-day backstop, kept that small because Prefork kills a worker whose
+heartbeat has gone silent at the same ceiling, so a worker hung while serving is reaped rather
+than leaked; a drain that outlasts a day is killed at it. What bounds a drain in practice is
+each hook run's own limit, each Docker call's inactivity timeout, and the container's stop
+grace.
 
 This only prevents the *deliberate-restart* case. A real crash, an OOM kill, `-k`, or
 `graceful_timeout` itself expiring all bypass it entirely by construction (nothing catches
 `SIGKILL`) - mechanisms 1/2 remain the only backstop for those.
 
-**Operational follow-on**: `app-server` ships its own `down-signal` file (content `QUIT`), read
-by both a manual `s6-svc -r` and `s6-svscan`'s own whole-container-shutdown cascade
-(`docker stop`, a host reboot) - the latter bypasses a manual `s6-svc` invocation entirely, so it
-needed its own, separately-verified mechanism to reach the same graceful path. `nginx`/
-`docker-event-daemon` carry no `down-signal` file, so both still restart via a plain `SIGTERM`.
-`CLAUDE.md`'s restart matrix and every script that restarts services
-(`dockside-self-update.sh`) use `s6-svc -r` uniformly across all three for this reason - the one
-flag whose signal `down-signal` actually governs, unlike `-t`/`-q`, which are hard-coded to their
-one named signal regardless of any per-service file.
+**Operational follow-on**: `app-server` ships its own `down-signal` file (content `QUIT`). It is
+read by `s6-svscan`'s whole-container shutdown cascade, which is the production path
+(`docker compose stop`/`restart`, a host reboot), and by a manual `s6-svc -r`, which is the
+development path (`CLAUDE.md`'s restart matrix, and the self-hosting hook
+`dockside-self-update.sh`). Both therefore reach the same graceful shutdown. `nginx`/
+`docker-event-daemon` carry no `down-signal` file, so both restart via a plain `SIGTERM`. The
+development path must use `-r`, the one flag whose signal `down-signal` governs; `-t`/`-q` are
+hard-coded to their one named signal regardless of any per-service file.
 
-### Known and unknown outcomes
+### The create chain as a state model
 
-A create chain issues mutations it may not learn the result of. The ownership lock is this
-process's state and dies with it; a request already accepted by Docker is not this process's state
-and may be carried out regardless. So the exit of the process that issued a request is not
-evidence that the request had no effect, and every outcome falls on two axes, not one:
+The mechanisms above are what make recovery possible. This section is the rule book they operate
+under: for every state a reservation can be found in, what evidence the process that finds it may
+trust, and what it must do with each thing that evidence can say. A change to the create chain is
+judged against it, and the chain's test coverage is complete when every transition row below is
+exercised.
 
-| Outcome | Meaning | Recorded as | Reconciled again? |
-|---|---|---|---|
-| Success | The mutation took effect | the stage advances, ultimately `done` | no |
-| Resolved failure | Docker refused the request, so nothing took effect | `stage: failed`, `failed: 1`, an `expiryTime` | no |
-| Unresolved | It may or may not have taken effect | the stage is kept, `failed: 0`, a `createStatus.unresolved` diagnostic, **no** `expiryTime` | yes |
+#### Terms
 
-**Anything not positively identified is unresolved.** The two directions are not symmetric:
-treating an unknown outcome as unresolved costs one later lookup, while treating it as a failure
-records an expiry that deletes the reservation - and with it the only record of a container that
-may be running. Concretely, unresolved covers a lost or timed-out response, a `2xx` whose body
-cannot be read (Docker accepted the mutation; only the id was lost), a `5xx`, any status not
-listed below, a name lookup that establishes nothing, and a Docker call that succeeded whose
-result could not be written to disk.
+- **Record.** A reservation's entry in `reservations.json`. Its `createStatus.stage` is the
+  reservation's **stage**; `createStatus.failed`, `createStatus.unresolved`, `containerId` and
+  `expiryTime` are the other fields the model reads.
+- **Driver.** The process, or `Mojo::Server::Prefork` worker, currently running a reservation's
+  create chain. There is at most one at a time, guaranteed by the ownership lock (mechanism 1).
+- **Attempt.** One run of the chain by one driver, from acquiring the lock to releasing it. A
+  fresh `create()` is an attempt; each resumption by `reconcile_one` is another.
+- **Entry.** The state a driver finds the record in when its attempt begins. There are four:
+  **fresh** (no `createStatus`), and resumed at **`pulling`**, **`creating`** or **`starting`**.
+- **First create.** A create request issued by an attempt that knows no earlier create can have
+  been issued for this reservation. A fresh entry's create is a first create, and so is the create
+  that follows a pull resumed from `pulling`.
+- **Possible prior create.** The condition of an attempt entered at `creating`: some earlier
+  attempt may have posted a create whose outcome was never recorded, and Docker may have carried
+  it out regardless of that attempt's death. The ownership lock is this process's state and dies
+  with it; a request already accepted by Docker is not this process's state and may be carried out
+  regardless. So the exit of the process that issued a request is not evidence that the request
+  had no effect.
+- **Outcome classes.** Every request ends in exactly one of: **success** (the mutation took
+  effect), **definitive failure** (Docker refused it, so nothing took effect), or **unresolved**
+  (whether it took effect cannot be established).
 
-An unresolved reservation keeps a non-terminal stage, so `reconcile_one` still resumes it, and
-carries `attempts`, `since` and `retryAfter` in its diagnostic. `retryAfter` paces the retries:
-the lock excludes a second simultaneous driver but says nothing about how soon the next may
-start, so without it a sibling worker's sweep would retry the instant the previous holder
-released the lock. Such a record is never expired or deleted by `load_clean_map`, including at
-`starting`, where a container id is already recorded and a Docker snapshot that has not caught up
-would otherwise start a deletion clock against a live container. Reconciliation is what ends the
-state - by completing the chain, or by recording a definitive failure, after which the ordinary
-cleanup rules apply.
+  | Outcome | Recorded as | Reconciled again? |
+  |---|---|---|
+  | Success | the stage advances, ultimately `done` | no |
+  | Definitive failure | `stage: failed`, `failed: 1`, `error`, an `expiryTime` | no |
+  | Unresolved | the stage is kept, `failed: 0`, a `createStatus.unresolved` diagnostic (`reason`, `attempts`, `since`, `retryAfter`), **no** `expiryTime` | yes |
 
-### Ground truth per stage
+  **Anything not positively identified is unresolved.** The two directions are not symmetric:
+  treating an unknown outcome as unresolved costs one later lookup, while treating it as a failure
+  records an expiry that deletes the reservation, and with it the only record of a container that
+  may be running.
+- **Mutation.** A request that can change Docker's state: an image pull, a container create, a
+  container start. A name lookup is not a mutation.
+- **Evidence.** A fact a driver may act on. The next section lists which facts qualify.
 
-Each non-terminal stage has a real Docker-side signal to reconcile against - no stage needs an
-ongoing "is this still happening" poll the way a live hook `execId` does. The `creating` row
-differs between a fresh create and a recovery re-entry, per mechanism 3 above.
+#### What a driver may trust
 
-| `createStatus.stage` freshly read while holding the reservation lock | Reconciliation check | Safe action |
+A driver acts only on the following. Anything else is not evidence, whatever it appears to say.
+
+1. **The stage read from a fresh reload of the record while holding the ownership lock.** Not the
+   reconciler's candidate snapshot, and not the driver's own in-memory copy from before the lock
+   was taken (mechanism 2).
+2. **A validated `200` list response to the exact-name lookup** `GET /containers/json?all=1` with
+   the filter `{"name":["^/<name>$"]}`, the name regex-escaped. It establishes **present** (one
+   entry) or **absent** (no entries). A failed request, any other status, a body that will not
+   decode, a decoded value that is not a list, or more than one entry establishes nothing.
+3. **A present entry's ownership**, read as: a usable id (a plain string of 12 to 64 lowercase hex
+   digits) and a `Labels` set that is absent, null, or a hash whose
+   `dev.dockside.reservation.id` is a plain string. With those shapes, the entry is **ours** if the
+   label equals this reservation's id, **unrelated** otherwise, including when no label is present.
+   An entry of any other shape establishes nothing.
+4. **Docker's status code to the driver's own request**, classified per operation by the table
+   under "Classification".
+5. **The result of the driver's own write to the record.** A write that throws has not happened.
+   The in-memory copy is updated only after the write returns, so a failed write leaves memory
+   agreeing with disk.
+
+Explicitly not evidence: the exit or death of any process; the ownership lock being free; the text
+of a `409` body; a name match without the id label; a lookup that is anything but a validated
+`200` list; a stage the driver tried and failed to write.
+
+#### Invariants
+
+- **I1. The stage is written before its mutation is posted.** `creating` reaches disk before a
+  create is posted, `starting` before a start. A driver whose stage write fails posts nothing and
+  ends the attempt unresolved. Consequently a record at `pulling` has never had a create posted
+  for it, and a record at `starting` always carries a `containerId`.
+- **I2. One live driver per reservation.** The lock is taken before the first write of an attempt
+  and released only after every callback that could write for that attempt has settled.
+- **I3. Adoption needs the exact name, this reservation's id label and a usable id.** Never any
+  one of those alone.
+- **I4. An outcome exists only once it is on disk.** If the write recording an outcome fails, the
+  attempt reports unresolved whatever the outcome was, because the record still says what it said
+  before the attempt.
+- **I5. At most one create is posted per attempt.** The `409` and refusal paths inspect; they never
+  post again. A second create for the same reservation can only come from a later attempt, which
+  looks the name up first.
+- **I6. A resumable record is never expired by cleanup.** A record whose stage is `pulling`,
+  `creating` or `starting` with `failed` false is left alone by `load_clean_map`, whether or not it
+  carries a `containerId` and whether or not that container is in the Docker snapshot. This
+  matters most at `starting`, where a container id is already recorded and a Docker snapshot that
+  has not caught up would otherwise start a deletion clock against a live container.
+- **I7. Every rejection on the chain reaches a handler.** No promise on the chain is dropped
+  rejected; an outcome that is not recorded is not an outcome.
+- **I8. The consumer of an attempt is notified once, after cleanup, outside the classifier.** A
+  consumer that throws cannot change the recorded outcome or be entered twice.
+- **I9. An unresolved diagnostic belongs to one stage.** Re-entering the same stage carries it
+  forward; advancing to another stage, or reaching a terminal one, clears it.
+
+#### States
+
+| Stage on disk | What may exist in Docker | What the next attempt may assume |
 |---|---|---|
-| `pulling` | `GET /images/{image}/json` | Present → proceed to `creating` as a first create (next row). Absent → re-`POST /images/create` (killing the client mid-pull aborts it server-side too - Docker does not keep pulling after the initiating connection drops - so no "pull already in progress" check is ever needed). A pull that fails created nothing, so its failure is definitive. A record at `pulling` has never issued a create, because `creating` is persisted before any create is posted, so the create that follows a resumed pull has no predecessor to account for |
-| `creating` (first create: reached from `create()` or from `pulling`, fresh or resumed) | `POST /containers/create`, with `409` confirmed by the lookup below | `2xx` with a usable id → proceed to `starting`. `400`/`404`/`422` → `failed`, user-facing reason: no earlier create can exist, so this refusal is the whole story. `409` → confirm ownership, never infer it |
-| `creating` (read at `creating` under the lock: a prior create may have been issued) | `GET /containers/json?all=1&filters={"name":["^/<name>$"]}` | Present, with a usable id, **and** `Labels."dev.dockside.reservation.id"` equals this reservation's id → proceed to `starting` with its id. A record with a usable id and any other or no matching label → `failed`, user-facing conflict reason. A record with no usable id confirms nothing, so it is treated the same as an unreadable lookup, below. Absent → run the create call, whose own `400`/`404`/`422`/`409` is confirmed the same way as the two rows below, not inferred from this one lookup - the predecessor's own request, issued by a worker now dead, may still be completing regardless of what this retry is told. Only a validated `200` list establishes absence: a failed, unreadable, non-list or multiply-matching lookup, or a record whose shape cannot be read, is unresolved and must not authorize a create |
-| `creating` with a possible prior create, `400`/`404`/`422` from its own create call, or a body that could not be compiled to attempt one | the same name lookup, polled on a bounded budget | Owned by this reservation → adopt its id and proceed to `starting`. A record with a usable id owned by anything else → `failed`. Nothing holding the name after the poll budget, or a record with no usable id → unresolved: this retry's own outcome is not evidence about a predecessor's still-completing request |
-| `creating`, `409` from the create call | the same name lookup, polled on a bounded budget | Owned by this reservation → adopt its id and proceed to `starting`. A record with a usable id owned by anything else → `failed`. Nothing holding the name, or a record with no usable id → unresolved: Docker takes a name early in create and releases it if that create fails, so an empty lookup here is a transient state and not a verdict |
-| `starting` | none needed | `POST /containers/{id}/start`; `204` or `304` both proceed to `done` (`304` is Docker's already-running answer, which re-entry depends on). `404` → `failed`, the container is confirmed gone. A `409` carries no name-collision meaning here and never enters the create path's adoption |
+| none | nothing of this reservation's | It is the first attempt. |
+| `pulling` | image partly or fully pulled | No container; no create has been posted (I1). The pull is idempotent. |
+| `creating`, no `containerId` | a container under this name with this reservation's label, if a prior create was carried out | A prior create is possible. Ownership must be established before any refusal is trusted. |
+| `creating`, with `containerId` | that container | The id was recorded but `starting` was not. The preflight lookup finds and re-adopts it. |
+| `starting` | the container, started or not | The container exists unless Docker says `404`. A start is idempotent (`304`). |
+| `done` | the container, started | Terminal. |
+| `failed` | nothing of this reservation's | Terminal; `expiryTime` set; cleanup deletes the record. |
 
-Resuming `starting` needs only the container id already on disk, so it never compiles a create
-body. That is not an optimisation: `cmdline_json()` reads the reservation's profile, and
-compiling one here would let an unrelated profile change terminate a reservation whose container
-exists and only needs starting. A `creating` re-entry whose body cannot be compiled likewise
-establishes ownership first, since adopting a container needs no body either.
+#### Classification
+
+Per request, from the driver's own response. `$err` is a transport-level failure (timeout, reset,
+closed socket).
+
+| Operation | Response | Class |
+|---|---|---|
+| any | `$err` set, or no response | unresolved |
+| any | status code missing or malformed | unresolved |
+| create | `2xx` with a usable id in the JSON body | success |
+| create | `2xx` without a usable id | unresolved: Docker accepted it; only the id was lost |
+| create | `409` | conflict: inspect ownership, never infer it |
+| create | `400`, `404`, `422` | definitive failure of **this** request |
+| start | `2xx` or `304` | success; no body needed (`304` is Docker's already-running answer, which re-entry depends on) |
+| start | `404` | definitive failure: the container is confirmed gone |
+| start | `409` | unresolved; it carries no name-collision meaning and never enters adoption |
+| any | `5xx` or any status not listed | unresolved |
+| image check | `200` | present; `404` absent; `$err` or other → the pull stage rejects definitively |
+| pull | stream error, non-2xx, `$err` | definitive failure of the pull: a pull creates no container. Killing the client mid-pull aborts it server-side too, so no "pull already in progress" check is needed |
+
+A definitive failure of *this* request becomes a definitive failure of the *reservation* only when
+no prior create is possible. With a possible prior create, it is followed by ownership
+confirmation, because it says nothing about the earlier request.
+
+#### Ownership confirmation
+
+Used after a `409`, after a refusal with a possible prior create, and when a record at `creating`
+cannot compile a create body. It polls the exact-name lookup on a bounded budget
+(`$CREATE_CONFLICT_POLL_DELAYS`, `$CREATE_CONFLICT_POLL_BUDGET_SECONDS`), capping each request's
+timeout to what remains of the budget because the ownership lock is held throughout. The poll
+exists for a predecessor's request still completing inside `dockerd` when the lookup runs; at the
+reconciler's cadence that request has long settled before any resumed attempt looks, so the poll
+is bounded insurance for an overlap the schedule makes near-impossible, not a routine path. It
+reports:
+
+| Poll result | Report |
+|---|---|
+| present, ours | adopt that id and proceed to `starting` |
+| present, unrelated | definitive failure: confirmed foreign ownership |
+| present, shape not readable | unresolved |
+| absent on every poll | unresolved: Docker takes a name early in create and releases it if that create fails, so absence within the budget is transient, not a verdict |
+| lookup established nothing | unresolved |
+
+#### Transitions
+
+Each row is one cell of entry × request × response, with the durable result of the attempt.
+"Unresolved" always means: stage kept, `failed` 0, `unresolved` diagnostic written with
+`attempts`, `since` and `retryAfter`, no `expiryTime`, lock released, consumer told unresolved.
+"Failed" always means: `stage: failed`, `failed: 1`, `error`, `expiryTime`, lock released,
+consumer told a definitive failure.
+
+**Fresh entry, and resumed `pulling`**
+
+| Request | Response | Result |
+|---|---|---|
+| image check / pull | failure of any kind | failed |
+| image check | present, or pull completes | write `creating`; if the write fails, unresolved with the record left at `pulling` and no create posted |
+| first create | success | write `containerId`, then `starting` |
+| first create | `400`/`404`/`422` | failed, no lookup at all: no earlier create can exist, so this refusal is the whole story |
+| first create | `409` | ownership confirmation |
+| first create | `$err`, `5xx`, unusable body | unresolved at `creating`; the next attempt is a `creating` entry and looks the name up first |
+
+**Resumed `creating` (a prior create is possible)**
+
+| Request | Response | Result |
+|---|---|---|
+| body compile | throws | ownership confirmation without a body: ours → adopt; unrelated → failed; otherwise unresolved. Adopting a container needs no body, and a body that cannot be compiled says nothing about whether a container was already created |
+| preflight lookup | present, ours | adopt; write `containerId`; proceed to `starting`; no create posted |
+| preflight lookup | present, unrelated | failed; no create posted |
+| preflight lookup | present, unreadable | unresolved; no create posted |
+| preflight lookup | established nothing | unresolved; no create posted |
+| preflight lookup | absent | post the create |
+| create | success | write `containerId`, then `starting` |
+| create | success, `containerId` write fails | unresolved at `creating`, no `containerId`, no start posted |
+| create | success, `starting` write fails | unresolved at `creating` with `containerId` recorded, no start posted |
+| create | `$err` or `5xx` | unresolved |
+| create | `2xx`, no usable id | unresolved; no id invented; no start |
+| create | `400`/`404`/`422` | ownership confirmation: ours → adopt; unrelated → failed; otherwise unresolved. This retry's own outcome is not evidence about a predecessor's still-completing request |
+| create | `409`, then ours appears | adopt; proceed |
+| create | `409`, unrelated | failed |
+| create | `409`, unreadable entry | unresolved |
+| create | `409`, absent throughout the budget | unresolved; a later attempt creates once the name is free |
+
+**Resumed `starting`**
+
+| Request | Response | Result |
+|---|---|---|
+| (no body compile) | body would throw | irrelevant: never compiled. `cmdline_json()` reads the reservation's profile, and compiling it here would let an unrelated profile change terminate a reservation whose container exists and only needs starting |
+| start | `204` or `304` | write `done` |
+| start | success, `done` write fails | unresolved at `starting` |
+| start | `404` | failed |
+| start | `409` | unresolved; no lookup |
+| start | `$err` or `5xx` | unresolved |
+
+**Any entry: recording and pacing**
+
+| Event | Result |
+|---|---|
+| the write recording an unresolved or failed outcome fails | consumer told unresolved; record unchanged; lock and in-flight entry released |
+| consecutive unresolved attempts at one stage | `attempts` increments, `since` is kept, `retryAfter` refreshed to now plus `$CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS`; a warning is logged at `$CREATE_UNRESOLVED_WARN_AFTER_ATTEMPTS` |
+| a reconcile pass arrives before `retryAfter` | skipped under the lock, no Docker request, not counted. `retryAfter` paces the retries: the lock excludes a second simultaneous driver but says nothing about how soon the next may start |
+| a later attempt advances the stage | the diagnostic is cleared |
+| the consumer throws | entered once; outcome unchanged; in-flight entry released |
+| cleanup runs against a resumable record | record retained, no expiry (I6) |
+| any rejection on the chain | reaches a handler (I7) |
 
 ## Lock-file lifecycle and constraints
 
@@ -260,8 +575,8 @@ establishes ownership first, since adopting a container needs no body either.
 ## Consequences
 
 - A `create()` chain survives every restart shape this codebase actually exercises: a
-  whole-process restart, a single worker dying under its siblings, and a deliberate,
-  in-repo-normal restart - proven by `t/integration/tests/18_create_restart_recovery.py`, which
+  whole-process restart, a single worker dying under its siblings, and a deliberate restart in
+  either lifecycle - proven by `t/integration/tests/18_create_restart_recovery.py`, which
   kills `app-server` mid-pull (single and four-concurrent) via a genuinely non-graceful
   `s6-svc -t` and confirms every reservation still reaches `done`. That test deliberately keeps
   `-t`, not the documented `-r`, specifically because its job is proving recovery from a
@@ -367,14 +682,22 @@ controlled scheduling or barriers for the races rather than depending on pull du
   on later in another, with `reservations.json` becoming a command queue; a new client-visible
   "requested" stage; and create availability coupled to daemon liveness with no signal to the
   user.
+- **Fail a record stuck at `creating` and remove any container it left, telling the user to
+  create afresh.** Needs the same exact-name lookup and label check as adoption to find the
+  container, then adds a delete (a mutation with its own unresolved outcome) and a failed record,
+  where adoption adds only the start the chain owed anyway. Not removing the container instead
+  would leave it holding the name, so the user's fresh create under that name would be refused as
+  foreign. Adoption is the smaller and non-destructive of the two, and the unresolved outcome
+  class already gives the persistent case its graceful ending.
 - **Tolerate a second driver, and add only the label check and `304` acceptance.** Fixes the
   adoption defect and a spurious `failed` on an already-running container, but leaves every long
   pull under multiple workers a candidate for a duplicate pull and a duplicate driver.
-- **Skip the graceful exit handler; rely on the lock/reconciler alone.** Given how routinely this
-  repo's own workflow restarts `app-server` on purpose, that would leave the common case paying
-  the full cost (however many minutes until the periodic reconciler's next tick, every time) of a
-  failure mode that's otherwise entirely avoidable.
+- **Skip the graceful exit handler; rely on the lock/reconciler alone.** Every compose stop or
+  restart in production, and every per-service restart in development, would then pay the full
+  cost (however many minutes until the periodic reconciler's next tick, every time) of a failure
+  mode that's otherwise entirely avoidable.
 - **Leave `app-server`'s restart on `-t`/`-q` (fixed-signal) rather than introducing
   `down-signal` + `-r`.** `-t` sends `SIGTERM` unconditionally, the worst case for an in-flight
   chain (immediate `SIGKILL`, zero grace) - exactly what the graceful handler exists to avoid on
-  a routine, deliberate restart.
+  a deliberate development restart, and would leave that path behind the production one, which
+  the cascade already makes graceful.

@@ -2226,7 +2226,7 @@ sub create ($self, $cb) {
 
 # Resumes a create() chain abandoned by the process (or, under Mojo::Server::Prefork, just the
 # one worker) that was driving it - reads createStatus.stage to decide where to resume, per
-# docs/adr/0007-create-restart-recovery.md's own "Ground truth per stage" table.
+# the "States" table in docs/adr/0007-create-restart-recovery.md's state-model section.
 # $self must already be a freshly-read, lock-held snapshot - see reconcile_one below, the one
 # real caller, for both. Only a record read at 'creating' resumes with a possible prior create
 # (the label-checked adoption and ownership confirmation in _create_stage_creating): 'creating' is
