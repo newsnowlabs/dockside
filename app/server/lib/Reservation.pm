@@ -3070,7 +3070,8 @@ sub run_hook_manual ($self, $args, $cb) {
          unless $self->profileObject->hooks->{$name}{'manual'};
    }
 
-   my $timeout = $args->{'timeout'} || $CONFIG->{'hooks'}{'defaultTimeoutSeconds'};
+   # A request that names a limit is held to it, 0 included; only an absent one takes the default.
+   my $timeout = $args->{'timeout'} // $CONFIG->{'hooks'}{'defaultTimeoutSeconds'};
    die Exception->new( 'msg' => "'timeout' must be a positive integer number of seconds", 'status' => 400 )
       unless $timeout =~ /^[1-9][0-9]*$/;
 

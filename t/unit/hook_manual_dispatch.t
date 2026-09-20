@@ -50,7 +50,7 @@ subtest 'an invocation with its own limit reports and enforces that one' => sub 
 };
 
 subtest 'a limit that is not a positive integer is refused before any dispatch' => sub {
-   for my $bad ( 'abc', '-5', '1.5' ) {
+   for my $bad ( 'abc', '-5', '1.5', '0', 0 ) {
       my ( $answer, $dispatched );
       my $died = !eval { ( $answer, $dispatched ) = invoke( 'args' => { 'name' => 'update', 'timeout' => $bad } ); 1 };
       ok( $died, "timeout '$bad' is refused" );

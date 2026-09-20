@@ -867,7 +867,9 @@ def api_hook(opener, server, res_id, name, timeout=None):
     api_hook_status/wait_for_hook below to learn how it actually turns out."""
     url = server.rstrip('/') + f'/containers/{urllib.parse.quote(res_id)}/hook'
     params = {'name': name}
-    if timeout:
+    # A limit the caller names is sent as given, 0 included, for the server to validate; only
+    # an absent one leaves the server's default in force.
+    if timeout is not None:
         params['timeout'] = timeout
     data = _do_post(opener, url, params, timeout=30)
     return data.get('data') or {}
