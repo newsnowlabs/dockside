@@ -32,6 +32,7 @@ use Reservation;   # ->load/->create_in_flight_count below - restart-recovery/ex
 use App;   # split_args, and the asset/header helpers _send_branded_page/
            # _render_spa_shell below reuse
 use App::Metadata;   # $c-native, not adapter-backed - see its own route below
+use App::Shutdown;   # the graceful-exit latch and drain - configured pre-fork, below
 
 flog({ 'service' => 'dockside-app', 'file' => "/var/log/$ENV{'USER'}/$ENV{'USER'}.log" });
 flog("Starting...");
@@ -112,16 +113,6 @@ my $app = Mojolicious->new( mode => $ENV{'MOJO_MODE'} // 'production' );
 $app->max_request_size( $CONFIG->{'appServer'}{'maxRequestSize'} );
 
 # ── Shared helpers, used across every route below ────────────────────────────
-
-# Set by the graceful exit handler (registered further down, near Mojo::Server::Prefork->new)
-# once this worker's own shutdown begins - declared here, ahead of every route below, since a
-# route's closure can only capture a lexical already in scope when it's compiled, not one
-# declared later in the file even if registered "before" this worker ever runs. Checked by the
-# /containers/create route only - every other route either doesn't start new detached work
-# (nothing else in this file does) or is naturally covered by Mojo::Server::Prefork's own
-# stop-accepting-new-connections behaviour once shutdown begins (see
-# docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section).
-my $shuttingDown = 0;
 
 # Authenticates the request and enforces the globalCookieRequired gate - a real,
 # configured, instance-wide access gate (config.json's globalCookie.name/.secret) every
@@ -500,12 +491,14 @@ $routes->post('/containers/create')->to(
       try {
          # Belt-and-braces: Mojo::Server::Prefork already stops routing new connections to a
          # worker mid-graceful-shutdown (covering every route uniformly, not just this one) -
-         # this catches the narrow remaining window where a connection was already accepted,
-         # in flight, right as shutdown began, closing it with a clean, fast rejection rather
-         # than starting a chain that's about to be abandoned. See
+         # App::Shutdown's own admission gate catches the narrow remaining window where a
+         # connection was already accepted, in flight, right as shutdown began, closing it with
+         # a clean, fast rejection rather than starting a chain that's about to be abandoned.
+         # Only the two routes that start work outliving their own HTTP response ask for
+         # admission; nothing else in this file starts any. See
          # docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
          return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
-            if $shuttingDown;
+            unless App::Shutdown::admit('create');
 
          my $User = _authenticate($c) or return;
 
@@ -566,11 +559,11 @@ $routes->post('/containers/:id/hook')->to(
       $c->render_later;
       my $id = $c->stash('id');
       try {
-         # Same belt-and-braces rejection as /containers/create above: dispatch_hook_exec holds
-         # a non-detached, live-streamed docker_exec connection open for however long the hook
+         # Same admission gate as /containers/create above: dispatch_hook_exec holds a
+         # non-detached, live-streamed docker_exec connection open for however long the hook
          # runs, just like create()'s own chain. See docs/adr/0007-create-restart-recovery.md.
          return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
-            if $shuttingDown;
+            unless App::Shutdown::admit('hook');
 
          my $User = _authenticate($c) or return;
          my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
@@ -1055,70 +1048,64 @@ $routes->any( '/*whatever' => { whatever => '' } => sub ($c) {
 Mojo::IOLoop->timer( 0 => \&_reconcile_pass );
 Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => \&_reconcile_pass );
 
-# Graceful exit handler - refuses new creates and manually-invoked hook runs (the
-# /containers/create and /containers/:id/hook routes' own $shuttingDown checks) and gives
-# in-flight ones a bounded chance to settle before this worker exits, rather than relying
-# solely on the startup sweep/periodic reconciler. Mojo::Server::Prefork's own graceful
-# shutdown only waits for the HTTP connection to close, not for either kind of chain's own
-# work, which outlives it - this closes that gap. Registered once, pre-fork, on the shared
-# singleton; fires exactly once per worker.
-Mojo::IOLoop->singleton->on( finish => sub (@) {
-   # A second QUIT re-emits this event (Mojo::IOLoop::stop_gracefully emits it on every call),
-   # and a second, nested drain would wait a second full grace period on top of the first.
-   return if $shuttingDown;
-   $shuttingDown = 1;
+# The drain's own reactor pacing timer, created by the first tick below and released once the
+# drain returns - a worker that exits with nothing in flight never registers one at all. It
+# bounds how long a single tick may block: one_tick derives its timeout from the nearest pending
+# timer, and the periodic reconciler's own is up to 300s away, so with no nearer timer a quiet
+# moment mid-chain (an image pull between layer reads, say) would block well past the drain's
+# deadline instead of honouring it.
+my $pacer;
 
-   my $grace    = $CONFIG->{'appServer'}{'shutdownGracePeriod'};
-   my $deadline = steady_time() + $grace;
-   my $inFlight = Reservation->create_in_flight_count() + Reservation->hook_dispatch_in_flight_count();
-   return unless $inFlight;
+# Configures App::Shutdown with everything time-, reactor- and log-shaped it deliberately does
+# not know about itself. Pre-fork, so every worker inherits the same configuration.
+App::Shutdown::configure(
+   'grace'       => $CONFIG->{'appServer'}{'shutdownGracePeriod'},
+   'obligations' => sub () {
+      return {
+         'creates' => [ Reservation->create_in_flight_ids() ],
+         'hooks'   => [ Reservation->hook_dispatch_in_flight_ids() ],
+      };
+   },
+   'clock' => \&steady_time,
+   'log'   => sub ($message) { flog($message) },
 
-   flog("app-server: worker $$ is shutting down; waiting up to ${grace}s for $inFlight create " .
-        "chain(s)/hook run(s) to settle");
-
-   # The wait happens here, synchronously, by pumping the reactor - not by registering a timer
-   # that waits after this handler returns. Mojo::IOLoop::stop_gracefully stops the reactor the
-   # moment this handler returns unless an accepted inbound connection is still open, and
-   # create()'s own route answers its HTTP request immediately by design (the fast-ack-then-poll
-   # contract create() itself describes), so the connection that started a chain has long since
-   # closed by the time shutdown begins - a timer registered here would never receive a tick.
-   # one_tick keeps the chain's own I/O and timer callbacks running until it settles, Prefork's
-   # own worker heartbeat included, so the manager continues to see this worker as healthy while
-   # it drains rather than force-killing it as unresponsive.
+   # The drain waits synchronously, by pumping the reactor from inside the finish handler below
+   # - not by registering a timer that waits after that handler returns.
+   # Mojo::IOLoop::stop_gracefully stops the reactor the moment the handler returns unless an
+   # accepted inbound connection is still open, and create()'s own route answers its HTTP request
+   # immediately by design (the fast-ack-then-poll contract create() itself describes), so the
+   # connection that started a chain has long since closed by the time shutdown begins - a timer
+   # registered there would never receive a tick. one_tick keeps the chain's own I/O and timer
+   # callbacks running until it settles, Prefork's own worker heartbeat included, so the manager
+   # continues to see this worker as healthy while it drains rather than force-killing it as
+   # unresponsive.
    #
-   # The pacing timer bounds how long a single tick may block: one_tick derives its timeout from
-   # the nearest pending timer, and the periodic reconciler's own is up to 300s away, so with no
-   # nearer timer a quiet moment mid-chain (an image pull between layer reads, say) would block
-   # well past the deadline instead of honouring it.
    # The reactor is addressed directly, rather than via Mojo::IOLoop->one_tick: that wrapper
-   # croaks outright when the loop is already running, which it is here (this handler runs from
+   # croaks outright when the loop is already running, which it is here (the drain runs from
    # inside stop_gracefully, itself reached from the reactor's own signal dispatch). Its body is
    # exactly this call, and Mojo::Reactor::Poll::one_tick is re-entrant by construction - it
    # keeps its own 'running' flag set for a nested call and returns after a single event - so
    # this is the supported way to pump a running reactor from within one of its callbacks.
-   my $reactor = Mojo::IOLoop->singleton->reactor;
-   my $pacer   = Mojo::IOLoop->recurring( 1 => sub (@) { } );
-   $reactor->one_tick
-      while ( Reservation->create_in_flight_count() + Reservation->hook_dispatch_in_flight_count() )
-         && steady_time() < $deadline;
-   Mojo::IOLoop->remove($pacer);
+   'tick' => sub () {
+      $pacer //= Mojo::IOLoop->recurring( 1 => sub (@) { } );
+      Mojo::IOLoop->singleton->reactor->one_tick;
+      return;
+   },
+);
 
-   my $remainingCreates = Reservation->create_in_flight_count();
-   my $remainingHooks   = Reservation->hook_dispatch_in_flight_count();
-   if ( $remainingCreates || $remainingHooks ) {
-      # create()'s own startup sweep/periodic reconciler recovers a chain left here; hooks have
-      # no equivalent beyond hook_is_running's own lazy self-heal on a later read (narrower
-      # still for lifecycle:launch/lifecycle:start, which docker-event-daemon's own sweep does
-      # re-poll). A pre-existing gap, not introduced by this wait - today's behaviour is
-      # strictly worse (abandoned immediately, no wait at all).
-      flog("app-server: worker $$ reached its ${grace}s shutdown grace period with " .
-           "$remainingCreates create chain(s) (recovered by the startup sweep/periodic " .
-           "reconciler) and $remainingHooks hook run(s) (recovered only lazily, if at all) " .
-           "still in flight");
-   }
-   else {
-      flog("app-server: worker $$ drained every in-flight create chain and hook run; exiting");
-   }
+# Graceful exit handler - refuses new creates and manually-invoked hook runs (the
+# /containers/create and /containers/:id/hook routes' own App::Shutdown::admit calls) and gives
+# in-flight ones a bounded chance to settle before this worker exits, rather than relying
+# solely on the startup sweep/periodic reconciler. Mojo::Server::Prefork's own graceful
+# shutdown only waits for the HTTP connection to close, not for either kind of chain's own
+# work, which outlives it - this closes that gap. Registered once, pre-fork, on the shared
+# singleton; fires exactly once per worker, since begin_shutdown's latch turns away the repeat
+# emission a second QUIT produces (Mojo::IOLoop::stop_gracefully emits this event on every call)
+# and with it a second, nested drain waiting a second full grace period on top of the first.
+Mojo::IOLoop->singleton->on( finish => sub (@) {
+   return unless App::Shutdown::begin_shutdown();
+   App::Shutdown::drain();
+   Mojo::IOLoop->remove($pacer) if $pacer;
 } );
 
 flog("Listening on 127.0.0.1:$port with $workers worker(s)...");

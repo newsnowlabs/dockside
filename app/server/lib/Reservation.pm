@@ -1304,11 +1304,13 @@ sub _create_status_set ($self, $value, $extra = {}) {
 # observes a chain's start/settle moments; a bin/app-server-side hash would need a second
 # callback threaded all the way through User::createContainerReservation's own unrelated
 # signature just to signal in/out, for no benefit over owning it where the lifecycle already
-# lives. create_in_flight/create_in_flight_count below are its only public surface.
+# lives. create_in_flight/create_in_flight_count/create_in_flight_ids below are its only public
+# surface.
 my %CREATE_IN_FLIGHT;
 
 sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
 sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
+sub create_in_flight_ids ($class) { return sort keys %CREATE_IN_FLIGHT; }
 
 # invocationId => 1, from just before dispatch_hook_exec hands its docker_exec call over - or
 # from the point a failure before that owes an outcome write instead - until this process has
@@ -1320,10 +1322,12 @@ sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 # thrown - see that function's own comment for why a write that threw is settled by the record's
 # next reader rather than by holding this obligation. Process-local like %CREATE_IN_FLIGHT:
 # docker-event-daemon and bin/app-server each see only their own copy despite calling the same
-# function defined once here.
+# function defined once here. hook_dispatch_in_flight_count/hook_dispatch_in_flight_ids below are
+# its only public surface.
 my %HOOK_DISPATCH_IN_FLIGHT;
 
 sub hook_dispatch_in_flight_count ($class) { return scalar keys %HOOK_DISPATCH_IN_FLIGHT; }
+sub hook_dispatch_in_flight_ids ($class) { return sort keys %HOOK_DISPATCH_IN_FLIGHT; }
 
 # A create chain that ends without learning whether its Docker mutation took effect records an
 # 'unresolved' diagnostic and keeps its stage, so a later reconciliation pass retries it. These
