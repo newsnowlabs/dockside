@@ -351,12 +351,18 @@ sub _parse_docker_size ($str) {
 # has no generic CLI-flag-to-JSON translation available - unlike every other
 # field here, these are arbitrary strings a profile author can put anything into.
 # Scoped instead to exactly the flag patterns every profile in this repo actually
-# uses today (--memory, --pids-limit, --cpus, --env - verified by grep across
+# uses today (--memory, --pids-limit, --cpus, --env, --stop-timeout - the profiles under
 # app/server/example/config/profiles/*.json and the integration test fixtures) -
 # anything else fails loudly with a clear message naming the unsupported flag,
 # rather than silently dropping it or creating a container that doesn't match
 # what the profile declared. Extending this list for a new flag pattern is
 # straightforward if/when a profile actually needs one outside this set.
+#
+# The largest value Docker's integer container-config fields are guaranteed to hold. A digit
+# string above it is refused like any other unsupported entry: Perl would carry a larger one as
+# a float, and one past its range as Inf, which the JSON encoder writes as a string.
+my $DOCKER_INT_MAX = 2147483647;
+
 sub cmdline_json ($self) {
    # Mirrors cmdline_security()'s own per-flag logic above, reading $security directly rather
    # than parsing that function's own CLI-flag output back apart - see this function's own
@@ -413,6 +419,7 @@ sub cmdline_json ($self) {
    # collision - profile-author intent expressed directly in dockerArgs wins over the derived
    # options-projection.
    my @env = $self->_option_env_pairs();
+   my $stopTimeout;
    if ( ref( $self->profileObject->{'dockerArgs'} ) eq 'ARRAY' ) {
       for my $raw ( @{ $self->profileObject->{'dockerArgs'} } ) {
          my $arg = $self->_placeholders($raw);
@@ -428,11 +435,17 @@ sub cmdline_json ($self) {
          elsif ( $arg =~ /^--env=(.+)$/ ) {
             push( @env, $1 );
          }
+         elsif ( $arg =~ /^--stop-timeout=(\d+)$/ && $1 <= $DOCKER_INT_MAX ) {
+            # Seconds Docker waits after the stop signal before killing the container, honoured by
+            # a stop request that sends no timeout of its own (Reservation::action). A container
+            # config field, not a HostConfig one.
+            $stopTimeout = 0 + $1;
+         }
          else {
             die Exception->new(
                'msg'    => "This devtainer's profile declares a dockerArgs entry, '$arg', that this " .
                            "server cannot apply. Supported entries are --memory, --pids-limit, " .
-                           "--cpus and --env.",
+                           "--cpus, --env and --stop-timeout.",
                'status' => 400
             );
          }
@@ -542,6 +555,7 @@ sub cmdline_json ($self) {
       ( defined($entrypoint) ? ( 'Entrypoint' => [$entrypoint] ) : () ),
       'Cmd'      => \@command,
       ( @env             ? ( 'Env'          => \@env )          : () ),
+      ( defined($stopTimeout) ? ( 'StopTimeout' => $stopTimeout ) : () ),
       ( %$exposedPorts    ? ( 'ExposedPorts' => $exposedPorts )  : () ),
       'HostConfig' => $hostConfig,
       # Identity labels - docs/adr/0007-create-restart-recovery.md's "Decision" section. Only
