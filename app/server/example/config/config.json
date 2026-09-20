@@ -34,6 +34,12 @@
     "hooks": {
         "defaultTimeoutSeconds": 300
     },
+    "appServer": {
+        // 'unlimited' (the default) sets no ceiling of its own: a stopping worker waits for in-flight hook runs and devcontainer creates however long they take,
+        // bounded only by the container's stop grace (docker-compose.yml stop_grace_period) and a one-day backstop after which the server kills the worker regardless.
+        // A positive integer is instead an in-container ceiling in seconds, after which a draining worker is killed.
+        "shutdownGraceSeconds": "unlimited"
+    },
     "clientDistPath": "/home/dockside/dockside/app/client/dist",
     "docker": {
         "bin": "/usr/bin/docker",

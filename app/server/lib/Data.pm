@@ -6,10 +6,11 @@ use Exporter qw(import);
 our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO invalidate_profile_cache valid_ide_name
    $CONFIG_PATH $USERS_FILE $ROLES_FILE $PASSWD_FILE $PROFILES_DIR);
 
+use B;
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
-use Util qw(flog cacheReadWrite get_config call_socket_json_api);
+use Util qw(flog wlog cacheReadWrite get_config call_socket_json_api);
 
 # Single source of truth for all persistent config storage paths.
 # Exported so that User::Manage and Profile::Manage can reference these
@@ -54,6 +55,72 @@ sub parse_json ($json) {
    s!//[^"]*$!!gm;
 
    return from_json( $_, { 'relaxed' => 1 } );
+}
+
+# One message to both loggers for a config value this server cannot use: wlog reaches stderr - a
+# supervised service's own log stream, and nginx's error log for the embedded proxy - while flog
+# files it in the service log alongside the load lines it belongs with.
+sub _config_warn ($message) {
+   my $msg = "Data::load: config.json: $message";
+   flog($msg);
+   wlog($msg);
+   return;
+}
+
+# True only of a JSON number that is a finite whole number of at least 1. The decoded scalar's
+# own flags are what tells a JSON number apart from a JSON string of digits - from_json leaves a
+# number with numeric flags and no string flag of its own - and the two are kept distinct
+# deliberately by _validate_shutdown_grace_seconds below: the only string that key takes is
+# 'unlimited', so a quoted "300" is a mistake to tell the operator about rather than silently
+# accept. The number's own decimal form then has to be plain digits: an exponent that overflows
+# decodes to infinity, which is numerically whole and positive and would otherwise pass, and a
+# magnitude beyond what prints as digits is no ceiling anyone means. A JSON boolean decodes to
+# an object and a number the decoder keeps as a string (one too large for a native integer) to
+# a string, so both fall to the two tests before this one.
+sub _is_json_positive_integer ($value) {
+   return 0 if !defined($value) || ref($value);
+
+   my $flags = B::svref_2object( \$value )->FLAGS;
+   return 0 unless ( $flags & ( B::SVp_IOK | B::SVp_NOK ) ) && !( $flags & B::SVp_POK );
+
+   return "$value" =~ /\A[1-9][0-9]*\z/ ? 1 : 0;
+}
+
+# Settles appServer.shutdownGraceSeconds in place on a freshly loaded config.json's appServer
+# section. The string 'unlimited' and a positive integer number of seconds stand as given;
+# every other shape, and the key's absence, leave it 'unlimited', with one warning for anything
+# actually written in the file. A value this server cannot use is never a reason to fail the
+# load: the rest of the config is serviceable, and the fallback is the safest of the two shapes -
+# it waits for in-flight work rather than cutting it short.
+sub _validate_shutdown_grace_seconds ($appServer) {
+   if ( exists $appServer->{'shutdownGracePeriod'} ) {
+      _config_warn( 'appServer.shutdownGracePeriod is not a key this server reads; a draining ' .
+         "worker's ceiling comes from appServer.shutdownGraceSeconds" );
+      delete $appServer->{'shutdownGracePeriod'};
+   }
+
+   unless ( exists $appServer->{'shutdownGraceSeconds'} ) {
+      $appServer->{'shutdownGraceSeconds'} = 'unlimited';
+      return;
+   }
+
+   my $value = $appServer->{'shutdownGraceSeconds'};
+
+   # The numeric test must come before any string comparison against $value: comparing a number
+   # as a string caches its string form in the scalar, which is the very flag the numeric test
+   # reads to tell 300 from "300".
+   return if _is_json_positive_integer($value);
+   return if defined($value) && !ref($value) && $value eq 'unlimited';
+
+   my $shown =
+        ref($value)      ? 'the ' . ref($value) . ' value it holds'
+      : !defined($value) ? 'its null value'
+      :                    "the value '$value'";
+   _config_warn( "appServer.shutdownGraceSeconds: ignoring $shown; it takes the string " .
+      "'unlimited' or a positive integer number of seconds, and drains unlimited until it holds " .
+      'one of those' );
+   $appServer->{'shutdownGraceSeconds'} = 'unlimited';
+   return;
 }
 
 sub valid_ide_name ($ide) {
@@ -128,11 +195,13 @@ $CONFIG_FILES = {
          # docs/adr/0007-create-restart-recovery.md. reconcileIntervalSeconds is the per-worker
          # periodic reconciler's own recheck cadence (each tick re-runs the same sweep under a
          # single process-wide flock, so only one worker's tick actually does the work).
-         # shutdownGracePeriod must stay comfortably under Mojo::Server::Prefork's own
-         # graceful_timeout (bin/app-server raises that to 150s to match) - deliberately
-         # coordinated, not left to whatever the two defaults happened to leave.
          $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 300;
-         $CONFIG->{'appServer'}{'shutdownGracePeriod'} //= 90;
+
+         # shutdownGraceSeconds is the ceiling a shutting-down worker's drain waits under, and
+         # the one bin/app-server also hands Mojo::Server::Prefork as its graceful_timeout. It is
+         # validated rather than defaulted with //=, because it takes two shapes and a
+         # mistyped one silently bounds a drain that operators expect to be unlimited.
+         _validate_shutdown_grace_seconds( $CONFIG->{'appServer'} );
 
          # A hook run's server-side time limit in seconds when the caller sets none. The only
          # default for it: every dispatch path reads this key and none carries a fallback of

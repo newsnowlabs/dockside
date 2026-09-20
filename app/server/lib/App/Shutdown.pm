@@ -1,6 +1,6 @@
 # bin/app-server's graceful-exit gate: the one-way shutting-down latch every admission check
-# consults, and the bounded drain that gives this worker's in-flight obligations a chance to
-# settle before the process exits. Owned here rather than as a bin/app-server lexical so the
+# consults, and the drain that gives this worker's in-flight obligations a chance to settle
+# before the process exits. Owned here rather than as a bin/app-server lexical so the
 # latch is reachable from any route's own closure without threading a variable through it, and
 # so the drain loop itself is exercisable without a reactor.
 #
@@ -14,7 +14,28 @@ package App::Shutdown;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(configure begin_shutdown is_shutting_down admit drain);
+our @EXPORT_OK = qw(configure begin_shutdown is_shutting_down admit drain graceful_timeout_for);
+
+# Seconds by which a drain under a finite ceiling stops short of the ceiling itself. The manager
+# kills the worker at the ceiling regardless; stopping this much earlier is what lets the worker
+# log what it leaves behind and exit cleanly rather than be killed mid-line. A ceiling of this
+# much or less therefore leaves no time to wait at all.
+our $MARGIN = 10;
+
+# Seconds between the drain's own progress lines, so a wait long enough to be worth asking about
+# is visible in the log while it is happening rather than only once it ends.
+our $LOG_INTERVAL = 30;
+
+# The graceful_timeout, in seconds, given to Mojo::Server::Prefork when no ceiling is configured.
+# Prefork's ceiling is a number compared against a stamp, so a drain with no configured limit
+# still needs one, and this is a backstop rather than a bound the drain plans around: no hook
+# run limit or Docker call is expected to approach a day. It is one day rather than something
+# larger because Prefork also treats a worker whose heartbeat has gone silent as a graceful
+# stop and kills it at this same ceiling, so a worker hung while serving is reaped a day after
+# Prefork marks it (about a minute after its heartbeat stops) instead of leaking until the
+# container restarts. A drain that does outlast it - a hook whose own run limit exceeds a day -
+# is killed at it: 'unlimited' means no configured ceiling, not the absence of one.
+our $UNLIMITED_GRACEFUL_TIMEOUT = 86400;
 
 # The injected environment, set once by configure() before any worker forks, so every worker
 # inherits the same one. Empty until then, which drain() treats as a programming error rather
@@ -26,17 +47,25 @@ my %ENVIRONMENT;
 # request is answered immediately by its own route; nothing is queued for later.
 my $SHUTTING_DOWN = 0;
 
-# Keys: grace (seconds the drain may wait), obligations (a sub returning
-# { creates => [ids], hooks => [ids] }), clock (a sub returning monotonic seconds), tick (a sub
-# running one round of whatever makes those obligations progress), log (a sub taking one message).
+# Keys: ceiling (seconds after which the manager kills this worker, or undef for an unlimited
+# drain), obligations (a sub returning { creates => [ids], hooks => [ids] }), clock (a sub
+# returning monotonic seconds), tick (a sub running one round of whatever makes those obligations
+# progress), log (a sub taking one message).
 sub configure (%opts) {
    %ENVIRONMENT = %opts;
    return;
 }
 
+# The graceful_timeout to give Mojo::Server::Prefork for a worker draining under $ceiling. Both
+# come from the one configured value, so the bound the manager enforces and the bound the worker
+# drains against can never disagree.
+sub graceful_timeout_for ($ceiling) {
+   return defined($ceiling) ? $ceiling : $UNLIMITED_GRACEFUL_TIMEOUT;
+}
+
 # One-way latch. True for the caller that actually starts the shutdown, false for every later
 # caller, so a repeated shutdown request (a second QUIT re-emits the event that drives this) is a
-# no-op rather than a second full grace period stacked on the first.
+# no-op rather than a second full drain stacked on the first.
 sub begin_shutdown () {
    return 0 if $SHUTTING_DOWN;
    $SHUTTING_DOWN = 1;
@@ -54,8 +83,9 @@ sub admit ($kind) {
    return 0;
 }
 
-# Waits, up to the configured grace period, for the configured obligations to clear, ticking
-# between checks. Returns whatever is still outstanding as a { creates => [], hooks => [] }
+# Waits for the configured obligations to clear - without limit under an undefined ceiling,
+# otherwise up to the ceiling less $MARGIN - ticking between checks and reporting progress every
+# $LOG_INTERVAL. Returns whatever is still outstanding as a { creates => [], hooks => [] }
 # hashref - empty lists when everything settled. Only the ids of the two known kinds are ever
 # read out of the obligations structure, and only those ids ever reach the log.
 sub drain () {
@@ -67,19 +97,40 @@ sub drain () {
       return $outstanding;
    }
 
-   my $grace    = $ENVIRONMENT{'grace'};
-   my $deadline = $ENVIRONMENT{'clock'}->() + $grace;
+   my $ceiling = $ENVIRONMENT{'ceiling'};
+   my $start   = $ENVIRONMENT{'clock'}->();
+   my $budget  = defined($ceiling) ? ( $ceiling > $MARGIN ? $ceiling - $MARGIN : 0 ) : undef;
+   my $deadline = defined($budget) ? $start + $budget : undef;
+   my $nextLog  = $start + $LOG_INTERVAL;
 
-   _log( "app-server: worker $$ is shutting down; waiting up to ${grace}s for " .
-      _describe($outstanding) . " to settle" );
+   _log( "app-server: worker $$ is shutting down; " .
+      ( defined($budget) ? "waiting up to ${budget}s" : 'waiting without limit' ) . ' for ' .
+      _describe($outstanding) . ' to settle' );
 
    while ( ( @{ $outstanding->{'creates'} } || @{ $outstanding->{'hooks'} } )
-      && $ENVIRONMENT{'clock'}->() < $deadline )
+      && ( !defined($deadline) || $ENVIRONMENT{'clock'}->() < $deadline ) )
    {
       $ENVIRONMENT{'tick'}->();
       $outstanding = _outstanding();
+
+      # Only while something remains: a tick that settles the last obligation as it crosses the
+      # interval has nothing left to report waiting for, and the finish line below follows at once.
+      if ( ( @{ $outstanding->{'creates'} } || @{ $outstanding->{'hooks'} } )
+         && $ENVIRONMENT{'clock'}->() >= $nextLog )
+      {
+         _log( sprintf( 'app-server: worker %d draining for %ds; still waiting for %s',
+            $$, $ENVIRONMENT{'clock'}->() - $start, _describe($outstanding) ) );
+
+         # Advanced past the clock rather than by one interval, so a single tick that blocked for
+         # several intervals reports the wait once, at its true length, not once per interval it
+         # spanned.
+         $nextLog += $LOG_INTERVAL while $nextLog <= $ENVIRONMENT{'clock'}->();
+      }
    }
 
+   # Whole seconds: the injected clock is monotonic but not necessarily integral, and these lines
+   # report how long the wait took, not a measurement anything computes from.
+   my $elapsed          = int( $ENVIRONMENT{'clock'}->() - $start );
    my $remainingCreates = scalar @{ $outstanding->{'creates'} };
    my $remainingHooks   = scalar @{ $outstanding->{'hooks'} };
    if ( $remainingCreates || $remainingHooks ) {
@@ -87,14 +138,15 @@ sub drain () {
       # reconciler; hooks have no equivalent beyond hook_is_running's own lazy self-heal on a
       # later read (narrower still for lifecycle:launch/lifecycle:start, which
       # docker-event-daemon's own sweep does re-poll).
-      _log( "app-server: worker $$ reached its ${grace}s shutdown grace period with " .
+      _log( "app-server: worker $$ reached its shutdown ceiling after ${elapsed}s with " .
          "$remainingCreates create chain(s) (" . _ids( $outstanding->{'creates'} ) .
          "; recovered by the startup sweep/periodic reconciler) and " .
          "$remainingHooks hook run(s) (" . _ids( $outstanding->{'hooks'} ) .
          "; recovered only lazily, if at all) still in flight" );
    }
    else {
-      _log("app-server: worker $$ drained every in-flight create chain and hook run; exiting");
+      _log( "app-server: worker $$ drained every in-flight create chain and hook run " .
+         "after ${elapsed}s; exiting" );
    }
 
    return $outstanding;

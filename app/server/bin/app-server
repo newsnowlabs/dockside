@@ -1065,10 +1065,19 @@ Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => \
 # deadline instead of honouring it.
 my $pacer;
 
+# The seconds a shutting-down worker has before the manager kills it, or undef for a drain with
+# no limit (appServer.shutdownGraceSeconds, validated in Data.pm, holds either a positive integer
+# or the string 'unlimited'). Derived once here, pre-fork, and given both to App::Shutdown below
+# and to Mojo::Server::Prefork at the foot of this file, so the bound a worker drains against and
+# the bound the manager enforces are the same value by construction.
+my $ceiling = $CONFIG->{'appServer'}{'shutdownGraceSeconds'} eq 'unlimited'
+   ? undef
+   : $CONFIG->{'appServer'}{'shutdownGraceSeconds'};
+
 # Configures App::Shutdown with everything time-, reactor- and log-shaped it deliberately does
 # not know about itself. Pre-fork, so every worker inherits the same configuration.
 App::Shutdown::configure(
-   'grace'       => $CONFIG->{'appServer'}{'shutdownGracePeriod'},
+   'ceiling'     => $ceiling,
    'obligations' => sub () {
       return {
          'creates' => [ Reservation->create_in_flight_ids() ],
@@ -1104,7 +1113,7 @@ App::Shutdown::configure(
 
 # Graceful exit handler - refuses new creates and manually-invoked hook runs (the
 # /containers/create and /containers/:id/hook routes' own App::Shutdown::admit calls) and gives
-# in-flight ones a bounded chance to settle before this worker exits, rather than relying
+# in-flight ones the chance to settle before this worker exits, rather than relying
 # solely on the startup sweep/periodic reconciler. Mojo::Server::Prefork's own graceful
 # shutdown only waits for the HTTP connection to close, not for either kind of chain's own
 # work, which outlives it - this closes that gap. Registered once, pre-fork, on the shared
@@ -1128,8 +1137,10 @@ $Data::CORE_PARSE_FAILURE_FATAL = 0;
 Mojo::Server::Prefork->new(
    listen           => ["http://127.0.0.1:$port"],
    workers          => $workers,
-   # 150s, not the 120s default - comfortably above appServer.shutdownGracePeriod (90s
-   # default) so the exit handler's own bounded wait never races this hard force-kill ceiling.
-   # See docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
-   graceful_timeout => 150,
+   # The same ceiling the exit handler's own drain waits under, deliberately: the manager kills a
+   # gracefully stopping worker at this bound, and App::Shutdown stops its drain short of it by
+   # its own margin, so a worker that runs out of time logs what it leaves behind and exits
+   # rather than being killed mid-line. See
+   # docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
+   graceful_timeout => App::Shutdown::graceful_timeout_for($ceiling),
 )->app($app)->run;
