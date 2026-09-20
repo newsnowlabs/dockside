@@ -121,6 +121,22 @@ This applies everywhere — inline code comments, doc comments, and commit messa
 Scope: this repo only — other repos have their own conventions; don't apply this rule there,
 and don't edit their docs when sweeping this one.
 
+## Fix commits must be self-contained
+
+A commit that fixes a defect — however it was found (review, testing, an incident, reading the
+code) — must state, in the commit message itself, enough for a reviewer to judge both the need
+for the fix and its correctness **without opening any other document**: not a review file, an
+ADR draft, a chat/session log, or a linked issue. Cover, briefly:
+
+- the concrete scenario in which the pre-fix code produces the wrong behaviour — what
+  input/state triggers it, and what actually happens; and
+- what the fix changes, and why that closes the gap.
+
+This adds a completeness requirement on top of the style rule above; it does not relax it.
+Describe the defect as a property of the pre-fix code's behaviour — a scenario it mishandles —
+not as an account of how it was discovered, reviewed, or previously patched. A bare reference
+such as "Fixes #8" or "Addresses review finding" is not sufficient on its own.
+
 ## Repo scope: reference only this repo's own files
 
 Docs, code comments, ADRs, and commit messages here should reference only files within this
