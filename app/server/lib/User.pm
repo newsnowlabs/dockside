@@ -1227,6 +1227,13 @@ sub runContainerHook ($self, $id, $args, $cb) {
 # status is hook_status($name)'s master-record entry (undef if $name has never been invoked
 # on this devtainer), output is load_hook_log($name)'s tailed log lines ([] if there is
 # nothing to show yet, for either reason).
+#
+# An entry still reading 'running' is checked against Docker first (hook_is_running), so a
+# poller sees the outcome of an exec that has finished even when the process that dispatched
+# it never recorded one - its outcome write threw, or it died. This read is the next reader
+# such an entry gets, and the settlement is the one that read performs; without it a poller
+# would watch an unchanged 'running' entry until its own deadline. An exec genuinely still
+# running costs the poll one exec inspection and changes nothing.
 sub runContainerHookStatus ($self, $id, $args = {}) {
    if( $id !~ m!^([0-9a-f]+)$! ) {
       die Exception->new( 'msg' => "hook status read with invalid argument '$id' failed" );
@@ -1244,6 +1251,8 @@ sub runContainerHookStatus ($self, $id, $args = {}) {
 
    my $name = $args->{'name'};
    die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
+
+   $container->hook_is_running($name);
 
    return {
       'status' => $container->hook_status($name),

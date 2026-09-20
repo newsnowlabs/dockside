@@ -1311,14 +1311,14 @@ sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
 sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 
 # invocationId => 1, from just before dispatch_hook_exec hands its docker_exec call over - or
-# from the point a failure before that owes an outcome write instead - until that invocation's
-# outcome is durably recorded in *this* process. Same shape and purpose as
+# from the point a failure before that owes an outcome write instead - until this process has
+# attempted that invocation's outcome write. Same shape and purpose as
 # %CREATE_IN_FLIGHT above, for the other non-detached exec connection a restart can sever
 # mid-flight. The obligation deliberately outlives the exec's own completion callback: what a
-# draining worker must wait for is the outcome reaching disk, not the connection closing, so it
-# is released by _hook_settle_outcome only once the write has been applied or fenced, and is
-# held across retries for as long as it is neither - see that function's own comment for why an
-# unwritten outcome must keep a drain incomplete. Process-local like %CREATE_IN_FLIGHT:
+# draining worker must wait for is the outcome write being decided, not the connection closing,
+# so it is released by _hook_settle_outcome only once that write has been applied, fenced or has
+# thrown - see that function's own comment for why a write that threw is settled by the record's
+# next reader rather than by holding this obligation. Process-local like %CREATE_IN_FLIGHT:
 # docker-event-daemon and bin/app-server each see only their own copy despite calling the same
 # function defined once here.
 my %HOOK_DISPATCH_IN_FLIGHT;
@@ -2088,8 +2088,8 @@ sub _create_track ($self, $promise, $onSettled = sub {}, $lock = undef) {
 # the whole file; the alternative (nested callbacks) would be a four-deep pyramid. It is not
 # precedent for giving another method a promise-shaped interface: every other async method here
 # presents the plain ($self, ..., $cb) single-callback convention to its callers, whatever it
-# uses internally (_hook_settle_outcome drives its retries off a Mojo::IOLoop timer and still
-# reports through a single callback).
+# uses internally (_hook_settle_outcome resolves an outcome write and a %HOOK_DISPATCH_IN_FLIGHT
+# obligation together, and still reports through a single callback).
 sub create ($self, $cb) {
    my $id = $self->id();
 
@@ -2542,15 +2542,6 @@ our $HOOK_HISTORY_MAX = 100;
 # window already handles every other way it can fail to get there).
 our $HOOK_CLAIM_STALE_SECONDS = 60;
 
-# Longest gap between retries of a hook outcome write that will not go through, and the attempt
-# at which the retrying starts being reported as a stuck drain rather than a hiccup - see
-# _hook_settle_outcome. The ceiling keeps an unwritable disk from being retried in a tight loop
-# while still recovering promptly once it can be written to again; the warning threshold sits
-# past the immediate retries, so an interrupted lock that succeeds on its second attempt never
-# raises one.
-our $HOOK_PERSIST_RETRY_CEILING = 30;
-our $HOOK_PERSIST_WARN_AFTER_ATTEMPTS = 5;
-
 # Internal helpers isolating hooks.status's read/write boilerplate.
 sub _hook_status_all ($self) {
    return ($self->data('hooks') // {})->{'status'} // {};
@@ -2567,18 +2558,27 @@ sub _hook_status_store_one ($self, $name, $entry) {
    $self->store_fields( { 'data' => { 'hooks' => { 'status' => { $name => $entry } } } } );
 }
 
-# Returns true if $name's last-known invocation is still running, per the master record. A
-# cheap, purely *optimizing* pre-exec check (see item B) - it has no visibility into an
+# Returns true if $name's last-known invocation is still running, per the master record
+# reconciled against Docker: an entry reading 'running' whose exec Docker reports finished, or
+# cannot account for, is settled here - its real outcome recorded, or 'aborted' - and reported
+# not running. This is how an outcome whose dispatching process never recorded it (its write
+# threw, or it died) reaches the record: the read path a poller goes through
+# (User::runContainerHookStatus) and docker-event-daemon's recovery sweep both call this, and
+# the claim path performs the same check under its lock (Reservation::Mutate::_hook_entry_liveness).
+#
+# As a pre-exec check it is only optimizing (see item B) - it has no visibility into an
 # auto-invoked lifecycle:launch/lifecycle:start run (those never touch this record at all - see
 # item B's auto-invoke exception), so a false "not running" is possible and expected in that
 # specific race. The in-container mkdir lock (run_hook() in launch.sh) remains the actual
-# safety net regardless, exactly as it already is today - this only ever saves a wasted
-# round-trip in the common case, it was never the thing overlap-safety depends on. Each self-heal
-# write below passes $status->{'invocationId'} back to hook_status_completed as the invocation it
-# believes it's resolving; if a newer claim has since superseded it, that write is rejected and
-# this still reports not-running regardless - the same already-tolerated imprecision as the
-# auto-invoke race above, not a new one, and the corrected in-memory entry hook_status_completed
-# syncs on rejection is what a subsequent call sees.
+# safety net regardless - this only ever saves a wasted round-trip in the common case, it was
+# never the thing overlap-safety depends on. Each self-heal write below passes
+# $status->{'invocationId'} back to hook_status_completed as the invocation it believes it's
+# resolving; if a newer claim has since superseded it, that write is rejected and this still
+# reports not-running regardless - the same already-tolerated imprecision as the auto-invoke
+# race above, not a new one, and the corrected in-memory entry hook_status_completed syncs on
+# rejection is what a subsequent call sees. A settlement here can also cross with the live
+# completion's own write for the same invocation; both carry that invocation's id, so the later
+# writer's fields stand and the history keeps one row (see Reservation::Mutate::_append_hook_history).
 sub hook_is_running ($self, $name) {
    my $status = $self->_hook_status_all->{$name};
    return 0 unless $status && ($status->{'state'} // '') eq 'running';
@@ -2729,102 +2729,79 @@ sub hook_status_completed ($self, $name, $fields, $expectedInvocationId = undef)
    return 1;
 }
 
-# Delay in seconds before retry number $n of an outcome write. The first two are immediate: the
-# failure most likely to be transient is a signal-interrupted lock acquisition, which succeeds as
-# soon as it is retried. Past that the wait doubles up to a ceiling, so a disk that stays
-# unwritable is retried indefinitely without spinning on it.
-sub _hook_persist_retry_delay ($n) {
-   return 0 if $n <= 2;
-   my $delay = 0.5 * ( 2 ** ( $n - 3 ) );
-   return $delay > $HOOK_PERSIST_RETRY_CEILING ? $HOOK_PERSIST_RETRY_CEILING : $delay;
-}
-
-# Persists a finished invocation's outcome, and only then releases its %HOOK_DISPATCH_IN_FLIGHT
-# obligation and notifies the caller, once. It takes that obligation on itself, so every route
-# into this function is counted for as long as it owes a write - including a failure that
-# happens before any exec is dispatched. The obligation is what a draining worker waits on, so
-# it is held until the outcome is durable rather than dropped when the exec connection closes.
-# Two terminal outcomes release it:
+# Persists a finished invocation's outcome in a single write attempt, then releases its
+# %HOOK_DISPATCH_IN_FLIGHT obligation and notifies the caller, at most once. It takes that
+# obligation on itself, so every route into this function is counted while its write is being
+# decided - including a failure that happens before any exec is dispatched. The obligation is
+# what a draining worker waits on, so it spans the write rather than ending when the exec
+# connection closes. That one attempt has exactly three outcomes, all of which release it:
 #
-#   applied - the write landed. Release, then notify exactly once.
+#   applied - the write landed. Release, then notify exactly once with the settled state.
 #   fenced  - resolve_hook_status rejected the write because a newer invocation owns the entry
 #             now, or the reservation is gone. Nothing of this invocation's own is left to
 #             persist or report, so release and stay silent - hook_status_completed already
 #             specifies that a rejected write suppresses the caller's continuation.
+#   threw   - the write has not happened. Release, log it, and notify with no state and the
+#             error, so the caller learns this invocation is over here and that its outcome is
+#             not this process's to report.
 #
-# A thrown write is neither. The outcome is still unrecorded, so the obligation stays held and
-# the write is retried - same $fields, same $invocationId, never a fresh dispatch - until it
-# applies or is fenced. Passing $invocationId is what keeps a retry fenced: a newer invocation
-# claiming $name in between makes the retry a rejection rather than an overwrite.
+# Passing $invocationId is what makes the fenced case possible at all: a newer invocation
+# claiming $name makes this write a rejection rather than an overwrite.
 #
-# Retrying indefinitely is the point rather than a hazard. A drain must not report success for an
-# outcome that was never written, and an entry left 'running' for a later reader to repair is not
-# a recorded outcome - it is a repair that has not happened yet, and may never happen if nothing
-# reads the entry again. Bounding how long a worker may wait for its obligations is the shutdown
-# policy's concern, not this function's; this function's job is to not claim settlement it
-# cannot back. A worker that exits first loses the retry with the process, which is the same
-# position a process killed outright is already in.
+# A write that threw leaves the entry 'running' with its execId, and that entry plus Docker is
+# the recovery source: hook_is_running asks the exec API what became of that execId and records
+# the real outcome, or 'aborted' where Docker no longer has it, and every reader of a running
+# entry goes through it - the status read a poller repeats (User::runContainerHookStatus), the
+# daemon's recovery sweep, and the next claim of the same name. This is the same rule the create
+# chain follows - what is on the record, reconciled against Docker by whoever reads it next,
+# rather than an in-process repair loop that only survives as long as the process does. It is
+# also why no call site here runs a retry loop or holds an obligation across a write: a drain
+# waits on writes still being decided, not on an outcome this process has already handed to the
+# record's next reader.
 #
 # $outcome, when set, is the settlement state to report as-is; undef derives it from the
 # persisted entry. A dispatch that never ran reports 'aborted', which _hook_outcome_state would
 # otherwise flatten to the less specific 'failed'.
-#
-# A retry can re-apply a write that already landed, when it was the history append following it
-# that threw. _resolve_hook_entry is idempotent for exactly this case, at the cost of at most one
-# duplicate history row - preferred over discarding a real outcome.
 sub _hook_settle_outcome ($self, $name, $fields, $invocationId, $outcome, $err, $on_settled) {
    # Registered here rather than relied upon from the caller, and idempotent because it is keyed
    # by invocation: a dispatched hook is already counted for the exec it is awaiting, while a
    # failure before dispatch reaches this point with nothing counted at all. Either way the
-   # obligation has to exist before the first write is attempted, or a write that throws would
-   # schedule its retries against a count that never rose - and a drain reading zero would let
-   # the worker exit, discarding the retry and leaving an acknowledged invocation recorded as
-   # still running.
+   # obligation has to exist before the write is attempted, or a drain reading zero could let the
+   # worker exit mid-write, leaving an acknowledged invocation recorded as still running with no
+   # execId for a reader to reconcile.
    $HOOK_DISPATCH_IN_FLIGHT{$invocationId} = 1;
 
-   my $attempt = 0;
-   my $persist;
-
-   $persist = sub {
-      $attempt++;
-      my ( $applied, $failed );
-      my $written = try {
-         $applied = $self->hook_status_completed( $name, $fields, $invocationId );
-         1;
-      }
-      catch {
-         $failed = $_;
-         0;
-      };
-
-      unless ($written) {
-         my $delay = _hook_persist_retry_delay($attempt);
-         flog( "Reservation::_hook_settle_outcome: '$name' could not persist its outcome for reservationId="
-             . $self->id() . " (attempt $attempt, retrying in ${delay}s, dispatch still counted in flight): "
-             . format_caught_error($failed) );
-         # Once, at the point this stops looking like a momentary interruption - the drain this
-         # is holding open is otherwise indistinguishable from a hook that is simply slow.
-         wlog( "Reservation::_hook_settle_outcome: '$name' outcome still unwritten for reservationId="
-             . $self->id() . " after $attempt attempts; this worker cannot finish draining until "
-             . "it is written: " . format_caught_error($failed) )
-            if $attempt == $HOOK_PERSIST_WARN_AFTER_ATTEMPTS;
-         Mojo::IOLoop->timer( $delay => sub (@) { $persist->() } );
-         return;
-      }
-
-      # Released here, after the durability decision and before the one notification, so an
-      # exception thrown by $on_settled itself can neither leak the count nor produce a second
-      # notification. $persist is cleared to break its own reference cycle.
-      delete $HOOK_DISPATCH_IN_FLIGHT{$invocationId};
-      $persist = undef;
-
-      return unless $applied;
-
-      $on_settled->( $outcome // _hook_outcome_state( $self->hook_status($name) ), $err );
-      return;
+   my ( $applied, $failed );
+   my $written = try {
+      $applied = $self->hook_status_completed( $name, $fields, $invocationId );
+      1;
+   }
+   catch {
+      $failed = $_;
+      0;
    };
 
-   $persist->();
+   # Released here, after the write has been decided and before the one notification, so an
+   # exception thrown by $on_settled itself can neither leak the count nor produce a second
+   # notification.
+   delete $HOOK_DISPATCH_IN_FLIGHT{$invocationId};
+
+   unless ($written) {
+      # Both loggers, one message: wlog reaches stderr - a supervised service's own log stream,
+      # and nginx's error log for the embedded proxy - while flog files it in the service log
+      # alongside the dispatch lines it belongs with.
+      my $msg = "Reservation::_hook_settle_outcome: '$name' outcome unrecorded for reservationId="
+              . $self->id() . " invocationId=$invocationId; its entry stays 'running' with its "
+              . "execId for the next reader to settle from Docker: " . format_caught_error($failed);
+      flog($msg);
+      wlog($msg);
+      $on_settled->( undef, $failed );
+      return;
+   }
+
+   return unless $applied;
+
+   $on_settled->( $outcome // _hook_outcome_state( $self->hook_status($name) ), $err );
    return;
 }
 
@@ -2925,8 +2902,9 @@ sub dispatch_hook_exec ($self, $name, $script, $args, $on_claimed, $on_settled) 
    }, sub ( $result, $err ) {
       close($log);
 
-      # Derived before any write is attempted, so a retry inside _hook_settle_outcome replays
-      # exactly this result rather than re-deriving it from state that has since moved on.
+      # Derived here, from the result this callback was handed, so what gets persisted is this
+      # exec's own outcome rather than whatever the record happens to say by the time it is
+      # written.
       my ( $fields, $outcome );
       if ( !$result ) {
          flog("Reservation::dispatch_hook_exec: '$name' failed to dispatch: $err");

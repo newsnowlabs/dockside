@@ -157,7 +157,7 @@ subtest 'hook dispatch in-flight counter tracks a manual invocation and clears o
    is(Reservation->hook_dispatch_in_flight_count(), 0, 'cleared once settled');
 };
 
-subtest 'hook dispatch in-flight counter is held until the outcome is actually written' => sub {
+subtest 'a hook outcome write that throws releases the in-flight counter and settles the caller once' => sub {
    seed({ name => 'foo', state => 'pending' });
    my $r = bless { id => 'review', data => { startCount => 1 } }, 'DispatchReservation';
    my ($opts, $settle);
@@ -166,11 +166,10 @@ subtest 'hook dispatch in-flight counter is held until the outcome is actually w
    local *User::load = sub { bless {}, 'User' };
    local *Reservation::docker_exec = $capture;
 
-   my ( $failing, $writes ) = ( 1, 0 );
+   my $writes = 0;
    local *DispatchReservation::hook_status_completed = sub ( $self, @args ) {
       $writes++;
-      die "boom - resolution blew up\n" if $failing;
-      return Reservation::hook_status_completed( $self, @args );
+      die "boom - resolution blew up\n";
    };
 
    my $settled = 0;
@@ -178,18 +177,16 @@ subtest 'hook dispatch in-flight counter is held until the outcome is actually w
    is(Reservation->hook_dispatch_in_flight_count(), 1, 'in flight while awaiting settle');
 
    $settle->({ exitCode => 0, timedOut => 0 }, undef);
-   is(Reservation->hook_dispatch_in_flight_count(), 1,
-      'still in flight while the outcome cannot be written - this count is what a drain reads, '
-      . 'and an unrecorded outcome is not a settled one');
-   is($settled, 0, 'no settlement is reported for an outcome that was never recorded');
+   is(Reservation->hook_dispatch_in_flight_count(), 0,
+      'the obligation spans the write attempt, not the outcome reaching disk, so a drain reading '
+      . 'this count is not blocked by a write that will not go through');
+   is($writes, 1, 'the outcome is attempted exactly once');
+   is($settled, 1, 'and the caller is told the invocation is over here, exactly once');
 
-   pump_until(sub { $writes >= 3 }, 3);
-   cmp_ok($writes, '>=', 3, 'the write is retried rather than abandoned');
-
-   $failing = 0;
-   pump_until(sub { Reservation->hook_dispatch_in_flight_count() == 0 }, 3);
-   is(Reservation->hook_dispatch_in_flight_count(), 0, 'cleared once the outcome is finally written');
-   is($settled, 1, 'and on_settled is driven exactly once, at that point');
+   # A write that threw schedules nothing; running the loop briefly is what makes a second
+   # attempt observable if one were.
+   pump_until(sub { $writes >= 2 }, 0.5);
+   is($writes, 1, 'with no further attempt scheduled behind it');
 };
 
 subtest 'drain_complete reflects both in-flight counters, not just one' => sub {

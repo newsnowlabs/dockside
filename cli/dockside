@@ -1126,11 +1126,20 @@ def wait_for(opener, server, res_id, target, timeout=120, interval=2, quiet=Fals
     return False
 
 
+# Every state a hooks.status entry can hold once its invocation is over - the states a poll
+# stops on. 'running' and 'pending' are the two it keeps polling through.
+HOOK_TERMINAL_STATES = ('done', 'failed', 'timedOut', 'aborted', 'skipped')
+
+
 def wait_for_hook(opener, server, res_id, name, timeout, interval=1.0, quiet=False):
     """
     Poll a dispatched hook's status/log (api_hook_status above) until it
-    reaches a terminal state ('done' or 'aborted'), or `timeout` plus a fixed
-    margin elapses. `timeout` is the server-side run limit in force for this
+    reaches a terminal state, or `timeout` plus a fixed margin elapses. The
+    terminal states are the server's own vocabulary for a finished entry:
+    'done' (the exec ran to completion, with an exitCode), 'failed' (an exec
+    the server settled from Docker after its own record of the run was lost,
+    with a non-zero exitCode), 'timedOut', 'aborted' (no exit code exists)
+    and 'skipped'. `timeout` is the server-side run limit in force for this
     invocation - the dispatch response's own `timeout` - so the client never
     gives up on a hook the server is still allowing to run; the margin covers
     the server recording the outcome once that limit lands.
@@ -1146,7 +1155,7 @@ def wait_for_hook(opener, server, res_id, name, timeout, interval=1.0, quiet=Fal
     while time.monotonic() < deadline:
         result = api_hook_status(opener, server, res_id, name)
         status = result.get('status')
-        if status and status.get('state') in ('done', 'aborted'):
+        if status and status.get('state') in HOOK_TERMINAL_STATES:
             if printed and not quiet:
                 print(file=sys.stderr)
             return result
