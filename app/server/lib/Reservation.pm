@@ -9,7 +9,6 @@ use Tie::File;
 use Storable qw(dclone);
 use Time::HiRes ();
 use URI::Escape;
-use Mojo::Promise;
 use Reservation::Mutate qw(update load_clean_map record_stop_request release_stop_request resolve_hook_status hook_claim_if_not_running);
 # Not imported: Reservation::Mutate's own add_router/remove_router/replace_router - Reservation.pm
 # defines its OWN methods of the same name below (the public API other code calls), which call
@@ -20,7 +19,7 @@ use Reservation::Load;
 use Reservation::Launch;
 use Containers;
 use Profile;
-use Util qw(flog wlog trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api_sync call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text format_caught_error tryLockFile);
+use Util qw(flog wlog once trim is_true clean_pty run TO_JSON YYYYMMDDHHMMSS cacheReadWrite call_socket_api_sync call_socket_api docker_exec unique run_system get_uri sanitize_sensitive_text format_caught_error tryLockFile);
 use Data qw($CONFIG $HOSTNAME $INNER_DOCKERD valid_ide_name);
 
 ################################################################################
@@ -1390,7 +1389,7 @@ sub _create_status_set ($self, $value, $extra = {}) {
    return $self;
 }
 
-# reservation id => 1, while create()/reconcile_create()'s own promise chain is actively
+# reservation id => 1, while create()/reconcile_create()'s own chain is actively
 # running in *this* process - queried by bin/app-server's periodic reconciler (skip a
 # reservation this worker already owns, without even attempting a claim) and its exit handler
 # (wait for these to drain before letting the worker actually exit). See
@@ -1553,13 +1552,6 @@ sub _create_unresolved_error ($msg) {
    return Exception->new( 'unresolved' => 1, 'msg' => $msg );
 }
 
-# A promise already rejected with $err, for the paths that fail before there is anything to await.
-sub _create_rejected ($err) {
-   my $promise = Mojo::Promise->new;
-   $promise->reject($err);
-   return $promise;
-}
-
 # Ground-truth-by-name lookup. Anchored to the exact name via the collection endpoint's own
 # filters, not Docker's single-container GET /containers/{name}/json, which also resolves an id
 # prefix - a reservation named after a hex prefix of some other container's id would otherwise
@@ -1579,9 +1571,9 @@ sub _create_rejected ($err) {
 #
 # $timeout, when set, caps the whole request - callers that poll this run under an overall budget
 # and must not let a stalled GET outlive it. Reporting every failure through $cb is what keeps the
-# enclosing promise settling: an exception raised here escapes into the reactor instead of the
-# promise (unlike one raised in a ->then callback), leaving the chain unsettled and its ownership
-# lock held for the lifetime of the process.
+# enclosing chain settling: an exception raised here escapes into the reactor's event loop
+# instead of reaching any continuation, leaving the chain unsettled and its ownership lock held
+# for the lifetime of the process.
 sub _create_lookup_by_name ($self, $timeout, $cb) {
    my $name = $self->name;
 
@@ -1726,105 +1718,130 @@ sub _create_confirm_ownership ($self, $cb) {
 }
 
 # Ground-truth stage builders, shared by create() (always starts at 'pulling') and
-# reconcile_create() (resumes at whatever stage createStatus was stuck at) - see
-# docs/adr/0007-create-restart-recovery.md's own "Ground truth per stage" table for the
-# reasoning behind each one. Each returns a Mojo::Promise and is unconditionally safe to
-# (re)enter - there is no "first time" vs "recovery" branch inside any of them, so there is
-# exactly one code path per stage, not two.
+# reconcile_create() (resumes at whatever stage createStatus was stuck at) - see the "States"
+# table in docs/adr/0007-create-restart-recovery.md's state-model section for the reasoning
+# behind each one. Each takes a continuation as its last argument and calls it exactly once,
+# with ($value, $err): $err undef on success, a plain string for a definitive failure, or an
+# Exception carrying 'unresolved' for an outcome that could not be established; the once guard
+# on it makes a second settlement a logged bug rather than a second outcome. Each is
+# unconditionally safe to (re)enter - there is no "first time" vs "recovery" branch inside any
+# of them, so there is exactly one code path per stage, not two.
 
-sub _create_stage_pulling ($self, $image) {
+sub _create_stage_pulling ($self, $image, $cb) {
    my $socket = $CONFIG->{'docker'}{'socket'};
+   my $done = once( "Reservation::_create_stage_pulling for reservation '" . $self->id() . "'", $cb );
 
-   return Mojo::Promise->new( sub ($resolve, $reject) {
-      call_socket_api( $socket, '/images/' . uri_escape($image) . '/json', {}, sub ($result, $err) {
-         return $reject->($err) if $err;
-         $resolve->( $result && $result->code == 200 );
-      } );
-   } )->then( sub ($present) {
-      return 1 if $present;
+   call_socket_api( $socket, '/images/' . uri_escape($image) . '/json', {}, sub ($result, $err) {
+      return $done->( undef, $err ) if $err;
+      return $done->( 1, undef ) if $result && $result->code == 200;
 
       my ( $repo, $tag ) = $image =~ m{^(.+):([^/:]+)$} ? ( $1, $2 ) : ( $image, 'latest' );
       my $lastPersist = 0;
-
-      return Mojo::Promise->new( sub ($resolve, $reject) {
-         my $buf = '';
-         my $failed;
-         call_socket_api( $socket, '/images/create?fromImage=' . uri_escape($repo) . '&tag=' . uri_escape($tag), {
-            'method'  => 'POST',
-            'on_read' => sub ($bytes) {
-               $buf .= $bytes;
-               while ( ( my $nl = index( $buf, "\n" ) ) >= 0 ) {
-                  my $line = substr( $buf, 0, $nl );
-                  $buf = substr( $buf, $nl + 1 );
-                  next unless length($line);
-                  my $event = eval { decode_json($line) };
-                  next unless $event;
-                  # Two distinct error shapes share this same stream: a per-layer failure
-                  # mid-pull uses 'error'/'errorDetail'
-                  # (Docker's documented pull-progress event shape); a pull that fails outright
-                  # before any layer progress starts (e.g. 404 'manifest unknown' for a bad tag)
-                  # delivers a single line shaped {"message":...} instead - Docker's generic
-                  # top-level API error shape, just delivered over this same on_read stream
-                  # rather than as a distinctly-shaped non-200 body (the completion callback
-                  # below never sees it separately: by the time it runs, this loop has already
-                  # consumed the line, including its trailing newline, out of $buf).
-                  if ( my $errMsg = $event->{'error'} // $event->{'message'} ) {
-                     $failed = $errMsg;
-                  }
-                  next unless $event->{'id'};
-
-                  my $cs = $self->{'createStatus'};
-                  $cs->{'layers'}{ $event->{'id'} } = {
-                     'status'  => $event->{'status'},
-                     'current' => $event->{'progressDetail'}{'current'},
-                     'total'   => $event->{'progressDetail'}{'total'},
-                  };
-                  $self->{'createStatus'} = $cs;
-
-                  # Debounce the disk write - hundreds of progress events can arrive over a
-                  # large pull. At most once/second is a reasonable default, not a
-                  # precisely-tuned one - revisit if a real client ends up wanting smoother
-                  # progress than that; the in-memory copy above is always current regardless.
-                  #
-                  # The write is contained because it is the one recoverable failure in this
-                  # loop: losing a progress snapshot costs a client some smoothness, whereas
-                  # letting it abort the loop would skip the remainder of this chunk, which is
-                  # where Docker reports a mid-stream pull error for this same transfer. A pull
-                  # that actually failed would then be reported as having succeeded.
-                  my $now = time();
-                  if ( $now > $lastPersist ) {
-                     $lastPersist = $now;
-                     my $persisted = eval { $self->update( { 'createStatus' => $cs } ); 1 };
-                     flog( "Reservation::_create_stage_pulling: progress write failed for reservationId="
-                         . $self->id() . ": " . format_caught_error($@) ) unless $persisted;
-                  }
+      my $buf = '';
+      my $failed;
+      call_socket_api( $socket, '/images/create?fromImage=' . uri_escape($repo) . '&tag=' . uri_escape($tag), {
+         'method'  => 'POST',
+         'on_read' => sub ($bytes) {
+            $buf .= $bytes;
+            while ( ( my $nl = index( $buf, "\n" ) ) >= 0 ) {
+               my $line = substr( $buf, 0, $nl );
+               $buf = substr( $buf, $nl + 1 );
+               next unless length($line);
+               my $event = eval { decode_json($line) };
+               next unless $event;
+               # Two distinct error shapes share this same stream: a per-layer failure
+               # mid-pull uses 'error'/'errorDetail'
+               # (Docker's documented pull-progress event shape); a pull that fails outright
+               # before any layer progress starts (e.g. 404 'manifest unknown' for a bad tag)
+               # delivers a single line shaped {"message":...} instead - Docker's generic
+               # top-level API error shape, just delivered over this same on_read stream
+               # rather than as a distinctly-shaped non-200 body (the completion callback
+               # below never sees it separately: by the time it runs, this loop has already
+               # consumed the line, including its trailing newline, out of $buf).
+               if ( my $errMsg = $event->{'error'} // $event->{'message'} ) {
+                  $failed = $errMsg;
                }
-            },
-         }, sub ($result, $err) {
-            if ( $err || !$result || !$result->is_success ) {
-               # A pull can fail two different ways: a clean top-level HTTP error before any
-               # streaming starts (e.g. 404 'manifest unknown' for a bad tag - a single
-               # {"message":...} JSON object body, no trailing newline for the while loop above
-               # to have consumed it, so it's still sitting unparsed in $buf), or an error
-               # embedded mid-stream after a 200 already started (a bad layer partway through an
-               # otherwise-real pull - $failed, above). $result->body is *always* empty here
-               # regardless of which - on_read replaces Mojo's own default body-accumulation
-               # (see call_socket_api's own comment) - so $buf/$failed are the only place
-               # the actual error text survives. An unknown-tag pull returns 404 with exactly
-               # this un-newline-terminated {"message":...} shape - without this fallback it
-               # would silently report an empty error string instead.
-               my $bodyErr = length($buf) ? ( eval { decode_json($buf)->{'message'} } // $buf ) : undef;
-               $reject->( $err // $failed // $bodyErr // ( $result ? 'HTTP ' . $result->code : 'no response' ) );
-               return;
+               next unless $event->{'id'};
+
+               my $cs = $self->{'createStatus'};
+               $cs->{'layers'}{ $event->{'id'} } = {
+                  'status'  => $event->{'status'},
+                  'current' => $event->{'progressDetail'}{'current'},
+                  'total'   => $event->{'progressDetail'}{'total'},
+               };
+               $self->{'createStatus'} = $cs;
+
+               # Debounce the disk write - hundreds of progress events can arrive over a
+               # large pull. At most once/second is a reasonable default, not a
+               # precisely-tuned one - revisit if a real client ends up wanting smoother
+               # progress than that; the in-memory copy above is always current regardless.
+               #
+               # The write is contained because it is the one recoverable failure in this
+               # loop: losing a progress snapshot costs a client some smoothness, whereas
+               # letting it abort the loop would skip the remainder of this chunk, which is
+               # where Docker reports a mid-stream pull error for this same transfer. A pull
+               # that actually failed would then be reported as having succeeded.
+               my $now = time();
+               if ( $now > $lastPersist ) {
+                  $lastPersist = $now;
+                  my $persisted = eval { $self->update( { 'createStatus' => $cs } ); 1 };
+                  flog( "Reservation::_create_stage_pulling: progress write failed for reservationId="
+                      . $self->id() . ": " . format_caught_error($@) ) unless $persisted;
+               }
             }
-            if ($failed) {
-               $reject->($failed);
-               return;
-            }
-            $resolve->(1);
-         } );
+         },
+      }, sub ($result, $err) {
+         if ( $err || !$result || !$result->is_success ) {
+            # A pull can fail two different ways: a clean top-level HTTP error before any
+            # streaming starts (e.g. 404 'manifest unknown' for a bad tag - a single
+            # {"message":...} JSON object body, no trailing newline for the while loop above
+            # to have consumed it, so it's still sitting unparsed in $buf), or an error
+            # embedded mid-stream after a 200 already started (a bad layer partway through an
+            # otherwise-real pull - $failed, above). $result->body is *always* empty here
+            # regardless of which - on_read replaces the transport's own default body
+            # accumulation (see call_socket_api's own comment) - so $buf/$failed are the only
+            # place the actual error text survives. An unknown-tag pull returns 404 with
+            # exactly this un-newline-terminated {"message":...} shape - without this fallback
+            # it would silently report an empty error string instead.
+            my $bodyErr = length($buf) ? ( eval { decode_json($buf)->{'message'} } // $buf ) : undef;
+            $done->( undef, $err // $failed // $bodyErr // ( $result ? 'HTTP ' . $result->code : 'no response' ) );
+            return;
+         }
+         if ($failed) {
+            $done->( undef, $failed );
+            return;
+         }
+         $done->( 1, undef );
       } );
    } );
+   return;
+}
+
+# Persists $containerId as this reservation's container, whether created by this chain or
+# adopted. Stored as the 12-char short id, matching Reservation::containerId's own established
+# convention - docker-event-daemon's containers.json keys are the same 12-char short id
+# (_update_merge: 'substr($c->{'Id'}, 0, 12)'), and both $BY_CONTAINERID (this file's own
+# update_container_info) and load_clean_map match against those keys directly. The Create API's
+# response 'Id' (and the ground-truth name lookup) is the full 64-char id - storing it
+# untruncated would silently never match either lookup: update_container_info would leave this
+# reservation's status stuck at -3 ('destroyed') forever, onContainerStart would log "we don't
+# manage" this containerId and never fire the launch DAG, and load_clean_map would conclude the
+# container is gone and delete the reservation entirely after 30s - all while the container
+# itself is alive and running.
+#
+# Returns undef once the id is on disk, or the unresolved error to report: the container exists,
+# and only the record of its id was lost. Failing definitively would expire a reservation whose
+# container is running, so the stage stays where it is and a later pass adopts that container by
+# name. $what says how the container came to be this reservation's, for that error.
+sub _create_record_container_id ($self, $containerId, $what) {
+   my $shortId = substr( $containerId, 0, 12 );
+   my $persisted = eval {
+      $self->containerId($shortId);
+      $self->update( { 'containerId' => $shortId } );
+      1;
+   };
+   return undef if $persisted;
+   return _create_unresolved_error( "$what but could not record its id: " . format_caught_error($@) );
 }
 
 # $priorCreatePossible says whether a create request for this reservation may already have been
@@ -1833,80 +1850,93 @@ sub _create_stage_pulling ($self, $image) {
 # the create is posted and nothing else ever posts one. A fresh create(), and a chain resumed from
 # 'pulling', have no such predecessor - a record at 'pulling' has never reached the write that
 # precedes a post - so for those this stage's own result is the whole story.
-sub _create_stage_creating ($self, $body, $priorCreatePossible = 0) {
+sub _create_stage_creating ($self, $body, $priorCreatePossible, $cb) {
    my $socket = $CONFIG->{'docker'}{'socket'};
+   my $done = once( "Reservation::_create_stage_creating for reservation '" . $self->id() . "'", $cb );
+
+   # The stage is settled once the container's id is on disk, whether the container was created
+   # here or adopted; a write that fails leaves the stage unresolved, with the container by name
+   # for a later pass.
+   my $recorded = sub ($containerId) {
+      my $unrecorded = $self->_create_record_container_id( $containerId,
+         "created a container for name '" . $self->name . "'" );
+      return $done->( undef, $unrecorded ) if $unrecorded;
+      $done->( 1, undef );
+      return;
+   };
 
    my $createContainer = sub {
-      return Mojo::Promise->new( sub ($resolve, $reject) {
-         call_socket_api( $socket, '/containers/create?name=' . uri_escape( $self->name ), {
-            'method' => 'POST',
-            'json'   => $body,
-         }, sub ($result, $err) {
-            my ( $state, $detail ) = _create_classify( 'create', $result, $err );
+      call_socket_api( $socket, '/containers/create?name=' . uri_escape( $self->name ), {
+         'method' => 'POST',
+         'json'   => $body,
+      }, sub ($result, $err) {
+         my ( $state, $detail ) = _create_classify( 'create', $result, $err );
 
-            if ( $state eq 'failed' ) {
-               my $refusal = "create refused for name '" . $self->name . "': $detail";
+         if ( $state eq 'failed' ) {
+            my $refusal = "create refused for name '" . $self->name . "': $detail";
 
-               # Where a prior create may have been issued, this retry is not the reservation's
-               # first attempt: the earlier one, whose outcome this process never learned, may have
-               # been issued by a worker that has since died and gone on to create a container
-               # regardless - Docker went on processing it, since the ownership lock is process
-               # state and the in-flight request is not. This retry's own refusal says nothing
-               # about that earlier request, so it is not trusted as a verdict until ownership is
-               # confirmed. With no possible predecessor, the refusal is definitive.
-               if ($priorCreatePossible) {
-                  _create_confirm_ownership( $self, sub ( $owner, $ownerDetail ) {
-                     return $resolve->($ownerDetail) if $owner eq 'ours';
-                     return $reject->($refusal) if $owner eq 'unrelated';
-                     $reject->( _create_unresolved_error( "$refusal, and what holds name '"
-                        . $self->name . "' could not be established: $ownerDetail" ) );
-                  } );
-                  return;
-               }
-               $reject->($refusal);
-               return;
-            }
-            if ( $state eq 'unresolved' ) {
-               $reject->( _create_unresolved_error( "create for name '" . $self->name
-                  . "' reported no usable outcome: $detail" ) );
-               return;
-            }
-            if ( $state eq 'conflict' ) {
-               # A 409 says the name is taken and nothing more. It does not say by what: this
-               # reservation's own earlier create - issued by a worker that has since died,
-               # whose request Docker went on processing regardless, since the ownership lock
-               # is process state and the in-flight request is not - collides with this one
-               # exactly as an unrelated container does. Ownership is established by looking.
+            # Where a prior create may have been issued, this retry is not the reservation's
+            # first attempt: the earlier one, whose outcome this process never learned, may have
+            # been issued by a worker that has since died and gone on to create a container
+            # regardless - Docker went on processing it, since the ownership lock is process
+            # state and the in-flight request is not. This retry's own refusal says nothing
+            # about that earlier request, so it is not trusted as a verdict until ownership is
+            # confirmed. With no possible predecessor, the refusal is definitive.
+            if ($priorCreatePossible) {
                _create_confirm_ownership( $self, sub ( $owner, $ownerDetail ) {
-                  return $resolve->($ownerDetail) if $owner eq 'ours';
-                  return $reject->( "name '" . $self->name
-                     . "' is already in use by a container this reservation does not own" )
-                     if $owner eq 'unrelated';
-                  $reject->( _create_unresolved_error( "name '" . $self->name
-                     . "' is taken but its owner could not be established: $ownerDetail" ) );
+                  return $recorded->($ownerDetail) if $owner eq 'ours';
+                  return $done->( undef, $refusal ) if $owner eq 'unrelated';
+                  $done->( undef, _create_unresolved_error( "$refusal, and what holds name '"
+                     . $self->name . "' could not be established: $ownerDetail" ) );
                } );
                return;
             }
+            $done->( undef, $refusal );
+            return;
+         }
+         if ( $state eq 'unresolved' ) {
+            $done->( undef, _create_unresolved_error( "create for name '" . $self->name
+               . "' reported no usable outcome: $detail" ) );
+            return;
+         }
+         if ( $state eq 'conflict' ) {
+            # A 409 says the name is taken and nothing more. It does not say by what: this
+            # reservation's own earlier create - issued by a worker that has since died,
+            # whose request Docker went on processing regardless, since the ownership lock
+            # is process state and the in-flight request is not - collides with this one
+            # exactly as an unrelated container does. Ownership is established by looking.
+            _create_confirm_ownership( $self, sub ( $owner, $ownerDetail ) {
+               return $recorded->($ownerDetail) if $owner eq 'ours';
+               return $done->( undef, "name '" . $self->name
+                  . "' is already in use by a container this reservation does not own" )
+                  if $owner eq 'unrelated';
+               $done->( undef, _create_unresolved_error( "name '" . $self->name
+                  . "' is taken but its owner could not be established: $ownerDetail" ) );
+            } );
+            return;
+         }
 
-            # Docker accepted the create, so a response carrying no usable Id leaves the
-            # container's existence unknown rather than disproved. Resolving would persist an
-            # unusable containerId and drive the start stage against nothing, so this reports an
-            # unresolved outcome and lets a later pass find the container by name instead.
-            # Decoding must not be allowed to throw, for the same reason as the name lookup - the
-            # exception would bypass this promise entirely rather than rejecting it. The id is held
-            # to the same hex-id shape _create_entry_ownership requires: a 201 whose body does not
-            # actually carry a real Docker id is exactly the case this must not trust.
-            my $containerId = eval { decode_json( $result->body )->{'Id'} };
-            unless ( defined($containerId) && !ref($containerId) && $containerId =~ /^[0-9a-f]{12,64}$/ ) {
-               $reject->( _create_unresolved_error( "create for name '" . $self->name
-                  . "' returned no usable id: "
-                  . ( format_caught_error($@) || 'no Id in response' ) ) );
-               return;
-            }
-            $resolve->($containerId);
-         } );
+         # Docker accepted the create, so a response carrying no usable Id leaves the
+         # container's existence unknown rather than disproved. Settling as a success would
+         # persist an unusable containerId and drive the start stage against nothing, so this
+         # reports an unresolved outcome and lets a later pass find the container by name
+         # instead. Decoding must not be allowed to throw, for the same reason as the name lookup
+         # - the exception would escape into the reactor rather than reaching the continuation.
+         # The id is held to the same hex-id shape _create_entry_ownership requires: a 201 whose
+         # body does not actually carry a real Docker id is exactly the case this must not trust.
+         my $containerId = eval { decode_json( $result->body )->{'Id'} };
+         unless ( defined($containerId) && !ref($containerId) && $containerId =~ /^[0-9a-f]{12,64}$/ ) {
+            $done->( undef, _create_unresolved_error( "create for name '" . $self->name
+               . "' returned no usable id: "
+               . ( format_caught_error($@) || 'no Id in response' ) ) );
+            return;
+         }
+         $recorded->($containerId);
       } );
+      return;
    };
+
+   return $createContainer->() unless $priorCreatePossible;
 
    # Where a prior create may have been issued, the name is looked up before creating anything:
    # the container this stage is about to create may already exist, made by the request whose
@@ -1914,79 +1944,44 @@ sub _create_stage_creating ($self, $body, $priorCreatePossible = 0) {
    # carries this reservation's own id label, and only a lookup that positively establishes the
    # name is free may fall through to a create - an inconclusive lookup must not authorize one,
    # since it cannot tell "nothing holds this name" apart from "Docker did not answer".
-   my $lookupOrCreate = $priorCreatePossible
-      ? Mojo::Promise->new( sub ($resolve, $reject) {
-           _create_lookup_by_name( $self, undef, sub ($lookup) {
-              if ( $lookup->{'state'} eq 'unknown' ) {
-                 $reject->( _create_unresolved_error( "cannot establish what holds name '"
-                    . $self->name . "': " . $lookup->{'reason'} ) );
-                 return;
-              }
-              unless ( $lookup->{'state'} eq 'present' ) {
-                 # Resolving with the create's own promise adopts its outcome either way. Chaining
-                 # it through $resolve/$reject as handlers would instead leave a derived promise
-                 # following the rejection with nothing attached, and Mojo::Promise reports every
-                 # such promise as unhandled when it is freed.
-                 $resolve->( $createContainer->() );
-                 return;
-              }
-              my ( $owner, $detail ) = _create_entry_ownership( $self, $lookup->{'entry'} );
-              return $resolve->($detail) if $owner eq 'ours';
-              return $reject->( "name '" . $self->name
-                 . "' is already in use by a container this reservation does not own" )
-                 if $owner eq 'unrelated';
-              $reject->( _create_unresolved_error( "container holding name '" . $self->name
-                 . "' could not be identified: $detail" ) );
-           } );
-        } )
-      : $createContainer->();
+   _create_lookup_by_name( $self, undef, sub ($lookup) {
+      if ( $lookup->{'state'} eq 'unknown' ) {
+         $done->( undef, _create_unresolved_error( "cannot establish what holds name '"
+            . $self->name . "': " . $lookup->{'reason'} ) );
+         return;
+      }
+      return $createContainer->() unless $lookup->{'state'} eq 'present';
 
-   return $lookupOrCreate->then( sub ($containerId) {
-      # Store the 12-char short id, matching Reservation::containerId's own established
-      # convention - docker-event-daemon's containers.json keys are the same 12-char short id
-      # (_update_merge: 'substr($c->{'Id'}, 0, 12)'), and both $BY_CONTAINERID (this file's own
-      # update_container_info) and load_clean_map match against those keys directly. The
-      # Create API's response 'Id' (and the ground-truth GET above) is the full 64-char id -
-      # storing it untruncated would silently never match either lookup: update_container_info
-      # would leave this reservation's status stuck at -3 ('destroyed') forever,
-      # onContainerStart would log "we don't manage" this containerId and never fire the
-      # launch DAG, and load_clean_map would conclude the container is gone and delete the
-      # reservation entirely after 30s - all while the container itself is alive and running.
-      my $shortId = substr( $containerId, 0, 12 );
-      my $persisted = eval {
-         $self->containerId($shortId);
-         $self->update( { 'containerId' => $shortId } );
-         1;
-      };
-      return 1 if $persisted;
-
-      # The container exists; only the record of its id was lost. Failing definitively here would
-      # expire a reservation whose container is running, so this reports an unresolved outcome
-      # instead: the stage stays 'creating', and a later pass adopts that container by name.
-      die _create_unresolved_error( "created a container for name '" . $self->name
-         . "' but could not record its id: " . format_caught_error($@) );
+      my ( $owner, $detail ) = _create_entry_ownership( $self, $lookup->{'entry'} );
+      return $recorded->($detail) if $owner eq 'ours';
+      return $done->( undef, "name '" . $self->name
+         . "' is already in use by a container this reservation does not own" )
+         if $owner eq 'unrelated';
+      $done->( undef, _create_unresolved_error( "container holding name '" . $self->name
+         . "' could not be identified: $detail" ) );
    } );
+   return;
 }
 
-sub _create_stage_starting ($self, $containerId) {
+sub _create_stage_starting ($self, $containerId, $cb) {
    my $socket = $CONFIG->{'docker'}{'socket'};
+   my $done = once( "Reservation::_create_stage_starting for reservation '" . $self->id() . "'", $cb );
 
-   return Mojo::Promise->new( sub ($resolve, $reject) {
-      call_socket_api( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
-         # Docker's own 'already started' 304 counts as success here - see _create_classify,
-         # which holds that rule and the rest of this response's reading.
-         my ( $state, $detail ) = _create_classify( 'start', $result, $err );
-         return $resolve->(1) if $state eq 'success';
-         return $reject->( "start refused for container '$containerId': $detail" )
-            if $state eq 'failed';
+   call_socket_api( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
+      # Docker's own 'already started' 304 counts as success here - see _create_classify,
+      # which holds that rule and the rest of this response's reading.
+      my ( $state, $detail ) = _create_classify( 'start', $result, $err );
+      return $done->( 1, undef ) if $state eq 'success';
+      return $done->( undef, "start refused for container '$containerId': $detail" )
+         if $state eq 'failed';
 
-         # The start may well have taken effect. Reporting it unresolved keeps the reservation at
-         # 'starting', where a later pass reissues the start - idempotent, by that same 304.
-         $reject->( _create_unresolved_error(
-            "start of container '$containerId' reported no usable outcome: "
-            . ( $detail // 'no detail' ) ) );
-      } );
+      # The start may well have taken effect. Reporting it unresolved keeps the reservation at
+      # 'starting', where a later pass reissues the start - idempotent, by that same 304.
+      $done->( undef, _create_unresolved_error(
+         "start of container '$containerId' reported no usable outcome: "
+         . ( $detail // 'no detail' ) ) );
    } );
+   return;
 }
 
 # The three-stage tail shared by create() and reconcile_create() below - each _create_run_from_*
@@ -2027,38 +2022,50 @@ sub _create_status_enter ($self, $stage) {
    return 0;
 }
 
-sub _create_run_from_starting ($self) {
-   return _create_rejected( _create_unresolved_error( "could not record the start of reservation '"
-      . $self->id() . "'" ) ) unless $self->_create_status_enter('starting');
+sub _create_run_from_starting ($self, $cb) {
+   unless ( $self->_create_status_enter('starting') ) {
+      $cb->( undef, _create_unresolved_error( "could not record the start of reservation '"
+         . $self->id() . "'" ) );
+      return;
+   }
 
-   return _create_stage_starting( $self, $self->containerId() )->then( sub (@) {
+   _create_stage_starting( $self, $self->containerId(), sub ( $started, $err ) {
+      return $cb->( undef, $err ) if defined $err;
       flog("Reservation::create: reservation '" . $self->id() . "' created and started successfully");
-      return 1 if $self->_create_status_enter('done');
+      return $cb->( 1, undef ) if $self->_create_status_enter('done');
 
       # The container is started; only the record saying so was lost. Left at 'starting', a later
       # pass reissues the start and settles the chain, so this stays recoverable rather than
       # reporting a success no other process can see.
-      die _create_unresolved_error( "reservation '" . $self->id()
-         . "' started but its completion could not be recorded" );
+      $cb->( undef, _create_unresolved_error( "reservation '" . $self->id()
+         . "' started but its completion could not be recorded" ) );
    } );
+   return;
 }
 
-sub _create_run_from_creating ($self, $body, $priorCreatePossible = 0) {
-   return _create_rejected( _create_unresolved_error( "could not record the create stage of "
-      . "reservation '" . $self->id() . "'" ) ) unless $self->_create_status_enter('creating');
+sub _create_run_from_creating ($self, $body, $priorCreatePossible, $cb) {
+   unless ( $self->_create_status_enter('creating') ) {
+      $cb->( undef, _create_unresolved_error( "could not record the create stage of "
+         . "reservation '" . $self->id() . "'" ) );
+      return;
+   }
 
-   return _create_stage_creating( $self, $body, $priorCreatePossible )->then( sub (@) {
-      return $self->_create_run_from_starting();
+   _create_stage_creating( $self, $body, $priorCreatePossible, sub ( $created, $err ) {
+      return $cb->( undef, $err ) if defined $err;
+      $self->_create_run_from_starting($cb);
    } );
+   return;
 }
 
 # A chain at 'pulling' has never issued a create - 'creating' is written to disk before any create
 # is posted - so the create that follows the pull is always this reservation's first, whether the
 # chain is fresh or resumed, and is never told to account for a predecessor.
-sub _create_run_from_pulling ($self, $body) {
-   return _create_stage_pulling( $self, $self->data('image') )->then( sub (@) {
-      return $self->_create_run_from_creating( $body, 0 );
+sub _create_run_from_pulling ($self, $body, $cb) {
+   _create_stage_pulling( $self, $self->data('image'), sub ( $present, $err ) {
+      return $cb->( undef, $err ) if defined $err;
+      $self->_create_run_from_creating( $body, 0, $cb );
    } );
+   return;
 }
 
 # Shared failure handling for create()/reconcile_create() - flogs, then records createStatus
@@ -2139,54 +2146,44 @@ sub _create_record_outcome ($self, $err) {
    return ( 1, $msg );
 }
 
-# Registers this reservation in %CREATE_IN_FLIGHT for $promise's own duration (a
-# create()/reconcile_create() chain already running), clearing it once settled regardless of
-# outcome. $onSettled (default: no one's listening - create()'s own contract has no external
-# consumer for its tail) fires after cleanup, with the terminal ($self,undef)/(undef,$exception)
-# result - reconcile_create() below is the one real consumer, since unlike create()'s
-# fire-fast-then-continue $cb, its own $cb fires exactly once, on settle, with nothing else to
-# ack early. $lock (optional: create()/reconcile_create()'s own per-reservation ownership lock
-# handle - docs/adr/0007-create-restart-recovery.md's "Decision" section) is held in this
-# closure and closed - releasing it - only once the chain settles, so the lock covers this
-# chain's entire lifetime regardless of outcome.
-sub _create_track ($self, $promise, $onSettled = sub {}, $lock = undef) {
+# Registers this reservation in %CREATE_IN_FLIGHT for the duration of $run (a
+# create()/reconcile_create() chain, as a sub taking the settlement continuation it reports
+# through), clearing it once settled regardless of outcome. $onSettled (default: no one's
+# listening - create()'s own contract has no external consumer for its tail) fires after
+# cleanup, with the terminal ($self,undef)/(undef,$exception) result - reconcile_create() below
+# is the one real consumer, since unlike create()'s fire-fast-then-continue $cb, its own $cb
+# fires exactly once, on settle, with nothing else to ack early. $lock (optional:
+# create()/reconcile_create()'s own per-reservation ownership lock handle -
+# docs/adr/0007-create-restart-recovery.md's "Decision" section) is held in this closure and
+# closed - releasing it - only once the chain settles, so the lock covers this chain's entire
+# lifetime regardless of outcome.
+sub _create_track ($self, $run, $onSettled = sub {}, $lock = undef) {
    my $id = $self->id();
    $CREATE_IN_FLIGHT{$id} = 1;
 
-   my $notified = 0;
-   my $notify = sub ( $reservation, $err ) {
-      return if $notified++;
+   # The settlement continuation records the outcome, releases what the chain holds, and then
+   # notifies the consumer. The consumer runs last and outside the recording, and both
+   # placements are load-bearing: a consumer's own exception is contained here, so it cannot be
+   # taken for this chain's failure - overwriting an outcome already recorded, and entering the
+   # consumer a second time - and a consumer entered before cleanup could observe an in-flight
+   # count and a held lock for a chain that has already settled. The once guard is what makes a
+   # second settlement a logged bug rather than a second release of the lock and the entry.
+   $run->( once( "Reservation::_create_track for reservation '$id'", sub ( $ok, $err ) {
+      my $outcome;
+      if ( defined $err ) {
+         my ( $unresolved, $msg ) = $self->_create_record_outcome($err);
+         $outcome = Exception->new( 'msg' => $msg, ( $unresolved ? ( 'unresolved' => 1 ) : () ) );
+      }
+
       delete $CREATE_IN_FLIGHT{$id};
       close($lock) if $lock;
       $lock = undef;
 
-      # The consumer runs here: after this chain's own cleanup, and outside the handler that
-      # classifies the chain's outcome. Both placements are load-bearing. A consumer invoked from
-      # inside that handler would have its own exception classified as this chain's failure -
-      # overwriting an outcome already recorded, and entering the consumer a second time - and one
-      # invoked before cleanup could observe an in-flight count and a held lock for a chain that
-      # has already settled.
-      eval { $onSettled->( $reservation, $err ); 1 }
+      eval { $onSettled->( ( defined $err ? undef : $self ), $outcome ); 1 }
          or flog( "Reservation::_create_track: settlement consumer failed for reservationId=$id: "
                 . format_caught_error($@) );
       return;
-   };
-
-   # Two handlers on one ->then, deliberately, rather than ->then->catch: the rejection handler
-   # must see only the chain's own failures, not anything the fulfilment handler raises.
-   $promise->then(
-      sub (@) {
-         $notify->( $self, undef );
-         return;
-      },
-      sub ($err) {
-         my ( $unresolved, $msg ) = $self->_create_record_outcome($err);
-         $notify->( undef,
-            Exception->new( 'msg' => $msg, ( $unresolved ? ( 'unresolved' => 1 ) : () ) ) );
-         return;
-      },
-   );
-
+   } ) );
    return;
 }
 
@@ -2202,8 +2199,8 @@ sub _create_track ($self, $promise, $onSettled = sub {}, $lock = undef) {
 # check/pull, create, start) continues independently afterwards, on this same process's event
 # loop, visible only via polling createStatus (see status()'s own comment on its shape) - this
 # preserves a fast-ack-then-poll client UX, which only holds if the initial API call keeps
-# returning quickly rather than waiting for the whole chain. If the process (or, under
-# Mojo::Server::Prefork, just the one worker) driving that background chain dies before it
+# returning quickly rather than waiting for the whole chain. If the process (or, under a
+# preforking server, just the one worker) driving that background chain dies before it
 # reaches a terminal stage, nothing above this sub notices on its own - see reconcile_create()
 # below and docs/adr/0007-create-restart-recovery.md for what does.
 #
@@ -2218,15 +2215,11 @@ sub _create_track ($self, $promise, $onSettled = sub {}, $lock = undef) {
 # completed and released the lock this call just acquired) - so the actual guard is a forced
 # reload under the lock, not the in-memory copy; see _reservation_reloaded's own comment.
 #
-# Composed with Mojo::Promise, not nested callbacks - the one genuinely multi-step async chain
-# in this file (image check -> optional pull -> create -> start). This is a deliberate, scoped
-# exception to this file otherwise having no Mojolicious-framework dependency at all (no $c, no
-# ->render, no routes) - chosen here specifically because this is the one multi-step chain in
-# the whole file; the alternative (nested callbacks) would be a four-deep pyramid. It is not
-# precedent for giving another method a promise-shaped interface: every other async method here
-# presents the plain ($self, ..., $cb) single-callback convention to its callers, whatever it
-# uses internally (_hook_settle_outcome resolves an outcome write and a %HOOK_DISPATCH_IN_FLIGHT
-# obligation together, and still reports through a single callback).
+# Composed as continuations: each stage takes the next step as its last argument and calls it
+# exactly once (Util::once), the same plain ($self, ..., $cb) single-callback convention every
+# other async method in this file presents to its callers. The chain's timer and recycling hold
+# come from the process that loads this file (provider(), above); nothing here names the event
+# loop or the server framework.
 sub create ($self, $cb) {
    my $id = $self->id();
 
@@ -2258,11 +2251,11 @@ sub create ($self, $cb) {
    $self->_create_status_set( { 'stage' => 'pulling', 'failed' => 0, 'layers' => {} } );
    $cb->( $self, undef );
 
-   $self->_create_track( $self->_create_run_from_pulling($body), sub {}, $lock );
+   $self->_create_track( sub ($settle) { $self->_create_run_from_pulling( $body, $settle ) }, sub {}, $lock );
    return;
 }
 
-# Resumes a create() chain abandoned by the process (or, under Mojo::Server::Prefork, just the
+# Resumes a create() chain abandoned by the process (or, under a preforking server, just the
 # one worker) that was driving it - reads createStatus.stage to decide where to resume, per
 # the "States" table in docs/adr/0007-create-restart-recovery.md's state-model section.
 # $self must already be a freshly-read, lock-held snapshot - see reconcile_one below, the one
@@ -2288,7 +2281,7 @@ sub reconcile_create ($self, $cb, $lock = undef) {
    my $stage = ( $self->{'createStatus'} // {} )->{'stage'} // '';
 
    if ( $stage eq 'starting' ) {
-      $self->_create_track( $self->_create_run_from_starting(), $cb, $lock );
+      $self->_create_track( sub ($settle) { $self->_create_run_from_starting($settle) }, $cb, $lock );
       return;
    }
 
@@ -2313,7 +2306,7 @@ sub reconcile_create ($self, $cb, $lock = undef) {
       # body - so ownership is established first, and only a reservation that provably owns
       # nothing is failed for a body that cannot be rebuilt.
       if ( $stage eq 'creating' ) {
-         $self->_create_track( _create_adopt_only( $self, $prepError ), $cb, $lock );
+         $self->_create_track( sub ($settle) { _create_adopt_only( $self, $prepError, $settle ) }, $cb, $lock );
          return;
       }
       my $msg = $self->_create_fail($prepError);
@@ -2323,8 +2316,10 @@ sub reconcile_create ($self, $cb, $lock = undef) {
    }
 
    $self->_create_track(
-      ( $stage eq 'pulling' ? $self->_create_run_from_pulling($body)
-                            : $self->_create_run_from_creating( $body, 1 ) ),
+      sub ($settle) {
+         return $self->_create_run_from_pulling( $body, $settle ) if $stage eq 'pulling';
+         $self->_create_run_from_creating( $body, 1, $settle );
+      },
       $cb, $lock );
    return;
 }
@@ -2338,29 +2333,22 @@ sub reconcile_create ($self, $cb, $lock = undef) {
 # since died, whose request Docker went on processing regardless (the ownership lock is process
 # state; the in-flight request is not) - so, like the 409 and recovery-retry cases,
 # _create_confirm_ownership's bounded poll is what this waits on before concluding either way.
-sub _create_adopt_only ($self, $prepError) {
+sub _create_adopt_only ($self, $prepError, $cb) {
    my $prepMsg = ( ref($prepError) eq 'Exception' ) ? $prepError->msg : "$prepError";
    my $context = "cannot rebuild the create request for reservation '" . $self->id() . "' ($prepMsg)";
 
-   return Mojo::Promise->new( sub ( $resolve, $reject ) {
-      _create_confirm_ownership( $self, sub ( $owner, $detail ) {
-         return $resolve->($detail) if $owner eq 'ours';
-         return $reject->("$context, and it owns no container to adopt") if $owner eq 'unrelated';
-         $reject->( _create_unresolved_error(
-            "$context, and what holds name '" . $self->name . "' could not be established: $detail" ) );
-      } );
-   } )->then( sub ($containerId) {
-      my $shortId = substr( $containerId, 0, 12 );
-      my $persisted = eval {
-         $self->containerId($shortId);
-         $self->update( { 'containerId' => $shortId } );
-         1;
-      };
-      die _create_unresolved_error( "adopted the container holding name '" . $self->name
-         . "' but could not record its id: " . format_caught_error($@) ) unless $persisted;
-
-      return $self->_create_run_from_starting();
+   _create_confirm_ownership( $self, sub ( $owner, $detail ) {
+      if ( $owner eq 'ours' ) {
+         my $unrecorded = $self->_create_record_container_id( $detail,
+            "adopted the container holding name '" . $self->name . "'" );
+         return $cb->( undef, $unrecorded ) if $unrecorded;
+         return $self->_create_run_from_starting($cb);
+      }
+      return $cb->( undef, "$context, and it owns no container to adopt" ) if $owner eq 'unrelated';
+      $cb->( undef, _create_unresolved_error(
+         "$context, and what holds name '" . $self->name . "' could not be established: $detail" ) );
    } );
+   return;
 }
 
 # Decides what a non-terminal createStatus.stage for $id actually means, and resumes the chain

@@ -6,7 +6,7 @@
 
 ## Context
 
-`Reservation::create` is a three-stage `Mojo::Promise` chain (pull the image if it isn't already
+`Reservation::create` is a three-stage chain of continuations (pull the image if it isn't already
 present → `POST /containers/create` → `POST /containers/{id}/start`), each stage recorded in
 `createStatus.stage` (`pulling` → `creating` → `starting` → `done`, or `failed` at any point).
 The stage is written once, synchronously, when a stage begins. While a pull runs the record also
@@ -38,7 +38,7 @@ doesn't port directly to `app-server`, for a reason specific to how the two proc
   event loop starts, catches every case there is.
 - `app-server` runs under `Mojo::Server::Prefork` - one manager process plus N worker processes,
   forked from the manager after the manager's own one-time startup code has already run. A
-  `create()` call's whole promise chain lives entirely in the memory of the one worker that
+  `create()` call's whole chain lives entirely in the memory of the one worker that
   received the original HTTP request. The manager forks a *replacement* worker directly from
   itself when one dies - it does not re-exec the script, so a startup-only sweep never fires
   again for that case. A single worker dying (an uncaught exception, that worker OOM-killed) is,
@@ -80,7 +80,7 @@ does not make; they are defined so that the whole area shares one vocabulary.
 - **docker-event-daemon.** The single, non-forking process (`app/server/bin/docker-event-daemon`)
   that consumes Docker's `/events` stream, drives the launch DAG and runs its own event loop.
 - **Event loop / reactor.** `Mojo::IOLoop` and the reactor beneath it. Both binaries run one. All
-  asynchronous work in this area runs on it: HTTP calls to Docker, timers, promise settlement.
+  asynchronous work in this area runs on it: HTTP calls to Docker and timers.
 - **Public API (of Mojolicious).** Attributes, events and methods documented in the module's own
   POD. For `Mojo::Server::Prefork` (installed 9.31) that is: events `finish`, `heartbeat`, `reap`,
   `spawn`, `wait`; attributes `accepts`, `cleanup`, `graceful_timeout`, `heartbeat_interval`,
@@ -195,8 +195,8 @@ process depends on it. Process memory holds nothing that a later process needs.
 
 **P6. Reservation.pm is domain logic and owns no framework dependency.** Asynchronous primitives
 it needs, a timer and the recycling hold, are provided to it by the process that loads it
-(`Reservation::provider`); its monotonic clock is Perl's own. The create chain's `Mojo::Promise`
-spine is the current exception to this principle.
+(`Reservation::provider`); its monotonic clock is Perl's own. The create chain is a chain of
+continuations, each called exactly once (I7), and the module names the framework nowhere.
 
 ## Decision
 
@@ -301,7 +301,7 @@ every worker with `SIGKILL` immediately - no grace period at all. Only a **grace
 close, and `create()`'s own handler returns its HTTP response immediately (by design - the
 fast-ack-then-poll UX its own header comment describes), so the connection that carried the
 original `POST /containers/create` closes almost instantly and Mojo considers the worker done
-**while the detached promise chain is still actively running** on that worker's event loop.
+**while the detached chain is still actively running** on that worker's event loop.
 Mojo's graceful shutdown has no visibility into work that outlives the request that started it.
 
 `App::Shutdown` tracks the worker's in-flight `create()` chains and hook runs
@@ -425,8 +425,9 @@ of a `409` body; a name match without the id label; a lookup that is anything bu
   carries a `containerId` and whether or not that container is in the Docker snapshot. This
   matters most at `starting`, where a container id is already recorded and a Docker snapshot that
   has not caught up would otherwise start a deletion clock against a live container.
-- **I7. Every rejection on the chain reaches a handler.** No promise on the chain is dropped
-  rejected; an outcome that is not recorded is not an outcome.
+- **I7. Every continuation on the chain is called exactly once.** A second call is a logged bug
+  and is ignored, so one attempt records one outcome; an outcome that is not recorded is not an
+  outcome.
 - **I8. The consumer of an attempt is notified once, after cleanup, outside the classifier.** A
   consumer that throws cannot change the recorded outcome or be entered twice.
 - **I9. An unresolved diagnostic belongs to one stage.** Re-entering the same stage carries it
@@ -548,7 +549,7 @@ consumer told a definitive failure.
 | a later attempt advances the stage | the diagnostic is cleared |
 | the consumer throws | entered once; outcome unchanged; in-flight entry released |
 | cleanup runs against a resumable record | record retained, no expiry (I6) |
-| any rejection on the chain | reaches a handler (I7) |
+| any continuation on the chain | called exactly once; a second call is logged and ignored (I7) |
 
 ## Lock-file lifecycle and constraints
 

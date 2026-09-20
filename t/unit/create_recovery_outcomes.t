@@ -12,7 +12,7 @@ use Test::More;
 # Covers what a create chain does when it cannot establish whether its Docker mutation took
 # effect. Exercises real database mutations, real reconciliation and the real ownership lock with
 # disposable data; only the Docker transport is ever stubbed, so each test drives the same stage
-# code, promise chain and persistence a live worker does. The distinction under test throughout is
+# code, continuations and persistence a live worker does. The distinction under test throughout is
 # between an outcome that is known (advance, or record a definitive failure and expire) and one
 # that is not (keep a resumable stage, so a later pass can find out).
 my $tmp = tempdir(CLEANUP => 1);
@@ -44,14 +44,12 @@ local $Reservation::CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS = 0;
 
 my $OWN_ID = 'c' x 64;
 
-# Every rejection on the chain must reach a handler. A rejected promise dropped without one is
-# reported by Mojo::Promise as a warning at destruction, so the whole file counts those and
-# asserts none at the end: such a promise is a rejection nothing recorded and nothing acted on.
-my @unhandled;
-$SIG{__WARN__} = sub ($warning) {
-   push @unhandled, $warning if $warning =~ /Unhandled rejected promise/;
-   warn $warning;
-};
+# Every continuation on the chain is called exactly once. A second call is reported by the once
+# guard in the log, so the whole file asserts at the end that no chain it drove produced one.
+sub second_calls {
+   open my $fh, '<', "$tmp/test.log" or return ();
+   return grep { /continuation called again; ignored/ } <$fh>;
+}
 
 sub write_record ($record) {
    open my $fh, '>', $Data::CONFIG->{reservationsPath} or die $!;
@@ -112,20 +110,29 @@ sub docker ( $calls, %queues ) {
    };
 }
 
-# Runs one reconciliation of 'rid' to settlement and reports what the caller was told. Bounded, so
-# a chain that never settles fails an assertion instead of hanging the suite.
+# Runs one reconciliation of 'rid' to settlement and reports what the caller was told. A chain
+# whose stubbed transport answers at once settles before reconcile_one returns; one answered on
+# a later tick settles under the loop. Bounded, so a chain that never settles fails an assertion
+# instead of hanging the suite.
 sub reconcile {
    my @settled;
    my $started = Reservation->reconcile_one( 'rid', sub ( $ok = undef, $err = undef ) {
       push @settled, { 'ok' => $ok, 'err' => $err };
       Mojo::IOLoop->stop;
    } );
-   return { 'started' => $started, 'settled' => \@settled } unless $started;
+   run_until_settled( sub { scalar @settled } ) if $started;
+   return { 'started' => $started, 'settled' => \@settled };
+}
 
+# Runs the loop until a settlement stops it, unless $settled already says the chain has settled:
+# a stubbed transport that answers at once settles a chain before the call that started it
+# returns. Bounded, so a chain that never settles fails an assertion instead of hanging the suite.
+sub run_until_settled ($settled) {
+   return if $settled->();
    my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
    Mojo::IOLoop->start;
    Mojo::IOLoop->remove($timeout);
-   return { 'started' => $started, 'settled' => \@settled };
+   return;
 }
 
 sub unresolved ($err) { return ( ref($err) eq 'Exception' && $err->unresolved ) ? 1 : 0; }
@@ -292,14 +299,12 @@ subtest 'a create Docker refuses outright on the first attempt is a definitive f
 
    my @settled;
    $reservation->_create_track(
-      $reservation->_create_run_from_creating( { Image => 'img:1' }, 0 ),
+      sub ($settle) { $reservation->_create_run_from_creating( { Image => 'img:1' }, 0, $settle ) },
       sub ( $ok = undef, $err = undef ) {
          push @settled, { 'ok' => $ok, 'err' => $err };
          Mojo::IOLoop->stop;
       } );
-   my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
-   Mojo::IOLoop->start;
-   Mojo::IOLoop->remove($timeout);
+   run_until_settled( sub { scalar @settled } );
 
    is( scalar @settled, 1, 'settles exactly once' );
    is( unresolved( $settled[0]{'err'} ), 0, 'a first attempt is failed without any ownership check' );
@@ -542,16 +547,13 @@ subtest 'a settlement consumer that throws cannot rewrite the outcome or run twi
    my $entered = 0;
    my $reservation = Reservation::_reservation_reloaded('rid');
    $reservation->_create_track(
-      $reservation->_create_run_from_creating( { Image => 'img:1' }, 1 ),
+      sub ($settle) { $reservation->_create_run_from_creating( { Image => 'img:1' }, 1, $settle ) },
       sub (@) {
          $entered++;
          Mojo::IOLoop->stop;
          die "fixture consumer failure\n";
       } );
-
-   my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
-   Mojo::IOLoop->start;
-   Mojo::IOLoop->remove($timeout);
+   run_until_settled( sub { $entered } );
 
    is( $entered, 1, 'the consumer is entered exactly once' );
    is( status()->{'stage'}, 'done', 'and its own exception does not turn a success into a failure' );
@@ -756,11 +758,9 @@ subtest 'an outcome that cannot be recorded is reported unresolved, whatever it 
       my $reservation = Reservation::_reservation_reloaded('rid');
       my @settled;
       $reservation->_create_track(
-         $reservation->_create_run_from_creating( { Image => 'img:1' }, 0 ),
+         sub ($settle) { $reservation->_create_run_from_creating( { Image => 'img:1' }, 0, $settle ) },
          sub ( $ok = undef, $err = undef ) { push @settled, { 'ok' => $ok, 'err' => $err }; Mojo::IOLoop->stop; } );
-      my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
-      Mojo::IOLoop->start;
-      Mojo::IOLoop->remove($timeout);
+      run_until_settled( sub { scalar @settled } );
 
       is( scalar @settled, 1, "$case->{'name'} unrecorded: settles exactly once" );
       ok( unresolved( $settled[0]{'err'} ), "$case->{'name'} unrecorded: reported unresolved" );
@@ -802,7 +802,8 @@ subtest 'each ownership-confirmation lookup is capped to what remains of the ins
       'every inspection lookup carries a positive timeout within the budget' );
 };
 
-is( scalar @unhandled, 0, 'no rejection on any chain was dropped without a handler' )
-   or diag( join( '', @unhandled ) );
+my @secondCalls = second_calls();
+is( scalar @secondCalls, 0, 'no continuation on any chain was called twice' )
+   or diag( join( '', @secondCalls ) );
 
 done_testing;

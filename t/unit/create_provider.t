@@ -87,7 +87,7 @@ sub reconcile {
       push @settled, { 'ok' => $ok, 'err' => $err };
       Mojo::IOLoop->stop;
    } );
-   return { 'started' => $started, 'settled' => \@settled } unless $started;
+   return { 'started' => $started, 'settled' => \@settled } if !$started || @settled;
 
    my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
    Mojo::IOLoop->start;

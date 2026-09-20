@@ -11,7 +11,8 @@ use Test::More;
 
 # Exercise real database mutations and flock with disposable data; no Docker required. Only the
 # transport (Util::call_socket_api, as imported into Reservation) is ever stubbed, so each test
-# runs the real stage code and the real promise chain.
+# runs the real stage code and the real continuations, each stage sub driven directly with a
+# continuation of the test's own.
 my $tmp = tempdir(CLEANUP => 1);
 my $logPath = "$tmp/test.log";
 $Data::CONFIG = {
@@ -19,6 +20,12 @@ $Data::CONFIG = {
    docker => { socket => 'unused' },
 };
 Util::flog({ file => $logPath });
+
+sub read_log {
+   open my $fh, '<', $logPath or return '';
+   local $/;
+   return <$fh> // '';
+}
 
 sub write_record ($record) {
    open my $fh, '>', $Data::CONFIG->{reservationsPath} or die $!;
@@ -42,23 +49,41 @@ sub response ($code, $body) {
    return Mojo::Message::Response->new->code($code)->body($body);
 }
 
-# Runs the loop until $promise settles, recording every settlement it makes. Bounded, so a stage
-# that never settles - the failure mode every test here is about - fails an assertion instead of
-# hanging the suite.
-sub settle ($promise) {
+# Runs $start with a continuation that records every call it receives, as [ 'resolve', $value ]
+# or [ 'reject', $err ], then runs the loop until the first, so a stage whose transport answers
+# on a later tick still settles here. Bounded, so a stage that never settles - the failure mode
+# every test here is about - fails an assertion instead of hanging the suite.
+sub settle ($start) {
    my @settled;
-   $promise->then( sub (@r) { push @settled, [ 'resolve', @r ] },
-                   sub (@r) { push @settled, [ 'reject',  @r ] } )
-           ->finally( sub (@) { Mojo::IOLoop->stop } );
+   $start->( sub ( $value, $err ) {
+      push @settled, defined($err) ? [ 'reject', $err ] : [ 'resolve', $value ];
+      Mojo::IOLoop->stop;
+   } );
+   return \@settled if @settled;
    my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
    Mojo::IOLoop->start;
    Mojo::IOLoop->remove($timeout);
    return \@settled;
 }
 
-# A stage rejects with a plain string when it has established that the mutation did not happen,
-# and with an Exception carrying 'unresolved' when it could not establish that - so a test reading
-# the reason has to handle both, and asserting which one it got is the point of several below.
+# Runs $code with stderr captured, since a continuation's second call is reported there as well
+# as in the log. Returns $code's results followed by the captured text.
+sub captured ($code) {
+   open( my $saved, '>&', \*STDERR ) or die "stderr: $!";
+   open( STDERR, '>', "$tmp/stderr" ) or die "stderr: $!";
+   my @out = eval { $code->() };
+   my $failed = $@;
+   open( STDERR, '>&', $saved ) or die "stderr: $!";
+   die $failed if $failed;
+   open my $fh, '<', "$tmp/stderr" or die $!;
+   local $/;
+   my $warnings = <$fh> // '';
+   return ( @out, $warnings );
+}
+
+# A stage reports a plain string when it has established that the mutation did not happen, and
+# an Exception carrying 'unresolved' when it could not establish that - so a test reading the
+# reason has to handle both, and asserting which one it got is the point of several below.
 sub reason ($err) {
    return ref($err) eq 'Exception' ? $err->msg : "$err";
 }
@@ -77,7 +102,7 @@ subtest 'a create response that decodes but carries no usable Id is unresolved, 
       };
 
       my $r = reservation();
-      my $settled = settle( Reservation::_create_stage_creating( $r, { Image => 'img:1' } ) );
+      my $settled = settle( sub ($cb) { Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 0, $cb ) } );
 
       is( scalar @$settled, 1, "settles exactly once for body '$body'" );
       is( $settled->[0][0], 'reject', 'an unusable create response is a rejection' );
@@ -97,11 +122,30 @@ subtest 'a usable create response resolves and persists the short container id' 
    };
 
    my $r = reservation();
-   my $settled = settle( Reservation::_create_stage_creating( $r, { Image => 'img:1' } ) );
+   my $settled = settle( sub ($cb) { Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 0, $cb ) } );
 
    is( scalar @$settled, 1, 'settles exactly once' );
    is( $settled->[0][0], 'resolve', 'a usable response resolves' );
    is( read_record()->{'containerId'}, 'a' x 12, 'the 12-char short id is persisted' );
+};
+
+subtest 'a transport that completes a stage twice leaves one settlement and a logged second call' => sub {
+   no warnings 'redefine';
+   local *Reservation::call_socket_api = sub ($socket, $path, $args, $cb) {
+      $cb->( response( 201, encode_json({ Id => 'd' x 64 }) ), undef ) for 1 .. 2;
+   };
+
+   my $r = reservation();
+   my ( $settled, $warnings ) = captured( sub {
+      settle( sub ($cb) { Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 0, $cb ) } );
+   } );
+
+   is( scalar @$settled, 1, 'the stage settles exactly once' );
+   is( $settled->[0][0], 'resolve', 'with the first completion' );
+   is( read_record()->{'containerId'}, 'd' x 12, 'and one recorded outcome' );
+   like( read_log(), qr/_create_stage_creating for reservation 'rid': continuation called again; ignored/,
+      'the second completion is logged as a bug, naming the stage' );
+   like( $warnings, qr/continuation called again; ignored/, 'on stderr too' );
 };
 
 subtest 'a recovery name lookup that will not decode is rejected, not left unsettled' => sub {
@@ -113,7 +157,7 @@ subtest 'a recovery name lookup that will not decode is rejected, not left unset
    };
 
    my $r = reservation();
-   my $settled = settle( Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 1 ) );
+   my $settled = settle( sub ($cb) { Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 1, $cb ) } );
 
    is( scalar @$settled, 1, 'settles exactly once' );
    is( $settled->[0][0], 'reject', 'an undecodable lookup is a rejection' );
@@ -169,7 +213,7 @@ subtest 'recovery adopts only on this reservation own label and a usable id' => 
       };
 
       my $r = reservation();
-      my $settled = settle( Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 1 ) );
+      my $settled = settle( sub ($cb) { Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 1, $cb ) } );
 
       is( scalar @$settled, 1, "settles exactly once: $case->{'name'}" );
       is( $settled->[0][0], 'reject', "does not adopt: $case->{'name'}" );
@@ -190,7 +234,7 @@ subtest 'recovery adopts a container carrying this reservation own label' => sub
    };
 
    my $r = reservation();
-   my $settled = settle( Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 1 ) );
+   my $settled = settle( sub ($cb) { Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 1, $cb ) } );
 
    is( scalar @$settled, 1, 'settles exactly once' );
    is( $settled->[0][0], 'resolve', 'the reservation own container is adopted' );
@@ -207,7 +251,7 @@ subtest 'the start stage settles once, accepting an already-started container' =
       };
 
       my $r = reservation();
-      my $settled = settle( Reservation::_create_stage_starting( $r, 'c' x 12 ) );
+      my $settled = settle( sub ($cb) { Reservation::_create_stage_starting( $r, 'c' x 12, $cb ) } );
 
       is( scalar @$settled, 1, "settles exactly once for HTTP $case->{'code'}" );
       is( $settled->[0][0], $case->{'outcome'}, "HTTP $case->{'code'} is a $case->{'outcome'}" );
@@ -232,7 +276,7 @@ subtest 'a failed progress write cannot hide a pull error later in the same chun
    };
 
    my $r = reservation();
-   my $settled = settle( Reservation::_create_stage_pulling( $r, 'img:1' ) );
+   my $settled = settle( sub ($cb) { Reservation::_create_stage_pulling( $r, 'img:1', $cb ) } );
 
    is( scalar @$settled, 1, 'settles exactly once' );
    is( $settled->[0][0], 'reject', 'a pull Docker reported as failed is not a success' );
@@ -248,10 +292,10 @@ subtest 'a transport failure at any stage is a single clean rejection' => sub {
       };
 
       my $r = reservation();
-      my $promise = $stage eq 'pulling'  ? Reservation::_create_stage_pulling( $r, 'img:1' )
-                  : $stage eq 'creating' ? Reservation::_create_stage_creating( $r, { Image => 'img:1' } )
-                  :                        Reservation::_create_stage_starting( $r, 'c' x 12 );
-      my $settled = settle($promise);
+      my $start = $stage eq 'pulling'  ? sub ($cb) { Reservation::_create_stage_pulling( $r, 'img:1', $cb ) }
+                : $stage eq 'creating' ? sub ($cb) { Reservation::_create_stage_creating( $r, { Image => 'img:1' }, 0, $cb ) }
+                :                        sub ($cb) { Reservation::_create_stage_starting( $r, 'c' x 12, $cb ) };
+      my $settled = settle($start);
 
       is( scalar @$settled, 1, "$stage settles exactly once on a transport failure" );
       is( $settled->[0][0], 'reject', "$stage rejects rather than hanging" );
