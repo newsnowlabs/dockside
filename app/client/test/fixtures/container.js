@@ -8,6 +8,7 @@ export function makeContainer(overrides = {}) {
       id: 'abc123',
       name: 'my-devtainer',
       status: 1,
+      stopping: false,
       data: { runtime: 'runc', unixuser: 'dockside' },
       docker: { Status: 'Up 2 hours', CreatedAt: Date.now() / 1000 },
       meta: {

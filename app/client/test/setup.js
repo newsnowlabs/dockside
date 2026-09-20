@@ -19,6 +19,17 @@ window.matchMedia = window.matchMedia || function (query) {
    };
 };
 
+// jsdom has no ResizeObserver either. Vuetify's v-progress-circular, which a
+// v-btn renders while its `loading` prop holds, observes its own element's
+// size through it at mount, so any test that mounts a loading button needs
+// one defined. Observing nothing is enough: no test asserts on a measured
+// size, only on the element's presence and state.
+window.ResizeObserver = window.ResizeObserver || class {
+   observe() {}
+   unobserve() {}
+   disconnect() {}
+};
+
 // Vitest setup (see vitest.config.js's setupFiles): stubs the window.dockside
 // bootstrap object that the store modules read at construction time (see
 // store/index.js's `containers: window.dockside.containers` and

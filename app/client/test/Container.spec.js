@@ -20,4 +20,34 @@ describe('Container.vue', () => {
       const inputValues = wrapper.findAll('input').map(el => el.element.value);
       expect(inputValues).toContain('Dockside'); // profileObject.name
    });
+
+   // Both Stop buttons (the header copy and the bottom row's) follow the
+   // server-derived `stopping` flag: loading and disabled while a stop the
+   // server has acknowledged is still in Docker's hands, ordinary otherwise.
+   const stopButtons = wrapper =>
+      wrapper.findAll('button').filter(b => b.text().includes('Stop') && !b.text().includes('Stopped'));
+
+   it('renders both stop buttons loading and disabled while stopping', () => {
+      const wrapper = mountApp(Container, {
+         props: { container: makeContainer({ stopping: true }) },
+      });
+      const buttons = stopButtons(wrapper);
+      expect(buttons).toHaveLength(2);
+      for (const b of buttons) {
+         expect(b.classes()).toContain('v-btn--loading');
+         expect(b.attributes('disabled')).toBeDefined();
+      }
+   });
+
+   it('renders both stop buttons normally when not stopping', () => {
+      const wrapper = mountApp(Container, {
+         props: { container: makeContainer({ stopping: false }) },
+      });
+      const buttons = stopButtons(wrapper);
+      expect(buttons).toHaveLength(2);
+      for (const b of buttons) {
+         expect(b.classes()).not.toContain('v-btn--loading');
+         expect(b.attributes('disabled')).toBeUndefined();
+      }
+   });
 });

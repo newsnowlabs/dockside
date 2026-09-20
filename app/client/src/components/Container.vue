@@ -40,6 +40,7 @@
                      >Start</v-btn>
                      <v-btn size="small" variant="outlined" color="error"
                         v-show="container.permissions.actions.stopContainer && !isEditMode && container.status == 1"
+                        :loading="container.stopping" :disabled="container.stopping"
                         @click.stop="action('stop')"
                         :data-id="container.id"
                      >Stop</v-btn>
@@ -385,8 +386,12 @@
                      :data-id="container.id"
                      >Start</v-btn>
 
+                  <!-- container.stopping (a server-derived flag, see Reservation.pm's
+                       is_stopping) holds from the stop's acknowledgement until the
+                       container is observed not running; the poll settles it. -->
                   <v-btn size="small" variant="outlined" color="error"
                      v-show="container.permissions.actions.stopContainer && !isEditMode && !isPrelaunchMode && container.status == 1"
+                     :loading="container.stopping" :disabled="container.stopping"
                      v-on:click="action('stop')"
                      :data-id="container.id"
                      >Stop</v-btn>
