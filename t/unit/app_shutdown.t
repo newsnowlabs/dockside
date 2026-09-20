@@ -108,11 +108,12 @@ subtest 'only ids are ever read out of the obligations structure' => sub {
    unlike($_, qr/DECOY/, 'no log line carries anything beyond the ids') for @logged;
 };
 
-subtest 'admit accepts both kinds while the worker is still serving' => sub {
+subtest 'admit accepts every kind while the worker is still serving' => sub {
    @logged = ();
    ok(!App::Shutdown::is_shutting_down(), 'the worker is not shutting down yet');
-   ok(App::Shutdown::admit('create'), 'a create is admitted');
-   ok(App::Shutdown::admit('hook'),   'a hook run is admitted');
+   ok(App::Shutdown::admit('create'),    'a create is admitted');
+   ok(App::Shutdown::admit('hook'),      'a hook run is admitted');
+   ok(App::Shutdown::admit('reconcile'), 'a reconcile pass is admitted');
    is(scalar @logged, 0, 'an admitted request logs nothing');
 };
 
@@ -123,7 +124,7 @@ subtest 'the shutdown latch is one-way' => sub {
    ok(App::Shutdown::is_shutting_down(), 'and leaves the latch set');
 };
 
-subtest 'admit refuses both kinds once the shutdown has begun' => sub {
+subtest 'admit refuses every kind once the shutdown has begun' => sub {
    @logged = ();
 
    ok(!App::Shutdown::admit('create'), 'a create is refused');
@@ -133,6 +134,12 @@ subtest 'admit refuses both kinds once the shutdown has begun' => sub {
    ok(!App::Shutdown::admit('hook'), 'a hook run is refused');
    is(scalar @logged, 2, 'exactly one further line is logged for it');
    like($logged[1], qr/refusing hook: worker $$ is shutting down/, 'naming that kind too');
+
+   # The gate is unconditional on the kind: a kind this test has never named before is refused
+   # identically, so a gate accidentally wired to a list of known kinds would fail here.
+   ok(!App::Shutdown::admit('reconcile'), 'a reconcile pass is refused');
+   is(scalar @logged, 3, 'and logged once, like the others');
+   like($logged[2], qr/refusing reconcile: worker $$ is shutting down/, 'naming that kind too');
 };
 
 done_testing;

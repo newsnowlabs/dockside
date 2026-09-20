@@ -75,7 +75,16 @@ _cleanup_orphaned_reservation_locks();
 # Re-loads reservations.json first to build this pass's own candidate list - a sibling worker or
 # docker-event-daemon may have mutated it since this worker's last refresh - but the list is only
 # ever a snapshot; reconcile_one decides ownership from its own fresh reload, not from this list.
+#
+# A draining worker starts nothing here: the periodic tick keeps firing while the drain pumps the
+# reactor, and this pass is the one way a worker with no request in hand can start a create
+# chain, which the drain would then have to wait for, or abandon at its grace period for the next
+# worker's own start-up pass to recover anyway. One check at the top suffices: the candidates are
+# handed over synchronously inside this one reactor callback, and the latch is only ever set from
+# another (the signal dispatch, or the accept path once the accept limit is reached), so the
+# worker's state cannot change between two candidates of the same pass.
 sub _reconcile_pass {
+   return unless App::Shutdown::admit('reconcile');
    try {
       Data::load('reservations.json');
 
