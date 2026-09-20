@@ -52,6 +52,25 @@ describe('Container.vue', () => {
    });
 });
 
+// The Remove button is shown (v-show) for a stopped or created container, and for a launch
+// that failed before any container existed, whose remove clears the record; hidden while a
+// launch is in flight.
+describe('Container.vue remove button', () => {
+   const removeButton = wrapper =>
+      wrapper.findAll('button').find(b => b.text() === 'Remove');
+   const mountAt = status => mountApp(Container, {
+      props: { container: makeContainer({ status, createStatus: { stage: status === -4 ? 'failed' : 'creating', failed: status === -4 ? 1 : 0 } }) },
+   });
+
+   it('is shown for a failed launch', () => {
+      expect(removeButton(mountAt(-4)).isVisible()).toBe(true);
+   });
+
+   it('is hidden while a launch is in flight', () => {
+      expect(removeButton(mountAt(-2)).isVisible()).toBe(false);
+   });
+});
+
 // The launch-progress row is one of the selected-card detail rows: `isSelected` is a
 // store-wide getter (any container name selected, not this card's own name), so
 // selecting by name is all these need - with a name other than 'new', which would put

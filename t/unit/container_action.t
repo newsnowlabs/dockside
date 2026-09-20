@@ -113,6 +113,32 @@ subtest 'start and remove address their own endpoints and answer at completion' 
    ok( !exists read_record()->{'data'}{'stopRequestedAt'}, 'neither records a stop request' );
 };
 
+subtest 'a remove of a failed launch with no container records an expiry without asking Docker' => sub {
+   write_record( { id => 'rid', name => 'devt', data => {}, createStatus => { stage => 'failed', failed => 1, error => 'no such image' } } );
+   my $r = bless { id => 'rid', name => 'devt', data => {}, createStatus => { stage => 'failed', failed => 1 } }, 'Reservation';
+   my @events;
+   no warnings qw(redefine once);
+   local *Reservation::call_socket_api = sub (@) { push @events, ['requested']; };
+
+   $r->action( 'remove', {}, sub (@a) { push @events, [ 'answered', @a ] } );
+   is_deeply( sequence( \@events ), ['answered'], 'answered with no Docker request' );
+   ok( !defined $events[0][2], 'as a success' );
+   like( read_record()->{'expiryTime'} // '', qr/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/,
+      'the record now carries an expiry, so cleanup deletes it' );
+   is( read_record()->{'createStatus'}{'stage'}, 'failed', 'and keeps its terminal status' );
+
+   for my $case ( [ 'stop', { stage => 'failed', failed => 1 } ], [ 'remove', { stage => 'creating', failed => 0 } ] ) {
+      my ( $action, $createStatus ) = @$case;
+      write_record( { id => 'rid', name => 'devt', data => {}, createStatus => $createStatus } );
+      my $r = bless { id => 'rid', name => 'devt', data => {}, createStatus => $createStatus }, 'Reservation';
+      @events = ();
+      $r->action( $action, {}, sub (@a) { push @events, [ 'answered', @a ] } );
+      is_deeply( sequence( \@events ), ['answered'], "a '$action' of a record at '$createStatus->{'stage'}' with no container is answered without a request" );
+      is( $events[0][2]->status, 409, 'with a refusal' );
+      ok( !read_record()->{'expiryTime'}, 'and records no expiry' );
+   }
+};
+
 subtest 'a stop is answered once its request has been sent, before Docker completes it' => sub {
    my $before = Time::HiRes::time();
    my ( undef, $events, $r ) = act('stop');

@@ -710,10 +710,12 @@ export default defineComponent({
      hasWildcardGitURLs() {
        return ((this.profile && this.profile.gitURLs) ? this.profile.gitURLs.filter(x => x.includes("*")) : []).length > 0;
      },
+     // A stopped or created container (-1 to 0), or a launch that failed before any container
+     // existed (-4), whose remove clears the record itself.
      canRemove() {
         return this.container.permissions.actions.removeContainer &&
            !this.isEditMode && !this.isPrelaunchMode &&
-           this.container.status >= -1 && this.container.status <= 0;
+           ((this.container.status >= -1 && this.container.status <= 0) || this.container.status === -4);
      },
      // Folds canRemove into the v-model itself, rather than a separate v-show on
      // <ConfirmModal>: ConfirmModal's root is a v-dialog, which Vuetify renders as a

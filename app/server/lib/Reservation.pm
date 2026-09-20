@@ -1099,6 +1099,20 @@ sub getLogs ($self, $args = {}) {
 sub action ($self, $action, $args, $cb) {
    my $containerId = $self->containerId();
 
+   # A launch that failed before any container existed leaves a record with no containerId and
+   # a terminal createStatus. Removing it means removing the record: an expiryTime is written,
+   # and load_clean_map deletes the record once that is old enough, exactly as it does for any
+   # other expired record. There is no Docker request to make. The write is not contained here:
+   # a write that throws reaches the route's own handler, which reports it, and nothing has been
+   # asked of Docker in the meantime.
+   my $createStatus = ref( $self->{'createStatus'} ) eq 'HASH' ? $self->{'createStatus'} : {};
+   if ( $action eq 'remove' && !length( $containerId // '' ) && ( $createStatus->{'stage'} // '' ) eq 'failed' ) {
+      $self->update( { 'expiryTime' => YYYYMMDDHHMMSS(time) } );
+      flog( "Reservation::action: 'remove' on failed launch '" . $self->id() . "' recorded its expiry" );
+      $cb->( undef, undef );
+      return;
+   }
+
    # A reservation whose container does not exist - a create that failed, or one still in
    # flight - has no id to act on, and interpolating it into the paths below would ask Docker
    # about '/containers//stop'. Reported through $cb, the channel every other outcome of this
