@@ -85,6 +85,13 @@ sub seed ( $stage, %extra ) {
    return;
 }
 
+# The record as written, for an assertion about the JSON itself rather than the values it decodes to.
+sub raw_record {
+   open my $fh, '<', $Data::CONFIG->{reservationsPath} or die $!;
+   local $/;
+   return <$fh> // '';
+}
+
 sub status { return read_record()->{'createStatus'} // {}; }
 
 sub responds ( $code, $body = '' ) {
@@ -486,6 +493,7 @@ subtest 'the recording worker retries at the configured delays, and the third un
    reconcile();
    my $first = status()->{'unresolved'};
    is( $first->{'attempts'}, 1, 'the first unresolved outcome is attempt one' );
+   like( raw_record(), qr/"attempts":1[,}]/, 'persisted as a number, not a string' );
    is( epoch( $first->{'retryAfter'} ) - epoch( $first->{'since'} ), 15, 'and names the first delay as when the next may run' );
    is( scalar @pending, 1, 'the worker holds one retry timer' );
    is( $pending[0][0], 15, 'at the first delay' );

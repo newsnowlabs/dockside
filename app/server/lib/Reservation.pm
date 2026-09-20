@@ -2184,7 +2184,11 @@ sub _create_unresolved ($self, $err) {
    $status{'unresolved'} = {
       'reason'     => $msg,
       'since'      => $previous->{'since'} // YYYYMMDDHHMMSS( _create_now() ),
-      'attempts'   => $attempts,
+      # Stored as a fresh integer: $attempts has been interpolated into the log line above, which
+      # gives the scalar a string form as well, and the JSON encoder writes such a scalar as a
+      # quoted string (cloneHash's own comment). A count read by a type-sensitive consumer, such
+      # as a numeric comparison in a client, must reach disk as a number.
+      'attempts'   => 0 + $attempts,
       'retryAfter' => YYYYMMDDHHMMSS( _create_now() + $delay ),
    };
    $self->_create_status_set( \%status );
