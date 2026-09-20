@@ -601,6 +601,35 @@ _BAD_IMAGE_PROFILE = {
 
 # ── Developer role spec ────────────────────────────────────────────────────────
 
+# A devtainer that takes its whole stop timeout to stop: its main process ignores SIGTERM (the
+# trap is inherited by sleep), so Docker kills it 20 s after the stop signal. What module 20
+# measures the stop acknowledgement against.
+_STOP_TIMEOUT_PROFILE = {
+    "version": 2,
+    "name": "Integration Test - Stop Timeout",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000", "--stop-timeout=20"],
+    "command": ["/bin/sh", "-c", "trap '' TERM; sleep infinity"],
+}
+
 _DEVELOPER_ROLE_PERMISSIONS = {
     'createContainerReservation': 1,
     'startContainer':             1,
@@ -769,6 +798,7 @@ class _EnvManager:
         self.profile_nginx      = None
         self.profile_git        = None
         self.profile_bad_image  = None
+        self.profile_stop_timeout = None
         self.password_dev    = 'inttest-testpass'
 
         # Resolved by select_network() before setup() builds any profile.
@@ -1159,6 +1189,7 @@ class _EnvManager:
         self.profile_hook_git   = self._ensure_profile('inttest-hook-git',   _HOOK_GIT_PROFILE)
         self.profile_hook_edge_case = self._ensure_profile('inttest-hook-edge-case', _EDGE_CASE_HOOK_PROFILE)
         self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
+        self.profile_stop_timeout = self._ensure_profile('inttest-stop-timeout', _STOP_TIMEOUT_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
 
@@ -1356,6 +1387,7 @@ def main():
         test_profile_hook_git   = _env_manager.profile_hook_git
         test_profile_hook_edge_case = _env_manager.profile_hook_edge_case
         test_profile_bad_image  = _env_manager.profile_bad_image
+        test_profile_stop_timeout = _env_manager.profile_stop_timeout
         test_image_alpine       = _prefix_image('alpine:latest')
         test_image_nginx        = _prefix_image('nginx:latest')
         test_image_debian       = _prefix_image('debian:latest')
@@ -1389,6 +1421,7 @@ def main():
             'test_profile_hook_git':   test_profile_hook_git,
             'test_profile_hook_edge_case': test_profile_hook_edge_case,
             'test_profile_bad_image':  test_profile_bad_image,
+            'test_profile_stop_timeout': test_profile_stop_timeout,
             'test_image_alpine':       test_image_alpine,
             'test_image_nginx':        test_image_nginx,
             'test_image_debian':       test_image_debian,

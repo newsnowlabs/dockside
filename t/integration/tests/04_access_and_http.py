@@ -47,7 +47,7 @@ class AccessAndHttpTests(TestCase):
     def tearDownClass(cls):
         for name in (cls.AC_CONTAINER, cls.NGINX_CONTAINER, cls.ROUTER_CONTAINER):
             for fn in (
-                lambda n=name: cls.admin.stop(n, wait=False),
+                lambda n=name: cls.admin.stop(n, wait=True, timeout=60),
                 lambda n=name: cls.admin.remove(n, wait=False),
             ):
                 try:

@@ -1011,6 +1011,7 @@ class TestCase:
     test_profile_router     = 'inttest-router'
     test_profile_nginx      = 'inttest-nginx'
     test_profile_bad_image  = 'inttest-bad-image'
+    test_profile_stop_timeout = 'inttest-stop-timeout'
     test_image_alpine       = 'alpine:latest'
     test_image_nginx        = 'nginx:latest'
     test_image_debian       = 'debian:latest'
@@ -1036,7 +1037,7 @@ class TestCase:
             return
         for name in self._cleanup_names:
             try:
-                self.admin.stop(name, wait=False)
+                self.admin.stop(name, wait=True, timeout=60)
             except Exception:
                 pass
             try:

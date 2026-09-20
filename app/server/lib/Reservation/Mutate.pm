@@ -4,7 +4,7 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map resolve_hook_status hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
+our @EXPORT_OK = qw(update load_clean_map record_stop_request release_stop_request resolve_hook_status hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
 
 use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync tryLockFile);
 use Exception;
@@ -90,6 +90,51 @@ sub update ($self, $e) {
          return 1;
       }
    );
+}
+
+# record_stop_request:
+#
+# Records $requestedAt, the time a stop request for reservation $id was sent to Docker, and
+# $requestId, that request's own id, as data.stopRequestedAt and data.stopRequestId, unless a
+# later time is on record. Stop requests for one container may be sent from any worker and their
+# records land in any order, so the later time always stands; an equal time, two requests within
+# one millisecond, is taken over by the request recording it, the two having no order. Returns
+# whether it was recorded.
+sub record_stop_request ($id, $requestedAt, $requestId) {
+   my $recorded = 0;
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $known = $reservation->{'data'}{'stopRequestedAt'};
+         return 0 if defined($known) && $known > $requestedAt;
+         $reservation->{'data'}{'stopRequestedAt'} = $requestedAt;
+         $reservation->{'data'}{'stopRequestId'}   = $requestId;
+         $recorded = 1;
+         return 1;
+      }
+   );
+   return $recorded;
+}
+
+# release_stop_request:
+#
+# Writes data.stopRequestedAt as 0 for reservation $id, marking the stop request with id
+# $requestId as one whose Docker call ended without success, but only while the record still
+# holds that id: a request recorded since is left for its own completion to settle. Returns
+# whether it was released.
+sub release_stop_request ($id, $requestId) {
+   my $released = 0;
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $known = $reservation->{'data'}{'stopRequestId'};
+         return 0 unless defined($known) && $known eq $requestId;
+         $reservation->{'data'}{'stopRequestedAt'} = 0;
+         $released = 1;
+         return 1;
+      }
+   );
+   return $released;
 }
 
 # load_clean_map:

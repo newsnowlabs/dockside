@@ -7,11 +7,12 @@ use Expect;
 use Try::Tiny;
 use Tie::File;
 use Storable qw(dclone);
+use Time::HiRes ();
 use URI::Escape;
 use Mojo::IOLoop;
 use Mojo::Promise;
 use Mojo::Util qw(steady_time);
-use Reservation::Mutate qw(update load_clean_map resolve_hook_status hook_claim_if_not_running);
+use Reservation::Mutate qw(update load_clean_map record_stop_request release_stop_request resolve_hook_status hook_claim_if_not_running);
 # Not imported: Reservation::Mutate's own add_router/remove_router/replace_router - Reservation.pm
 # defines its OWN methods of the same name below (the public API other code calls), which call
 # Reservation::Mutate's versions fully-qualified. Importing both under the same bare names into
@@ -104,6 +105,21 @@ sub status ($self) {
 
 sub is_running ($self) {
    return $self->status == 1;
+}
+
+# A stop has been requested since the container last started, and it is still running. Compares
+# two recorded times: data.stopRequestedAt, written by action('stop') once its request has been
+# sent to Docker, and docker.StartedAt, written by docker-event-daemon from Docker's own record
+# of the container's last start. Either absent means not stopping: a container never stopped
+# through Dockside, or one whose start no daemon has recorded. A later start makes the request
+# time older than StartedAt, a later stop refreshes it, and a stop request whose Docker call
+# ends without success is written as 0, older than any start. Both are host-clock epochs
+# (Docker reports UTC), so they compare directly; a host clock stepped backwards between the
+# two writes can misorder them until the container next starts or stops, which is accepted.
+sub is_stopping ($self) {
+   my $requested = $self->{'data'}{'stopRequestedAt'};
+   my $started   = $self->{'docker'}{'StartedAt'};
+   return $self->is_running && defined($requested) && defined($started) && $requested > $started ? 1 : 0;
 }
 
 # With no arguments: return owner data structure.
@@ -588,6 +604,10 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
    # Clone reservation object and embedded profile object
    my $clone = dclone($self);
 
+   # Derived for the client, never stored (see is_stopping): what the stop button reflects
+   # while a stop the server has acknowledged is still in Docker's hands.
+   $clone->{'stopping'} = $self->is_stopping ? JSON::true : JSON::false;
+
    if($clone->profileObject) {
       $clone->profileObject->applyConstraints($constraints);
 
@@ -612,7 +632,7 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
             'profileObject' => [ qw( name routers networks runtimes IDEs options ) ],
             'data' => [ qw( FQDN parentFQDN image runtime network unixuser gitURL runningIDE options startCount hooks ) ]
          },
-         [ qw(id name owner profile status containerId createStatus) ]
+         [ qw(id name owner profile status containerId createStatus stopping) ]
       );
    }
    else {
@@ -623,7 +643,7 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
             'meta' => [ qw( owner access viewers ) ],
             'profileObject' => [ qw( name routers ) ]
          },
-         [ qw( id name owner profile status containerId ) ]
+         [ qw( id name owner profile status containerId stopping ) ]
       );
    }
 
@@ -1062,6 +1082,23 @@ sub getLogs ($self, $args = {}) {
 # subprocess, no fork at all. Idempotent at Docker's own level for all three (repeat calls return
 # 304/304/404 respectively) - no guard needed, unlike create above. getLogs (above) is the one
 # container command that stays synchronous, never routed through here.
+#
+# $cb fires exactly once. start and remove answer when Docker does: their replies carry real
+# refusals (nothing to start; still running) and arrive within a second. stop answers as soon as
+# its whole request has been written to Docker's socket (call_socket_api's on_request_sent):
+# POST /containers/{id}/stop blocks for as long as the container takes to exit, up to its stop
+# timeout, and its reply carries no refusal (204, 304 and 404 all mean "not running"), so the
+# caller is told at once and the container's state reaches it through the reservations list
+# and the poll. Before answering, the request's time is persisted as data.stopRequestedAt and
+# then set on this object, which the client view's 'stopping' flag (is_stopping) reads; a
+# record that cannot be written is logged, left unset here too, and the stop still answered,
+# since it is under way regardless. The detached completion is logged; one that is not a
+# success (a transport failure, or a code $ok rejects) is logged at warning level and releases
+# the request time as 0, so the indicator is held only while the request is known to be in
+# progress: if Docker stopped the container regardless, its status shows that. Both writes are
+# fenced against a later stop request for the same container (see below). The call stays alive
+# through Util's user-agent registry and is not a drain obligation. A transport failure before
+# the request has been sent answers with the 502 below and records nothing.
 sub action ($self, $action, $args, $cb) {
    my $containerId = $self->containerId();
 
@@ -1110,12 +1147,68 @@ sub action ($self, $action, $args, $cb) {
       die Exception->new( 'msg' => "Unknown docker container action '$action'" );
    }
 
+   # The request time is persisted first and set here only once persisted, so this object never
+   # carries a value disk does not. Both writes compare and set under the record's lock
+   # (Reservation::Mutate), keyed on a request id minted here: the time is recorded, with its
+   # id, unless a later time is on record (an equal one is taken over, two requests within one
+   # millisecond having no order), and released only while the record still holds this
+   # request's id, so two stops of one container in flight together, from any workers, settle
+   # to the request last recorded whatever order their writes and completions land in. The time
+   # is kept to the millisecond, a precision the record's JSON round trip preserves exactly, so
+   # the order comparison reads the value this process holds.
+   my ( $requestedAt, $requestId );
+   my $recordRequest = sub {
+      $requestedAt = int( Time::HiRes::time() * 1000 ) / 1000;
+      $requestId   = sprintf( "%08x", int( rand(0xffffffff) ) );
+      try {
+         if ( record_stop_request( $self->id(), $requestedAt, $requestId ) ) {
+            $self->data( 'stopRequestedAt', $requestedAt );
+            $self->data( 'stopRequestId',   $requestId );
+         }
+      }
+      catch {
+         wlog( "Reservation::action: 'stop' on '$containerId': could not record stopRequestedAt=$requestedAt, "
+            . 'so the stopping indicator will not show for this stop: ' . format_caught_error($_) );
+      };
+   };
+   my $releaseRequest = sub {
+      try {
+         if ( release_stop_request( $self->id(), $requestId ) && ( $self->data('stopRequestId') // '' ) eq $requestId ) {
+            $self->data( 'stopRequestedAt', 0 );
+         }
+      }
+      catch {
+         wlog( "Reservation::action: 'stop' on '$containerId': could not release stop request $requestId, "
+            . 'so the stopping indicator will show until the container next starts or stops: ' . format_caught_error($_) );
+      };
+   };
+
+   my $acknowledged = 0;
+   my $onSent = $action ne 'stop' ? undef : sub {
+      $recordRequest->();
+      $acknowledged = 1;
+      $cb->( undef, undef );
+   };
+
    call_socket_api(
-      $CONFIG->{'docker'}{'socket'}, $path, { 'method' => $method },
+      $CONFIG->{'docker'}{'socket'}, $path,
+      { 'method' => $method, ( $onSent ? ( 'on_request_sent' => $onSent ) : () ) },
       sub ( $result, $err ) {
          my $code = $result ? $result->code : undef;
-         flog( "Reservation::action: '$action' on '$containerId' "
-            . ( $err ? "failed: $err" : 'returned ' . ( $code // '(no result)' ) ) );
+         my $outcome = $err ? "failed: $err" : 'returned ' . ( $code // '(no result)' );
+
+         if ($acknowledged) {
+            if ( $err || ( defined($code) && !$ok->($code) ) ) {
+               wlog( "Reservation::action: acknowledged '$action' on '$containerId' $outcome" );
+               $releaseRequest->();
+            }
+            else {
+               flog( "Reservation::action: acknowledged '$action' on '$containerId' $outcome" );
+            }
+            return;
+         }
+
+         flog( "Reservation::action: '$action' on '$containerId' $outcome" );
 
          # A transport-level failure ($err set, no HTTP response) is an upstream problem: this
          # server could not reach or drive Docker. dbg carries the raw reason for the log;
@@ -1130,7 +1223,7 @@ sub action ($self, $action, $args, $cb) {
          }
 
          # A response arrived, but with a code this action does not count as success - a genuine
-         # refusal (named, where known) rather than the silent 200 this used to report.
+         # refusal (named, where known), reported as an Exception rather than a bare code.
          if ( defined($code) && !$ok->($code) ) {
             $cb->( $result, Exception->new(
                'msg'    => $refusal->{$code} // "Docker refused to '$action' this devtainer (HTTP $code)",

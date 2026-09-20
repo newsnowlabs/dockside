@@ -32,7 +32,7 @@ class LifecycleDebianTests(TestCase):
     @classmethod
     def tearDownClass(cls):
         for fn in (
-            lambda: cls.admin.stop(cls.CONTAINER_NAME, wait=False),
+            lambda: cls.admin.stop(cls.CONTAINER_NAME, wait=True, timeout=60),
             lambda: cls.admin.remove(cls.CONTAINER_NAME, wait=False),
         ):
             try:
@@ -102,7 +102,7 @@ class LifecycleDebianDev1Tests(TestCase):
     @classmethod
     def tearDownClass(cls):
         for fn in (
-            lambda: cls.admin.stop(cls.DEV_CONTAINER, wait=False),
+            lambda: cls.admin.stop(cls.DEV_CONTAINER, wait=True, timeout=60),
             lambda: cls.admin.remove(cls.DEV_CONTAINER, wait=False),
         ):
             try:

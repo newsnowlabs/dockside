@@ -28,7 +28,7 @@ class IdeTests(TestCase):
     @classmethod
     def tearDownClass(cls):
         for fn in (
-            lambda: cls.admin.stop(cls.IDE_CONTAINER, wait=False),
+            lambda: cls.admin.stop(cls.IDE_CONTAINER, wait=True, timeout=60),
             lambda: cls.admin.remove(cls.IDE_CONTAINER, wait=False),
         ):
             try:

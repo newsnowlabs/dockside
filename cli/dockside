@@ -1634,6 +1634,7 @@ def _fmt_detail(c):
     lines = [
         ('Name',          c.get('name', '')),
         ('Status',        _status_str(c.get('status'))),
+        ('Stopping',      'yes' if c.get('stopping') else ''),
         ('Reservation',   c.get('id', '')),
         ('Container ID',  c.get('containerId') or docker.get('ID', '')),
         ('Profile',       c.get('profile', '')),

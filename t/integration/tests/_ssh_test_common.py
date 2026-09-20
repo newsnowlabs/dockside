@@ -260,7 +260,7 @@ class SshTestMixin:
     @classmethod
     def tearDownClass(cls):
         for fn in (
-            lambda: cls.dev1.stop(cls.SSH_CONTAINER, wait=False),
+            lambda: cls.dev1.stop(cls.SSH_CONTAINER, wait=True, timeout=60),
             lambda: cls.dev1.remove(cls.SSH_CONTAINER, wait=False),
         ):
             try:
