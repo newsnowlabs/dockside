@@ -136,7 +136,9 @@ does not make; they are defined so that the whole area shares one vocabulary.
   only on exact name plus this reservation's id label plus a usable id.
 - **Unresolved.** An attempt that ended without learning whether its mutation took effect. The
   record keeps its stage, gains a `createStatus.unresolved` diagnostic (`attempts`, `since`,
-  `retryAfter`, `reason`), and is never expired. The next attempt after `retryAfter` finds out.
+  `retryAfter`, `reason`), and is never expired. The next attempt after `retryAfter` finds out:
+  the recording worker's own, at `$CREATE_UNRESOLVED_RETRY_DELAYS`, or a sweep's. The outcome
+  after the last delay is the bound, recorded as `failed` with no expiry.
 - **Suspension.** A chain ended deliberately at a boundary where nothing has been posted, because
   the worker is shutting down. Not a failure; the next attempt resumes.
 
@@ -448,7 +450,7 @@ of a `409` body; a name match without the id label; a lookup that is anything bu
 | `creating`, with `containerId` | that container | The id was recorded but `starting` was not. The preflight lookup finds and re-adopts it. |
 | `starting` | the container, started or not | The container exists unless Docker says `404`. A start is idempotent (`304`). |
 | `done` | the container, started | Terminal. |
-| `failed` | nothing of this reservation's | Terminal; `expiryTime` set; cleanup deletes the record. |
+| `failed` | nothing of this reservation's; after the retry bound, whatever the last unresolved attempt left, which the `error` states | Terminal. With an `expiryTime`, cleanup deletes the record; the bounded failure carries none, and the record stays until removed. |
 
 #### Classification
 
@@ -498,8 +500,9 @@ reports:
 Each row is one cell of entry × request × response, with the durable result of the attempt.
 "Unresolved" always means: stage kept, `failed` 0, `unresolved` diagnostic written with
 `attempts`, `since` and `retryAfter`, no `expiryTime`, lock released, consumer told unresolved.
-"Failed" always means: `stage: failed`, `failed: 1`, `error`, `expiryTime`, lock released,
-consumer told a definitive failure.
+"Failed" always means: `stage: failed`, `failed: 1`, `error`, lock released, consumer told a
+definitive failure, and `expiryTime` except at the retry bound, whose failure carries none (the
+"Any entry: recording and pacing" table below, and the States table's `failed` row).
 
 **Fresh entry, and resumed `pulling`**
 
@@ -549,7 +552,7 @@ consumer told a definitive failure.
 | Event | Result |
 |---|---|
 | the write recording an unresolved or failed outcome fails | consumer told unresolved; record unchanged; lock and in-flight entry released |
-| consecutive unresolved attempts at one stage | `attempts` increments, `since` is kept, `retryAfter` refreshed to now plus `$CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS`; a warning is logged at `$CREATE_UNRESOLVED_WARN_AFTER_ATTEMPTS` |
+| consecutive unresolved attempts at one stage | `attempts` increments and `since` is kept; the recording worker schedules its own retry through the injected timer, at `$CREATE_UNRESOLVED_RETRY_DELAYS` (about 15 s after the first unresolved outcome, about 45 s after the second), `retryAfter` naming the same time; each retry is an ordinary `reconcile_one` under the lock with `retryAfter` honoured, and a sibling's sweep is the backstop. The third consecutive unresolved outcome is recorded as `stage: failed`, `failed: 1`, the last reason as `error` stating what may exist (a container under the name at `creating`, the recorded container at `starting`), **no** `expiryTime`, so the record stays until removed. A process dying mid-attempt records nothing and counts nothing; an outcome write that fails schedules no retry |
 | a reconcile pass arrives before `retryAfter` | skipped under the lock, no Docker request, not counted. `retryAfter` paces the retries: the lock excludes a second simultaneous driver but says nothing about how soon the next may start |
 | a later attempt advances the stage | the diagnostic is cleared; the entry map is kept |
 | the consumer throws | entered once; outcome unchanged; in-flight entry released |
@@ -575,8 +578,9 @@ consumer told a definitive failure.
 - **A chain that hangs while its worker lives holds the lock indefinitely.** The same exposure
   exists in any in-process in-flight table, including a single-driver daemon's. In practice it is
   bounded by `Mojo::UserAgent`'s inactivity timeout on each Docker call (the chain passes none
-  explicitly, so Mojo's 40s default applies): a stalled call errors, the chain settles as
-  `failed`, and the lock is released with it.
+  explicitly, so Mojo's 40s default applies): a stalled call errors, the attempt settles with
+  the outcome its classification gives, and the lock is released with it; the retry bound
+  keeps a call that stalls every time from being retried for ever.
 
 ## Consequences
 
@@ -591,10 +595,13 @@ consumer told a definitive failure.
 - Reconciliation is invisible to a polling client by design: a stuck `createStatus.stage` starts
   moving again (or flips to `failed` with a real reason) the same way it would have if the
   original worker had simply lived - no new `createStatus` shape.
-- Retry is unbounded on the periodic reconciler's own interval, by deliberate choice - a
-  reservation that can't reconcile is symptomatic of something wrong with Docker itself (which
-  would be blocking everything else too), not something to silently paper over as `failed` after
-  some arbitrary number of attempts.
+- Retry is bounded, and prompt: the worker that records an unresolved outcome retries it itself,
+  about 15 s later and then about 45 s later, with every worker's periodic sweep as the backstop
+  for a worker that exits first; the third consecutive unresolved outcome at a stage is recorded
+  `failed` with the last reason and no expiry. Two retries cover a transient that straddles the
+  first; a reservation still unresolved after three is symptomatic of Docker itself, and the
+  user sees the reason, and whether a container may exist under the name, rather than
+  "launching" for ever. The record stays for inspection until the user removes it.
 - Recovery is decided by one atomic, kernel-arbitrated question per reservation, with no
   heuristics and no cross-worker state. `create_in_flight`/`create_in_flight_count`
   (`Reservation.pm`) exist only for the graceful drain's own counter, since

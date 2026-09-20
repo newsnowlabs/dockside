@@ -115,6 +115,26 @@ describe('Container.vue launch timings', () => {
       expect(timingsText(wrapper)).toBe('pulling 12s · creating 0.4s');
    });
 
+   it('shows why a launch is retrying, with the attempt count, while its outcome is unresolved', () => {
+      const wrapper = mountLaunching(
+         { stage: 'creating', failed: 0, layers: {}, unresolved: {
+            reason: "create for name 'my-devtainer' reported no usable outcome: connection reset",
+            attempts: 2, since: '2026-09-20 12:00:00', retryAfter: '2026-09-20 12:00:45',
+         } },
+         -2, T0
+      );
+      expect(wrapper.find('.launch-retry').text().replace(/\s+/g, ' ').trim())
+         .toBe("Retrying (attempt 2): create for name 'my-devtainer' reported no usable outcome: connection reset");
+   });
+
+   it('shows no retry line for a launch whose last attempt settled', () => {
+      const wrapper = mountLaunching(
+         { stage: 'creating', failed: 0, layers: {}, unresolved: 0 },
+         -2, T0
+      );
+      expect(wrapper.find('.launch-retry').exists()).toBe(false);
+   });
+
    it('shows the stage alone for a record carrying no stage entry times', () => {
       const wrapper = mountLaunching(
          { stage: 'creating', failed: 0, layers: {} },

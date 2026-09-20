@@ -110,4 +110,21 @@ subtest 'expiry cleanup retains a reservation whose create is still recoverable'
    }
 };
 
+subtest 'expiry cleanup deletes a failed launch only once it carries an expiry' => sub {
+   # A launch that failed at the retry bound is retained with no expiry, since a container may
+   # exist under its name; the record carries no containerId for the container branch to act on,
+   # and cleanup has no other reason to touch it. The expiry a remove records is what ends that.
+   write_record({ id => 'review', name => 'review',
+      createStatus => { stage => 'failed', failed => 1, error => 'after 3 attempts, a container may exist' },
+   });
+   Reservation::Mutate->load_clean_map();
+   my $record = read_record();
+   ok( $record, 'a failed launch with no expiry survives cleanup' );
+   ok( !$record->{'expiryTime'}, 'and cleanup records no expiry against it' );
+
+   write_record({ %$record, expiryTime => Util::YYYYMMDDHHMMSS(time - 90) });
+   Reservation::Mutate->load_clean_map();
+   ok( !read_record(), 'once it carries an old enough expiry, cleanup deletes it' );
+};
+
 done_testing;

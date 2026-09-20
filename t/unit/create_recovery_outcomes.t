@@ -6,6 +6,7 @@ use Exception;
 use File::Temp qw(tempdir);
 use JSON qw(encode_json decode_json);
 use Time::HiRes ();
+use Time::Piece;
 use Mojo::IOLoop;
 use Mojo::Message::Response;
 use Test::More;
@@ -31,17 +32,25 @@ local *Reservation::update_container_info = sub {};
 # deliberately make compiling it fail, which override this themselves.
 local *Reservation::cmdline_json = sub (@) { return { Image => 'img:1' }; };
 
-# The conflict inspection's waits are the provider's timer. This one records each delay asked
-# for and fires at once, so what these tests assert about the inspection is how many lookups it
-# makes, at what delays, and what it concludes from them, not how long it waits in between.
+# The chain's waits are the provider's timer: the ownership inspection's delays within an attempt,
+# and the worker's own retry after an unresolved outcome. This one records each timer and fires
+# nothing itself. reconcile() below fires the timers due within an attempt, in order, until the
+# chain settles, recording their delays in @timerDelays; a retry timer left pending after the
+# settlement is what a test reads and fires by hand (fire_retry). So what these tests assert
+# about waits is how many, at what delays, and what follows them, never how long they take.
+my @pending;
 my @timerDelays;
 Reservation::provider(
-   'timer' => sub ( $delay, $cb ) { push @timerDelays, $delay; $cb->(); return scalar @timerDelays; },
+   'timer' => sub ( $delay, $cb ) { push @pending, [ $delay, $cb ]; return scalar @pending; },
    'hold'  => sub () { return sub { }; },
 );
-# Retry immediately by default, so a test driving consecutive attempts does not wait out a real
-# cooldown; the subtest that tests the cooldown itself restores a real one.
-local $Reservation::CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS = 0;
+# Retry at once by default, so a test driving consecutive attempts through the sweep is not held
+# back by retryAfter; the subtests of the delays themselves restore real ones. The record's wall
+# clock is the real one plus whatever fire_retry has advanced it by, so a retry fired by hand
+# arrives at the time the worker's would.
+local $Reservation::CREATE_UNRESOLVED_RETRY_DELAYS = [ 0, 0 ];
+my $clockAdvance = 0;
+local *Reservation::_create_now = sub () { return time + $clockAdvance; };
 
 my $OWN_ID = 'c' x 64;
 
@@ -112,17 +121,39 @@ sub docker ( $calls, %queues ) {
 }
 
 # Runs one reconciliation of 'rid' to settlement and reports what the caller was told. A chain
-# whose stubbed transport answers at once settles before reconcile_one returns; one answered on
-# a later tick settles under the loop. Bounded, so a chain that never settles fails an assertion
-# instead of hanging the suite.
+# whose stubbed transport answers at once settles before reconcile_one returns, or as soon as the
+# timers it waits on within the attempt have fired; one answered on a later tick settles under
+# the loop. Bounded, so a chain that never settles fails an assertion instead of hanging the
+# suite. A timer left pending by an earlier attempt belongs to a driver that is gone, and is
+# dropped first.
 sub reconcile {
    my @settled;
+   @pending = ();
    my $started = Reservation->reconcile_one( 'rid', sub ( $ok = undef, $err = undef ) {
       push @settled, { 'ok' => $ok, 'err' => $err };
       Mojo::IOLoop->stop;
    } );
-   run_until_settled( sub { scalar @settled } ) if $started;
+   if ($started) {
+      while ( !@settled && @pending ) {
+         my $timer = shift @pending;
+         push @timerDelays, $timer->[0];
+         $timer->[1]->();
+      }
+      run_until_settled( sub { scalar @settled } );
+   }
    return { 'started' => $started, 'settled' => \@settled };
+}
+
+# Fires the retry timer the last attempt left, as the worker's loop would once its delay had
+# passed, advancing the record's clock by that delay first, and returns the delay, or undef
+# when none is pending. The retry's own attempt settles before this returns, the stubbed
+# transport answering at once.
+sub fire_retry {
+   return undef unless @pending;
+   my $timer = shift @pending;
+   $clockAdvance += $timer->[0];
+   $timer->[1]->();
+   return $timer->[0];
 }
 
 # Runs the loop until a settlement stops it, unless $settled already says the chain has settled:
@@ -441,7 +472,10 @@ subtest 'a start Docker answers with 404 ends recovery definitively' => sub {
    ok( read_record()->{'expiryTime'}, 'and expired, so the record is eventually cleaned up' );
 };
 
-subtest 'consecutive unresolved attempts accumulate across reloads' => sub {
+sub epoch ($stamp) { return Time::Piece->strptime( $stamp, '%Y-%m-%d %H:%M:%S' )->epoch; }
+
+subtest 'the recording worker retries at the configured delays, and the third unresolved outcome is failed and retained' => sub {
+   local $Reservation::CREATE_UNRESOLVED_RETRY_DELAYS = [ 15, 45 ];
    my @calls;
    local *Reservation::call_socket_api = docker( \@calls,
       'lookup' => [ holds(undef) ],
@@ -451,19 +485,84 @@ subtest 'consecutive unresolved attempts accumulate across reloads' => sub {
 
    reconcile();
    my $first = status()->{'unresolved'};
-   reconcile();
-   my $second = status()->{'unresolved'};
-   reconcile();
-   my $third = status()->{'unresolved'};
+   is( $first->{'attempts'}, 1, 'the first unresolved outcome is attempt one' );
+   is( epoch( $first->{'retryAfter'} ) - epoch( $first->{'since'} ), 15, 'and names the first delay as when the next may run' );
+   is( scalar @pending, 1, 'the worker holds one retry timer' );
+   is( $pending[0][0], 15, 'at the first delay' );
 
-   is( $third->{'attempts'}, 3, 'the attempt count survives each attempt reloading the record' );
-   is( $third->{'since'}, $first->{'since'}, 'and the time it was first unresolved is kept' );
-   isnt( $second->{'retryAfter'}, undef, 'each attempt names when the next may run' );
-   is( status()->{'stage'}, 'creating', 'the stage is unchanged throughout' );
+   my $issued = scalar @calls;
+   fire_retry();
+   ok( scalar @calls > $issued, 'the retry issues a Docker request' );
+   my $second = status()->{'unresolved'};
+   is( $second->{'attempts'}, 2, 'the second unresolved outcome is attempt two, read from disk' );
+   is( $second->{'since'}, $first->{'since'}, 'the time it was first unresolved is kept' );
+   is( status()->{'stage'}, 'creating', 'the stage is unchanged' );
+   is( scalar @pending, 1, 'one retry timer again' );
+   is( $pending[0][0], 45, 'at the second delay' );
+
+   fire_retry();
+   is( status()->{'stage'}, 'failed', 'the third unresolved outcome is recorded as failed' );
+   ok( status()->{'failed'}, 'terminally' );
+   ok( !read_record()->{'expiryTime'}, 'with no expiry, so the record stays' );
+   like( status()->{'error'}, qr/^after 3 attempts, a container may exist under name 'devt': .*connection reset by peer$/,
+      'the reason states the count, what may exist, and the last reason' );
+   ok( !ref( status()->{'unresolved'} ), 'the unresolved diagnostic is cleared, the question being settled' );
+   is( scalar @pending, 0, 'and no further retry is scheduled' );
+   is( scalar( grep { m{^/containers/create} } @calls ), 3, 'three creates were posted in all' );
+   ok( status()->{'entered'}{'failed'}, 'the failure is entered like any other' );
+};
+
+subtest 'the bound tells the consumer a definitive failure, and states what exists at starting' => sub {
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls, 'start' => [ fails('connection reset by peer') ] );
+   seed( 'starting', containerId => 'c' x 12, createStatus => { stage => 'starting', failed => 0, layers => {},
+      unresolved => { reason => 'earlier', attempts => 2, since => '2026-01-01 00:00:00', retryAfter => '2026-01-01 00:00:45' } } );
+
+   my $run = reconcile();
+   is( $run->{'started'}, 1, 'a sweep past retryAfter runs the attempt' );
+   ok( !unresolved( $run->{'settled'}[0]{'err'} ), 'the consumer is told a definitive failure' );
+   like( reason( $run->{'settled'}[0]{'err'} ), qr/^after 3 attempts; container cccccccccccc exists and may be running: .*connection reset/,
+      'naming the container that exists' );
+   is( status()->{'stage'}, 'failed', 'recorded as failed' );
+   ok( !read_record()->{'expiryTime'}, 'and retained' );
+};
+
+subtest 'the count comes from disk and belongs to one stage' => sub {
+   local *Reservation::call_socket_api = docker( [],
+      'lookup' => [ holds(undef) ],
+      'create' => [ responds( 201, encode_json({ Id => $OWN_ID }) ) ],
+      'start'  => [ fails('connection reset by peer') ],
+   );
+   seed( 'creating', createStatus => { stage => 'creating', failed => 0, layers => {},
+      unresolved => { reason => 'earlier', attempts => 2, since => '2026-01-01 00:00:00', retryAfter => '2026-01-01 00:00:45' } } );
+
+   reconcile();
+   is( status()->{'stage'}, 'starting', 'the create succeeds and the start is unresolved' );
+   is( status()->{'unresolved'}{'attempts'}, 1, 'counted from one at the new stage, not three' );
+   isnt( status()->{'unresolved'}{'since'}, '2026-01-01 00:00:00', 'with its own since' );
+};
+
+subtest 'a retry finding the record settled by another driver issues nothing' => sub {
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'lookup' => [ holds(undef) ],
+      'create' => [ fails('connection reset by peer') ],
+   );
+   seed('creating');
+   reconcile();
+   is( scalar @pending, 1, 'a retry is pending' );
+
+   my $record = read_record();
+   $record->{'createStatus'} = { stage => 'done', failed => 0, layers => {}, unresolved => 0 };
+   write_record($record);
+   my $issued = scalar @calls;
+   fire_retry();
+   is( scalar @calls, $issued, 'the retry, finding a terminal stage under the lock, contacts Docker no further' );
+   is( status()->{'stage'}, 'done', 'and leaves the record as it found it' );
 };
 
 subtest 'a reservation within its retry cooldown is skipped without contacting Docker' => sub {
-   local $Reservation::CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS = 600;
+   local $Reservation::CREATE_UNRESOLVED_RETRY_DELAYS = [ 600, 600 ];
    my @calls;
    local *Reservation::call_socket_api = docker( \@calls,
       'lookup' => [ holds(undef) ],
@@ -758,6 +857,7 @@ subtest 'an outcome that cannot be recorded is reported unresolved, whatever it 
       seed('creating');
       my $reservation = Reservation::_reservation_reloaded('rid');
       my @settled;
+      @pending = ();
       $reservation->_create_track(
          sub ($settle) { $reservation->_create_run_from_creating( { Image => 'img:1' }, 0, $settle ) },
          sub ( $ok = undef, $err = undef ) { push @settled, { 'ok' => $ok, 'err' => $err }; Mojo::IOLoop->stop; } );
@@ -769,6 +869,7 @@ subtest 'an outcome that cannot be recorded is reported unresolved, whatever it 
       ok( !status()->{'failed'} && !read_record()->{'expiryTime'},
          "$case->{'name'} unrecorded: neither failed nor expired" );
       is( Reservation->create_in_flight_count(), 0, "$case->{'name'} unrecorded: the chain is released" );
+      is( scalar @pending, 0, "$case->{'name'} unrecorded: no retry is scheduled, the count having not advanced" );
    }
 };
 

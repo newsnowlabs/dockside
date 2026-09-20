@@ -351,6 +351,9 @@
                         <template v-for="(d, i) in launchTimings.durations" v-bind:key="d.stage">{{ i ? ' · ' : '' }}{{ d.stage }} {{ d.text }}</template>
                         <template v-if="launchTimings.elapsed">{{ launchTimings.durations.length ? ' · ' : '' }}{{ launchStage }} {{ launchTimings.elapsed }}</template>
                      </div>
+                     <div v-if="launchRetry" class="launch-retry">
+                        Retrying (attempt {{ launchRetry.attempts }}): {{ launchRetry.reason }}
+                     </div>
                      <div v-if="launchStage === 'failed'" class="launch-error">
                         {{ container.createStatus.error }}
                      </div>
@@ -643,6 +646,14 @@ export default defineComponent({
               formatSeconds(Date.now() / 1000 - entered[stage])
         };
      },
+     // The diagnostic a launch carries while its last attempt could not establish its outcome
+     // and a retry is due (createStatus.unresolved: the reason and the attempt count), so a
+     // user watching a launch retry can see why. Cleared by the server once the stage advances
+     // or the launch is failed, so it never shows beside a terminal outcome.
+     launchRetry() {
+        const unresolved = this.container.createStatus && this.container.createStatus.unresolved;
+        return (unresolved && typeof unresolved === 'object' && unresolved.attempts) ? unresolved : null;
+     },
      // The 5 launch:-/lifecycle:-DAG stage names docker-event-daemon dispatches after
      // container create/start succeeds (mirrors the CLI's own LAUNCH_DAG_STAGES). Unlike
      // showLaunchProgress above (createStatus, gated on container.status === -2/-4 - the
@@ -710,8 +721,9 @@ export default defineComponent({
      hasWildcardGitURLs() {
        return ((this.profile && this.profile.gitURLs) ? this.profile.gitURLs.filter(x => x.includes("*")) : []).length > 0;
      },
-     // A stopped or created container (-1 to 0), or a launch that failed before any container
-     // existed (-4), whose remove clears the record itself.
+     // A stopped or created container (-1 to 0), or a launch that failed with no container
+     // recorded (-4), whose remove clears the record itself; the failure's own message says
+     // whether a container may exist under the name regardless.
      canRemove() {
         return this.container.permissions.actions.removeContainer &&
            !this.isEditMode && !this.isPrelaunchMode &&
@@ -1228,6 +1240,12 @@ export default defineComponent({
    .launch-error {
       font-size: 0.85rem;
       color: rgb(var(--v-theme-error));
+      margin-bottom: 0.35rem;
+   }
+
+   .launch-retry {
+      font-size: 0.85rem;
+      color: rgb(var(--v-theme-warning));
       margin-bottom: 0.35rem;
    }
 

@@ -69,6 +69,8 @@ sub holds ($entry) { return responds( 200, encode_json( defined($entry) ? [$entr
 # Records every request path; answers a lookup as absent and a create as a conflict, which is
 # the shape that enters the ownership inspection. $onLookup runs before each lookup answers.
 my @calls;
+my @timers;
+my @pending;
 sub docker ( $onLookup = sub { } ) {
    return sub ( $socket, $path, $args, $cb ) {
       push @calls, $path;
@@ -81,12 +83,20 @@ sub docker ( $onLookup = sub { } ) {
    };
 }
 
+# Runs one reconciliation to settlement. The timers the attempt waits on (the inspection's) are
+# recorded by the provider above and fired here in order, their delays kept in @timers, until
+# the chain settles; the retry timer an unresolved settlement leaves is not fired.
 sub reconcile {
    my @settled;
    my $started = Reservation->reconcile_one( 'rid', sub ( $ok = undef, $err = undef ) {
       push @settled, { 'ok' => $ok, 'err' => $err };
       Mojo::IOLoop->stop;
    } );
+   while ( $started && !@settled && @pending ) {
+      my $timer = shift @pending;
+      push @timers, $timer->[0];
+      $timer->[1]->();
+   }
    return { 'started' => $started, 'settled' => \@settled } if !$started || @settled;
 
    my $timeout = Mojo::IOLoop->timer( 5 => sub { Mojo::IOLoop->stop } );
@@ -148,11 +158,11 @@ subtest 'a provider lacking either entry is refused the same way, naming the ent
 
 # A timer that records what it is asked for and fires at once, and a hold nothing in this stage
 # takes.
-my @timers;
 sub install_provider {
    @timers = ();
+   @pending = ();
    Reservation::provider(
-      'timer' => sub ( $delay, $cb ) { push @timers, $delay; $cb->(); return scalar @timers; },
+      'timer' => sub ( $delay, $cb ) { push @pending, [ $delay, $cb ]; return scalar @pending; },
       'hold'  => sub () { return sub { }; },
    );
    return;

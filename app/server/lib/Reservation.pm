@@ -1099,12 +1099,15 @@ sub getLogs ($self, $args = {}) {
 sub action ($self, $action, $args, $cb) {
    my $containerId = $self->containerId();
 
-   # A launch that failed before any container existed leaves a record with no containerId and
-   # a terminal createStatus. Removing it means removing the record: an expiryTime is written,
-   # and load_clean_map deletes the record once that is old enough, exactly as it does for any
-   # other expired record. There is no Docker request to make. The write is not contained here:
-   # a write that throws reaches the route's own handler, which reports it, and nothing has been
-   # asked of Docker in the meantime.
+   # A launch that failed with no container recorded leaves a record with no containerId and a
+   # terminal createStatus. Removing it means removing the record: an expiryTime is written, and
+   # load_clean_map deletes the record once that is old enough, exactly as it does for any other
+   # expired record. There is no Docker request to make. A failure at pulling or a refused first
+   # create made no container. A failure recorded at the retry bound while creating may have made
+   # one under the name, but its record likewise carries no id, so removing the record leaves any
+   # such container to the user. The write is not contained here: a write that throws reaches
+   # the route's own handler, which reports it, and nothing has been asked of Docker in the
+   # meantime.
    my $createStatus = ref( $self->{'createStatus'} ) eq 'HASH' ? $self->{'createStatus'} : {};
    if ( $action eq 'remove' && !length( $containerId // '' ) && ( $createStatus->{'stage'} // '' ) eq 'failed' ) {
       $self->update( { 'expiryTime' => YYYYMMDDHHMMSS(time) } );
@@ -1113,9 +1116,9 @@ sub action ($self, $action, $args, $cb) {
       return;
    }
 
-   # A reservation whose container does not exist - a create that failed, or one still in
-   # flight - has no id to act on, and interpolating it into the paths below would ask Docker
-   # about '/containers//stop'. Reported through $cb, the channel every other outcome of this
+   # A reservation with no container recorded - a create that failed, or one still in flight -
+   # has no id to act on, and interpolating it into the paths below would ask Docker about
+   # '/containers//stop'. Reported through $cb, the channel every other outcome of this
    # call already uses - as an Exception, the same shape a Docker-side refusal below hands back,
    # so the caller has one kind of thing to render (see the route in bin/app-server).
    unless ( length( $containerId // '' ) ) {
@@ -1453,16 +1456,19 @@ sub hook_dispatch_in_flight_count ($class) { return scalar keys %HOOK_DISPATCH_I
 sub hook_dispatch_in_flight_ids ($class) { return sort keys %HOOK_DISPATCH_IN_FLIGHT; }
 
 # A create chain that ends without learning whether its Docker mutation took effect records an
-# 'unresolved' diagnostic and keeps its stage, so a later reconciliation pass retries it. These
-# bound that retrying.
-#
-# The cooldown is deliberately its own constant rather than appServer.reconcileIntervalSeconds:
-# the reconcile interval sets how often a worker sweeps, while this sets how soon a record that
-# has just failed to learn its outcome is worth asking about again. Tying recovery latency to the
-# sweep cadence would make a record abandoned by a dying worker wait a full sweep interval before
-# anyone retries it, even though its lock is already free.
-our $CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS = 60;
-our $CREATE_UNRESOLVED_WARN_AFTER_ATTEMPTS = 5;
+# 'unresolved' diagnostic and keeps its stage, and the worker that recorded it retries: once
+# after the first such outcome and once after the second, at these delays in seconds, each retry
+# an ordinary reconciliation of the record under the lock (_create_track schedules it,
+# reconcile_one runs it), with every worker's periodic sweep as the backstop for a worker that
+# exits before its timer fires. The outcome after the last delay is the bound: recorded as
+# failed with the last reason and no expiry, so the record stays for inspection until removed.
+# What the bound leaves behind depends on the stage, and the reason says which: at creating a
+# container may exist under the name, at starting the recorded container exists, at pulling
+# nothing does, no create having been posted. An attempt counts only when its unresolved outcome
+# reaches disk, so a process dying mid-attempt counts nothing, and the count belongs to one stage
+# (_create_status_enter). Two retries cover a transient that straddles the first; when Docker is
+# down entirely, connections are refused at once and the three attempts take about a minute.
+our $CREATE_UNRESOLVED_RETRY_DELAYS = [ 15, 45 ];
 
 # Docker reserves a container's name early in create and releases it again if that create then
 # fails, so a 409 followed by an empty name lookup is a transient state, not a verdict. These
@@ -1506,6 +1512,12 @@ sub _create_provider_required () {
 # can stand in for it.
 sub _create_clock () {
    return Time::HiRes::clock_gettime( Time::HiRes::CLOCK_MONOTONIC() );
+}
+
+# Wall-clock seconds, for the record's own timestamps (since, retryAfter, expiryTime) and the
+# retryAfter check they are compared against. One sub, so a test can advance it.
+sub _create_now () {
+   return time;
 }
 
 # Path of the per-reservation ownership lock create()/reconcile_one() hold, non-blockingly, for
@@ -2105,7 +2117,14 @@ sub _create_run_from_pulling ($self, $body, $cb) {
 # 'stage' flips to 'failed' - a failure before any layer progress exists, e.g. cmdline_json()
 # throwing, simply has no layers to preserve, {} either way). Returns the extracted message,
 # for a caller that also needs it for its own $cb.
-sub _create_fail ($self, $err) {
+#
+# The expiry is what makes load_clean_map delete the record, so the failure of a create that
+# provably made nothing is cleared away on its own. $retain leaves the record without one: the
+# failure recorded at the retry bound (_create_unresolved) is one whose outcome was never
+# established, and its error states what may exist: a container under the name at creating,
+# the recorded container at starting, nothing at pulling; the record stays, whatever its stage,
+# until the user removes it (the remove branch of action(), above).
+sub _create_fail ($self, $err, $retain = 0) {
    my $msg = ( ref($err) eq 'Exception' ) ? $err->msg : "$err";
    flog("Reservation::create: reservation '" . $self->id() . "' failed: $msg");
    my $cs = ref( $self->{'createStatus'} ) eq 'HASH' ? $self->{'createStatus'} : {};
@@ -2116,7 +2135,7 @@ sub _create_fail ($self, $err) {
       # createStatus does not lose a key by omission.
       { 'stage' => 'failed', 'failed' => 1, 'error' => $msg, 'layers' => $layers,
         'unresolved' => 0, 'entered' => _create_entered( $cs, 'failed' ) },
-      { 'expiryTime' => YYYYMMDDHHMMSS(time) }
+      $retain ? {} : { 'expiryTime' => YYYYMMDDHHMMSS( _create_now() ) }
    );
    return $msg;
 }
@@ -2130,51 +2149,69 @@ sub _create_fail ($self, $err) {
 # are made by different workers, and after a restart by different processes; a count held in any
 # one of them would restart at zero exactly when it mattered. 'retryAfter' is what stops a sibling
 # worker's sweep retrying the instant this one releases the ownership lock - the lock excludes
-# simultaneous drivers, but says nothing about how soon the next may start.
+# simultaneous drivers, but says nothing about how soon the next may start. It is set from the
+# same delay as this worker's own retry timer, a moment before that timer is armed and floored
+# to the second, so it is never later than the timer's firing, and the timer's attempt is never
+# held back by it.
+#
+# Returns what _create_record_outcome reports: whether the record is still recoverable, the
+# message the consumer is told, and the delay before this worker retries, undef once the bound
+# is reached and the record is failed instead, its reason stating what may exist.
 sub _create_unresolved ($self, $err) {
    my $msg = ( ref($err) eq 'Exception' ) ? $err->msg : "$err";
    my $cs = ref( $self->{'createStatus'} ) eq 'HASH' ? $self->{'createStatus'} : {};
    my $previous = ref( $cs->{'unresolved'} ) eq 'HASH' ? $cs->{'unresolved'} : {};
    my $attempts = ( $previous->{'attempts'} // 0 ) + 1;
    my $stage = $cs->{'stage'} // 'unknown';
+   my @delays = @{$CREATE_UNRESOLVED_RETRY_DELAYS};
 
    flog( "Reservation::_create_unresolved: reservation '" . $self->id()
        . "' outcome unresolved at stage '$stage' after $attempts attempt(s): $msg" );
-   wlog( "Reservation: reservation '" . $self->id()
-       . "' has not established the outcome of its container create after $attempts attempts: $msg" )
-      if $attempts == $CREATE_UNRESOLVED_WARN_AFTER_ATTEMPTS;
 
+   if ( $attempts > @delays ) {
+      my $exists = $stage eq 'creating' ? ", a container may exist under name '" . $self->name . "'"
+                 : $stage eq 'starting' ? "; container " . ( $self->containerId() // '' ) . " exists and may be running"
+                 :                        '';
+      my $reason = "after $attempts attempts$exists: $msg";
+      wlog( "Reservation: reservation '" . $self->id() . "' has not established the outcome of its create $reason" );
+      return ( 0, $self->_create_fail( $reason, 1 ), undef );
+   }
+
+   my $delay = $delays[ $attempts - 1 ];
    my %status = %$cs;
    delete $status{'error'};
    $status{'failed'} = 0;
    $status{'unresolved'} = {
       'reason'     => $msg,
-      'since'      => $previous->{'since'} // YYYYMMDDHHMMSS(time),
+      'since'      => $previous->{'since'} // YYYYMMDDHHMMSS( _create_now() ),
       'attempts'   => $attempts,
-      'retryAfter' => YYYYMMDDHHMMSS( time + $CREATE_UNRESOLVED_RETRY_COOLDOWN_SECONDS ),
+      'retryAfter' => YYYYMMDDHHMMSS( _create_now() + $delay ),
    };
    $self->_create_status_set( \%status );
 
-   return $msg;
+   return ( 1, $msg, $delay );
 }
 
-# Records this attempt's outcome and reports whether the reservation is still recoverable.
-# Contained, because it writes to disk: a write that throws here would otherwise escape into the
-# reactor, leaving the ownership lock held and the in-flight count never cleared.
+# Records this attempt's outcome and reports whether the reservation is still recoverable, the
+# message for the consumer, and the delay before this worker retries it (undef when no retry is
+# due). Contained, because it writes to disk: a write that throws here would otherwise escape
+# into the reactor, leaving the ownership lock held and the in-flight count never cleared.
 #
 # An outcome that could not be recorded is reported as unresolved whatever it was. That is not a
 # fallback guess - it is the literal state of affairs: the record still says whatever it said
-# before, so as far as any other process can tell, this attempt has not concluded.
+# before, so as far as any other process can tell, this attempt has not concluded. No retry is
+# scheduled for it: the count that bounds the retries could not advance, and the sweep's own
+# cadence is the right pace for a disk that refuses writes.
 sub _create_record_outcome ($self, $err) {
    my $unresolved = ( ref($err) eq 'Exception' && $err->unresolved ) ? 1 : 0;
    my $msg = ( ref($err) eq 'Exception' ) ? $err->msg : "$err";
 
-   my $recorded = eval { $unresolved ? $self->_create_unresolved($err) : $self->_create_fail($err); 1 };
-   return ( $unresolved, $msg ) if $recorded;
+   my @recorded = eval { $unresolved ? $self->_create_unresolved($err) : ( 0, $self->_create_fail($err), undef ) };
+   return @recorded if @recorded;
 
    flog( "Reservation::_create_record_outcome: could not record the outcome of reservation '"
        . $self->id() . "' ($msg): " . format_caught_error($@) );
-   return ( 1, $msg );
+   return ( 1, $msg, undef );
 }
 
 # Registers this reservation in %CREATE_IN_FLIGHT for the duration of $run (a
@@ -2200,15 +2237,33 @@ sub _create_track ($self, $run, $onSettled = sub {}, $lock = undef) {
    # count and a held lock for a chain that has already settled. The once guard is what makes a
    # second settlement a logged bug rather than a second release of the lock and the entry.
    $run->( once( "Reservation::_create_track for reservation '$id'", sub ( $ok, $err ) {
-      my $outcome;
+      my ( $outcome, $retryDelay );
       if ( defined $err ) {
-         my ( $unresolved, $msg ) = $self->_create_record_outcome($err);
+         my ( $unresolved, $msg );
+         ( $unresolved, $msg, $retryDelay ) = $self->_create_record_outcome($err);
          $outcome = Exception->new( 'msg' => $msg, ( $unresolved ? ( 'unresolved' => 1 ) : () ) );
       }
 
       delete $CREATE_IN_FLIGHT{$id};
       close($lock) if $lock;
       $lock = undef;
+
+      # The retry is this worker's own, on the provider's timer, and is an ordinary
+      # reconciliation: it takes the lock, reloads the record and honours retryAfter, so a record
+      # a sibling has settled meanwhile is skipped. Scheduled only once the lock is released, so
+      # the retry can never find its own attempt still holding it.
+      if ( defined $retryDelay ) {
+         flog("Reservation::_create_track: reservation '$id' retries in ${retryDelay}s");
+         $PROVIDER->{'timer'}->( $retryDelay, sub () {
+            eval {
+               Reservation->reconcile_one( $id, sub ( $reconciled = undef, $e = undef ) {
+                  flog( "Reservation::_create_track: retry of reservation '$id' failed: " . $e->msg ) if $e;
+               } );
+               1;
+            } or flog( "Reservation::_create_track: retry of reservation '$id' could not start: "
+                     . format_caught_error($@) );
+         } );
+      }
 
       eval { $onSettled->( ( defined $err ? undef : $self ), $outcome ); 1 }
          or flog( "Reservation::_create_track: settlement consumer failed for reservationId=$id: "
@@ -2420,11 +2475,11 @@ sub reconcile_one ($class, $id, $cb = sub {}) {
    # asking Docker again. Honouring that here - under the lock, against the freshly reloaded
    # record - is what paces the retries: the lock excludes a second simultaneous driver, but does
    # nothing to stop a sibling worker's sweep picking the record up the instant the previous
-   # holder releases it. This is an eligibility time, not a schedule; the next pass to run after
-   # it is the one that retries.
+   # holder releases it. The recording worker's own timer arrives at this time (_create_track);
+   # a sweep arriving later, after that worker has gone, is the backstop.
    my $unresolved = ref( $createStatus->{'unresolved'} ) eq 'HASH' ? $createStatus->{'unresolved'} : {};
    my $retryAfter = $unresolved->{'retryAfter'};
-   if ( defined($retryAfter) && !ref($retryAfter) && YYYYMMDDHHMMSS(time) lt $retryAfter ) {
+   if ( defined($retryAfter) && !ref($retryAfter) && YYYYMMDDHHMMSS( _create_now() ) lt $retryAfter ) {
       close($lock);
       $cb->();
       return 0;
