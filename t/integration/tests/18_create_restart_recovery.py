@@ -39,6 +39,7 @@ create() path's own fail-closed behaviour, docs/adr/0007-create-restart-recovery
     a name against ahead of an ID prefix.
 """
 
+import gzip
 import os
 import sys
 import json
@@ -230,18 +231,40 @@ class CreateRestartRecoveryTests(TestCase):
         the worker exits, which under a graceful shutdown trails the restart by however long the
         pull takes to finish - so this polls rather than reading once.
 
-        Rotation-aware: logrotate can rotate this file mid-test (size-triggered, ~every 60s), which
-        would leave `offset` pointing past the end of the new, smaller file. When the file is now
-        smaller than `offset`, read it whole from the start instead - safe here because the needle
-        (the graceful drain line) is written by nothing else in this module (test_01/02 use a
-        non-graceful `-t` that never drains), so a match cannot be some earlier line before the
-        offset."""
+        Rotation-aware: logrotate can rotate this file mid-test (size-triggered, checked every
+        60s; the file is renamed, compressed to `.1.gz` and recreated empty), which leaves
+        `offset` pointing past the end of the new, smaller file, and the needle in one of two
+        places: after `offset` in the rotated predecessor, when it was written before the
+        rotation, or anywhere in the new file, when after. When the file is now smaller than
+        `offset`, both are read: the predecessor (`.1`, or `.1.gz` once compressed) from `offset`,
+        and the new file whole. Reading the new file from the start is safe here because the
+        needle (the graceful drain line) is written by nothing else in this module (test_01/02
+        use a non-graceful `-t` that never drains), so a match cannot be some earlier line before
+        the offset."""
+        def _read_from(path, start):
+            opener = gzip.open if path.endswith('.gz') else open
+            with opener(path, 'rb') as fh:
+                fh.seek(start)
+                return fh.read().decode('utf-8', errors='replace')
+
         def _check():
             try:
                 size = os.path.getsize(_APP_SERVER_LOG)
-                with open(_APP_SERVER_LOG, 'r', errors='replace') as fh:
-                    fh.seek(0 if size < offset else offset)
-                    return needle in fh.read()
+            except OSError:
+                return False
+            if size >= offset:
+                try:
+                    return needle in _read_from(_APP_SERVER_LOG, offset)
+                except OSError:
+                    return False
+            for rotated in (_APP_SERVER_LOG + '.1', _APP_SERVER_LOG + '.1.gz'):
+                try:
+                    if needle in _read_from(rotated, offset):
+                        return True
+                except OSError:
+                    continue
+            try:
+                return needle in _read_from(_APP_SERVER_LOG, 0)
             except OSError:
                 return False
 
