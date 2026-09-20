@@ -4,7 +4,7 @@ use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = ( qw(
-   flog wlog
+   flog wlog once
    get_config
    trim is_true
    call_socket_api_sync call_socket_api call_socket_json_api docker_container_path_exists docker_exec
@@ -78,6 +78,26 @@ sub wlog ($m) {
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
    
    print STDERR $dt . " [dockside] " . $m . "\n";
+}
+
+# Returns a sub that passes its first call through to $cb, with its arguments and in its
+# context, and on any later call logs "$label: continuation called again; ignored" through
+# flog and wlog and does nothing else. It is for a continuation whose caller must be told an
+# outcome exactly once: a caller that has registered an obligation against the callback
+# (an in-flight entry, a lock) would release it twice on a second call, so a second call is a
+# bug in whatever hands out the continuation, reported to both logs and dropped, never
+# delivered. The call counts from the moment it is entered, so a call made from inside $cb is
+# a second call. What $cb throws is not caught: it belongs to the caller of the returned sub,
+# and that throw is still the one call.
+sub once ($label, $cb) {
+   my $called = 0;
+   return sub (@args) {
+      return $cb->(@args) unless $called++;
+      my $line = "$label: continuation called again; ignored";
+      flog($line);
+      wlog($line);
+      return;
+   };
 }
 
 sub sanitize_sensitive_text ($text) {
@@ -262,20 +282,21 @@ sub async_ua_in_flight_count () { return scalar keys %ASYNC_UA_IN_FLIGHT; }
 # whether ->error is set at all.
 sub call_socket_api ($socket, $path, $opts, $cb) {
    # Established before anything that can fail, including the user agent itself: the exactly-once
-   # guarantee this function's header comment promises is enforced in this one place rather than
-   # asserted by each branch below. Callers register in-flight bookkeeping keyed on $cb firing
-   # exactly once (docker_exec's dispatch counters, Reservation's create-chain promise executors,
-   # Reservation::dispatch_hook_exec's %HOOK_DISPATCH_IN_FLIGHT), so a second call would release
-   # an obligation twice and a missing call would hold one until the process exits. An exception
-   # raised by $cb itself is deliberately not caught: it belongs to the caller, and swallowing it
-   # here would hide a real caller bug. $settled also makes a caller exception distinguishable
-   # from a setup failure at the $ua->start guard below.
+   # guarantee this function's header comment promises is enforced by the once guard in this one
+   # place rather than asserted by each branch below. Callers register in-flight bookkeeping keyed
+   # on $cb firing exactly once (docker_exec's dispatch counters, Reservation's create-chain
+   # promise executors, Reservation::dispatch_hook_exec's %HOOK_DISPATCH_IN_FLIGHT), so a second
+   # call would release an obligation twice and a missing call would hold one until the process
+   # exits. An exception raised by $cb itself is deliberately not caught: it belongs to the
+   # caller, and swallowing it here would hide a real caller bug. $settled, set before $cb is
+   # entered, makes a caller exception distinguishable from a setup failure at the $ua->start
+   # guard below, and tells on_request_sent that a call which has settled fires nothing.
    my $settled = 0;
-   my $settle = sub ( $result, $error ) {
-      return if $settled++;
+   my $settle = once( "call_socket_api: settlement for $path", sub ( $result, $error ) {
+      $settled = 1;
       $cb->( $result, $error );
       return;
-   };
+   } );
 
    # Constructing and configuring the user agent is inside the guard for the same reason every
    # other setup step below is: a caller that has already registered an obligation cannot

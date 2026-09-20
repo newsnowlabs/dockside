@@ -95,6 +95,32 @@ subtest 'an exception from the caller own callback is not reported as a transpor
    is( Util::async_ua_in_flight_count(), 0, 'and the user agent is still not leaked' );
 };
 
+subtest 'a transport that completes a request twice settles the caller once and logs the second' => sub {
+   my @settled;
+   no warnings 'redefine';
+   local *Mojo::UserAgent::start = sub ( $ua, $tx, $cb ) {
+      $cb->( $ua, $tx );
+      $cb->( $ua, $tx );
+      return $tx;
+   };
+
+   # The second completion is reported on stderr as well as in the log; captured so it stays
+   # out of the TAP stream.
+   open( my $saved, '>&', \*STDERR ) or die "stderr: $!";
+   open( STDERR, '>', "$tmp/stderr" ) or die "stderr: $!";
+   Util::call_socket_api( 'unused', '/containers/x', {}, sub (@a) { push @settled, [@a] } );
+   open( STDERR, '>&', $saved ) or die "stderr: $!";
+   open( my $fh, '<', "$tmp/stderr" ) or die $!;
+   my $stderr = do { local $/; <$fh> // '' };
+
+   is( scalar @settled, 1, 'the callback fires exactly once' );
+   ok( defined( $settled[0][0] ), 'with the one completion result' );
+   like( read_log(), qr/call_socket_api: settlement for \/containers\/x: continuation called again; ignored/,
+      'the second completion is reported as a bug in the transport, naming the request' );
+   like( $stderr, qr/settlement for \/containers\/x: continuation called again/, 'on stderr too' );
+   is( Util::async_ua_in_flight_count(), 0, 'and the user agent is released' );
+};
+
 subtest 'a streamed-response consumer that throws cannot escape into the reactor' => sub {
    my @settled;
    my $reads = 0;
