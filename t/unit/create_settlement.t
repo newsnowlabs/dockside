@@ -45,8 +45,12 @@ sub reservation {
    return bless { id => 'rid', name => 'devt', data => { image => 'img:1' } }, 'Reservation';
 }
 
+# A complete response, as the transport delivers one: parsed from the wire, so its content
+# reports itself finished, which the pull stage reads to tell a completed stream from one cut
+# off mid-way.
 sub response ($code, $body) {
-   return Mojo::Message::Response->new->code($code)->body($body);
+   return Mojo::Message::Response->new->parse(
+      "HTTP/1.1 $code OK\r\nContent-Length: " . length($body) . "\r\n\r\n$body" );
 }
 
 # Runs $start with a continuation that records every call it receives, as [ 'resolve', $value ]
@@ -300,10 +304,10 @@ subtest 'a transport failure at any stage is a single clean rejection' => sub {
       is( scalar @$settled, 1, "$stage settles exactly once on a transport failure" );
       is( $settled->[0][0], 'reject', "$stage rejects rather than hanging" );
       like( reason( $settled->[0][1] ), qr/connection refused/, "$stage reports the transport error" );
-      # A pull that never completed created nothing, so it is a definitive failure. A create or
-      # start whose transport died may well have been carried out by Docker regardless.
-      is( unresolved( $settled->[0][1] ), ( $stage eq 'pulling' ? 0 : 1 ),
-         "$stage classifies the transport failure by whether it could have mutated anything" );
+      # A create or start whose transport died may well have been carried out by Docker
+      # regardless. A pull that never completed created nothing, and is the safest thing on the
+      # chain to retry: it is idempotent and Docker keeps its completed layers.
+      ok( unresolved( $settled->[0][1] ), "$stage reports a transport failure as unresolved, so the attempt is retried" );
    }
 };
 

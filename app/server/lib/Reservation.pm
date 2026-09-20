@@ -1768,13 +1768,26 @@ sub _create_confirm_ownership ($self, $cb) {
 # unconditionally safe to (re)enter - there is no "first time" vs "recovery" branch inside any
 # of them, so there is exactly one code path per stage, not two.
 
+# A pull creates no container, so its outcome is classified by what arrived, never by message
+# text: a Docker-reported failure (a non-2xx response, or an error event in a 2xx stream) is
+# definitive, and a pull that did not complete (no response: the connection reset, refused, or
+# silent past the transport's inactivity limit; or a 2xx stream that ended before its
+# terminating chunk: the connection closed mid-stream) is unresolved, meaning worth retrying -
+# nothing was created, the pull is idempotent and Docker keeps completed layers - so the record
+# keeps 'pulling', its layer snapshot and the diagnostic, and the next attempt runs this same
+# code. The stream's completion is read from the response's content, which reports itself
+# finished only once the chunked body's terminating chunk has arrived: the transport reports a
+# closed connection as an error only while no status line has been received, and closes a
+# response whose status line has arrived without one. The image check is classified the same
+# way for no response; any status but 200 hands over to the pull, whose own outcome decides.
 sub _create_stage_pulling ($self, $image, $cb) {
    my $socket = $CONFIG->{'docker'}{'socket'};
    my $done = once( "Reservation::_create_stage_pulling for reservation '" . $self->id() . "'", $cb );
 
    call_socket_api( $socket, '/images/' . uri_escape($image) . '/json', {}, sub ($result, $err) {
-      return $done->( undef, $err ) if $err;
-      return $done->( 1, undef ) if $result && $result->code == 200;
+      return $done->( undef, _create_unresolved_error( "image check for '$image' ended without a response: $err" ) ) if $err;
+      return $done->( undef, _create_unresolved_error( "image check for '$image' ended without a response" ) ) unless $result;
+      return $done->( 1, undef ) if $result->code == 200;
 
       my ( $repo, $tag ) = $image =~ m{^(.+):([^/:]+)$} ? ( $1, $2 ) : ( $image, 'latest' );
       my $lastPersist = 0;
@@ -1832,24 +1845,31 @@ sub _create_stage_pulling ($self, $image, $cb) {
             }
          },
       }, sub ($result, $err) {
-         if ( $err || !$result || !$result->is_success ) {
-            # A pull can fail two different ways: a clean top-level HTTP error before any
-            # streaming starts (e.g. 404 'manifest unknown' for a bad tag - a single
-            # {"message":...} JSON object body, no trailing newline for the while loop above
-            # to have consumed it, so it's still sitting unparsed in $buf), or an error
-            # embedded mid-stream after a 200 already started (a bad layer partway through an
-            # otherwise-real pull - $failed, above). $result->body is *always* empty here
-            # regardless of which - on_read replaces the transport's own default body
-            # accumulation (see call_socket_api's own comment) - so $buf/$failed are the only
-            # place the actual error text survives. An unknown-tag pull returns 404 with
-            # exactly this un-newline-terminated {"message":...} shape - without this fallback
-            # it would silently report an empty error string instead.
-            my $bodyErr = length($buf) ? ( eval { decode_json($buf)->{'message'} } // $buf ) : undef;
-            $done->( undef, $err // $failed // $bodyErr // ( $result ? 'HTTP ' . $result->code : 'no response' ) );
-            return;
-         }
+         # An error event Docker put in the stream is its verdict on the pull, whatever became
+         # of the connection afterwards, so it is read first.
          if ($failed) {
             $done->( undef, $failed );
+            return;
+         }
+         if ( $err || !$result ) {
+            $done->( undef, _create_unresolved_error( "pull of '$image' ended without a response"
+               . ( $err ? ": $err" : '' ) ) );
+            return;
+         }
+         if ( $result->is_success && !$result->content->is_finished ) {
+            $done->( undef, _create_unresolved_error( "pull of '$image' ended before its stream completed" ) );
+            return;
+         }
+         if ( !$result->is_success ) {
+            # A clean top-level HTTP error before any streaming starts (e.g. 404 'manifest
+            # unknown' for a bad tag) is a single {"message":...} JSON object body with no
+            # trailing newline for the while loop above to have consumed it, so it's still
+            # sitting unparsed in $buf. $result->body is *always* empty here - on_read replaces
+            # the transport's own default body accumulation (see call_socket_api's own comment)
+            # - so $buf is the only place the actual error text survives; without this fallback
+            # an unknown-tag pull would silently report an empty error string instead.
+            my $bodyErr = length($buf) ? ( eval { decode_json($buf)->{'message'} } // $buf ) : undef;
+            $done->( undef, $bodyErr // ( 'HTTP ' . $result->code ) );
             return;
          }
          $done->( 1, undef );

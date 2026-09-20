@@ -469,8 +469,9 @@ closed socket).
 | start | `404` | definitive failure: the container is confirmed gone |
 | start | `409` | unresolved; it carries no name-collision meaning and never enters adoption |
 | any | `5xx` or any status not listed | unresolved |
-| image check | `200` | present; `404` absent; `$err` or other → the pull stage rejects definitively |
-| pull | stream error, non-2xx, `$err` | definitive failure of the pull: a pull creates no container. Killing the client mid-pull aborts it server-side too, so no "pull already in progress" check is needed |
+| image check | `200` | present; `$err` or no response → unresolved at `pulling`; any other status → the pull decides |
+| pull | non-2xx response, or an error event in a 2xx stream | definitive failure of the pull, Docker having reported it: a pull creates no container. Killing the client mid-pull aborts it server-side too, so no "pull already in progress" check is needed |
+| pull | `$err` or no response (reset, refused, silent past the inactivity limit), or a 2xx stream that ended before its terminating chunk (closed mid-stream; the transport reports a close as an error only while no status line has arrived, so the response's content completion is the evidence) | unresolved at `pulling`. For a pull there is no mutation whose effect is in doubt: "unresolved" means worth retrying, the pull being idempotent and Docker keeping completed layers |
 
 A definitive failure of *this* request becomes a definitive failure of the *reservation* only when
 no prior create is possible. With a possible prior create, it is followed by ownership
@@ -508,8 +509,11 @@ definitive failure, and `expiryTime` except at the retry bound, whose failure ca
 
 | Request | Response | Result |
 |---|---|---|
-| image check / pull | failure of any kind | failed |
-| image check | present, or pull completes | write `creating`; if the write fails, unresolved with the record left at `pulling` and no create posted |
+| image check | any status but `200` | the pull is posted, and its own outcome decides; the status itself is not a verdict on the reservation |
+| pull | Docker-reported failure (a non-2xx response, or an error event in the stream) | failed |
+| image check / pull | no response | unresolved at `pulling`, the layer snapshot kept; the next attempt is a `pulling` entry |
+| pull | a 2xx stream that ended before its terminating chunk | unresolved at `pulling`, exactly as no response |
+| image check | `200`, or pull completes | write `creating`; if the write fails, unresolved with the record left at `pulling` and no create posted |
 | first create | success | write `containerId`, then `starting` |
 | first create | `400`/`404`/`422` | failed, no lookup at all: no earlier create can exist, so this refusal is the whole story |
 | first create | `409` | ownership confirmation |

@@ -94,8 +94,19 @@ sub raw_record {
 
 sub status { return read_record()->{'createStatus'} // {}; }
 
+# A complete response, as the transport delivers one: parsed from the wire, so its content
+# reports itself finished, which is what the pull stage reads to tell a completed stream from one
+# cut off mid-way.
 sub responds ( $code, $body = '' ) {
-   return sub ( $cb, @ ) { $cb->( Mojo::Message::Response->new->code($code)->body($body), undef ); };
+   my $wire = "HTTP/1.1 $code OK\r\nContent-Length: " . length($body) . "\r\n\r\n$body";
+   return sub ( $cb, @ ) { $cb->( Mojo::Message::Response->new->parse($wire), undef ); };
+}
+
+# A 2xx chunked stream whose connection closed before the terminating chunk: the transport
+# delivers it finished and without error, its content unfinished.
+sub cut_off () {
+   my $wire = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n{\"status\":\"a\"}\n\r\n";
+   return sub ( $cb, @ ) { $cb->( Mojo::Message::Response->new->parse($wire), undef ); };
 }
 
 sub fails ($err) {
@@ -974,6 +985,128 @@ subtest 'a failed record carries the time it failed' => sub {
    is( status()->{'stage'}, 'failed', 'recorded as failed' );
    is( status()->{'entered'}{'pulling'}, 1000.25, 'the pull entry is kept' );
    like( status()->{'entered'}{'failed'} // '', qr/^\d+\.\d+$/, 'and the failure is entered at a fractional epoch' );
+};
+
+# A pull responder: feeds each of @events to the stage's stream reader as one line, then completes
+# with $completion (a responder).
+sub streams ( $completion, @events ) {
+   return sub ( $cb, $path, $args ) {
+      $args->{'on_read'}->( encode_json($_) . "\n" ) for @events;
+      return $completion->($cb);
+   };
+}
+
+subtest 'a pull cut off at the socket is unresolved at pulling, and the next attempt completes it' => sub {
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'image'  => [ responds( 404, '' ), responds( 200, '{}' ) ],
+      'other'  => [ streams( fails('Premature connection close'),
+                       { id => 'layer1', status => 'Pull complete' },
+                       { id => 'layer2', status => 'Downloading', progressDetail => { current => 1, total => 4 } } ) ],
+      'create' => [ responds( 201, encode_json({ Id => $OWN_ID }) ) ],
+      'start'  => [ responds(204) ],
+   );
+   seed('pulling');
+
+   my $run = reconcile();
+   ok( unresolved( $run->{'settled'}[0]{'err'} ), 'the consumer is told the outcome is unresolved' );
+   like( reason( $run->{'settled'}[0]{'err'} ), qr/pull of 'img:1' ended without a response: Premature connection close/,
+      'naming the pull and the transport error' );
+   my $diag = is_recoverable( 'pulling', 'pull cut off' );
+   is( $diag->{'attempts'}, 1, 'pull cut off: counted as one attempt' );
+   is_deeply( [ sort keys %{ status()->{'layers'} } ], [qw(layer1 layer2)], 'pull cut off: the layer snapshot is kept' );
+   is( scalar @pending, 1, 'pull cut off: the worker holds a retry' );
+
+   $run = reconcile();
+   ok( $run->{'settled'}[0]{'ok'}, 'the next attempt completes the chain' );
+   is( status()->{'stage'}, 'done', 'reaching done' );
+   is( scalar( grep { m{^/images/create} } @calls ), 1, 'the pull was issued once, the image being present on the retry' );
+   ok( !ref( status()->{'unresolved'} ), 'and the diagnostic is cleared' );
+};
+
+subtest 'a pull whose stream ends before its terminating chunk is unresolved, not complete' => sub {
+   # The connection closed mid-stream after the status line arrived: the transport reports no
+   # error and the response is a 200, so the stream's own completion is the evidence.
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'image'  => [ responds( 404, '' ), responds( 200, '{}' ) ],
+      'other'  => [ streams( cut_off(), { id => 'layer1', status => 'Downloading', progressDetail => { current => 1, total => 4 } } ) ],
+      'create' => [ responds( 201, encode_json({ Id => $OWN_ID }) ) ],
+      'start'  => [ responds(204) ],
+   );
+   seed('pulling');
+
+   my $run = reconcile();
+   ok( unresolved( $run->{'settled'}[0]{'err'} ), 'unresolved' );
+   like( reason( $run->{'settled'}[0]{'err'} ), qr/pull of 'img:1' ended before its stream completed/, 'naming the cut-off stream' );
+   is_recoverable( 'pulling', 'stream cut off' );
+   is( scalar( grep { m{^/containers/create} } @calls ), 0, 'stream cut off: no create is posted for an image that may be absent' );
+
+   $run = reconcile();
+   ok( $run->{'settled'}[0]{'ok'}, 'the next attempt completes the chain' );
+   is( status()->{'stage'}, 'done', 'reaching done' );
+};
+
+subtest 'a pull cut off three times is failed with that reason' => sub {
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls,
+      'image' => [ responds( 404, '' ) ],
+      'other' => [ streams( fails('Premature connection close') ) ],
+   );
+   seed('pulling');
+
+   reconcile() for 1 .. 2;
+   is( status()->{'unresolved'}{'attempts'}, 2, 'two attempts recorded' );
+   is( status()->{'stage'}, 'pulling', 'still at pulling' );
+   my $run = reconcile();
+   ok( !unresolved( $run->{'settled'}[0]{'err'} ), 'the third is a definitive failure' );
+   is( status()->{'stage'}, 'failed', 'recorded as failed' );
+   like( status()->{'error'}, qr/^after 3 attempts: pull of 'img:1' ended without a response: Premature connection close$/,
+      'with the count and the reason, and nothing that may exist, no create having been posted' );
+   ok( !read_record()->{'expiryTime'}, 'and retained' );
+   is( scalar( grep { m{^/images/create} } @calls ), 3, 'three pulls were issued' );
+};
+
+subtest 'an image check with no response is unresolved; one with any other status hands over to the pull' => sub {
+   my @calls;
+   local *Reservation::call_socket_api = docker( \@calls, 'image' => [ fails('connection refused') ] );
+   seed('pulling');
+   my $run = reconcile();
+   ok( unresolved( $run->{'settled'}[0]{'err'} ), 'no response to the image check is unresolved' );
+   like( reason( $run->{'settled'}[0]{'err'} ), qr/image check for 'img:1' ended without a response: connection refused/, 'and says so' );
+   is_recoverable( 'pulling', 'image check cut off' );
+   is( scalar( grep { m{^/images/create} } @calls ), 0, 'no pull was issued' );
+
+   @calls = ();
+   local *Reservation::call_socket_api = docker( \@calls,
+      'image'  => [ responds( 500, '' ) ],
+      'other'  => [ streams( responds( 200, '' ) ) ],
+      'create' => [ responds( 201, encode_json({ Id => $OWN_ID }) ) ],
+      'start'  => [ responds(204) ],
+   );
+   seed('pulling');
+   $run = reconcile();
+   ok( $run->{'settled'}[0]{'ok'}, 'a 500 to the image check is followed by the pull, which decides' );
+   is( scalar( grep { m{^/images/create} } @calls ), 1, 'one pull was issued' );
+   is( status()->{'stage'}, 'done', 'and the chain completes' );
+};
+
+subtest 'a pull Docker reports as failed is definitive, whatever became of the connection' => sub {
+   for my $case (
+      { 'name' => 'an error event in the stream', 'pull' => streams( responds( 200, '' ), { error => 'bad layer' } ), 'reason' => qr/^bad layer$/ },
+      { 'name' => 'an error event, then the connection lost', 'pull' => streams( fails('Premature connection close'), { error => 'bad layer' } ), 'reason' => qr/^bad layer$/ },
+      # A refusal's body arrives through the stream reader, unterminated, as the transport delivers it.
+      { 'name' => 'a refusal before the stream', 'reason' => qr/^manifest unknown$/,
+        'pull' => sub ( $cb, $path, $args ) { $args->{'on_read'}->('{"message":"manifest unknown"}'); return responds( 404, '' )->($cb); } },
+   ) {
+      local *Reservation::call_socket_api = docker( [], 'image' => [ responds( 404, '' ) ], 'other' => [ $case->{'pull'} ] );
+      seed('pulling');
+      my $run = reconcile();
+      ok( !unresolved( $run->{'settled'}[0]{'err'} ), "$case->{'name'}: a definitive failure" );
+      is( status()->{'stage'}, 'failed', "$case->{'name'}: recorded as failed" );
+      like( status()->{'error'}, $case->{'reason'}, "$case->{'name'}: with Docker's own reason" );
+      ok( read_record()->{'expiryTime'}, "$case->{'name'}: with an expiry, nothing having been created" );
+   }
 };
 
 my @secondCalls = second_calls();
