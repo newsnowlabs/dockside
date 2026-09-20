@@ -7,11 +7,12 @@ package EventDaemon::ContainerSync;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update onEvent);
+our @EXPORT_OK = qw(update onEvent record_all_started_at);
 
 use Try::Tiny;
 use JSON;
 use Time::HiRes qw(time);
+use Mojo::Date;
 
 use Util qw(flog cacheReadWrite call_socket_api);
 use Exception;
@@ -77,6 +78,12 @@ sub _update_merge ($newContainersFromAPI, $oldJSON) {
          }
       }
 
+      # StartedAt is known only from inspecting the container (record_started_at below), never
+      # from the list, so the old record's value is carried the way Size is above.
+      if( $oldContainers && $oldContainers->{$ID} && defined $oldContainers->{$ID}{'docker'}{'StartedAt'} ) {
+         $newContainers->{$ID}{'docker'}{'StartedAt'} = $oldContainers->{$ID}{'docker'}{'StartedAt'};
+      }
+
    }
 
    my $newContainersFile = { 'version' => Containers::CURRENT_VERSION, 'containers' => $newContainers };
@@ -140,6 +147,95 @@ sub update ($opts, $cb) {
    } );
 }
 
+# Docker's inspect reports State.StartedAt as an RFC 3339 UTC string with nanoseconds, and Go's
+# zero time, 0001-01-01T00:00:00Z, for a container that has never started. Mojo::Date keeps the
+# fraction but reads that zero time's year as 2001, so it is excluded by its text. Returns a
+# fractional epoch, or undef for the zero time or a string that does not parse.
+sub _started_at_epoch ($startedAt) {
+   return undef unless defined($startedAt) && $startedAt !~ /^0001-01-01T/;
+   return Mojo::Date->new($startedAt)->epoch;
+}
+
+# Records $epoch as docker.StartedAt on containers.json's entry for $id, under the file's lock,
+# or with $epoch undef removes the value. Inspections of one container land in whatever order
+# Docker answers them, so a value is only ever replaced by a later one. An entry the list fetch
+# has not yet written is left alone: the container's next start event inspects again. Returns
+# whether anything was written.
+sub _write_started_at ($id, $epoch) {
+   my $shortId = substr($id, 0, 12);
+   my $written = 0;
+   cacheReadWrite( $CONFIG->{'containersPath'}, sub ($oldJSON) {
+      my $file  = decode_json($oldJSON);
+      my $entry = $file->{'containers'}{$shortId} or return $oldJSON;
+      my $known = $entry->{'docker'}{'StartedAt'};
+      if ( defined $epoch ) {
+         return $oldJSON if defined($known) && $known >= $epoch;
+         $entry->{'docker'}{'StartedAt'} = $epoch;
+      }
+      else {
+         return $oldJSON unless defined $known;
+         delete $entry->{'docker'}{'StartedAt'};
+      }
+      $written = 1;
+      return encode_json($file);
+   } );
+   return $written;
+}
+
+# Removes a container's recorded start time. Called when the container has started again and
+# the new time is not yet known, so that the list refresh carries no previous start forward and
+# an inspection that fails leaves the container with no value, which readers treat as not
+# stopping, rather than a stale one that a stop request could remain newer than for as long as
+# the container runs.
+sub _clear_started_at ($id) {
+   try { _write_started_at( $id, undef ) }
+   catch { flog("EventDaemon::ContainerSync::_clear_started_at: containerId=" . substr($id, 0, 12) . ": " . (ref($_) ? $_->dbg : $_)) };
+   return;
+}
+
+# Fetches a container's last start time from Docker and records it (_write_started_at), after
+# removing the value on record (_clear_started_at). The value is what Reservation's client view
+# compares a stop request's time against, so the stopping indicator settles when the container
+# is next started. Non-blocking; $cb, if given, is called once with no arguments when the record
+# has been made or abandoned.
+sub record_started_at ($id, $cb = undef) {
+   my $shortId = substr($id, 0, 12);
+   _clear_started_at($shortId);
+   call_socket_api( $CONFIG->{'docker'}{'socket'}, "/containers/$shortId/json", {}, sub ($result, $err) {
+      try {
+         die "unable to inspect: " . ($err // 'no result') unless $result;
+         die sprintf("inspect answered %d", $result->code) unless $result->is_success;
+         my $epoch = _started_at_epoch( decode_json($result->body)->{'State'}{'StartedAt'} );
+         die "inspect reports no start time" unless defined $epoch;
+         my $written = _write_started_at($shortId, $epoch);
+         flog("EventDaemon::ContainerSync::record_started_at: containerId=$shortId StartedAt=$epoch "
+            . ($written ? 'recorded' : 'not recorded: no newer than the value on record, or no entry yet'));
+      }
+      catch {
+         flog("EventDaemon::ContainerSync::record_started_at: containerId=$shortId: " . (ref($_) ? $_->dbg : $_));
+      };
+      $cb->() if $cb;
+   } );
+   return;
+}
+
+# Records the start time of every container in containers.json, so a container started while no
+# daemon was observing events carries its real start rather than none or a stale one. Every
+# container, not only those whose status phrase reads "Up": Reservation::update_container_info
+# treats every status but Created and Exited as running, and a container that has never started
+# reports the zero time, which is recorded as nothing. Once per process, after the first list
+# fetch. $cb is called once, with no arguments, when every inspection has settled; with no
+# containers that is before this returns.
+sub record_all_started_at ($cb) {
+   my $containers = try { decode_json( cacheReadWrite( $CONFIG->{'containersPath'} ) )->{'containers'} } catch { {} };
+   my @ids = sort keys %$containers;
+
+   flog("EventDaemon::ContainerSync::record_all_started_at: " . scalar(@ids) . " container(s)");
+   my $pending = scalar(@ids) or do { $cb->(); return; };
+   record_started_at( $_, sub { $cb->() unless --$pending } ) for @ids;
+   return;
+}
+
 # Called when a container start event is received. Updates container state, reloads all
 # data files (config, users, reservations, containers), then launches the IDE process
 # inside the container if it belongs to a Dockside-managed reservation. Non-blocking throughout
@@ -156,7 +252,15 @@ sub _onContainerStart ($id, $eventCount) {
 
    # This container's details might not yet have been loaded. Do this now.
    flog("EventDaemon::ContainerSync::onContainerStart #$eventCount: Updating docker containers without sizes before reloading reservations");
+   # The container has a new start time, not yet known: the value on record is removed before
+   # the list refresh below, which would otherwise carry it forward, and the container is
+   # inspected after it, once its entry is certain to exist. Whether or not this daemon manages
+   # the container, and independent of the launch below, so it is not waited for.
+   _clear_started_at($id);
+
    update( {}, sub {
+      record_started_at($id);
+
       # Reload config, reservations and containers, to access Reservation->load and %CONFIG.
       # Reload users and roles too, in case we can update owner's name and email [at later date].
       Data::load('config.json', 'users.json', 'roles.json', 'reservations.json', 'containers.json');

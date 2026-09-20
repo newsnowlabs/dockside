@@ -63,7 +63,7 @@ use Mojo::IOLoop;
 
 use Util qw(flog call_socket_api);
 use Data qw($CONFIG);
-use EventDaemon::ContainerSync qw(update onEvent);
+use EventDaemon::ContainerSync qw(update onEvent record_all_started_at);
 use EventDaemon::LaunchDispatch qw(begin_shutdown drain_complete);
 use EventDaemon::LaunchReadiness qw(check_pending_launches);
 use EventDaemon::LaunchRecovery qw(check_launch_recovering restart_recovery_sweep);
@@ -247,6 +247,14 @@ if( ! -d $CONFIG->{'tmpPath'} ) {
 # so there's no concurrency to lose by waiting for it inline.
 flog("Writing initial container state synchronously...");
 update( {}, sub { Mojo::IOLoop->stop; } );
+Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
+
+# The start time of every listed container, once per process - see
+# EventDaemon::ContainerSync::record_all_started_at. Same run-until-settled shape as the
+# initial update above; with no containers the callback fires inline and start() returns at
+# once, the reactor having nothing to wait for.
+flog("Recording container start times...");
+record_all_started_at( sub { Mojo::IOLoop->stop; } );
 Mojo::IOLoop->start unless Mojo::IOLoop->is_running;
 
 # Recovers any launch stage left 'running' by a previous, now-dead docker-event-daemon process -
