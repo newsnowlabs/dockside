@@ -132,10 +132,26 @@ def _wait_create_settled(test, name, timeout=120):
     )
 
 
-def _assert_recovered(test, name, data):
+def _assert_recovered(test, name, data, timeout=15):
+    """Asserts `data`, read at the moment $name's createStatus settled, says done, then that the
+    reservation is running. The running status is docker-event-daemon's: it indexes the
+    container on the start event, which reaches it in parallel with app-server's own done
+    write, so a read taken the instant the stage settles can find the record done and its
+    container not yet indexed. The status is therefore polled, briefly, before it is judged."""
     stage = _create_status(data).get('stage')
     test.assert_equal(stage, 'done', f'{name!r} createStatus never reached done: {data.get("createStatus")!r}')
-    test.assert_equal(data.get('status'), 1, f'{name!r} did not end up running: {data!r}')
+
+    def _running():
+        try:
+            current = test.admin.get_container(name)
+        except APIError:
+            return False
+        return current if current.get('status') == 1 else False
+
+    test.wait_until(
+        _running, timeout=timeout, interval=0.5,
+        timeout_msg=f'{name!r} reached done but did not end up running',
+    )
 
 
 class _PullChainTests(TestCase):
