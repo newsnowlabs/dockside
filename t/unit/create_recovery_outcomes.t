@@ -204,6 +204,17 @@ sub run_until_settled ($settled) {
 }
 
 sub unresolved ($err) { return ( ref($err) eq 'Exception' && $err->unresolved ) ? 1 : 0; }
+
+# What a drain reads at the moment a stub answers: the chains with a tail open, as rendered, and
+# those with none. A responder wrapped by observing() records it before answering.
+sub tails () {
+   return { 'issued' => [ Reservation->create_issued_tail_ids ], 'abandonable' => [ Reservation->create_abandonable_ids ] };
+}
+sub observing ( $seen, $responder ) {
+   return sub ( $cb, @rest ) { push @$seen, tails(); return $responder->( $cb, @rest ); };
+}
+sub no_tail ()   { return { 'issued' => [],               'abandonable' => ['rid'] }; }
+sub in_tail ($kind) { return { 'issued' => ["rid ($kind)"], 'abandonable' => [] }; }
 sub reason ($err) { return ref($err) eq 'Exception' ? $err->msg : "$err"; }
 
 # Every path that leaves an outcome unknown must leave the same durable state behind, so this is
@@ -959,6 +970,119 @@ subtest 'a chain holds this worker against recycling from tracking until it sett
    Reservation::_reservation_reloaded('rid')->create( sub ( $ok = undef, $err = undef ) { push @refused, $err; } );
    like( reason( $refused[1] ), qr/already has a createStatus set/, 'and a duplicate create' );
    is_deeply( \@events, [], 'none of which took a hold' );
+};
+
+subtest 'the in-flight entry records the tail open from a post until its result is recorded' => sub {
+   my %seen;
+   local *Reservation::call_socket_api = docker( [],
+      'lookup' => [ observing( $seen{'lookup'} = [], holds(undef) ) ],
+      'create' => [ observing( $seen{'create'} = [], responds( 201, encode_json({ Id => $OWN_ID }) ) ) ],
+      'start'  => [ observing( $seen{'start'} = [], responds(204) ) ],
+   );
+   # The stage writes observe too, as does the entry to the start stage, which lies between the
+   # create tail's end and the start tail's beginning.
+   my $realUpdate = \&Reservation::update;
+   local *Reservation::update = sub ( $self, $fields, @rest ) {
+      my $stage = ref( $fields->{'createStatus'} ) eq 'HASH' ? $fields->{'createStatus'}{'stage'} : undef;
+      push @{ $seen{"write $stage"} }, tails() if defined $stage;
+      return $realUpdate->( $self, $fields, @rest );
+   };
+   my $realStarting = \&Reservation::_create_stage_starting;
+   local *Reservation::_create_stage_starting = sub (@args) { push @{ $seen{'entering start'} }, tails(); return $realStarting->(@args); };
+   seed('creating');
+
+   my $run = reconcile();
+   ok( $run->{'settled'}[0]{'ok'}, 'the chain completes' );
+   is_deeply( $seen{'write creating'}, [ no_tail() ], 'the creating write opens no tail' );
+   is_deeply( $seen{'lookup'}, [ no_tail() ], 'nor does the preflight lookup: the chain is abandonable' );
+   is_deeply( $seen{'create'}, [ in_tail('create') ], 'the create is posted inside the create tail' );
+   is_deeply( $seen{'write starting'}, [ in_tail('create') ], 'which covers the starting write' );
+   is_deeply( $seen{'entering start'}, [ no_tail() ], 'and ends once that write has returned' );
+   is_deeply( $seen{'start'}, [ in_tail('start') ], 'the start is posted inside the start tail' );
+   is_deeply( $seen{'write done'}, [ in_tail('start') ], 'which covers the done write' );
+   is_deeply( tails(), { 'issued' => [], 'abandonable' => [] }, 'and the chain is gone from both once settled' );
+};
+
+subtest 'the create tail stays open through ownership confirmation' => sub {
+   my @lookups;
+   local *Reservation::call_socket_api = docker( [],
+      'lookup' => [ observing( \@lookups, holds(undef) ), observing( \@lookups, holds(undef) ),
+                    observing( \@lookups, holds( owned_by('rid') ) ) ],
+      'create' => [ responds( 409, '' ) ],
+      'start'  => [ responds(204) ],
+   );
+   seed('creating');
+
+   my $run = reconcile();
+   ok( $run->{'settled'}[0]{'ok'}, 'the container is adopted' );
+   is( scalar @lookups, 3, 'a preflight lookup, then two confirmation lookups' );
+   is_deeply( $lookups[0], no_tail(), 'the preflight lookup precedes any tail' );
+   is_deeply( $lookups[$_], in_tail('create'), "confirmation lookup $_ is inside the create tail" ) for 1, 2;
+};
+
+subtest 'a pull opens no tail' => sub {
+   my @seen;
+   local *Reservation::call_socket_api = docker( [],
+      'image'  => [ observing( \@seen, responds( 404, '' ) ) ],
+      'other'  => [ observing( \@seen, streams( responds( 200, '' ), { id => 'layer1', status => 'Pull complete' } ) ) ],
+      'create' => [ responds( 201, encode_json({ Id => $OWN_ID }) ) ],
+      'start'  => [ responds(204) ],
+   );
+   seed('pulling');
+
+   my $run = reconcile();
+   ok( $run->{'settled'}[0]{'ok'}, 'the chain completes' );
+   ok( scalar @seen >= 2, 'the image check and the pull were both observed' );
+   is_deeply( $_, no_tail(), 'a request of the pull stage finds the chain abandonable' ) for @seen;
+};
+
+subtest 'a settled chain leaves no tail and no entry, whatever ended it' => sub {
+   my $realUpdate = \&Reservation::update;
+   my $failing = sub { 0 };
+   local *Reservation::update = sub ( $self, $fields, @rest ) {
+      die Exception->new( 'dbg' => 'fixture write failure' ) if $failing->($fields);
+      return $realUpdate->( $self, $fields, @rest );
+   };
+   my $stage = sub ($fields) { return ref( $fields->{'createStatus'} ) eq 'HASH' ? ( $fields->{'createStatus'}{'stage'} // '' ) : ''; };
+   my $created = responds( 201, encode_json({ Id => $OWN_ID }) );
+   for my $case (
+      { 'name' => 'a refused create',           'create' => responds( 400, encode_json({ message => 'bad request' }) ) },
+      { 'name' => 'an unresolved create',       'create' => fails('connection reset by peer') },
+      { 'name' => 'a containerId write that fails', 'create' => $created, 'failing' => sub ($f) { exists $f->{'containerId'} } },
+      { 'name' => 'a starting write that fails', 'create' => $created, 'failing' => sub ($f) { $stage->($f) eq 'starting' } },
+      { 'name' => 'a start Docker answers 404', 'create' => $created, 'start' => responds(404) },
+      { 'name' => 'a done write that fails',    'create' => $created, 'start' => responds(204), 'failing' => sub ($f) { $stage->($f) eq 'done' } },
+      { 'name' => 'a consumer that throws',     'create' => $created, 'start' => responds(204), 'consumer' => sub { die "fixture consumer failure\n" } },
+   ) {
+      $failing = $case->{'failing'} // sub { 0 };
+      local *Reservation::call_socket_api = docker( [], 'create' => [ $case->{'create'} ], 'start' => [ $case->{'start'} // responds(500) ] );
+      seed('creating');
+      my $reservation = Reservation::_reservation_reloaded('rid');
+      my $settled = 0;
+      @pending = ();
+      $reservation->_create_track(
+         sub ($settle) { $reservation->_create_run_from_creating( { Image => 'img:1' }, 0, $settle ) },
+         sub (@) { $settled++; Mojo::IOLoop->stop; ( $case->{'consumer'} // sub {} )->(); } );
+      run_until_settled( sub { $settled } );
+
+      is( $settled, 1, "$case->{'name'}: the chain settles" );
+      is_deeply( tails(), { 'issued' => [], 'abandonable' => [] }, "$case->{'name'}: leaves no tail and no entry" );
+   }
+};
+
+subtest 'the accessors render every live chain by its tail, sorted' => sub {
+   my @settle;
+   for my $id ( 'rid2', 'rid', 'rid3' ) {
+      ( bless { 'id' => $id }, 'Reservation' )->_create_track( sub ($settle) { push @settle, $settle; } );
+   }
+   ( bless { 'id' => 'rid' },  'Reservation' )->_create_tail('create');
+   ( bless { 'id' => 'rid2' }, 'Reservation' )->_create_tail('start');
+   is_deeply( tails(), { 'issued' => [ 'rid (create)', 'rid2 (start)' ], 'abandonable' => ['rid3'] },
+      'each chain with a tail is rendered with its kind, in id order; the rest are ids' );
+   ( bless { 'id' => 'rid4' }, 'Reservation' )->_create_tail('create');
+   is( Reservation->create_in_flight_count(), 3, 'a mark on a chain that is not tracked records nothing' );
+   $_->( 1, undef ) for @settle;
+   is_deeply( tails(), { 'issued' => [], 'abandonable' => [] }, 'once settled, none remain' );
 };
 
 subtest 'a preflight lookup finding another owner is a definitive failure without a create' => sub {

@@ -865,10 +865,11 @@ def restart_app_server_graceful(timeout=150):
     Unlike restart_app_server above, which forces a non-graceful `-t` to stand in for a hard
     kill, this exercises the graceful path: app-server ships a down-signal of QUIT, so `-r`
     delivers SIGQUIT, which Mojo::Server::Prefork treats as a graceful shutdown - each worker
-    runs its exit handler and drains any in-flight create() chain before exiting
-    (docs/adr/0007-create-restart-recovery.md, mechanism 3). The manager therefore does not exit,
-    and s6 does not report a new pid, until that drain finishes - hence a far more generous
-    default timeout than the `-t` path.
+    runs its exit handler and drains its hook runs and any create or start its chains have
+    posted to Docker before exiting, abandoning a chain in a pull to the restarted workers'
+    first pass (docs/adr/0007-create-restart-recovery.md, mechanism 6). The manager therefore
+    does not exit, and s6 does not report a new pid, until that drain finishes - hence a far
+    more generous default timeout than the `-t` path.
 
     Skips (CapabilityUnavailable) if the down-signal file isn't in place: without it `-r` is a
     bare SIGTERM and there is no graceful drain to exercise - the exact environment gap that left

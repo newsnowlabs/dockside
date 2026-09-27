@@ -162,7 +162,7 @@ in_child 'a streamed read of a response read until the connection closes' => sub
 };
 
 in_child 'a streamed read of a chunk that ends the response' => sub {
-   arm();
+   arm( 'abandoned' => ['r-pull'] );
    server( 'path' => "$tmp/chunked.sock", 'framing' => 'chunked' );
    Util::call_socket_api( "$tmp/chunked.sock", '/images/create', {
       'method'  => 'POST',
@@ -172,7 +172,8 @@ in_child 'a streamed read of a chunk that ends the response' => sub {
 
    is_deeply( \@order, [ 'read begins', 'finish', 'read ends', 'drain', 'settled' ],
       'the finish event arrives inside the read; the drain follows the read, and the completion, in the same event, follows the drain' );
-   like( $logged[-1], qr/nothing in flight; exiting/, 'so a drain begun there can wait for nothing that completion settles' );
+   like( $logged[-1], qr/has no issued tail or hook run to wait for; abandoning 1 create chain\(s\) at an unissued stage \(r-pull\)/,
+      'so a drain begun there waits for nothing that completion settles: the pull is named as abandoned' );
 };
 
 in_child 'the request-sent check' => sub {

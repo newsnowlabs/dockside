@@ -18,7 +18,9 @@ mountIDE:false/sudo/s6 access requirement applies here):
     just "the process didn't crash".
   - the same under N concurrent in-flight creates at once, exercising the per-reservation locks
     under real concurrent load.
-  - a graceful restart draining an in-flight create instead of abandoning it to the reconciler.
+  - a graceful restart mid-pull returning promptly: the owning worker's drain abandons the pull,
+    naming the reservation in its own log line, and the restarted workers' first pass carries
+    the chain to a running container.
 
 Deliberately removes a real Docker image before each of the above (a genuine, low-level
 `docker rmi`, not a CLI action - permitted under CLAUDE.md's t/integration hard rules, point 5,
@@ -60,6 +62,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import time
 import uuid
 
 _LIB_DIR = os.path.join(os.path.dirname(__file__), '..', 'lib')
@@ -70,9 +73,9 @@ from dockside_test import (
 )
 
 # app-server's own log. Read directly (it is world-readable) rather than through the CLI, for
-# the one thing the CLI cannot show: whether a graceful restart drained an in-flight create in
-# the worker that owned it, or left it to the startup sweep afterwards - both end 'done', so the
-# drain's own log line is the only observable difference (see test_03). The same low-level-helper
+# what the CLI cannot show: which worker did what to a chain across a restart - the owning
+# worker's drain naming the reservation it abandons mid-pull (see test_03), or the recording
+# worker's retry line - where the record alone ends 'done' either way. The same low-level-helper
 # allowance (CLAUDE.md t/integration rule 5) that _ensure_image_absent's docker calls rely on.
 _APP_SERVER_LOG = '/var/log/dockside/dockside.log'
 
@@ -215,10 +218,9 @@ class _PullChainTests(TestCase):
         rotation, or anywhere in the new file, when after. When the file is now smaller than
         `offset`, both are read: the predecessor (`.1`, or `.1.gz` once compressed) from `offset`,
         and the new file whole. Reading the new file from the start is safe because every needle
-        passed here identifies a single event in this module's own run: the graceful drain line,
-        which nothing else here produces (the non-graceful `-t` restarts never drain), or a retry
-        line naming this test's own reservation id, which no earlier line can carry. A match
-        therefore cannot be some unrelated earlier line before the offset."""
+        passed here names this test's own reservation id, which no earlier line can carry: the
+        drain line naming the chain it abandons, or the retry line naming the reservation. A
+        match therefore cannot be some unrelated earlier line before the offset."""
         def _read_from(path, start):
             opener = gzip.open if path.endswith('.gz') else open
             with opener(path, 'rb') as fh:
@@ -324,19 +326,26 @@ class CreateRestartRecoveryTests(_PullChainTests):
             data = _wait_create_settled(self, name)
             _assert_recovered(self, name, data)
 
-    def test_03_graceful_restart_drains_in_flight_create(self):
-        """A graceful restart (`s6-svc -r` -> SIGQUIT, app-server's own down-signal) mid-pull must
-        DRAIN the in-flight create() in the worker that owns it - ADR-0007 mechanism 3 - not
-        abandon it for the startup sweep to recover afterwards. Both paths leave the reservation
-        'done', so the drain is asserted via the exit handler's own log line, the only observable
-        difference, alongside the terminal state. This is the path restart_app_server's `-t`
-        deliberately does not exercise, and which shipped inert until it was fixed."""
+    # The bound on a graceful restart made mid-pull. A worker with nothing posted to Docker
+    # exits as soon as its drain has named the chain it abandons, so the restart takes the few
+    # seconds the manager and s6 need; the pull it abandons runs for far longer than this.
+    _GRACEFUL_RESTART_BOUND_SECONDS = 20
+
+    def test_03_graceful_restart_abandons_pull_to_next_pass(self):
+        """A graceful restart (`s6-svc -r` -> SIGQUIT, app-server's own down-signal) while a
+        create() is mid-pull returns within a bound far shorter than the pull: the owning
+        worker's drain waits only for a create or start already posted to Docker and for hook
+        runs, names the chain it abandons at pulling in its own log line, and exits - ADR-0007
+        mechanism 6. The restarted workers' first pass then resumes the record at pulling and
+        carries it to done and running. The log line is what proves the abandonment happened in
+        the owning worker; the bound is what proves the drain did not wait the pull out."""
         self._ensure_image_absent()
         name = self._sfx('inttest-createrestart-graceful')
         self.register_cleanup(name)
         self.admin.create(profile=self._profile, name=name, no_wait=True)
 
-        self._wait_pulling_with_progress(name)
+        data = self._wait_pulling_with_progress(name)
+        reservation_id = data['id']
 
         try:
             offset = os.path.getsize(_APP_SERVER_LOG)
@@ -345,13 +354,20 @@ class CreateRestartRecoveryTests(_PullChainTests):
 
         # SIGQUIT while the pull is genuinely in flight. This blocks until the manager exits,
         # which it only does once its workers have drained - so on return the drain has happened.
+        started = time.monotonic()
         restart_app_server_graceful()
+        elapsed = time.monotonic() - started
 
         self.assert_true(
-            self._log_contains_since(offset, 'drained every in-flight create chain'),
-            "graceful restart did not drain the in-flight create(): no 'drained every in-flight "
-            "create chain' line after the restart - mechanism 3 inert, or the drain hit its grace "
-            "period",
+            elapsed < self._GRACEFUL_RESTART_BOUND_SECONDS,
+            f'graceful restart mid-pull took {elapsed:.1f}s, over the '
+            f'{self._GRACEFUL_RESTART_BOUND_SECONDS}s bound: the drain waited for the pull',
+        )
+        needle = f'at an unissued stage ({reservation_id})'
+        self.assert_true(
+            self._log_contains_since(offset, needle),
+            f'the owning worker did not name the chain it abandoned: no {needle!r} after the '
+            f'restart',
         )
 
         data = _wait_create_settled(self, name)

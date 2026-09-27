@@ -27,7 +27,7 @@ use Data qw($CONFIG $HOSTNAME $HOSTINFO $VERSION);
 use Containers;
 use Request;
 use User;
-use Reservation;   # ->load/->create_in_flight_count below - restart-recovery/exit-handler use
+use Reservation;   # ->load and the in-flight accessors below - restart-recovery/exit-handler use
                     # only (every route still reaches Reservation exclusively through User.pm)
 use App;   # split_args, and the asset/header helpers _send_branded_page/
            # _render_spa_shell below reuse
@@ -1088,8 +1088,9 @@ App::Shutdown::configure(
    'ceiling'     => $ceiling,
    'obligations' => sub () {
       return {
-         'creates' => [ Reservation->create_in_flight_ids() ],
-         'hooks'   => [ Reservation->hook_dispatch_in_flight_ids() ],
+         'creates'   => [ Reservation->create_issued_tail_ids() ],
+         'hooks'     => [ Reservation->hook_dispatch_in_flight_ids() ],
+         'abandoned' => [ Reservation->create_abandonable_ids() ],
       };
    },
    'clock' => \&steady_time,
@@ -1145,15 +1146,17 @@ Util::step_wrapper( \&App::Shutdown::busy_while );
 
 # Graceful exit handler - refuses new creates and manually-invoked hook runs (the
 # /containers/create and /containers/:id/hook routes' own App::Shutdown::admit calls) and gives
-# in-flight ones the chance to settle before this worker exits, rather than relying
-# solely on the startup sweep/periodic reconciler. Mojo::Server::Prefork's own graceful
-# shutdown only waits for the HTTP connection to close, not for either kind of chain's own
-# work, which outlives it - this closes that gap. Registered once, pre-fork, on the shared
-# singleton. on_finish sets the latch at once and runs the drain at once, or, when the event
-# arrives inside one of this worker's own steps, once that step has completed; its latch turns
-# away the repeat emission a second QUIT produces (Mojo::IOLoop::stop_gracefully emits this
-# event on every call) and with it a second, nested drain waiting a second full grace period on
-# top of the first.
+# in-flight ones the chance to settle before this worker exits, rather than relying solely on
+# the startup sweep/periodic reconciler: every hook run, and every create or start a chain has
+# posted to Docker and not yet recorded the result of; a chain with nothing posted, in a pull,
+# a lookup or a stage write, is abandoned to the restarted workers' first pass and named in the
+# log. Mojo::Server::Prefork's own graceful shutdown only waits for the HTTP connection to
+# close, not for either kind of chain's own work, which outlives it - this closes that gap.
+# Registered once, pre-fork, on the shared singleton. on_finish sets the latch at once and runs
+# the drain at once, or, when the event arrives inside one of this worker's own steps, once
+# that step has completed; its latch turns away the repeat emission a second QUIT produces
+# (Mojo::IOLoop::stop_gracefully emits this event on every call) and with it a second, nested
+# drain waiting a second full grace period on top of the first.
 Mojo::IOLoop->singleton->on( finish => sub (@) {
    App::Shutdown::on_finish( sub () {
       App::Shutdown::drain();

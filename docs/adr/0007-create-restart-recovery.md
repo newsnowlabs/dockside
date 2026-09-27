@@ -69,8 +69,7 @@ Terms are defined once here and used with exactly this meaning throughout this r
 term names a thing in the code, the code's name follows in brackets. The create chain's own terms
 (record, stage, driver, attempt, entry, first create, possible prior create, outcome classes,
 evidence) are defined under "Terms" in the state-model section, next to the rules that use them.
-Three terms here (admission, issued tail, suspension) name distinctions the drain in mechanism 6
-does not make; they are defined so that the whole area shares one vocabulary.
+Admission and the issued tail are the two distinctions the drain in mechanism 6 turns on.
 
 **Processes and framework**
 
@@ -105,26 +104,36 @@ does not make; they are defined so that the whole area shares one vocabulary.
   the daemon, which it treats as a request to drain and exit. No production procedure runs
   `s6-svc` against a single service.
 - **Restart, in development.** `s6-svc -r <service>` after an edit to what that service loads.
-  The same `down-signal` files apply, so app-server's is graceful here too.
+  The same `down-signal` files apply, so app-server's is graceful here too: a worker driving a
+  chain waits for the create or start it has posted, abandons a pull to the restarted workers'
+  first pass, and says which in its log.
 
 **Work and its accounting**
 
 - **Drain.** What a worker does between its `finish` event and its exit: it stops admitting new
   work and waits for work it already owes. The **drain predicate** is the condition under which
-  it may exit.
+  it may exit: no issued tail and no hook run outstanding. A chain with no tail open is not
+  waited for; the drain names it as abandoned and the next process's pass resumes it.
 - **Admission.** The check that decides whether a request or a timer may start new work. A worker
   that is shutting down refuses admission: the request gets a 503, the timer does nothing.
 - **In-flight registry.** A process-local table of work the process still owes. There are three:
-  create chains (`%CREATE_IN_FLIGHT`, `Reservation.pm`), hook runs whose outcome write has not
-  yet been decided (`%HOOK_DISPATCH_IN_FLIGHT`, `Reservation.pm`; released once the one attempt
-  has applied, been fenced or thrown), and the daemon's DAG dispatches
+  create chains (`%CREATE_IN_FLIGHT`, `Reservation.pm`; each entry's value records the chain's
+  open issued tail, `create`, `start` or none, and the drain reads the tails, not the chains),
+  hook runs whose outcome write has not yet been decided (`%HOOK_DISPATCH_IN_FLIGHT`,
+  `Reservation.pm`; released once the one attempt has applied, been fenced or thrown), and the
+  daemon's DAG dispatches
   (`%DISPATCH_IN_FLIGHT`, `EventDaemon/LaunchDispatch.pm`). A fourth, `%ASYNC_UA_IN_FLIGHT` in
   `Util.pm`, only keeps HTTP user agents alive and is diagnostic.
 - **Obligation.** An entry in an in-flight registry: something this process must finish, or hand
   over durably, before it may exit.
 - **Issued tail.** The part of a create chain after a mutation has been posted to Docker and
-  before its result is durably recorded. Distinct from a pull, which may be abandoned at any time
-  because it changes nothing a later attempt cannot redo.
+  before its result is durably recorded: a create tail runs from the `POST /containers/create`,
+  through any ownership confirmation and the `containerId` write, to the `starting` stage write;
+  a start tail from the start `POST` to the `done` write. A record at `starting` with its id is
+  resumed by posting the start directly, which is why the create tail ends at that write rather
+  than the `containerId` write, after which a resumption would need a lookup and re-adoption.
+  Distinct from a pull, which may be abandoned at any time because it changes nothing a later
+  attempt cannot redo.
 - **Durable handover.** Leaving the on-disk record in a state from which any later process can
   resume correctly, so that this process's exit loses nothing. The record is the queue.
 
@@ -143,9 +152,6 @@ does not make; they are defined so that the whole area shares one vocabulary.
   `retryAfter`, `reason`), and is never expired. The next attempt after `retryAfter` finds out:
   the recording worker's own, at `$CREATE_UNRESOLVED_RETRY_DELAYS`, or a sweep's. The outcome
   after the last delay is the bound, recorded as `failed` with no expiry.
-- **Suspension.** A chain ended deliberately at a boundary where nothing has been posted, because
-  the worker is shutting down. Not a failure; the next attempt resumes.
-
 **Hooks**
 
 - **Hook run / invocation.** One execution of a profile hook inside a devtainer via Docker's exec
@@ -310,21 +316,24 @@ original `POST /containers/create` closes almost instantly and Mojo considers th
 **while the detached chain is still actively running** on that worker's event loop.
 Mojo's graceful shutdown has no visibility into work that outlives the request that started it.
 
-`App::Shutdown` tracks the worker's in-flight `create()` chains and hook runs
-(`Reservation->create_in_flight_ids`, `->hook_dispatch_in_flight_ids`) and, on the worker's
-`finish` event, drains: it waits for them to settle before letting the worker actually stop.
-The event can arrive inside one of the worker's own steps, a Docker reply's continuation, a
-timer's, the reconcile pass or a request that starts work, since Perl runs the signal handler
-between two operations of the executing code; a drain begun there would wait for a settlement
-the interrupted step is about to record, which no tick can reach, so the drain is held until
-that step completes (`on_finish`, `busy_while`; `Util::step_wrapper` brackets, at its entry,
-every callback the transport, the fetch and the timer hand the loop: a reply's completion, a
-streamed read, the request-sent check, a fetch's completion, a timer's). The framework's own
-handler is left as it is. A streamed read's step ends when its consumer returns, and a
-response whose last chunk that read carried completes in the same reactor event, after a drain
-begun there: Docker's exec output stream is read until the connection closes, so a hook run
-completes in an event of its own; a pull is chunked, and can complete in the event that
-carried its last chunk. The drain waits
+`App::Shutdown` reads the worker's issued create and start tails, its hook runs and its chains
+with no tail open (`Reservation->create_issued_tail_ids`, `->hook_dispatch_in_flight_ids`,
+`->create_abandonable_ids`) and, on the worker's `finish` event, drains: it waits for the tails
+and the hook runs to settle before letting the worker actually stop, and abandons the rest, a
+chain in a pull, a lookup or a stage write, to the next process's pass, naming each abandoned
+chain in its start and exit lines; a tail that opens while it waits is waited for, the lists
+being re-read every tick. The event can arrive inside one of the worker's own steps, a Docker
+reply's continuation, a timer's, the reconcile pass or a request that starts work, since Perl
+runs the signal handler between two operations of the executing code; a drain begun there
+would wait for a settlement the interrupted step is about to record, which no tick can reach,
+so the drain is held until that step completes (`on_finish`, `busy_while`;
+`Util::step_wrapper` brackets, at its entry, every callback the transport, the fetch and the
+timer hand the loop: a reply's completion, a streamed read, the request-sent check, a fetch's
+completion, a timer's). The framework's own handler is left as it is. A streamed read's step
+ends when its consumer returns, and a response whose last chunk that read carried completes in
+the same reactor event, after a drain begun there: Docker's exec output stream is read until
+the connection closes, so a hook run completes in an event of its own; a pull is chunked, and
+can complete in the event that carried its last chunk; a pull is never waited for. The drain waits
 with no configured ceiling by default, or up to `appServer.shutdownGraceSeconds` less a fixed
 margin when a finite ceiling is configured, logging what it is still waiting for every 30 s; the
 `/containers/create` route itself asks `App::Shutdown` for admission at its own top and returns
@@ -335,7 +344,9 @@ that timeout is a one-day backstop, kept that small because Prefork kills a work
 heartbeat has gone silent at the same ceiling, so a worker hung while serving is reaped rather
 than leaked; a drain that outlasts a day is killed at it. What bounds a drain in practice is
 each hook run's own limit, each Docker call's inactivity timeout, and the container's stop
-grace.
+grace. A worker driving a chain is never recycled at its accept quota: the chain holds the
+worker (`App::Shutdown::hold`, taken and released by `_create_track`), so an abandoned pull
+results only from a deliberate restart or a death.
 
 This only prevents the *deliberate-restart* case. A real crash, an OOM kill, `-k`, or
 `graceful_timeout` itself expiring all bypass it entirely by construction (nothing catches
@@ -461,7 +472,7 @@ of a `409` body; a name match without the id label; a lookup that is anything bu
 | Stage on disk | What may exist in Docker | What the next attempt may assume |
 |---|---|---|
 | none | nothing of this reservation's | It is the first attempt. |
-| `pulling` | image partly or fully pulled | No container; no create has been posted (I1). The pull is idempotent. |
+| `pulling` | image partly or fully pulled | No container; no create has been posted (I1). The pull is idempotent. A draining worker abandons a pull, so a record found here after a deliberate restart is the expected case, not a death's. |
 | `creating`, no `containerId` | a container under this name with this reservation's label, if a prior create was carried out | A prior create is possible. Ownership must be established before any refusal is trusted. |
 | `creating`, with `containerId` | that container | The id was recorded but `starting` was not. The preflight lookup finds and re-adopts it. |
 | `starting` | the container, started or not | The container exists unless Docker says `404`. A start is idempotent (`304`). |
@@ -579,6 +590,16 @@ definitive failure, and `expiryTime` except at the retry bound, whose failure ca
 | cleanup runs against a resumable record | record retained, no expiry (I6) |
 | any continuation on the chain | called exactly once; a second call is logged and ignored (I7) |
 
+**During shutdown: what a draining worker waits for**
+
+| The chain is | The drain |
+|---|---|
+| inside a create tail (create posted; ownership confirmation; `containerId` write; `starting` write) | waits for it, then for the start tail that follows |
+| inside a start tail (start posted; `done` write) | waits for it |
+| in a pull, a name lookup, or a stage write, with no tail open | abandons it, naming the chain in its start and exit lines; the worker exits with the record as written, and the next process's pass resumes it. A pull is repeated from the layers Docker kept |
+| unresolved, its retry timer pending | the timer fires during a drain that is waiting for something else and its chain is treated as any other; a timer pending at the worker's exit never fires, and the sweep takes the record once `retryAfter` has passed |
+| any of the above, and a tail opens while the drain waits | waited for from then on: the lists are re-read every tick |
+
 ## Lock-file lifecycle and constraints
 
 - **No persistence requirement.** Lock state is kernel state on the descriptor, not file
@@ -623,9 +644,9 @@ definitive failure, and `expiryTime` except at the retry bound, whose failure ca
   user sees the reason, and whether a container may exist under the name, rather than
   "launching" for ever. The record stays for inspection until the user removes it.
 - Recovery is decided by one atomic, kernel-arbitrated question per reservation, with no
-  heuristics and no cross-worker state. `create_in_flight`/`create_in_flight_count`
-  (`Reservation.pm`) exist only for the graceful drain's own counter, since
-  `Reservation.pm` is the only code that observes a chain's start/settle moments.
+  heuristics and no cross-worker state. The in-flight accessors (`Reservation.pm`) exist for
+  the graceful drain, which reads the issued tails and names the rest, since `Reservation.pm`
+  is the only code that observes a chain's start/settle moments and its posts.
 - A name collision on a first create is a user-visible `failed`. Operators can identify and
   filter Dockside-managed containers by label (`docker ps --filter label=dev.dockside.reservation.id`).
 - `create()`'s own body is a set of unconditionally re-enterable `_create_stage_*` functions

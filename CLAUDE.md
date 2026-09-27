@@ -25,10 +25,11 @@
     graceful `SIGQUIT` — it's the one process that can have a `create()` chain genuinely in
     flight. `nginx`/`docker-event-daemon` have no `down-signal` file, so their `-r` is a
     plain `SIGTERM`, same as before.
-    Signal semantics differ per service. `app-server` on `SIGQUIT` drains its in-flight creates
-    and hook runs until they settle (a one-day backstop aside) unless
-    `appServer.shutdownGraceSeconds` sets a ceiling, so a restart that appears to hang is
-    waiting for something it logs every 30 s; its immediate
+    Signal semantics differ per service. `app-server` on `SIGQUIT` drains its in-flight hook
+    runs and any create or start it has already posted to Docker until they settle (a one-day
+    backstop aside) unless `appServer.shutdownGraceSeconds` sets a ceiling, and abandons a pull
+    in flight to the restarted workers' first pass, naming it in the log; so a restart that
+    appears to hang is waiting for something it logs every 30 s. Its immediate
     stop is `sudo s6-svc -t /etc/service/app-server` (`SIGTERM`, which `Mojo::Server::Prefork`
     treats as kill-now). `docker-event-daemon` handles `SIGTERM`, `SIGQUIT` and `SIGINT` alike
     as graceful, so its only immediate stop is `-k` (`SIGKILL`).

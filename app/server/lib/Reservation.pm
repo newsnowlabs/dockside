@@ -1421,22 +1421,44 @@ sub _create_entered ($cs, $stage) {
    return \%entered;
 }
 
-# reservation id => 1, while create()/reconcile_create()'s own chain is actively
-# running in *this* process - queried by bin/app-server's periodic reconciler (skip a
-# reservation this worker already owns, without even attempting a claim) and its exit handler
-# (wait for these to drain before letting the worker actually exit). See
-# docs/adr/0007-create-restart-recovery.md. Lives here, not as a bin/app-server-side hash as
-# that decision's first draft called for - Reservation.pm is the only code that actually
-# observes a chain's start/settle moments; a bin/app-server-side hash would need a second
-# callback threaded all the way through User::createContainerReservation's own unrelated
-# signature just to signal in/out, for no benefit over owning it where the lifecycle already
-# lives. create_in_flight/create_in_flight_count/create_in_flight_ids below are its only public
-# surface.
+# reservation id => the chain's open issued tail, while create()/reconcile_create()'s own chain
+# is actively running in *this* process. The value names what the chain has posted to Docker
+# and not yet durably recorded the result of - 'create' from just before POST /containers/create
+# until the 'starting' stage write has returned, 'start' from just before the start POST until
+# the 'done' write has returned - and is '' while nothing is posted: during a pull, a name
+# lookup, a stage write. Read by bin/app-server's exit handler, whose drain waits for the issued
+# tails, since a chain cut off inside one leaves a mutation whose result no process knows, and
+# abandons the rest to the next process's pass, since a pull is idempotent and a lookup or a
+# write is repeated as it stands. It is process-local and says nothing about other processes:
+# a chain's ownership against any other driver, in this process or another, is the
+# per-reservation lock (reconcile_one), which is why the periodic reconciler consults the lock
+# and not this registry. See docs/adr/0007-create-restart-recovery.md. Lives here because
+# Reservation.pm is the only code that observes a chain's start/settle moments and its posts; a
+# hash on the bin/app-server side would need a second callback threaded all the way through
+# User::createContainerReservation's own unrelated signature just to signal in/out, for no
+# benefit over owning it where the lifecycle already lives. The five accessors below are its
+# only public surface.
 my %CREATE_IN_FLIGHT;
 
 sub create_in_flight ($class, $id) { return exists $CREATE_IN_FLIGHT{$id}; }
 sub create_in_flight_count ($class) { return scalar keys %CREATE_IN_FLIGHT; }
 sub create_in_flight_ids ($class) { return sort keys %CREATE_IN_FLIGHT; }
+
+# The chains with a tail open, each as "<id> (create|start)", and those with none, as ids; both
+# sorted, so a drain's log line reads the same for the same state.
+sub create_issued_tail_ids ($class) {
+   return map { "$_ ($CREATE_IN_FLIGHT{$_})" } sort grep { $CREATE_IN_FLIGHT{$_} } keys %CREATE_IN_FLIGHT;
+}
+sub create_abandonable_ids ($class) { return sort grep { !$CREATE_IN_FLIGHT{$_} } keys %CREATE_IN_FLIGHT; }
+
+# Records $kind ('create', 'start', or '' for none) as this chain's open tail. A chain not
+# registered in %CREATE_IN_FLIGHT has no entry to mark, so a stage driven outside _create_track
+# records nothing.
+sub _create_tail ($self, $kind) {
+   my $id = $self->id();
+   $CREATE_IN_FLIGHT{$id} = $kind if exists $CREATE_IN_FLIGHT{$id};
+   return;
+}
 
 # invocationId => 1, from just before dispatch_hook_exec hands its docker_exec call over - or
 # from the point a failure before that owes an outcome write instead - until this process has
@@ -1927,6 +1949,7 @@ sub _create_stage_creating ($self, $body, $priorCreatePossible, $cb) {
    };
 
    my $createContainer = sub {
+      $self->_create_tail('create');
       call_socket_api( $socket, '/containers/create?name=' . uri_escape( $self->name ), {
          'method' => 'POST',
          'json'   => $body,
@@ -2028,6 +2051,7 @@ sub _create_stage_starting ($self, $containerId, $cb) {
    my $socket = $CONFIG->{'docker'}{'socket'};
    my $done = once( "Reservation::_create_stage_starting for reservation '" . $self->id() . "'", $cb );
 
+   $self->_create_tail('start');
    call_socket_api( $socket, "/containers/$containerId/start", { 'method' => 'POST' }, sub ($result, $err) {
       # Docker's own 'already started' 304 counts as success here - see _create_classify,
       # which holds that rule and the rest of this response's reading.
@@ -2084,17 +2108,25 @@ sub _create_status_enter ($self, $stage) {
    return 0;
 }
 
+# The create tail, if one is open, ends once the 'starting' write has returned: a record at
+# 'starting' with its id is resumed by posting the start directly, so from that write on the
+# chain owes nothing a later attempt cannot redo. The start tail ends once the 'done' write has
+# returned. A tail left open by a write that fails is cleared with the entry at settlement.
 sub _create_run_from_starting ($self, $cb) {
    unless ( $self->_create_status_enter('starting') ) {
       $cb->( undef, _create_unresolved_error( "could not record the start of reservation '"
          . $self->id() . "'" ) );
       return;
    }
+   $self->_create_tail('');
 
    _create_stage_starting( $self, $self->containerId(), sub ( $started, $err ) {
       return $cb->( undef, $err ) if defined $err;
       flog("Reservation::create: reservation '" . $self->id() . "' created and started successfully");
-      return $cb->( 1, undef ) if $self->_create_status_enter('done');
+      if ( $self->_create_status_enter('done') ) {
+         $self->_create_tail('');
+         return $cb->( 1, undef );
+      }
 
       # The container is started; only the record saying so was lost. Left at 'starting', a later
       # pass reissues the start and settles the chain, so this stays recoverable rather than
@@ -2238,10 +2270,11 @@ sub _create_record_outcome ($self, $err) {
    return ( 1, $msg, undef );
 }
 
-# Registers this reservation in %CREATE_IN_FLIGHT and takes the provider's hold against this
-# worker being recycled, for the duration of $run (a create()/reconcile_create() chain, as a sub
-# taking the settlement continuation it reports through), clearing both once settled regardless
-# of outcome. A worker at its accept quota stops its loop gracefully, the same finish a
+# Registers this reservation in %CREATE_IN_FLIGHT, with no tail open, and takes the provider's
+# hold against this worker being recycled, for the duration of $run (a create()/
+# reconcile_create() chain, as a sub taking the settlement continuation it reports through),
+# clearing both once settled regardless of outcome; the delete clears whatever tail the stages
+# left marked, so no exit path clears one itself. A worker at its accept quota stops its loop gracefully, the same finish a
 # shutdown drains under, so without the hold a worker's routine replacement would put the chain
 # it drives under the drain's rules and its ceiling; the hold defers that stop until the chain
 # has settled.
@@ -2255,7 +2288,7 @@ sub _create_record_outcome ($self, $err) {
 # chain's entire lifetime regardless of outcome.
 sub _create_track ($self, $run, $onSettled = sub {}, $lock = undef) {
    my $id = $self->id();
-   $CREATE_IN_FLIGHT{$id} = 1;
+   $CREATE_IN_FLIGHT{$id} = '';
    my $release = $PROVIDER->{'hold'}->();
 
    # The settlement continuation records the outcome, then releases what the chain holds in

@@ -35,8 +35,9 @@
         "defaultTimeoutSeconds": 300
     },
     "appServer": {
-        // 'unlimited' (the default) sets no ceiling of its own: a stopping worker waits for in-flight hook runs and devcontainer creates however long they take,
-        // bounded only by the container's stop grace (docker-compose.yml stop_grace_period) and a one-day backstop after which the server kills the worker regardless.
+        // 'unlimited' (the default) sets no ceiling of its own: a stopping worker waits for in-flight hook runs, and for any devcontainer create or start it has
+        // posted to Docker and not yet recorded, however long they take, bounded only by the container's stop grace (docker-compose.yml stop_grace_period) and a
+        // one-day backstop after which the server kills the worker regardless. A pull in progress is abandoned to the restarted workers' first pass.
         // A positive integer is instead an in-container ceiling in seconds, after which a draining worker is killed.
         "shutdownGraceSeconds": "unlimited"
     },

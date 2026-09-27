@@ -1,9 +1,11 @@
 # bin/app-server's graceful-exit gate: the one-way shutting-down latch every admission check
-# consults, the drain that gives this worker's in-flight obligations a chance to settle before
-# the process exits, and the step bracket that decides when the drain may begin. Owned here
-# rather than as a bin/app-server lexical so the latch is reachable from any route's own closure
-# without threading a variable through it, and so the drain loop itself is exercisable without
-# a reactor.
+# consults, the drain that gives this worker's obligations a chance to settle before the
+# process exits, the create and start requests its chains have posted to Docker and not yet
+# recorded the result of, and its hook runs, and the step bracket that decides when the drain
+# may begin. A chain with nothing posted, in a pull, a lookup or a stage write, is abandoned to
+# the next process's pass and named in the log. Owned here rather than as a bin/app-server
+# lexical so the latch is reachable from any route's own closure without threading a variable
+# through it, and so the drain loop itself is exercisable without a reactor.
 #
 # Deliberately free of any Mojo dependency: everything time-, reactor- and log-shaped is injected
 # by configure() below. bin/app-server supplies the production implementations (Mojo::Util's
@@ -50,8 +52,9 @@ my %ENVIRONMENT;
 my $SHUTTING_DOWN = 0;
 
 # Keys: ceiling (seconds after which the manager kills this worker, or undef for an unlimited
-# drain), obligations (a sub returning { creates => [ids], hooks => [ids] }), clock (a sub
-# returning monotonic seconds), tick (a sub running one round of whatever makes those obligations
+# drain), obligations (a sub returning { creates => [ids], hooks => [ids], abandoned => [ids] }:
+# the issued create/start tails and the hook runs the drain waits for, and the chains it names
+# as abandoned and never waits for), clock (a sub returning monotonic seconds), tick (a sub running one round of whatever makes those obligations
 # progress), log (a sub taking one message), accept_limit (a sub returning the loop's accept
 # limit when called with no argument and setting it when called with one).
 sub configure (%opts) {
@@ -157,15 +160,21 @@ sub admit ($kind) {
 
 # Waits for the configured obligations to clear - without limit under an undefined ceiling,
 # otherwise up to the ceiling less $MARGIN - ticking between checks and reporting progress every
-# $LOG_INTERVAL. Returns whatever is still outstanding as a { creates => [], hooks => [] }
-# hashref - empty lists when everything settled. Only the ids of the two known kinds are ever
-# read out of the obligations structure, and only those ids ever reach the log.
+# $LOG_INTERVAL. Returns whatever is still outstanding as a { creates => [], hooks => [],
+# abandoned => [] } hashref - the first two empty when everything waited for settled, the third
+# as it stood at the last read, since the abandoned chains are named on the start and exit
+# lines and never waited for. The obligations are re-read every tick, so a tail that opens
+# while the drain waits for something else is waited for, and a chain abandoned at the start
+# that posts its create meanwhile is waited for from then on. Only the ids of the three known
+# kinds are ever read out of the obligations structure, and only those ids ever reach the log.
 sub drain () {
    die "App::Shutdown::drain called before configure\n" unless %ENVIRONMENT;
 
    my $outstanding = _outstanding();
    unless ( @{ $outstanding->{'creates'} } || @{ $outstanding->{'hooks'} } ) {
-      _log("app-server: worker $$ has nothing in flight; exiting");
+      _log( @{ $outstanding->{'abandoned'} }
+         ? "app-server: worker $$ has no issued tail or hook run to wait for" . _abandoning($outstanding) . '; exiting'
+         : "app-server: worker $$ has nothing in flight; exiting" );
       return $outstanding;
    }
 
@@ -177,7 +186,7 @@ sub drain () {
 
    _log( "app-server: worker $$ is shutting down; " .
       ( defined($budget) ? "waiting up to ${budget}s" : 'waiting without limit' ) . ' for ' .
-      _describe($outstanding) . ' to settle' );
+      _describe($outstanding) . ' to settle' . _abandoning($outstanding) );
 
    while ( ( @{ $outstanding->{'creates'} } || @{ $outstanding->{'hooks'} } )
       && ( !defined($deadline) || $ENVIRONMENT{'clock'}->() < $deadline ) )
@@ -211,33 +220,43 @@ sub drain () {
       # later read (narrower still for lifecycle:launch/lifecycle:start, which
       # docker-event-daemon's own sweep does re-poll).
       _log( "app-server: worker $$ reached its shutdown ceiling after ${elapsed}s with " .
-         "$remainingCreates create chain(s) (" . _ids( $outstanding->{'creates'} ) .
+         "$remainingCreates issued create/start tail(s) (" . _ids( $outstanding->{'creates'} ) .
          "; recovered by the startup sweep/periodic reconciler) and " .
          "$remainingHooks hook run(s) (" . _ids( $outstanding->{'hooks'} ) .
-         "; recovered only lazily, if at all) still in flight" );
+         "; recovered only lazily, if at all) still in flight" . _abandoning($outstanding) );
    }
    else {
-      _log( "app-server: worker $$ drained every in-flight create chain and hook run " .
-         "after ${elapsed}s; exiting" );
+      _log( "app-server: worker $$ drained every issued create/start tail and hook run " .
+         "after ${elapsed}s" . _abandoning($outstanding) . '; exiting' );
    }
 
    return $outstanding;
 }
 
-# The two known kinds, copied out into a structure of this module's own - whatever else the
+# The three known kinds, copied out into a structure of this module's own - whatever else the
 # supplied obligations structure carries is never read, never logged and never returned.
 sub _outstanding () {
    my $obligations = $ENVIRONMENT{'obligations'}->() // {};
    return {
-      'creates' => [ @{ $obligations->{'creates'} // [] } ],
-      'hooks'   => [ @{ $obligations->{'hooks'}   // [] } ],
+      'creates'   => [ @{ $obligations->{'creates'}   // [] } ],
+      'hooks'     => [ @{ $obligations->{'hooks'}     // [] } ],
+      'abandoned' => [ @{ $obligations->{'abandoned'} // [] } ],
    };
 }
 
 sub _describe ($outstanding) {
-   return sprintf( '%d create chain(s) (%s) and %d hook run(s) (%s)',
+   return sprintf( '%d issued create/start tail(s) (%s) and %d hook run(s) (%s)',
       scalar @{ $outstanding->{'creates'} }, _ids( $outstanding->{'creates'} ),
       scalar @{ $outstanding->{'hooks'} },   _ids( $outstanding->{'hooks'} ) );
+}
+
+# The clause naming the chains this worker leaves at an unissued stage, or nothing when there
+# are none.
+sub _abandoning ($outstanding) {
+   my $abandoned = $outstanding->{'abandoned'};
+   return '' unless @$abandoned;
+   return sprintf( '; abandoning %d create chain(s) at an unissued stage (%s) to the next process\'s pass',
+      scalar @$abandoned, _ids($abandoned) );
 }
 
 sub _ids ($ids) { return @$ids ? join( ', ', @$ids ) : 'none'; }
