@@ -2238,28 +2238,38 @@ sub _create_record_outcome ($self, $err) {
    return ( 1, $msg, undef );
 }
 
-# Registers this reservation in %CREATE_IN_FLIGHT for the duration of $run (a
-# create()/reconcile_create() chain, as a sub taking the settlement continuation it reports
-# through), clearing it once settled regardless of outcome. $onSettled (default: no one's
-# listening - create()'s own contract has no external consumer for its tail) fires after
-# cleanup, with the terminal ($self,undef)/(undef,$exception) result - reconcile_create() below
-# is the one real consumer, since unlike create()'s fire-fast-then-continue $cb, its own $cb
-# fires exactly once, on settle, with nothing else to ack early. $lock (optional:
-# create()/reconcile_create()'s own per-reservation ownership lock handle -
-# docs/adr/0007-create-restart-recovery.md's "Decision" section) is held in this closure and
-# closed - releasing it - only once the chain settles, so the lock covers this chain's entire
-# lifetime regardless of outcome.
+# Registers this reservation in %CREATE_IN_FLIGHT and takes the provider's hold against this
+# worker being recycled, for the duration of $run (a create()/reconcile_create() chain, as a sub
+# taking the settlement continuation it reports through), clearing both once settled regardless
+# of outcome. A worker at its accept quota stops its loop gracefully, the same finish a
+# shutdown drains under, so without the hold a worker's routine replacement would put the chain
+# it drives under the drain's rules and its ceiling; the hold defers that stop until the chain
+# has settled.
+# $onSettled (default: no one's listening - create()'s own contract has no external consumer
+# for its tail) fires after cleanup, with the terminal ($self,undef)/(undef,$exception) result -
+# reconcile_create() below is the one real consumer, since unlike create()'s
+# fire-fast-then-continue $cb, its own $cb fires exactly once, on settle, with nothing else to
+# ack early. $lock (optional: create()/reconcile_create()'s own per-reservation ownership lock
+# handle - docs/adr/0007-create-restart-recovery.md's "Decision" section) is held in this
+# closure and closed - releasing it - only once the chain settles, so the lock covers this
+# chain's entire lifetime regardless of outcome.
 sub _create_track ($self, $run, $onSettled = sub {}, $lock = undef) {
    my $id = $self->id();
    $CREATE_IN_FLIGHT{$id} = 1;
+   my $release = $PROVIDER->{'hold'}->();
 
-   # The settlement continuation records the outcome, releases what the chain holds, and then
-   # notifies the consumer. The consumer runs last and outside the recording, and both
-   # placements are load-bearing: a consumer's own exception is contained here, so it cannot be
-   # taken for this chain's failure - overwriting an outcome already recorded, and entering the
-   # consumer a second time - and a consumer entered before cleanup could observe an in-flight
-   # count and a held lock for a chain that has already settled. The once guard is what makes a
-   # second settlement a logged bug rather than a second release of the lock and the entry.
+   # The settlement continuation records the outcome, then releases what the chain holds in
+   # this order - the in-flight entry, the ownership lock, the hold against recycling - then
+   # schedules any retry, and notifies the consumer last. The consumer runs outside the
+   # recording, and both placements are load-bearing: a consumer's own exception is contained
+   # here, so it cannot be taken for this chain's failure - overwriting an outcome already
+   # recorded, and entering the consumer a second time - and a consumer entered before cleanup
+   # could observe an in-flight count and a held lock for a chain that has already settled. The
+   # hold is released after the lock so a worker never becomes recyclable while it still owns a
+   # reservation, and before the retry is scheduled because the retry is a new chain's concern:
+   # the worker that arms it may be recycled before it fires, in which case the sweep, in
+   # whichever worker runs it, finds the record instead. The once guard is what makes a second
+   # settlement a logged bug rather than a second release of the lock, the entry and the hold.
    $run->( once( "Reservation::_create_track for reservation '$id'", sub ( $ok, $err ) {
       my ( $outcome, $retryDelay );
       if ( defined $err ) {
@@ -2271,6 +2281,7 @@ sub _create_track ($self, $run, $onSettled = sub {}, $lock = undef) {
       delete $CREATE_IN_FLIGHT{$id};
       close($lock) if $lock;
       $lock = undef;
+      $release->();
 
       # The retry is this worker's own, on the provider's timer, and is an ordinary
       # reconciliation: it takes the lock, reloads the record and honours retryAfter, so a record

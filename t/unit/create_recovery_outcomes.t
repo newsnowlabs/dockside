@@ -38,11 +38,21 @@ local *Reservation::cmdline_json = sub (@) { return { Image => 'img:1' }; };
 # chain settles, recording their delays in @timerDelays; a retry timer left pending after the
 # settlement is what a test reads and fires by hand (fire_retry). So what these tests assert
 # about waits is how many, at what delays, and what follows them, never how long they take.
+#
+# The provider's hold against recycling the worker is recorded the same way: each take, each
+# release and each timer armed goes into @events in order, so a test can assert that a chain
+# takes one hold, releases it once settled, and arms its retry only after that. A release also
+# notes whether 'rid's ownership lock was still held at that moment, which the settlement order
+# forbids: the lock is closed before the hold is released.
 my @pending;
 my @timerDelays;
+my @events;
 Reservation::provider(
-   'timer' => sub ( $delay, $cb ) { push @pending, [ $delay, $cb ]; return scalar @pending; },
-   'hold'  => sub () { return sub { }; },
+   'timer' => sub ( $delay, $cb ) { push @pending, [ $delay, $cb ]; push @events, 'timer'; return scalar @pending; },
+   'hold'  => sub () {
+      push @events, 'hold';
+      return sub () { push @events, lock_free('rid') ? 'release' : 'release while locked'; };
+   },
 );
 # Retry at once by default, so a test driving consecutive attempts through the sweep is not held
 # back by retryAfter; the subtests of the delays themselves restore real ones. The record's wall
@@ -93,6 +103,13 @@ sub raw_record {
 }
 
 sub status { return read_record()->{'createStatus'} // {}; }
+
+# Whether $id's ownership lock can be taken right now, and so is held by no chain.
+sub lock_free ($id) {
+   my $lock = Util::tryLockFile( Reservation::_create_lock_path($id) ) or return 0;
+   close $lock;
+   return 1;
+}
 
 # A complete response, as the transport delivers one: parsed from the wire, so its content
 # reports itself finished, which is what the pull stage reads to tell a completed stream from one
@@ -147,6 +164,7 @@ sub docker ( $calls, %queues ) {
 sub reconcile {
    my @settled;
    @pending = ();
+   @events  = ();
    my $started = Reservation->reconcile_one( 'rid', sub ( $ok = undef, $err = undef ) {
       push @settled, { 'ok' => $ok, 'err' => $err };
       Mojo::IOLoop->stop;
@@ -508,6 +526,8 @@ subtest 'the recording worker retries at the configured delays, and the third un
    is( epoch( $first->{'retryAfter'} ) - epoch( $first->{'since'} ), 15, 'and names the first delay as when the next may run' );
    is( scalar @pending, 1, 'the worker holds one retry timer' );
    is( $pending[0][0], 15, 'at the first delay' );
+   is_deeply( \@events, [qw(hold release timer)],
+      'the hold against recycling is released, after the lock, before the retry is armed' );
 
    my $issued = scalar @calls;
    fire_retry();
@@ -665,6 +685,7 @@ subtest 'a settlement consumer that throws cannot rewrite the outcome or run twi
 
    my $entered = 0;
    my $reservation = Reservation::_reservation_reloaded('rid');
+   @events = ();
    $reservation->_create_track(
       sub ($settle) { $reservation->_create_run_from_creating( { Image => 'img:1' }, 1, $settle ) },
       sub (@) {
@@ -678,6 +699,7 @@ subtest 'a settlement consumer that throws cannot rewrite the outcome or run twi
    is( status()->{'stage'}, 'done', 'and its own exception does not turn a success into a failure' );
    ok( !read_record()->{'expiryTime'}, 'nor expire a reservation whose container is running' );
    is( Reservation->create_in_flight_count(), 0, 'the chain is still released from the in-flight set' );
+   is_deeply( \@events, [qw(hold release)], 'and its hold against recycling is released' );
 };
 
 subtest 'a resumed chain does not need a create body it cannot use' => sub {
@@ -877,6 +899,7 @@ subtest 'an outcome that cannot be recorded is reported unresolved, whatever it 
       my $reservation = Reservation::_reservation_reloaded('rid');
       my @settled;
       @pending = ();
+      @events  = ();
       $reservation->_create_track(
          sub ($settle) { $reservation->_create_run_from_creating( { Image => 'img:1' }, 0, $settle ) },
          sub ( $ok = undef, $err = undef ) { push @settled, { 'ok' => $ok, 'err' => $err }; Mojo::IOLoop->stop; } );
@@ -889,7 +912,53 @@ subtest 'an outcome that cannot be recorded is reported unresolved, whatever it 
          "$case->{'name'} unrecorded: neither failed nor expired" );
       is( Reservation->create_in_flight_count(), 0, "$case->{'name'} unrecorded: the chain is released" );
       is( scalar @pending, 0, "$case->{'name'} unrecorded: no retry is scheduled, the count having not advanced" );
+      is_deeply( \@events, [qw(hold release)], "$case->{'name'} unrecorded: the hold against recycling is released" );
    }
+};
+
+subtest 'a chain holds this worker against recycling from tracking until it settles, whatever the outcome' => sub {
+   for my $case (
+      { 'name' => 'done', 'stage' => 'starting', 'start' => responds(204), 'events' => [qw(hold release)] },
+      { 'name' => 'a definitive failure', 'stage' => 'starting', 'start' => responds(404), 'events' => [qw(hold release)] },
+      { 'name' => 'an unresolved outcome', 'stage' => 'starting', 'start' => fails('connection reset by peer'),
+        'events' => [qw(hold release timer)] },
+   ) {
+      local *Reservation::call_socket_api = docker( [], 'start' => [ $case->{'start'} ] );
+      seed( $case->{'stage'}, containerId => 'c' x 12 );
+      my $run = reconcile();
+      is( scalar @{ $run->{'settled'} }, 1, "$case->{'name'}: settles" );
+      is_deeply( \@events, $case->{'events'}, "$case->{'name'}: one hold, released after the lock" );
+   }
+
+   # Two chains live at once in one worker are two holds, each released as its own chain settles.
+   @events = ();
+   my @settle;
+   for my $id ( 'rid', 'rid2' ) {
+      my $reservation = bless { 'id' => $id }, 'Reservation';
+      $reservation->_create_track( sub ($settle) { push @settle, $settle; } );
+   }
+   is_deeply( \@events, [qw(hold hold)], 'two live chains have taken two holds' );
+   is( Reservation->create_in_flight_count(), 2, 'and are both in flight' );
+   $settle[0]->( 1, undef );
+   is_deeply( \@events, [qw(hold hold release)], 'the first to settle releases one' );
+   $settle[1]->( 1, undef );
+   is_deeply( \@events, [qw(hold hold release release)], 'the second releases the other' );
+   is( Reservation->create_in_flight_count(), 0, 'neither is in flight' );
+
+   # A chain refused before it is tracked takes nothing: the lock held by another driver, or a
+   # duplicate create for a reservation whose createStatus is already set.
+   local *Reservation::call_socket_api = docker( [] );
+   seed('creating');
+   @events = ();
+   my $lock = Util::tryLockFile( Reservation::_create_lock_path('rid') );
+   my @refused;
+   Reservation::_reservation_reloaded('rid')->create( sub ( $ok = undef, $err = undef ) { push @refused, $err; } );
+   like( reason( $refused[0] ), qr/already has a create in progress/, 'a create finding the lock held is refused' );
+   is( Reservation->reconcile_one('rid'), 0, 'as is a reconciliation' );
+   close $lock;
+   Reservation::_reservation_reloaded('rid')->create( sub ( $ok = undef, $err = undef ) { push @refused, $err; } );
+   like( reason( $refused[1] ), qr/already has a createStatus set/, 'and a duplicate create' );
+   is_deeply( \@events, [], 'none of which took a hold' );
 };
 
 subtest 'a preflight lookup finding another owner is a definitive failure without a create' => sub {

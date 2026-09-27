@@ -156,14 +156,16 @@ subtest 'a provider lacking either entry is refused the same way, naming the ent
    is_refused_before_anything('hold only');
 };
 
-# A timer that records what it is asked for and fires at once, and a hold nothing in this stage
-# takes.
+# A timer that records what it is asked for and fires at once, and a hold that counts its takes
+# and releases.
+my ( $holds, $releases );
 sub install_provider {
    @timers = ();
    @pending = ();
+   ( $holds, $releases ) = ( 0, 0 );
    Reservation::provider(
       'timer' => sub ( $delay, $cb ) { push @pending, [ $delay, $cb ]; return scalar @pending; },
-      'hold'  => sub () { return sub { }; },
+      'hold'  => sub () { $holds++; return sub () { $releases++; }; },
    );
    return;
 }
@@ -185,6 +187,8 @@ subtest 'the ownership inspection waits on the provider timer at the configured 
    my $lock = Util::tryLockFile( lock_path() );
    ok( $lock, 'and it is free again once the chain has settled' );
    close $lock;
+   is( $holds, 1, 'the chain took one hold against recycling this worker' );
+   is( $releases, 1, 'and released it once settled' );
 };
 
 subtest 'the inspection budget is measured on the monotonic clock, not waited out' => sub {
