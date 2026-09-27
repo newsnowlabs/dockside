@@ -1339,7 +1339,11 @@ sub store_fields ($self, $fields) {
 # blocks the reactor while GitHub responds. Expressed as a recursive callback chain (there's
 # no early 'return' across an async boundary). $cb fires exactly once, with the decoded
 # devcontainer.json hashref, or undef if there is none (no gitURL, non-GitHub URL, or neither
-# branch has one).
+# branch has one), and this method never throws: get_uri calls back exactly once whatever
+# befalls a fetch's setup, a request that cannot be built or started arriving as no result, the
+# same as a transport failure, so a caller that registers an obligation against $cb firing is
+# always released. That holds for the fallback branch, started from inside the first branch's
+# completion, as much as for the first.
 sub getGitDevContainer ($self, $cb) {
    my $uri = $self->data('gitURL');
    flog("getGitDevContainer: uri=" . ($uri // ''));

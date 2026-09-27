@@ -112,17 +112,21 @@ Admission and the issued tail are the two distinctions the drain in mechanism 6 
 
 - **Drain.** What a worker does between its `finish` event and its exit: it stops admitting new
   work and waits for work it already owes. The **drain predicate** is the condition under which
-  it may exit: no issued tail and no hook run outstanding. A chain with no tail open is not
-  waited for; the drain names it as abandoned and the next process's pass resumes it.
+  it may exit: no issued tail, no hook run and no admitted create request outstanding. A chain
+  with no tail open is not waited for; the drain names it as abandoned and the next process's
+  pass resumes it.
 - **Admission.** The check that decides whether a request or a timer may start new work. A worker
   that is shutting down refuses admission: the request gets a 503, the timer does nothing.
-- **In-flight registry.** A process-local table of work the process still owes. There are three:
+- **In-flight registry.** A process-local table of work the process still owes. There are four:
   create chains (`%CREATE_IN_FLIGHT`, `Reservation.pm`; each entry's value records the chain's
   open issued tail, `create`, `start` or none, and the drain reads the tails, not the chains),
   hook runs whose outcome write has not yet been decided (`%HOOK_DISPATCH_IN_FLIGHT`,
-  `Reservation.pm`; released once the one attempt has applied, been fenced or thrown), and the
-  daemon's DAG dispatches
-  (`%DISPATCH_IN_FLIGHT`, `EventDaemon/LaunchDispatch.pm`). A fourth, `%ASYNC_UA_IN_FLIGHT` in
+  `Reservation.pm`; released once the one attempt has applied, been fenced or thrown), admitted
+  create requests whose chain is not yet registered (`%CREATE_REQUEST_IN_FLIGHT`, `User.pm`;
+  held across the devcontainer.json fetch, from before the fetch to the entry of the callback
+  it resumes, from where `create()` registers the chain without returning to the loop), and
+  the daemon's DAG dispatches
+  (`%DISPATCH_IN_FLIGHT`, `EventDaemon/LaunchDispatch.pm`). A fifth, `%ASYNC_UA_IN_FLIGHT` in
   `Util.pm`, only keeps HTTP user agents alive and is diagnostic.
 - **Obligation.** An entry in an in-flight registry: something this process must finish, or hand
   over durably, before it may exit.
@@ -316,13 +320,22 @@ original `POST /containers/create` closes almost instantly and Mojo considers th
 **while the detached chain is still actively running** on that worker's event loop.
 Mojo's graceful shutdown has no visibility into work that outlives the request that started it.
 
-`App::Shutdown` reads the worker's issued create and start tails, its hook runs and its chains
-with no tail open (`Reservation->create_issued_tail_ids`, `->hook_dispatch_in_flight_ids`,
-`->create_abandonable_ids`) and, on the worker's `finish` event, drains: it waits for the tails
-and the hook runs to settle before letting the worker actually stop, and abandons the rest, a
-chain in a pull, a lookup or a stage write, to the next process's pass, naming each abandoned
-chain in its start and exit lines; a tail that opens while it waits is waited for, the lists
-being re-read every tick. The event can arrive inside one of the worker's own steps, a Docker
+`App::Shutdown` reads the worker's issued create and start tails, its hook runs, its admitted
+create requests and its chains with no tail open (`Reservation->create_issued_tail_ids`,
+`->hook_dispatch_in_flight_ids`, `User->create_request_in_flight_ids`,
+`Reservation->create_abandonable_ids`) and, on the worker's `finish` event, drains: it waits for
+the tails, the hook runs and the requests to settle before letting the worker actually stop,
+and abandons the rest, a chain in a pull, a lookup or a stage write, to the next process's
+pass, naming each abandoned chain in its start and exit lines; a tail that opens while it
+waits is waited for, the lists being re-read every tick, and a request that reaches its chain
+hands over to whatever that chain then holds. A create request is admitted at the top of its
+route, before the devcontainer.json fetch its chain waits on; the fetch runs on the loop, and
+the worker's `finish` event can arrive while it is outstanding, when the loop's own graceful
+stop waits only for the request's connection: the request's registry entry is what the drain
+waits for then. The fetch's user agent bounds connection establishment, by its connect
+timeout, and silence, by its inactivity timeout, and sets no total request timeout, so a
+response that keeps making progress has no bound but the drain's own, the configured ceiling
+or the one-day backstop. The event can arrive inside one of the worker's own steps, a Docker
 reply's continuation, a timer's, the reconcile pass or a request that starts work, since Perl
 runs the signal handler between two operations of the executing code; a drain begun there
 would wait for a settlement the interrupted step is about to record, which no tick can reach,
@@ -599,6 +612,7 @@ definitive failure, and `expiryTime` except at the retry bound, whose failure ca
 | in a pull, a name lookup, or a stage write, with no tail open | abandons it, naming the chain in its start and exit lines; the worker exits with the record as written, and the next process's pass resumes it. A pull is repeated from the layers Docker kept |
 | unresolved, its retry timer pending | the timer fires during a drain that is waiting for something else and its chain is treated as any other; a timer pending at the worker's exit never fires, and the sweep takes the record once `retryAfter` has passed |
 | any of the above, and a tail opens while the drain waits | waited for from then on: the lists are re-read every tick |
+| not yet begun: its create request admitted, the devcontainer.json fetch outstanding | waits for the request to reach its chain, then treats the chain as any of the above; a request still outstanding at the ceiling is unanswered and has written no record |
 
 ## Lock-file lifecycle and constraints
 

@@ -78,7 +78,7 @@ my %obligations;
 sub arm (%declared) {
    @order       = ();
    @logged      = ();
-   %obligations = ( 'creates' => [], 'hooks' => [], 'abandoned' => [], %declared );
+   %obligations = ( 'creates' => [], 'hooks' => [], 'requests' => [], 'abandoned' => [], %declared );
    App::Shutdown::configure(
       # Finite, so a drain begun above a paused callback fails the case after its budget rather
       # than hanging it: it would wait for the obligation the paused callback holds.
@@ -172,7 +172,7 @@ in_child 'a streamed read of a chunk that ends the response' => sub {
 
    is_deeply( \@order, [ 'read begins', 'finish', 'read ends', 'drain', 'settled' ],
       'the finish event arrives inside the read; the drain follows the read, and the completion, in the same event, follows the drain' );
-   like( $logged[-1], qr/has no issued tail or hook run to wait for; abandoning 1 create chain\(s\) at an unissued stage \(r-pull\)/,
+   like( $logged[-1], qr/has nothing to wait for; abandoning 1 create chain\(s\) at an unissued stage \(r-pull\)/,
       'so a drain begun there waits for nothing that completion settles: the pull is named as abandoned' );
 };
 

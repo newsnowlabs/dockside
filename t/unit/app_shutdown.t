@@ -69,7 +69,7 @@ subtest 'drain with nothing in flight returns immediately' => sub {
    my $remaining = App::Shutdown::drain();
 
    is($ticks, 0, 'no tick is run when there is nothing to wait for');
-   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [] }, 'the remainder is empty');
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [], 'requests' => [] }, 'the remainder is empty');
    is(scalar @logged, 1, 'exactly one line is logged');
    like($logged[0], qr/nothing in flight; exiting/, 'and it reports an immediate exit');
 };
@@ -81,12 +81,12 @@ subtest 'drain returns as soon as the obligations clear' => sub {
    my $remaining = App::Shutdown::drain();
 
    is($ticks, 3, 'one tick per obligation, and none after the last one settled');
-   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [] }, 'nothing is left outstanding');
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [], 'requests' => [] }, 'nothing is left outstanding');
    is(scalar @logged, 2, 'a start line and a finish line');
    like($logged[0], qr/waiting up to 10s for 2 issued create\/start tail\(s\) \(r-two, r-one\)/,
       'the start line counts the creates and names them');
    like($logged[0], qr/1 hook run\(s\) \(h-one\)/, 'and counts the hooks and names them');
-   like($logged[1], qr/drained every issued create\/start tail and hook run after 3s; exiting/,
+   like($logged[1], qr/drained every issued create\/start tail, hook run and admitted create request after 3s; exiting/,
       'the finish line reports a complete drain and how long it took');
 };
 
@@ -101,7 +101,7 @@ subtest 'drain gives up once the clock passes the ceiling, less the margin' => s
    my $remaining = App::Shutdown::drain();
 
    is($ticks, 10, 'the wait runs for the ceiling less the margin and no longer');
-   is_deeply($remaining, { 'creates' => ['r-stuck'], 'hooks' => [ 'h-stuck', 'h-also-stuck' ], 'abandoned' => [] },
+   is_deeply($remaining, { 'creates' => ['r-stuck'], 'hooks' => [ 'h-stuck', 'h-also-stuck' ], 'abandoned' => [], 'requests' => [] },
       'everything still in flight is handed back to the caller');
    like($logged[-1], qr/reached its shutdown ceiling after 10s with 1 issued create\/start tail\(s\) \(r-stuck;/,
       'the final line counts and names the creates left behind');
@@ -120,7 +120,7 @@ subtest 'a finite ceiling stops the drain a margin short of the ceiling itself' 
 
    is($now, 100 - $App::Shutdown::MARGIN, 'the wait ends at the ceiling less the margin');
    is($ticks, 90, 'and having ticked once per second up to that point');
-   is_deeply($remaining, { 'creates' => ['r-stuck'], 'hooks' => ['h-stuck'], 'abandoned' => [] },
+   is_deeply($remaining, { 'creates' => ['r-stuck'], 'hooks' => ['h-stuck'], 'abandoned' => [], 'requests' => [] },
       'what never settled is handed back');
    like($logged[0], qr/waiting up to 90s for /, 'the start line quotes the wait, not the ceiling');
    like($logged[-1], qr/reached its shutdown ceiling after 90s with 1 issued create\/start tail\(s\) \(r-stuck;/,
@@ -139,7 +139,7 @@ subtest 'a ceiling no larger than the margin leaves no time to wait at all' => s
       my $remaining = App::Shutdown::drain();
 
       is($ticks, 0, "a ceiling of $ceiling runs no tick");
-      is_deeply($remaining, { 'creates' => ['r-stuck'], 'hooks' => [], 'abandoned' => [] },
+      is_deeply($remaining, { 'creates' => ['r-stuck'], 'hooks' => [], 'abandoned' => [], 'requests' => [] },
          "a ceiling of $ceiling hands everything back");
       like($logged[0], qr/waiting up to 0s for /, "a ceiling of $ceiling announces no wait");
       like($logged[-1], qr/reached its shutdown ceiling after 0s with 1 issued create\/start tail\(s\) \(r-stuck;/,
@@ -165,10 +165,10 @@ subtest 'an unlimited ceiling waits for as long as the obligations take' => sub 
    my $remaining = App::Shutdown::drain();
 
    is($ticks, 500, 'the drain ticks on well past 100s of clock');
-   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [] }, 'and returns with nothing left');
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [], 'requests' => [] }, 'and returns with nothing left');
    like($logged[0], qr/waiting without limit for 1 issued create\/start tail\(s\) \(r-slow\)/,
       'the start line says the wait is unbounded and names what it waits for');
-   like($logged[-1], qr/drained every issued create\/start tail and hook run after 500s; exiting/,
+   like($logged[-1], qr/drained every issued create\/start tail, hook run and admitted create request after 500s; exiting/,
       'the finish line reports the full wait');
 };
 
@@ -185,7 +185,7 @@ subtest 'a long drain reports its progress on the log interval' => sub {
    is(scalar @progress, 3, 'a 90s wait reports progress three times on a 30s interval');
    like($progress[$_ - 1], qr/\Aapp-server: worker $$ draining for @{[ $_ * $App::Shutdown::LOG_INTERVAL ]}s; /,
       "progress line $_ lands on the interval") for 1 .. 3;
-   like($progress[0], qr/still waiting for 1 issued create\/start tail\(s\) \(r-stuck\) and 2 hook run\(s\) \(h-stuck, h-also-stuck\)/,
+   like($progress[0], qr/still waiting for 1 issued create\/start tail\(s\) \(r-stuck\), 2 hook run\(s\) \(h-stuck, h-also-stuck\) and 0 admitted create request\(s\) \(none\)/,
       'each progress line carries the counts and ids by kind');
 };
 
@@ -206,7 +206,7 @@ subtest 'a drain that settles as it crosses the interval reports no further wait
 
    is(scalar( grep { /draining for/ } @logged ), 0,
       'nothing is reported as still waited for once nothing is');
-   like($logged[-1], qr/drained every issued create\/start tail and hook run after 30s; exiting/,
+   like($logged[-1], qr/drained every issued create\/start tail, hook run and admitted create request after 30s; exiting/,
       'the finish line follows the settling tick directly');
 };
 
@@ -217,11 +217,11 @@ subtest 'a drain names the chains it abandons and does not wait for them' => sub
    my $remaining = App::Shutdown::drain();
 
    is($ticks, 1, 'one tick settles the one tail, and the abandoned chain costs none');
-   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => ['r-pull'] },
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => ['r-pull'], 'requests' => [] },
       'the abandoned chain is handed back as it stood, the tail settled');
-   like($logged[0], qr/waiting up to 10s for 1 issued create\/start tail\(s\) \(r-tail \(create\)\) and 0 hook run\(s\) \(none\) to settle; abandoning 1 create chain\(s\) at an unissued stage \(r-pull\) to the next process's pass$/,
+   like($logged[0], qr/waiting up to 10s for 1 issued create\/start tail\(s\) \(r-tail \(create\)\), 0 hook run\(s\) \(none\) and 0 admitted create request\(s\) \(none\) to settle; abandoning 1 create chain\(s\) at an unissued stage \(r-pull\) to the next process's pass$/,
       'the start line names the tail as rendered and the chain abandoned');
-   like($logged[-1], qr/drained every issued create\/start tail and hook run after 1s; abandoning 1 create chain\(s\) at an unissued stage \(r-pull\) to the next process's pass; exiting$/,
+   like($logged[-1], qr/drained every issued create\/start tail, hook run and admitted create request after 1s; abandoning 1 create chain\(s\) at an unissued stage \(r-pull\) to the next process's pass; exiting$/,
       'and so does the finish line');
 };
 
@@ -232,10 +232,10 @@ subtest 'a drain with only abandoned chains returns at once, naming them' => sub
    my $remaining = App::Shutdown::drain();
 
    is($ticks, 0, 'no tick is run: nothing is waited for');
-   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [ 'r-pull', 'r-lookup' ] },
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [ 'r-pull', 'r-lookup' ], 'requests' => [] },
       'the abandoned chains are handed back');
    is(scalar @logged, 1, 'exactly one line is logged');
-   like($logged[0], qr/has no issued tail or hook run to wait for; abandoning 2 create chain\(s\) at an unissued stage \(r-pull, r-lookup\) to the next process's pass; exiting$/,
+   like($logged[0], qr/has nothing to wait for; abandoning 2 create chain\(s\) at an unissued stage \(r-pull, r-lookup\) to the next process's pass; exiting$/,
       'and it names what is abandoned instead of reporting nothing in flight');
 };
 
@@ -247,7 +247,7 @@ subtest 'the ceiling line names the chains abandoned beside what is left in flig
 
    my $remaining = App::Shutdown::drain();
 
-   is_deeply($remaining, { 'creates' => ['r-stuck'], 'hooks' => [], 'abandoned' => ['r-pull'] },
+   is_deeply($remaining, { 'creates' => ['r-stuck'], 'hooks' => [], 'abandoned' => ['r-pull'], 'requests' => [] },
       'both are handed back');
    like($logged[-1], qr/still in flight; abandoning 1 create chain\(s\) at an unissued stage \(r-pull\) to the next process's pass$/,
       'the ceiling line ends with the abandoned chain');
@@ -273,12 +273,51 @@ subtest 'the obligations are re-read every tick, so a chain that posts mid-drain
    my $remaining = App::Shutdown::drain();
 
    is($ticks, 2, 'the drain waits for the tail that opened after it started');
-   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [] },
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => [], 'requests' => [] },
       'nothing is abandoned by the time it exits');
    like($logged[0], qr/abandoning 1 create chain\(s\) at an unissued stage \(r-pull\)/,
       'the start line named the chain as abandoned');
-   like($logged[-1], qr/drained every issued create\/start tail and hook run after 2s; exiting$/,
+   like($logged[-1], qr/drained every issued create\/start tail, hook run and admitted create request after 2s; exiting$/,
       'the finish line names nothing abandoned');
+};
+
+subtest 'a drain waits for an admitted create request to reach its chain' => sub {
+   %obligations = ( 'creates' => [], 'hooks' => [], 'requests' => ['r-fetching'], 'abandoned' => [] );
+   install_environment(
+      # The first tick completes the fetch: the request reaches its chain, which begins its pull
+      # and so is abandonable; the second is never run.
+      'tick' => sub () {
+         $ticks++;
+         $now += 1;
+         @{ $obligations{'requests'} } = ();
+         push @{ $obligations{'abandoned'} }, 'r-fetching';
+         return;
+      },
+   );
+
+   my $remaining = App::Shutdown::drain();
+
+   is($ticks, 1, 'the drain waits for the request and not for the chain it became');
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'requests' => [], 'abandoned' => ['r-fetching'] },
+      'the chain is handed back as abandoned');
+   like($logged[0], qr/waiting up to 10s for 0 issued create\/start tail\(s\) \(none\), 0 hook run\(s\) \(none\) and 1 admitted create request\(s\) \(r-fetching\) to settle$/,
+      'the start line names the request');
+   like($logged[-1], qr/drained every issued create\/start tail, hook run and admitted create request after 1s; abandoning 1 create chain\(s\) at an unissued stage \(r-fetching\) to the next process's pass; exiting$/,
+      'and the finish line names the chain it became as abandoned');
+};
+
+subtest 'the ceiling line names an admitted create request left outstanding' => sub {
+   %obligations = ( 'creates' => [], 'hooks' => [], 'requests' => ['r-fetching'], 'abandoned' => [] );
+   install_environment(
+      'tick' => sub () { $ticks++; $now += 1; return; },
+   );
+
+   my $remaining = App::Shutdown::drain();
+
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'requests' => ['r-fetching'], 'abandoned' => [] },
+      'the request is handed back');
+   like($logged[-1], qr/with 0 issued create\/start tail\(s\) \(none; recovered by the startup sweep\/periodic reconciler\), 0 hook run\(s\) \(none; recovered only lazily, if at all\) and 1 admitted create request\(s\) \(r-fetching; unanswered, no record written\) still in flight$/,
+      'the ceiling line says what becomes of it');
 };
 
 subtest 'the graceful timeout given to the manager follows the ceiling' => sub {
@@ -289,13 +328,13 @@ subtest 'the graceful timeout given to the manager follows the ceiling' => sub {
 };
 
 subtest 'only ids are ever read out of the obligations structure' => sub {
-   %obligations = ( 'creates' => ['r-one'], 'hooks' => [], 'abandoned' => ['r-pull'], 'secret' => 'DECOY' );
+   %obligations = ( 'creates' => ['r-one'], 'hooks' => [], 'requests' => [], 'abandoned' => ['r-pull'], 'secret' => 'DECOY' );
    install_environment();
 
    my $remaining = App::Shutdown::drain();
 
-   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'abandoned' => ['r-pull'] },
-      'the remainder carries the three known kinds and nothing else');
+   is_deeply($remaining, { 'creates' => [], 'hooks' => [], 'requests' => [], 'abandoned' => ['r-pull'] },
+      'the remainder carries the four known kinds and nothing else');
    unlike($_, qr/DECOY/, 'no log line carries anything beyond the ids') for @logged;
 
    # A drain long enough to report progress and then hit its ceiling renders the obligations

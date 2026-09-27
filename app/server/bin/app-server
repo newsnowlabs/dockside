@@ -1090,6 +1090,7 @@ App::Shutdown::configure(
       return {
          'creates'   => [ Reservation->create_issued_tail_ids() ],
          'hooks'     => [ Reservation->hook_dispatch_in_flight_ids() ],
+         'requests'  => [ User->create_request_in_flight_ids() ],
          'abandoned' => [ Reservation->create_abandonable_ids() ],
       };
    },
@@ -1147,11 +1148,12 @@ Util::step_wrapper( \&App::Shutdown::busy_while );
 # Graceful exit handler - refuses new creates and manually-invoked hook runs (the
 # /containers/create and /containers/:id/hook routes' own App::Shutdown::admit calls) and gives
 # in-flight ones the chance to settle before this worker exits, rather than relying solely on
-# the startup sweep/periodic reconciler: every hook run, and every create or start a chain has
-# posted to Docker and not yet recorded the result of; a chain with nothing posted, in a pull,
-# a lookup or a stage write, is abandoned to the restarted workers' first pass and named in the
-# log. Mojo::Server::Prefork's own graceful shutdown only waits for the HTTP connection to
-# close, not for either kind of chain's own work, which outlives it - this closes that gap.
+# the startup sweep/periodic reconciler: every hook run, every create or start a chain has
+# posted to Docker and not yet recorded the result of, and every admitted create request whose
+# devcontainer.json fetch is outstanding, its chain not yet begun; a chain with nothing posted,
+# in a pull, a lookup or a stage write, is abandoned to the restarted workers' first pass and
+# named in the log. Mojo::Server::Prefork's own graceful shutdown only waits for the HTTP connection to
+# close, not for any of that work, which outlives it - this closes that gap.
 # Registered once, pre-fork, on the shared singleton. on_finish sets the latch at once and runs
 # the drain at once, or, when the event arrives inside one of this worker's own steps, once
 # that step has completed; its latch turns away the repeat emission a second QUIT produces

@@ -1,9 +1,10 @@
 # bin/app-server's graceful-exit gate: the one-way shutting-down latch every admission check
 # consults, the drain that gives this worker's obligations a chance to settle before the
 # process exits, the create and start requests its chains have posted to Docker and not yet
-# recorded the result of, and its hook runs, and the step bracket that decides when the drain
-# may begin. A chain with nothing posted, in a pull, a lookup or a stage write, is abandoned to
-# the next process's pass and named in the log. Owned here rather than as a bin/app-server
+# recorded the result of, its hook runs, and the create requests it has admitted whose chain
+# is not yet registered, and the step bracket that decides when the drain may begin. A chain
+# with nothing posted, in a pull, a lookup or a stage write, is abandoned to the next
+# process's pass and named in the log. Owned here rather than as a bin/app-server
 # lexical so the latch is reachable from any route's own closure without threading a variable
 # through it, and so the drain loop itself is exercisable without a reactor.
 #
@@ -52,9 +53,10 @@ my %ENVIRONMENT;
 my $SHUTTING_DOWN = 0;
 
 # Keys: ceiling (seconds after which the manager kills this worker, or undef for an unlimited
-# drain), obligations (a sub returning { creates => [ids], hooks => [ids], abandoned => [ids] }:
-# the issued create/start tails and the hook runs the drain waits for, and the chains it names
-# as abandoned and never waits for), clock (a sub returning monotonic seconds), tick (a sub running one round of whatever makes those obligations
+# drain), obligations (a sub returning { creates => [ids], hooks => [ids], requests => [ids],
+# abandoned => [ids] }: the issued create/start tails, the hook runs and the admitted create
+# requests the drain waits for, and the chains it names as abandoned and never waits for),
+# clock (a sub returning monotonic seconds), tick (a sub running one round of whatever makes those obligations
 # progress), log (a sub taking one message), accept_limit (a sub returning the loop's accept
 # limit when called with no argument and setting it when called with one).
 sub configure (%opts) {
@@ -161,19 +163,21 @@ sub admit ($kind) {
 # Waits for the configured obligations to clear - without limit under an undefined ceiling,
 # otherwise up to the ceiling less $MARGIN - ticking between checks and reporting progress every
 # $LOG_INTERVAL. Returns whatever is still outstanding as a { creates => [], hooks => [],
-# abandoned => [] } hashref - the first two empty when everything waited for settled, the third
-# as it stood at the last read, since the abandoned chains are named on the start and exit
-# lines and never waited for. The obligations are re-read every tick, so a tail that opens
-# while the drain waits for something else is waited for, and a chain abandoned at the start
-# that posts its create meanwhile is waited for from then on. Only the ids of the three known
-# kinds are ever read out of the obligations structure, and only those ids ever reach the log.
+# requests => [], abandoned => [] } hashref - the first three empty when everything waited for
+# settled, the fourth as it stood at the last read, since the abandoned chains are named on the
+# start and exit lines and never waited for. The obligations are re-read every tick, so a tail
+# that opens while the drain waits for something else is waited for, an admitted request that
+# reaches its chain hands over to whatever that chain then holds, and a chain abandoned at the
+# start that posts its create meanwhile is waited for from then on. Only the ids of the four
+# known kinds are ever read out of the obligations structure, and only those ids ever reach the
+# log.
 sub drain () {
    die "App::Shutdown::drain called before configure\n" unless %ENVIRONMENT;
 
    my $outstanding = _outstanding();
-   unless ( @{ $outstanding->{'creates'} } || @{ $outstanding->{'hooks'} } ) {
+   unless ( _waiting($outstanding) ) {
       _log( @{ $outstanding->{'abandoned'} }
-         ? "app-server: worker $$ has no issued tail or hook run to wait for" . _abandoning($outstanding) . '; exiting'
+         ? "app-server: worker $$ has nothing to wait for" . _abandoning($outstanding) . '; exiting'
          : "app-server: worker $$ has nothing in flight; exiting" );
       return $outstanding;
    }
@@ -188,17 +192,13 @@ sub drain () {
       ( defined($budget) ? "waiting up to ${budget}s" : 'waiting without limit' ) . ' for ' .
       _describe($outstanding) . ' to settle' . _abandoning($outstanding) );
 
-   while ( ( @{ $outstanding->{'creates'} } || @{ $outstanding->{'hooks'} } )
-      && ( !defined($deadline) || $ENVIRONMENT{'clock'}->() < $deadline ) )
-   {
+   while ( _waiting($outstanding) && ( !defined($deadline) || $ENVIRONMENT{'clock'}->() < $deadline ) ) {
       $ENVIRONMENT{'tick'}->();
       $outstanding = _outstanding();
 
       # Only while something remains: a tick that settles the last obligation as it crosses the
       # interval has nothing left to report waiting for, and the finish line below follows at once.
-      if ( ( @{ $outstanding->{'creates'} } || @{ $outstanding->{'hooks'} } )
-         && $ENVIRONMENT{'clock'}->() >= $nextLog )
-      {
+      if ( _waiting($outstanding) && $ENVIRONMENT{'clock'}->() >= $nextLog ) {
          _log( sprintf( 'app-server: worker %d draining for %ds; still waiting for %s',
             $$, $ENVIRONMENT{'clock'}->() - $start, _describe($outstanding) ) );
 
@@ -211,43 +211,51 @@ sub drain () {
 
    # Whole seconds: the injected clock is monotonic but not necessarily integral, and these lines
    # report how long the wait took, not a measurement anything computes from.
-   my $elapsed          = int( $ENVIRONMENT{'clock'}->() - $start );
-   my $remainingCreates = scalar @{ $outstanding->{'creates'} };
-   my $remainingHooks   = scalar @{ $outstanding->{'hooks'} };
-   if ( $remainingCreates || $remainingHooks ) {
+   my $elapsed = int( $ENVIRONMENT{'clock'}->() - $start );
+   if ( _waiting($outstanding) ) {
       # A create chain left here is recovered by create()'s own startup sweep/periodic
       # reconciler; hooks have no equivalent beyond hook_is_running's own lazy self-heal on a
       # later read (narrower still for lifecycle:launch/lifecycle:start, which
-      # docker-event-daemon's own sweep does re-poll).
+      # docker-event-daemon's own sweep does re-poll); an admitted create request left here is
+      # never answered and has written no record, so its client retries.
       _log( "app-server: worker $$ reached its shutdown ceiling after ${elapsed}s with " .
-         "$remainingCreates issued create/start tail(s) (" . _ids( $outstanding->{'creates'} ) .
-         "; recovered by the startup sweep/periodic reconciler) and " .
-         "$remainingHooks hook run(s) (" . _ids( $outstanding->{'hooks'} ) .
-         "; recovered only lazily, if at all) still in flight" . _abandoning($outstanding) );
+         scalar( @{ $outstanding->{'creates'} } ) . ' issued create/start tail(s) (' . _ids( $outstanding->{'creates'} ) .
+         '; recovered by the startup sweep/periodic reconciler), ' .
+         scalar( @{ $outstanding->{'hooks'} } ) . ' hook run(s) (' . _ids( $outstanding->{'hooks'} ) .
+         '; recovered only lazily, if at all) and ' .
+         scalar( @{ $outstanding->{'requests'} } ) . ' admitted create request(s) (' . _ids( $outstanding->{'requests'} ) .
+         '; unanswered, no record written) still in flight' . _abandoning($outstanding) );
    }
    else {
-      _log( "app-server: worker $$ drained every issued create/start tail and hook run " .
+      _log( "app-server: worker $$ drained every issued create/start tail, hook run and admitted create request " .
          "after ${elapsed}s" . _abandoning($outstanding) . '; exiting' );
    }
 
    return $outstanding;
 }
 
-# The three known kinds, copied out into a structure of this module's own - whatever else the
+# The four known kinds, copied out into a structure of this module's own - whatever else the
 # supplied obligations structure carries is never read, never logged and never returned.
 sub _outstanding () {
    my $obligations = $ENVIRONMENT{'obligations'}->() // {};
    return {
       'creates'   => [ @{ $obligations->{'creates'}   // [] } ],
       'hooks'     => [ @{ $obligations->{'hooks'}     // [] } ],
+      'requests'  => [ @{ $obligations->{'requests'}  // [] } ],
       'abandoned' => [ @{ $obligations->{'abandoned'} // [] } ],
    };
 }
 
+# The drain predicate's complement: whether anything the drain waits for is still outstanding.
+sub _waiting ($outstanding) {
+   return @{ $outstanding->{'creates'} } || @{ $outstanding->{'hooks'} } || @{ $outstanding->{'requests'} };
+}
+
 sub _describe ($outstanding) {
-   return sprintf( '%d issued create/start tail(s) (%s) and %d hook run(s) (%s)',
-      scalar @{ $outstanding->{'creates'} }, _ids( $outstanding->{'creates'} ),
-      scalar @{ $outstanding->{'hooks'} },   _ids( $outstanding->{'hooks'} ) );
+   return sprintf( '%d issued create/start tail(s) (%s), %d hook run(s) (%s) and %d admitted create request(s) (%s)',
+      scalar @{ $outstanding->{'creates'} },  _ids( $outstanding->{'creates'} ),
+      scalar @{ $outstanding->{'hooks'} },    _ids( $outstanding->{'hooks'} ),
+      scalar @{ $outstanding->{'requests'} }, _ids( $outstanding->{'requests'} ) );
 }
 
 # The clause naming the chains this worker leaves at an unissued stage, or nothing when there

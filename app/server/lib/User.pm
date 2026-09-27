@@ -1268,6 +1268,17 @@ sub runContainerHookStatus ($self, $id, $args = {}) {
 # blocking GitHub fetch, no docker CLI subprocess). The old synchronous fallback, and the
 # App.pm route that was its only caller, are both gone (audited first - no other caller
 # existed).
+# The create requests this process has accepted whose chain create() has not yet registered:
+# from just before the devcontainer.json fetch createContainerReservation makes, to the entry
+# of the callback that fetch resumes, from where create() registers the chain without returning
+# to the loop. Keyed by the reservation id, the id the chain's own registry entry then carries.
+# bin/app-server's exit handler reads it: a draining worker waits for these requests to reach
+# their chains as it waits for its chains' issued tails, since a request left here at the
+# worker's exit is unanswered and has written no record.
+my %CREATE_REQUEST_IN_FLIGHT;
+
+sub create_request_in_flight_ids ($class) { return sort keys %CREATE_REQUEST_IN_FLIGHT; }
+
 sub createContainerReservation ($self, $args, $cb) {
    # Launch new container.
    if( !$self->has_permission( 'createContainerReservation' ) ) {
@@ -1310,7 +1321,14 @@ sub createContainerReservation ($self, $args, $cb) {
    # whatever the fetch below changes.
    $reservation->cmdline_json();
 
+   # Registered before the fetch and released at the entry of its callback, see
+   # %CREATE_REQUEST_IN_FLIGHT above. getGitDevContainer calls back exactly once and never
+   # throws, at once when there is nothing to fetch, get_uri settling a fetch that cannot be
+   # built or started as no result; the release below therefore always runs.
+   $CREATE_REQUEST_IN_FLIGHT{ $reservation->id() } = 1;
    $reservation->getGitDevContainer( sub ($dc) {
+      delete $CREATE_REQUEST_IN_FLIGHT{ $reservation->id() };
+
       # This whole callback runs outside the caller's own try/catch frame (it fires later, off
       # the event loop, once the GitHub fetch above resolves) - an uncaught die anywhere in here,
       # not just around store()->create below, would be an uncaught exception inside a Mojo
