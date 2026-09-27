@@ -1,0 +1,7 @@
+#!/bin/sh
+# s6 runs this after ./run exits and before restarting it. Throttle a crash-restart loop
+# (e.g. a core config file that won't parse - app-server/docker-event-daemon exit for s6 to
+# restart them; see Data.pm's Data::$CORE_PARSE_FAILURE_FATAL) by pausing briefly first - but
+# only on an abnormal exit. $1 is ./run's exit code, or 256 if it was terminated by a signal,
+# so a deliberate `s6-svc -r` (a signal) restarts with no added delay.
+[ "$1" = "256" ] || sleep 1

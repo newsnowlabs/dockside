@@ -3,10 +3,8 @@
 - **Status:** Proposed (draft — part of the `OtdcG` curated merge)
 - **Date:** 2026-06-13
 - **Deciders:** Struan Bartlett
-- **Scope note:** The branch migrated and enforced POST on the **admin/self** mutation
-  routes only, *deliberately deferring* the **container** routes (see `4c6b2bb`). This
-  merge **completes** that migration — the container routes are brought onto POST in the
-  net-new commit **C7**, so that no state-changing route remains reachable via GET.
+- **Scope:** covers all state-changing API routes — **admin/self** mutation routes and
+  **container** routes alike. No state-changing route remains reachable via GET.
 
 ## Context
 
@@ -80,6 +78,5 @@ path's real POST handler — one per route rather than one shared regex, since n
 Mojolicious routing has no equivalent of a single dispatch-wide guard to hook into. The
 *decision* this ADR records (mutations are POST-only; GET gets a clean 405; responses are
 canonical JSON) is unchanged and still enforced identically from a client's point of view —
-only the enforcement site moved. This gap was itself found and closed, pre-landing, by the
-same integration-suite check (`AdminApiTests.test_05_get_on_mutation_is_405`) this ADR's own
-guard was originally built to satisfy.
+only the enforcement site moved. Coverage: `AdminApiTests.test_05_get_on_mutation_is_405`
+verifies the 405 behaviour end-to-end.

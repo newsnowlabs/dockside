@@ -56,10 +56,11 @@ and the sanitisation/abbreviation that backs it — not the invention of the
 
 ## Addendum (2026-08-16): handler relocated, decision unchanged
 
-"A central handler in `App.pm`" (Context, above) no longer describes where this lives:
+Context (above) names `App.pm` as home to the central handler that converts a caught
+exception into the client's HTTP response; that specific function is relocated:
 [ADR-0006](0006-standalone-app-server.md) moves the UI/API server off nginx onto a
-standalone process, and `App.pm` no longer handles requests at all. The sole
-error-response path for the whole server is now `_render_error` in `bin/app-server` — same
-`Exception` shape, same `sanitize_sensitive_text` treatment of both `msg` and `dbg`, same
-"never return `dbg`" rule, just relocated with the code that used to carry it. Nothing about
-the decision itself changed.
+standalone process, and the error-response path is `_render_error` in `bin/app-server`
+instead — same `Exception` shape, same `sanitize_sensitive_text` treatment of both `msg` and
+`dbg`, same "never return `dbg`" rule, just at that call site. (`App.pm` itself still handles
+other request-time work — asset serving, header rendering, `split_args` query/body parsing —
+none of that moved.) The decision itself is unchanged.

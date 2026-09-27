@@ -46,7 +46,10 @@ sub authenticate_by_credentials ($class, $username, $password) {
 # - a User object containing authentication state, if authentication cookie(s) can be validated
 
 sub authenticate ($class, $options) {
-   my $cookie = $options->{'cookie'};
+   # A request carrying no Cookie header at all is ordinary - every pre-login page view is one -
+   # and reaches here as undef. The checks below all read this as a string, so an absent header
+   # is one carrying no cookies rather than an undefined value.
+   my $cookie = $options->{'cookie'} // '';
 
    my $user = User->new();
 
@@ -90,7 +93,7 @@ sub authenticate ($class, $options) {
    # - user exists
    if( my $uid = validate_auth_cookie( $options, $CONFIG->{'uidCookie'}{'name'}, $CONFIG->{'uidCookie'}{'salt'} ) ) {
       # Check that $user is named in users.json file (if it's not loaded, it's not named).
-      # N.B. We NO LONGER check that the user has a password defined in the passwd file,
+      # N.B. This does not check that the user has a password defined in the passwd file,
       # for consistency with normal expectations (of e.g. a unix user account).
       unless($user->load($uid->{'name'})) {
          wlog( "auth: user '$uid->{'name'}' not found in users.json file" );

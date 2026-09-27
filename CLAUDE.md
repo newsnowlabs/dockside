@@ -1,7 +1,7 @@
 # Repo Notes
 
-- `./test.sh` runs the full static suite (Perl compile, Vue build, ESLint, StyleLint,
-  ShellCheck, JSON/YAML, Python compile) — run it regularly, not just for Perl.
+- `./test.sh` runs the full static suite (Perl compile, Vue build, Vue unit tests (Vitest),
+  ESLint, StyleLint, ShellCheck, JSON/YAML, Python compile) — run it regularly, not just for Perl.
   `./test.sh --only <check>` runs a single check (e.g. `--only perl` while iterating on
   Perl under `app/server/lib` or `app/server/bin`; `--only vue`, `--only eslint`, …).
 - Perl server code runs across **three** independent processes, each loading its own copy of
@@ -25,6 +25,15 @@
     graceful `SIGQUIT` — it's the one process that can have a `create()` chain genuinely in
     flight. `nginx`/`docker-event-daemon` have no `down-signal` file, so their `-r` is a
     plain `SIGTERM`, same as before.
+    Signal semantics differ per service. `app-server` on `SIGQUIT` drains its in-flight hook
+    runs, any create or start it has already posted to Docker and any create request it has
+    admitted whose chain has not begun until they settle (a one-day
+    backstop aside) unless `appServer.shutdownGraceSeconds` sets a ceiling, and abandons a pull
+    in flight to the restarted workers' first pass, naming it in the log; so a restart that
+    appears to hang is waiting for something it logs every 30 s. Its immediate
+    stop is `sudo s6-svc -t /etc/service/app-server` (`SIGTERM`, which `Mojo::Server::Prefork`
+    treats as kill-now). `docker-event-daemon` handles `SIGTERM`, `SIGQUIT` and `SIGINT` alike
+    as graceful, so its only immediate stop is `-k` (`SIGKILL`).
   - `app/server/lib/Proxy.pm`, `app/server/nginx/conf/**` → `sudo s6-svc -r /etc/service/nginx`
     only.
   - `app/server/bin/docker-event-daemon` only → `sudo s6-svc -r /etc/service/docker-event-daemon`
@@ -59,9 +68,8 @@ If asked to try it yourself: the hostname depends on your environment:
   asking or guessing: `ssl.domains[0]` in `/data/config/config.json` gives the base domain
   (e.g. `<name>.dockside-domain.com`); prepend `www-` to its first label for the actual UI
   hostname (`www-<name>.dockside-domain.com`). Don't trust the container's own "Navigate
-  to ..." boot-log line for this — confirmed unreliable: on a real instance it printed a
-  `www.<name>...` form (dot, not hyphen) that 400s, while the actual working hostname was
-  the hyphenated `www-<name>...` form above.
+  to ..." boot-log line for this — it can print a `www.<name>...` form (dot, not hyphen) that
+  400s; the actual working hostname is the hyphenated `www-<name>...` form above.
 
 Admin credentials, if you don't already have them: recover from this container's own
 first-boot log rather than guessing or asking over chat (username is always `admin`) —
@@ -80,9 +88,9 @@ the process list, unlike passing `--password` directly.)
 ### Ad-hoc HTTP checks
 
 Use `dockside check-url <URL>` (or `python3 cli/dockside check-url <URL>`), not a handcrafted
-`curl` — it reuses the CLI's own already-working session/TLS/connection setup. Confirmed this
-session: a raw `curl` against the public hostname hung, while `check-url` against the
-identical URL worked immediately.
+`curl` — it reuses the CLI's own already-working session/TLS/connection setup. A raw `curl`
+against the public hostname can hang where `check-url` against the identical URL works
+immediately.
 
 ### Integration suite invocation (local mode)
 
@@ -97,6 +105,66 @@ PYTHONUNBUFFERED=1 \
   bash t/integration/run_tests.sh [--only NN]
 ```
 Run modules individually with `--only NN` for targeted testing.
+
+## Writing code and commit comments
+
+Code comments and commit messages must **strictly** describe the current code's behaviour as
+if the current code had been the intended end-state all along — never as a diff against, or a
+retelling of the journey from, what came before. Strictly avoid narrative about: previous/prior
+behaviour ("used to do X", "the old version had Y", "no longer Z"); the process that produced
+the change ("refactored to...", "switched from...to...", "fixed a bug where..."); or things
+tested/verified along the way ("confirmed live", "tested via...", "verified that..."). None of
+that describes what the code *is* — it describes how it got there, and it rots the moment the
+prior state is no longer live in anyone's head.
+
+The **only** exception: documenting a specific edge case the current code depends on, where
+*without* that documentation there's a real risk a future change silently regresses it — e.g. a
+non-obvious runtime/browser quirk, an ordering requirement, or an external contract the code
+must keep satisfying. Even then, phrase it as a property of the current code ("X must happen
+before Y, because Z" / "must stay a `<foo>` because the caller assumes..."), not as an account of
+the bug that revealed it or how it was fixed.
+
+This applies everywhere — inline code comments, doc comments, and commit messages alike. See
+"Commit messages" below for the specific, narrower case of branch-provenance/lineage narrative.
+
+Scope: this repo only — other repos have their own conventions; don't apply this rule there,
+and don't edit their docs when sweeping this one.
+
+## Fix commits must be self-contained
+
+A commit that fixes a defect — however it was found (review, testing, an incident, reading the
+code) — must state, in the commit message itself, enough for a reviewer to judge both the need
+for the fix and its correctness **without opening any other document**: not a review file, an
+ADR draft, a chat/session log, or a linked issue. Cover, briefly:
+
+- the concrete scenario in which the pre-fix code produces the wrong behaviour — what
+  input/state triggers it, and what actually happens; and
+- what the fix changes, and why that closes the gap.
+
+This adds a completeness requirement on top of the style rule above; it does not relax it.
+Describe the defect as a property of the pre-fix code's behaviour — a scenario it mishandles —
+not as an account of how it was discovered, reviewed, or previously patched. A bare reference
+such as "Fixes #8" or "Addresses review finding" is not sufficient on its own.
+
+## Repo scope: reference only this repo's own files
+
+Docs, code comments, ADRs, and commit messages here should reference only files within this
+repo — never a file that happens to exist elsewhere in the workspace (another checked-out repo, a
+sibling directory), whatever it is. If something relevant lives outside this repo, incorporate
+the point that's actually relevant here directly, in this repo's own words, rather than gesturing
+at such non-repo files.
+
+## Sweep for violations of the rules above before committing
+
+Before committing non-trivial work — not only for a large branch-landing effort — consider
+running a compliance sweep of the changed files against the rules above (no narrative history in
+comments; reference only this repo's own files; fix commits self-contained). Judge each file by
+its actual meaning rather than a keyword search: a keyword list misses paraphrased narrative, and
+can only search for an external reference by a name already known in advance, which is exactly
+the case a genuine violation defeats. See `docs/developing/curated-merge-process.md`'s "Compliance sweep"
+section for the full methodology — reading full files inside disposable per-subagent context so
+only a compact findings report survives, parallelised by area, on a cheaper model for the bulk
+pass — which applies just as well to an ordinary feature branch as to a large curated landing.
 
 ## Commit authorship
 
@@ -120,8 +188,8 @@ no such trailer, since nothing is being discarded.
 Before concluding a **multi-commit** branch is unmerged, check for the `Raw-History:` trailer
 convention — a squashed/rewritten landing on `main` won't show up via a plain `git diff` or
 `git merge-base --is-ancestor` check (it's a deliberate history rewrite, not a rebase). See
-`docs/developing/curated-merge-process.md` (detection snippet + the full curated-landing
-process) and `docs/plans/branches.md` (current branch inventory).
+`docs/developing/curated-merge-process.md` for the detection snippet and the full
+curated-landing process.
 
 ## Runtime environment & testing capability (check at the start of each session)
 
@@ -167,9 +235,9 @@ wired via `/etc/claude-code/managed-mcp.json`. Check rather than assume either w
 ```
 ls /etc/claude-code/managed-mcp.json 2>/dev/null   # present => development image, Playwright MCP configured
 ```
-Confirmed absent in this session's own container — but that's not conclusive either way in
-general: this particular container was launched long enough ago to predate `:development`'s
-existence, so its absence here reflects the container's age, not its launch profile.
+Absence alone isn't conclusive either way: a container launched before `:development` existed
+will show this file absent regardless of its launch profile, since a container's age — not its
+launch profile — determines whether the file exists.
 
 ## Writing integration tests (hard rules)
 

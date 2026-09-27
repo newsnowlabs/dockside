@@ -4,15 +4,15 @@ use v5.36;
 
 use Exporter qw(import);
 our @EXPORT_OK = ( qw(
-   flog wlog
+   flog wlog once loop_timer
    get_config
    trim is_true
    call_socket_api_sync call_socket_api call_socket_json_api docker_container_path_exists docker_exec
    get_uri
    run run_system clean_pty run_pty
-   sanitize_sensitive_text
+   sanitize_sensitive_text format_caught_error
    YYYYMMDDHHMMSS TO_JSON
-   cacheReadWrite cloneHash lockFile
+   cacheReadWrite cloneHash lockFile tryLockFile
    encrypt_password generate_auth_cookie_values validate_auth_cookie
    unique
    apply_args_to_record
@@ -30,6 +30,7 @@ use Mojo::Util qw(b64_decode);
 use Digest::SHA qw(sha256_hex);
 use Exception;
 use Crypt::Rijndael;
+use Scalar::Util qw(blessed);
 
 ####################################################################################################
 
@@ -37,8 +38,11 @@ my $FLOG;
 
 sub flog ($m) {
    if(ref($m) eq 'HASH') {
-      $FLOG->{'service'} = $m->{'service'};
-      $FLOG->{'file'} = $m->{'file'};
+      # Only the keys actually supplied are updated. A caller naming just a service (App.pm,
+      # Proxy.pm) must not silently redirect logging that another caller has already pointed at
+      # a specific file: bin/app-server and bin/docker-event-daemon each set both, and a later
+      # service-only call would otherwise send the rest of that process's output somewhere else.
+      $FLOG->{$_} = $m->{$_} for grep { exists $m->{$_} } qw( service file );
       return;
    }
 
@@ -47,10 +51,24 @@ sub flog ($m) {
    my @tm = gmtime($time[0]);
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
 
-   open( LOG, ">>", $FLOG->{'file'} || "/var/log/dockside/dockside.log" ) && do {
-      printf LOG "%05d: %s [%s] %s\n", $$, $dt, $FLOG->{'service'} // 'dockside', $m;
-      close LOG;
-   };
+   my $file = $FLOG->{'file'} || "/var/log/dockside/dockside.log";
+   my $line = sprintf( "%05d: %s [%s] %s\n", $$, $dt, $FLOG->{'service'} // 'dockside', $m );
+
+   if( open( my $fh, ">>", $file ) ) {
+      print $fh $line;
+      close $fh;
+      return;
+   }
+
+   # A log file this process cannot open must not cost the line. STDERR reaches the container's
+   # own log stream for an s6-supervised service, and nginx's error log for the embedded proxy,
+   # so both the message and the reason it could not be filed remain visible to an operator.
+   # This matters because the file is shared by processes running as different users - nginx's
+   # master is root, everything else is $USER - so whichever process creates it decides who can
+   # write to it afterwards; without this, that lands as silence rather than as a diagnosis.
+   print STDERR "[dockside] flog: cannot append to '$file' ($!): $line";
+
+   return;
 }
 
 sub wlog ($m) {
@@ -60,6 +78,49 @@ sub wlog ($m) {
    my $dt = sprintf "%4d/%02d/%02d %02d:%02d:%02d.%06d", $tm[5] + 1900, $tm[4] + 1, @tm[ 3, 2, 1, 0 ], $time[1];
    
    print STDERR $dt . " [dockside] " . $m . "\n";
+}
+
+# Returns a sub that passes its first call through to $cb, with its arguments and in its
+# context, and on any later call logs "$label: continuation called again; ignored" through
+# flog and wlog and does nothing else. It is for a continuation whose caller must be told an
+# outcome exactly once: a caller that has registered an obligation against the callback
+# (an in-flight entry, a lock) would release it twice on a second call, so a second call is a
+# bug in whatever hands out the continuation, reported to both logs and dropped, never
+# delivered. The call counts from the moment it is entered, so a call made from inside $cb is
+# a second call. What $cb throws is not caught: it belongs to the caller of the returned sub,
+# and that throw is still the one call.
+sub once ($label, $cb) {
+   my $called = 0;
+   return sub (@args) {
+      return $cb->(@args) unless $called++;
+      my $line = "$label: continuation called again; ignored";
+      flog($line);
+      wlog($line);
+      return;
+   };
+}
+
+# The wrapper this process runs around every callback this module hands the loop: a reply's
+# completion, a streamed read and the request-sent check (call_socket_api), a fetch's completion
+# (get_uri) and a timer's (loop_timer). A sub taking one sub and running it; the default runs
+# the callback as it is. bin/app-server installs App::Shutdown::busy_while, which brackets the
+# callback as one of the worker's own steps, so a graceful stop whose signal lands inside it
+# drains once the callback has completed rather than above it. The bracket sits at each
+# callback's entry, before anything the callback does, so no operation of it runs outside. An
+# exception the callback raises still reaches the loop.
+my $STEP = sub ($code) { $code->(); return; };
+
+sub step_wrapper ($wrapper) {
+   $STEP = $wrapper;
+   return;
+}
+
+# Runs $cb once, with no arguments, $delay seconds from now on this process's event loop, and
+# returns the loop's id for the timer. The loop passes its own timer callbacks the loop object;
+# that argument stops here, so a consumer's signature can say it takes nothing. This is the
+# timer a process installs for Reservation's create chain (Reservation::provider).
+sub loop_timer ($delay, $cb) {
+   return Mojo::IOLoop->timer( $delay => sub (@) { $STEP->( sub { $cb->(); } ); } );
 }
 
 sub sanitize_sensitive_text ($text) {
@@ -180,9 +241,9 @@ sub call_socket_api_sync ($socket, $path, $opts = {}) {
       elsif($method eq 'POST') {
          my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
 
-         # No 'on_read' streamed-consumption option here (unlike call_socket_api) -
-         # the only caller that ever needed it on the blocking path was the now-deleted sync
-         # docker_exec; every real streamed caller today goes through call_socket_api.
+         # No 'on_read' streamed-consumption option here (unlike call_socket_api) - this
+         # blocking path only ever returns a complete buffered response; a caller that needs
+         # streamed consumption uses call_socket_api instead.
          $result = $ua->post($uri => $headers => $body)->result;
       }
       else {
@@ -215,12 +276,17 @@ sub call_socket_api_sync ($socket, $path, $opts = {}) {
 # connection had even finished being established.
 my %ASYNC_UA_IN_FLIGHT;
 
+# The size of that registry. A non-zero count with no request outstanding is a leaked user agent,
+# which the hash being lexical otherwise makes unobservable from outside this module.
+sub async_ua_in_flight_count () { return scalar keys %ASYNC_UA_IN_FLIGHT; }
+
 # Non-blocking sibling of call_socket_api_sync above - never blocks the caller's own event loop.
 # Same $opts/conventions (method/json/inactivity_timeout/request_timeout/headers/http+unix://
 # transport) - this replicates call_socket_api_sync's own behavior for a non-blocking caller, it does
-# not redefine it. 'on_read' (streamed consumption) is one exception: only this async form
-# supports it - every real streamed-response caller already goes through here, and the blocking
-# form's own 'on_read' branch was dead code, removed above. $cb->($result, $error) fires exactly
+# not redefine it. 'on_read' (streamed consumption) and 'on_request_sent' (see below) are the two
+# exceptions: only this async form supports them - every real streamed-response caller already
+# goes through here, and the blocking form has no connection to observe before its result.
+# $cb->($result, $error) fires exactly
 # once, whenever the call
 # settles: $result is the response object (call_socket_api_sync's own return value) whenever one
 # exists - including a non-2xx HTTP response, e.g. a 404, exactly as call_socket_api_sync's own
@@ -238,9 +304,43 @@ my %ASYNC_UA_IN_FLIGHT;
 # anything usable returned at all" is $tx->error's own ->{'code'} being defined or not, not
 # whether ->error is set at all.
 sub call_socket_api ($socket, $path, $opts, $cb) {
-   my $ua = Mojo::UserAgent->new();
-   $ua->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
-   $ua->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
+   # Established before anything that can fail, including the user agent itself: the exactly-once
+   # guarantee this function's header comment promises is enforced by the once guard in this one
+   # place rather than asserted by each branch below. Callers register in-flight bookkeeping keyed
+   # on $cb firing exactly once (docker_exec's dispatch counters, Reservation's create-chain
+   # promise executors, Reservation::dispatch_hook_exec's %HOOK_DISPATCH_IN_FLIGHT), so a second
+   # call would release an obligation twice and a missing call would hold one until the process
+   # exits. An exception raised by $cb itself is deliberately not caught: it belongs to the
+   # caller, and swallowing it here would hide a real caller bug. $settled, set before $cb is
+   # entered, makes a caller exception distinguishable from a setup failure at the $ua->start
+   # guard below, and tells on_request_sent that a call which has settled fires nothing.
+   #
+   # Every callback this function hands the loop, the completion, a streamed read and the
+   # request-sent check, is entered through $STEP at its entry (see $STEP above). A settlement
+   # made here synchronously, from a setup failure below, runs in the caller's own frame, which
+   # is whatever step the caller is in.
+   my $settled = 0;
+   my $settle = once( "call_socket_api: settlement for $path", sub ( $result, $error ) {
+      $settled = 1;
+      $cb->( $result, $error );
+      return;
+   } );
+
+   # Constructing and configuring the user agent is inside the guard for the same reason every
+   # other setup step below is: a caller that has already registered an obligation cannot
+   # discover a synchronous throw as a settlement, and nothing else would ever settle the
+   # request. Reading $opts here is part of what is being guarded.
+   my $ua = eval {
+      my $agent = Mojo::UserAgent->new();
+      $agent->inactivity_timeout($opts->{'inactivity_timeout'}) if defined $opts->{'inactivity_timeout'};
+      $agent->request_timeout($opts->{'request_timeout'}) if defined $opts->{'request_timeout'};
+      $agent;
+   };
+   unless ($ua) {
+      $settle->( undef, "call_socket_api: failed to create user agent for $path: "
+         . ( format_caught_error($@) || 'no user agent' ) );
+      return;
+   }
 
    my $method = uc($opts->{'method'} // 'GET');
    my $uri = 'http+unix://' . uri_escape($socket) . $path;
@@ -248,37 +348,140 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
 
    flog("call_socket_api: $method $uri");
 
-   # DELETE added for Reservation::action's 'remove' (DELETE /containers/{id}?v=true) -
+   #
+   # DELETE is here for Reservation::action's 'remove' (DELETE /containers/{id}?v=true) -
    # no body, same as GET/HEAD below - Docker's remove-container endpoint takes its options
    # (v/force) as query params, not a body.
-   die Exception->new( 'dbg' => "call_socket_api: unsupported method '$method' for $path" )
-      unless $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE';
+   unless ( $method eq 'GET' || $method eq 'HEAD' || $method eq 'POST' || $method eq 'DELETE' ) {
+      $settle->( undef, "call_socket_api: unsupported method '$method' for $path" );
+      return;
+   }
 
-   my $body = defined($opts->{'json'}) ? encode_json($opts->{'json'}) : '';
-   my $tx = $method eq 'POST'
-      ? $ua->build_tx( POST => $uri => $headers => $body )
-      : $ua->build_tx( $method => $uri => $headers );
+   my $body;
+   if ( defined $opts->{'json'} ) {
+      $body = eval { encode_json($opts->{'json'}) };
+      unless ( defined $body ) {
+         $settle->( undef, "call_socket_api: failed to encode request body for $path: $@" );
+         return;
+      }
+   }
+   else {
+      $body = '';
+   }
 
+   # build_tx parses $uri, so a malformed socket path or $path throws here rather than failing
+   # at the transport level later.
+   my $tx = eval {
+      $method eq 'POST'
+         ? $ua->build_tx( POST => $uri => $headers => $body )
+         : $ua->build_tx( $method => $uri => $headers );
+   };
+   unless ($tx) {
+      $settle->( undef, "call_socket_api: failed to build request for $path: "
+         . ( format_caught_error($@) || 'no transaction' ) );
+      return;
+   }
+
+   # The first exception raised by a streamed-response consumer, if any. It must not escape into
+   # the reactor's own read event, where it would abort the connection without settling $cb and
+   # leave the caller's obligation open - but it must not be discarded either. A consumer that
+   # threw has not seen the rest of that chunk, so whatever it derives from the stream (a pull's
+   # per-layer progress and, critically, Docker's own mid-stream error events) is incomplete, and
+   # reporting HTTP success would present a failed transfer as a successful one. It is therefore
+   # held here and reported at completion below, in place of the response.
+   my $consumerError;
+
+   # The read is a step of its own, and the step ends when the consumer returns: what follows
+   # in the same reactor event, the rest of the response parse and, when this chunk ends the
+   # response, the completion below, is not reachable from a drain begun at the consumer's
+   # end. A response read until the connection closes, Docker's raw exec output stream,
+   # completes on the close, an event of its own; a chunked response, a pull's, can complete in
+   # the event that carried its last chunk.
    if( my $onRead = $opts->{'on_read'} ) {
       $tx->res->content->unsubscribe('read')->on(read => sub ($content, $bytes) {
-         $onRead->($bytes);
+         $STEP->( sub {
+            my $consumed = eval { $onRead->($bytes); 1 };
+            return if $consumed;
+            $consumerError //= $@;
+            flog("call_socket_api: on_read consumer failed for $path: " . format_caught_error($@));
+         } );
+      });
+   }
+
+   # 'on_request_sent' is called once, with no arguments, when every byte of the request has
+   # been written to the socket. The request's 'finish' event (Mojo::Message) is emitted while
+   # its last chunk is being generated, inside the user agent's own write step, which queues that
+   # chunk on the connection's stream only after the event returns; so the check waits for the
+   # next reactor tick, by which time the chunk is queued and, as a rule, written, and then
+   # either fires at once, nothing being left waiting on the stream, or on the stream's 'drain'
+   # event (Mojo::IOLoop::Stream: everything queued has been written). Mojo::Transaction's
+   # 'connection' event is not that point either: it is emitted when a connection is assigned,
+   # before the request is written. For a Unix socket, written means the kernel holds the
+   # request for Docker whatever this process does next. A request that never reaches the
+   # socket, or whose connection fails before the request is written, never fires it: a call
+   # that has settled fires nothing. It is for a caller that answers its own client then rather
+   # than at completion (Reservation::action's stop). A throw from the consumer is logged and
+   # does not escape into the reactor, where it would abort the connection without settling
+   # $cb; the request goes on to settle as usual.
+   if( my $onSent = $opts->{'on_request_sent'} ) {
+      my $fired = 0;
+      my $fire  = sub (@) {
+         $STEP->( sub {
+            return if $fired++ || $settled;
+            eval { $onSent->(); 1 } and return;
+            flog("call_socket_api: on_request_sent consumer failed for $path: " . format_caught_error($@));
+         } );
+      };
+      $tx->req->on(finish => sub (@) {
+         Mojo::IOLoop->next_tick( sub {
+            return if $settled;
+            my $stream = Mojo::IOLoop->stream( $tx->connection // '' );
+            return $fire->() unless $stream && $stream->bytes_waiting;
+            $stream->once(drain => $fire);
+         } );
       });
    }
 
    $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;   # see %ASYNC_UA_IN_FLIGHT's own comment
 
-   $ua->start( $tx => sub ($ua, $tx) {
-      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+   my $started = eval {
+      $ua->start( $tx => sub ($ua, $tx) {
+         $STEP->( sub {
+            delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
 
-      my $err = $tx->error;
-      if( $err && !defined($err->{'code'}) ) {
-         # Transport-level failure - see this function's own header comment for why ->result
-         # would throw here rather than just being undef, and why that's not tested for.
-         $cb->( undef, $err->{'message'} );
-         return;
-      }
-      $cb->( $tx->result, undef );
-   } );
+            my $err = $tx->error;
+            if( $err && !defined($err->{'code'}) ) {
+               # Transport-level failure - see this function's own header comment for why
+               # ->result would throw here rather than just being undef, and why that's not
+               # tested for.
+               $settle->( undef, $err->{'message'} );
+               return;
+            }
+            # Checked before the response is handed over: a stream the consumer could not
+            # finish reading is not a usable result, whatever status the transfer itself ended
+            # with.
+            if ( defined $consumerError ) {
+               $settle->( undef, "call_socket_api: streamed-response consumer failed for $path: "
+                  . ( format_caught_error($consumerError) || 'consumer failed' ) );
+               return;
+            }
+            $settle->( $tx->result, undef );
+         } );
+      } );
+      1;
+   };
+   unless ($started) {
+      my $startErr = $@;
+      # start() can deliver an immediate failure straight to the completion callback, so a throw
+      # here may be $cb's own, raised after the request already settled. That exception is the
+      # caller's to handle - rethrow it rather than reporting it as a setup failure. Otherwise
+      # nothing was ever queued, so this is the only place the request can be settled from, and
+      # the UA reference has to be dropped by hand since no completion callback will run.
+      die $startErr if $settled;
+      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+      $settle->( undef, "call_socket_api: failed to start request for $path: "
+         . ( format_caught_error($startErr) || 'start failed' ) );
+   }
 
    return $tx;   # so a caller with a long-held stream (e.g. /events) can retain/abort it later
 }
@@ -358,7 +561,10 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 #      for the container's whole life.
 #   on_created         => sub ($execId) { ... }  optional, called once the exec exists but
 #      *before* it is started - lets a caller persist the exec id (for later abort/liveness
-#      detection) right away.
+#      detection) right away. It must return true to authorize starting the exec; false or
+#      an exception reports a dispatch failure through $cb without starting the exec. When it
+#      threw, $error includes a rendering of whatever was thrown - see format_caught_error's
+#      own comment for exactly what shape of thrown value renders to what.
 #   on_output          => sub ($stream, $bytes) { ... }  optional, called for each frame of
 #      output as it arrives (not buffered/batched) - $stream is 'stdout' or 'stderr'. Omit to
 #      discard output entirely (the caller only wants the final exit code).
@@ -376,6 +582,27 @@ sub docker_container_path_exists ($socket, $containerId, $containerPath) {
 # request_timeout. Every failure path reports via $cb rather than dying: an async caller has no
 # surrounding try/catch frame by the time any of this runs, so dying here would be an uncaught
 # exception inside a Mojo completion callback, not something any caller could catch.
+# Safely renders a value caught via eval (an Exception object, some other blessed exception, an
+# unblessed reference, or a plain string) into a short string for inclusion in an error/log
+# message - never dies itself, whatever the shape of $err, so a caller reporting a real failure
+# can never lose that report just because the exception describing it wasn't what was expected.
+# '' for a false/empty $err (an ordinary failure with nothing thrown). Prefers a blessed object's
+# own dbg (falling back to msg when dbg is unset), then a plain string as-is, then Perl's own
+# default stringification (e.g. 'HASH(0x...)') for anything else.
+sub format_caught_error ($err) {
+   return '' unless $err;
+   my $formatted = eval {
+      if ( !ref($err) ) { $err }
+      else {
+         my $class = blessed($err);
+         if ( $class && $class->can('dbg') && defined $err->dbg ) { $err->dbg }
+         elsif ( $class && $class->can('msg') && defined $err->msg ) { $err->msg }
+         else { "$err" }
+      }
+   };
+   return ( defined($formatted) && length($formatted) ) ? $formatted : 'unformattable error';
+}
+
 sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
    call_socket_api( $socket, "/containers/$containerId/exec", {
       'method' => 'POST',
@@ -397,8 +624,21 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
          return;
       }
 
-      my $execId = decode_json($createRes->body)->{'Id'};
-      $opts->{'on_created'}->($execId) if $opts->{'on_created'};
+      my $execId = eval { decode_json($createRes->body)->{'Id'} };
+      unless ( defined $execId ) {
+         $cb->( undef, "docker_exec: malformed create response for containerId=$containerId: "
+            . ( $@ || 'missing Id' ) );
+         return;
+      }
+      if ( $opts->{'on_created'} ) {
+         my $accepted = eval { $opts->{'on_created'}->($execId) };
+         my $detail = format_caught_error($@);
+         unless ($accepted) {
+            $cb->( undef, "docker_exec: execId=$execId start authorization failed"
+               . ( $detail ne '' ? ": $detail" : '' ) );
+            return;
+         }
+      }
 
       if( $opts->{'Detach'} ) {
          call_socket_api( $socket, "/exec/$execId/start", {
@@ -449,11 +689,22 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
             $cb->( undef, "docker_exec: unable to start execId=$execId" . ( $startErr ? ": $startErr" : '' ) );
             return;
          }
+         # Same status check as the Detach branch above - a non-200 here (e.g. a 404/409 from a
+         # since-removed or already-started exec) still leaves $startRes truthy, so without this
+         # check it falls through to the inspect call below as if the exec had actually started.
+         # An exec that was never started inspects with ExitCode: null, which both callers of
+         # this function already treat as a failure - but the error surfaced would be a
+         # misleadingly bare "exit code unavailable" rather than the real cause.
+         unless( $startRes->code == 200 ) {
+            $cb->( undef, sprintf( "docker_exec: unable to start execId=%s: %d %s", $execId, $startRes->code, $startRes->body ) );
+            return;
+         }
 
          call_socket_api( $socket, "/exec/$execId/json", {}, sub ($inspectRes, $inspectErr) {
             my $exitCode;
             if( $inspectRes && $inspectRes->is_success ) {
-               $exitCode = decode_json($inspectRes->body)->{'ExitCode'};
+               $exitCode = eval { decode_json($inspectRes->body)->{'ExitCode'} };
+               flog("docker_exec: malformed inspect response for execId=$execId: $@") if $@;
             }
             else {
                flog("docker_exec: post-run inspect of execId=$execId failed; exitCode unavailable");
@@ -464,31 +715,69 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
    } );
 }
 
-# Just GET a URI, non-blocking - $cb->($result) fires with the response object, or undef on
-# any failure (connection error, timeout, ...). Used by Reservation::getGitDevContainer;
-# kept as its own function here, not inlined, in case another caller needs the same non-blocking
-# fetch later. Manual build_tx/start (not the ->get($uri => $cb) shorthand) and
-# %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api above - the same
-# "Premature connection close" GC hazard applies here (this function's own $ua is otherwise
-# unreferenced the instant it returns), same fix.
+# Just GET a URI, non-blocking - $cb->($result) fires exactly once: with the response object,
+# or undef on any failure, a request that cannot be built or started as much as a connection
+# error or a timeout. Used by Reservation::getGitDevContainer; kept as its own function here,
+# not inlined, in case another caller needs the same non-blocking fetch later. Manual
+# build_tx/start (not the ->get($uri => $cb) shorthand) and %ASYNC_UA_IN_FLIGHT registration,
+# exactly matching call_socket_api above - the same "Premature connection close" GC hazard
+# applies here (this function's own $ua is otherwise unreferenced the instant it returns), same
+# fix. The exactly-once guarantee is call_socket_api's too, kept by the same construction and
+# for the same reason: a caller registers an obligation against $cb firing
+# (Reservation::getGitDevContainer promises its own caller one callback, and
+# User::createContainerReservation holds a create request's registry entry until that callback),
+# so a setup failure settles through $cb rather than throwing, and an exception $cb itself
+# raises is the caller's and is rethrown, told apart from a setup failure by $settled, which is
+# set before $cb is entered. The completion is entered through $STEP at its entry.
 sub get_uri ($uri, $cb) {
-   my $ua = Mojo::UserAgent->new();
+   my $settled = 0;
+   my $settle = once( "get_uri: completion for $uri", sub ($result) {
+      $settled = 1;
+      $cb->($result);
+      return;
+   } );
+
+   my $ua = eval { Mojo::UserAgent->new() };
+   unless ($ua) {
+      flog( "get_uri: failed to create user agent for $uri: " . ( format_caught_error($@) || 'no user agent' ) );
+      $settle->(undef);
+      return;
+   }
 
    flog("get_uri: $uri");
 
-   my $tx = $ua->build_tx( GET => $uri );
+   my $tx = eval { $ua->build_tx( GET => $uri ) };
+   unless ($tx) {
+      flog( "get_uri: failed to build request for $uri: " . ( format_caught_error($@) || 'no transaction' ) );
+      $settle->(undef);
+      return;
+   }
    $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;
 
-   $ua->start( $tx => sub ($ua, $tx) {
-      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+   my $started = eval {
+      $ua->start( $tx => sub ($ua, $tx) {
+         $STEP->( sub {
+            delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
 
-      my $err = $tx->error;
-      if( $err && !defined($err->{'code'}) ) {
-         $cb->(undef);
-         return;
-      }
-      $cb->( $tx->result );
-   } );
+            my $err = $tx->error;
+            if( $err && !defined($err->{'code'}) ) {
+               $settle->(undef);
+               return;
+            }
+            $settle->( $tx->result );
+         } );
+      } );
+      1;
+   };
+   unless ($started) {
+      # As at call_socket_api's start guard: a throw after the request settled is the consumer's
+      # own, raised on a completion start delivered synchronously, and belongs to the caller.
+      my $startErr = $@;
+      die $startErr if $settled;
+      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+      flog( "get_uri: failed to start request for $uri: " . ( format_caught_error($startErr) || 'no error' ) );
+      $settle->(undef);
+   }
 
    return;
 }
@@ -728,6 +1017,24 @@ sub lockFile ($lockfile) {
       || die Exception->new( 'dbg' => "Cannot open lock file '$lockfile' ($!)" );
    flock( $LK, LOCK_EX )
       || do { close $LK; die Exception->new( 'dbg' => "Cannot lock '$lockfile' ($!)" ); };
+   return $LK;
+}
+
+# Like lockFile, but non-blocking: returns the open, locked handle immediately if the lock is
+# free, or undef immediately if some other live process already holds it - never waits. Used
+# wherever "someone else already owns this" is a normal, expected outcome to detect and skip
+# rather than a failure (docs/adr/0007-create-restart-recovery.md's per-reservation create lock
+# is the first caller: a chain already running elsewhere, in this process or another, must be
+# detected without blocking on it). Same scope-guard release contract as lockFile above - the
+# caller keeps the handle in a lexical scoped to exactly the region to hold the lock, and
+# dropping it (return, die, or process exit) releases it.
+sub tryLockFile ($lockfile) {
+   open( my $LK, ">>", $lockfile )
+      || die Exception->new( 'dbg' => "Cannot open lock file '$lockfile' ($!)" );
+   unless ( flock( $LK, LOCK_EX | LOCK_NB ) ) {
+      close($LK);
+      return undef;
+   }
    return $LK;
 }
 

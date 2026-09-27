@@ -148,7 +148,7 @@ class IdeLaunchReadinessTests(TestCase):
     @classmethod
     def tearDownClass(cls):
         for fn in (
-            lambda: cls.admin.stop(cls.CONTAINER, wait=False),
+            lambda: cls.admin.stop(cls.CONTAINER, wait=True, timeout=60),
             lambda: cls.admin.remove(cls.CONTAINER, wait=False),
         ):
             try:

@@ -3,7 +3,7 @@
 
 The rest of the suite exercises the admin endpoints only as un-asserted _EnvManager
 setup scaffolding.  This module asserts the persisted shape end-to-end via the
-`dockside` CLI, covering the merge-gate fixes:
+`dockside` CLI, covering:
 
   - role create --permissions <json> persists permissions as a structured object,
     not a string.                                                       [test_01]
@@ -153,10 +153,10 @@ class AdminApiTests(TestCase):
         # id resolution, so fake ids are fine. Container reads (/containers, .../logs,
         # /resources) stay GET and are intentionally not listed.
         mutation_paths = (
-            # admin/self routes (migrated by the admin POST work)
+            # admin/self routes (POST-only)
             '/roles/create',
             '/users/inttest-verbcheck-absent/remove',
-            # container routes (C8: complete the container GET→POST migration)
+            # container routes (POST-only)
             '/containers/create',
             '/containers/deadbeef/update',
             '/containers/deadbeef/start',

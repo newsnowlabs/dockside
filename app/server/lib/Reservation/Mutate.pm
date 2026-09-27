@@ -4,9 +4,9 @@ package Reservation::Mutate;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(update load_clean_map record_hook_history increment_data_field hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
+our @EXPORT_OK = qw(update load_clean_map record_stop_request release_stop_request resolve_hook_status hook_claim_if_not_running launch_reset_stages_if_idle add_router remove_router replace_router);
 
-use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync);
+use Util qw(flog wlog YYYYMMDDHHMMSS cacheReadWrite cloneHash call_socket_api_sync tryLockFile);
 use Exception;
 use Data qw($CONFIG);
 use JSON;
@@ -92,6 +92,51 @@ sub update ($self, $e) {
    );
 }
 
+# record_stop_request:
+#
+# Records $requestedAt, the time a stop request for reservation $id was sent to Docker, and
+# $requestId, that request's own id, as data.stopRequestedAt and data.stopRequestId, unless a
+# later time is on record. Stop requests for one container may be sent from any worker and their
+# records land in any order, so the later time always stands; an equal time, two requests within
+# one millisecond, is taken over by the request recording it, the two having no order. Returns
+# whether it was recorded.
+sub record_stop_request ($id, $requestedAt, $requestId) {
+   my $recorded = 0;
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $known = $reservation->{'data'}{'stopRequestedAt'};
+         return 0 if defined($known) && $known > $requestedAt;
+         $reservation->{'data'}{'stopRequestedAt'} = $requestedAt;
+         $reservation->{'data'}{'stopRequestId'}   = $requestId;
+         $recorded = 1;
+         return 1;
+      }
+   );
+   return $recorded;
+}
+
+# release_stop_request:
+#
+# Writes data.stopRequestedAt as 0 for reservation $id, marking the stop request with id
+# $requestId as one whose Docker call ended without success, but only while the record still
+# holds that id: a request recorded since is left for its own completion to settle. Returns
+# whether it was released.
+sub release_stop_request ($id, $requestId) {
+   my $released = 0;
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $known = $reservation->{'data'}{'stopRequestId'};
+         return 0 unless defined($known) && $known eq $requestId;
+         $reservation->{'data'}{'stopRequestedAt'} = 0;
+         $released = 1;
+         return 1;
+      }
+   );
+   return $released;
+}
+
 # load_clean_map:
 #
 # Takes as input, a full complement of container IDs for active (running or stopped) containers.
@@ -106,6 +151,11 @@ sub load_clean_map ($class, @containerIds) {
    my $now = YYYYMMDDHHMMSS(time);
    my $expireTime = YYYYMMDDHHMMSS(time - 30);
 
+   # Keep deletion guards through the database write, not just through the callback.
+   # Acquisition is non-blocking: a create driver may hold its reservation lock while
+   # waiting for this database lock, so waiting here would deadlock.
+   my @deletionLocks;
+
    return mutate(
       sub ($by_id, $by_name) {
 
@@ -114,6 +164,26 @@ sub load_clean_map ($class, @containerIds) {
          keys %$by_id;
          # Loop through reservation db entries
          while( my ( $id, $reservation ) = each %$by_id ) {
+
+            # A reservation whose create chain is still recoverable - a non-terminal stage that
+            # has not been recorded as failed - is neither expired nor deleted here. Its container
+            # may exist: a create that could not establish its own outcome deliberately keeps this
+            # stage so that a later reconciliation pass can find out, and expiring the record
+            # would delete the only thing that remembers to ask. This matters most at 'starting',
+            # where a containerId is already recorded, so the branch below would otherwise expire
+            # the record on the strength of a Docker snapshot that simply has not caught up.
+            # Reconciliation is what ends this state: it either completes the chain, or records a
+            # definitive failure, after which the ordinary rules below apply.
+            my $createStatus = $reservation->{'createStatus'};
+            if ( ref($createStatus) eq 'HASH' && !$createStatus->{'failed'}
+                 && ( $createStatus->{'stage'} // '' ) =~ /^(?:pulling|creating|starting)$/ ) {
+               # An expiry recorded before the record reached this state would otherwise outlive it.
+               if ( $reservation->{'expiryTime'} ) {
+                  delete $reservation->{'expiryTime'};
+                  $Updates++;
+               }
+               next;
+            }
 
             # If the reservation already has a containerId:
             if( my $containerId = $reservation->{'containerId'} ) {
@@ -141,10 +211,17 @@ sub load_clean_map ($class, @containerIds) {
             # For container reservations, and failed launch reservations:
             # - If expiryTime exists and is old enough, delete the reservation db entry.
             if( $reservation->{'expiryTime'} && $reservation->{'expiryTime'} lt $expireTime ) {
+               my $lock = tryLockFile("$CONFIG->{'tmpPath'}/r-$id.lock");
+               next unless $lock;   # an outstanding create can still update this record
+               push @deletionLocks, $lock;
                flog("load_clean_map: deleting reservation $id");
                delete $by_name->{ $by_id->{$id}{'name'} };
                delete $by_id->{$id};
                $Updates++;
+
+               # Retain the inode until app-server's pre-fork orphan cleanup. Another
+               # process may already have opened this path before trying its flock;
+               # unlinking here would allow it and a later opener to own different inodes.
             }
          }
 
@@ -155,82 +232,63 @@ sub load_clean_map ($class, @containerIds) {
    );
 }
 
-# record_hook_history:
+# _append_hook_history:
 #
-# Atomically append $entry to reservation $id's data.hooks.history array, evicting oldest-first
-# down to at most $cap rows once appending would exceed it - but only rows in a terminal state
-# ($_->{'exitCode'} defined), never a still-running one (item B's storage-model rule: an
-# unrelated, more-frequent *other* hook name's invocations must never push a genuinely
-# still-running row out from under it, so the array can transiently exceed $cap while enough
-# invocations are genuinely in flight at once - expected, not a bug).
+# Records $entry, a hooks.status entry that has just been made terminal, in $data's
+# hooks.history array. Called only from inside a mutate() closure, on the locked, freshly re-read
+# $data whose status entry the caller has just resolved, so the row and the terminal entry are
+# one write: a crash or a write failure leaves either both or neither, never a resolved entry
+# with no row for it or a row for an entry still reading 'running'. Nothing outside a mutate()
+# closure appends to this array - Reservation::store()'s cloneHash-based merge (Util.pm)
+# compares an array by reference and replaces it wholesale, so two writers appending through
+# it would race and the loser's row would be lost.
 #
-# Deliberately its own atomic mutator, bypassing Reservation::store()'s usual whole-record
-# update() - update()'s cloneHash-based merge (Util.pm) recurses safely into nested *hashes*
-# (data.hooks.status, keyed by hook name, merges key-by-key across concurrent dispatches
-# updating different names, each blind to the other's simultaneous write), but an *array*
-# value is only ever compared by reference and replaced wholesale - two concurrent appends
-# via that path would race, and the loser's row would simply be lost. This function instead
-# re-reads the reservation fresh under mutate()'s own exclusive lock, appends, evicts, and
-# writes back - safe under genuine concurrency, unlike a read-append-store() round trip
-# through a possibly-stale in-memory copy of the whole array.
-sub record_hook_history ($id, $entry, $cap) {
-   return mutate(
-      sub ($by_id, $by_name) {
-         my $reservation = $by_id->{$id} or return 0;
-         my $data = $reservation->{'data'} //= {};
-         my $hooks = $data->{'hooks'} //= {};
-         my $history = $hooks->{'history'} //= [];
+# The array holds one row per invocation. A row already present for $entry's invocationId is
+# replaced where it stands rather than joined by a second: two writers can resolve the same
+# invocation - a reader that settled it from Docker, and the live completion arriving a moment
+# later - and the row ends up carrying whichever wrote last, which is also what the status entry
+# carries. A row with no invocationId is only ever appended.
+#
+# Evicts oldest-first down to at most $cap rows once appending would exceed it - but never a
+# row still recording a running invocation (item B's storage-model rule: an unrelated,
+# more-frequent *other* hook name's invocations must never push a genuinely still-running row
+# out from under it, so the array can transiently exceed $cap while enough invocations are
+# genuinely in flight at once - expected, not a bug).
+#
+# Eligibility is decided on 'state', which is what that rule is actually about, and not on
+# whether a row carries an exitCode: a row can be perfectly terminal and still have none, and
+# several routinely do - 'skipped' (every inapplicable launch:-DAG stage, recorded on every
+# container start), 'aborted' (a dispatch that never produced an exit code at all) and
+# 'timedOut'. Making those ineligible would leave the array unable to shrink whenever they
+# outnumber the rows that do carry an exitCode, which for an ordinary launch cycle they always
+# do, and $cap would then bound nothing.
+sub _append_hook_history ($data, $entry, $cap) {
+   my $history = ( $data->{'hooks'} //= {} )->{'history'} //= [];
 
-         push(@$history, $entry);
+   my $invocationId = $entry->{'invocationId'};
+   if ( defined($invocationId) && length($invocationId) ) {
+      for my $i ( 0 .. $#$history ) {
+         next unless ( $history->[$i]{'invocationId'} // '' ) eq $invocationId;
+         $history->[$i] = $entry;
+         return;
+      }
+   }
 
-         while( @$history > $cap ) {
-            my $evictIndex;
-            for my $i ( 0 .. $#$history ) {
-               if( defined $history->[$i]{'exitCode'} ) {
-                  $evictIndex = $i;
-                  last;
-               }
-            }
-            last unless defined $evictIndex;
-            splice(@$history, $evictIndex, 1);
+   push(@$history, $entry);
+
+   while( @$history > $cap ) {
+      my $evictIndex;
+      for my $i ( 0 .. $#$history ) {
+         if( ( $history->[$i]{'state'} // '' ) ne 'running' ) {
+            $evictIndex = $i;
+            last;
          }
-
-         return 1;
       }
-   );
-}
+      last unless defined $evictIndex;
+      splice(@$history, $evictIndex, 1);
+   }
 
-# increment_data_field:
-#
-# Atomically increments $reservation.data.$key by 1 and returns the new value. Same rationale
-# and pattern as record_hook_history just above (its own comment explains the general
-# principle in full) - the read and the write both happen inside mutate()'s own exclusive lock,
-# against a freshly re-read reservation, never against this process's own in-memory copy.
-#
-# Deliberately not just "narrow the eventual store() payload down to {data => {$key => N}}":
-# narrowing what gets *sent* (see Reservation::store_fields) only protects fields a writer
-# isn't trying to change, by leaving them absent from its payload entirely - it does nothing
-# for a field the writer *is* trying to change, whose new value is computed by reading the
-# field's own prior value first (an increment, unlike an authoritative "set to X"). Two
-# increments computed from the same stale read would still silently lose one, no matter how
-# narrowly the write is scoped - only recomputing from a fresh value, under the same lock as
-# the write, closes that. (Today's calling code only ever attempts one increment per launch
-# cycle, per stage's own idempotency guard, so this isn't defending against a currently-known
-# concurrent second incrementer - it's closing the same class of gap record_hook_history
-# already closes for the history array, on the same principle, so a future caller doesn't
-# reopen it.)
-sub increment_data_field ($id, $key) {
-   my $newValue;
-   mutate(
-      sub ($by_id, $by_name) {
-         my $reservation = $by_id->{$id} or return 0;
-         my $data = $reservation->{'data'} //= {};
-         $newValue = ( $data->{$key} // 0 ) + 1;
-         $data->{$key} = $newValue;
-         return 1;
-      }
-   );
-   return $newValue;
+   return;
 }
 
 ################################################################################
@@ -326,16 +384,23 @@ sub remove_router ($id, $name) {
 }
 
 # Atomically replaces router $name with $routerDef - same-name remove+add under one lock, so a
-# rename-in-place never has a window where the router is simply gone. Carries meta.access[$name]
-# forward when $routerDef's (possibly caller-supplied) name is unchanged *and* that carried value
-# is still legal under the new (possibly caller-narrowed) auth list; otherwise falls back to
-# $accessLevel - already resolved by User.pm exactly as add_router's own $accessLevel is, not
-# decided here. Returns ($normalised, $accessLevel) - the caller (Reservation.pm's own
-# replace_router) needs both to keep its in-memory copy in sync. Same hard ide/ssh block as
+# rename-in-place never has a window where the router is simply gone. The resulting
+# meta.access[$name] is resolved in this order: $explicitAccessLevel, if defined, always wins
+# (the caller asked for it by name, so it's checked for legality and used, full stop - it must
+# never be silently overridden by the router's own pre-existing access level); otherwise the old
+# meta.access[$name] is carried forward, but only when $routerDef's (possibly caller-supplied)
+# name is unchanged *and* that carried value is still legal under the new (possibly
+# caller-narrowed) auth list - e.g. replacing a 'public' router with one whose auth has been
+# narrowed to ['owner'] must not silently keep 'public' just because the name matched; otherwise
+# $defaultAccessLevel is used. Both $explicitAccessLevel and $defaultAccessLevel are resolved by
+# User.pm exactly as add_router's own $accessLevel is (owner/developer default, or the caller's
+# explicit override) - this function only picks between them and the carried value, it decides
+# none of the three itself. Returns ($normalised, $accessLevel) - the caller (Reservation.pm's
+# own replace_router) needs both to keep its in-memory copy in sync. Same hard ide/ssh block as
 # remove_router; collision-checked against the router list with the old entry already excluded,
 # so replacing a router with an unchanged definition of the same name never spuriously collides
 # with itself.
-sub replace_router ($id, $name, $routerDef, $accessLevel) {
+sub replace_router ($id, $name, $routerDef, $explicitAccessLevel, $defaultAccessLevel) {
    my ( $normalised, $resolvedAccessLevel );
    mutate(
       sub ($by_id, $by_name) {
@@ -354,15 +419,12 @@ sub replace_router ($id, $name, $routerDef, $accessLevel) {
          push( @remaining, $normalised );
          $reservation->{'profileObject'}{'routers'} = \@remaining;
 
-         # Carry the old level forward only if it's still legal under the (possibly caller-
-         # narrowed) new auth list - e.g. replacing a 'public' router with one whose auth has been
-         # narrowed to ['owner'] must not silently keep 'public' just because the name matched.
-         # Otherwise fall back to $accessLevel, which is still checked for legality either way.
          my $carried = $reservation->{'meta'}{'access'}{$name};
-         $resolvedAccessLevel = ( $normalised->{'name'} eq $name && defined($carried) &&
-                                   grep { $_ eq $carried } @{ $normalised->{'auth'} } )
-            ? $carried
-            : $accessLevel;
+         $resolvedAccessLevel =
+              defined($explicitAccessLevel) ? $explicitAccessLevel
+            : ( $normalised->{'name'} eq $name && defined($carried) &&
+                grep { $_ eq $carried } @{ $normalised->{'auth'} } ) ? $carried
+            : $defaultAccessLevel;
          _check_router_access_level( $resolvedAccessLevel, $normalised->{'auth'} );
          delete $reservation->{'meta'}{'access'}{$name} unless $normalised->{'name'} eq $name;
          $reservation->{'meta'}{'access'}{ $normalised->{'name'} } = $resolvedAccessLevel;
@@ -382,15 +444,25 @@ sub replace_router ($id, $name, $routerDef, $accessLevel) {
 # for its duration - only on that path, never on the common "nothing recorded" path, which this
 # returns from after a single hash lookup.
 #
-# Returns ($isLive, $healedEntry): $isLive true means genuinely still running - the caller must
-# not touch this slot. $healedEntry is a resolved entry (done/failed/aborted), for the caller to
-# persist and record_hook_history, if $existing was stale and needed self-healing; undef if
-# $existing was already terminal, absent, or genuinely live (nothing to heal either way).
+# Returns ($isLive, $healedFields): $isLive true means genuinely still running - the caller must
+# not touch this slot. $healedFields is the ('state', and 'exitCode' where known) fields
+# describing how a stale $existing actually ended, for the caller to apply via
+# _resolve_hook_entry below and _append_hook_history; undef if $existing was already terminal,
+# absent, or genuinely live (nothing to heal either way). Deliberately not a full merged entry -
+# only _resolve_hook_entry ever combines these fields with $existing, so there is exactly one
+# place that does, and it's the one place that also knows about a pending startCount commit.
 sub _hook_entry_liveness ($existing) {
    return ( 0, undef ) unless $existing && ( $existing->{'state'} // '' ) eq 'running';
 
    if ( !defined( $existing->{'execId'} ) ) {
-      return ( 1, undef );   # newly-started elsewhere, the signal doesn't exist yet - genuinely live
+      # Normally live: newly-started elsewhere, the execId signal doesn't exist yet. Stale only
+      # past $Reservation::HOOK_CLAIM_STALE_SECONDS with still no execId at all - the one gap
+      # Reservation::dispatch_hook_exec's own try/catch around this exact window cannot close
+      # (its owning process dying outright, not an exception it could catch and settle itself) -
+      # see that package variable's own comment for why this lives there, not here.
+      my $staleBefore = YYYYMMDDHHMMSS( time - $Reservation::HOOK_CLAIM_STALE_SECONDS );
+      return ( 1, undef ) if ( $existing->{'startTime'} // '' ) ge $staleBefore;
+      return ( 0, { 'state' => 'aborted' } );
    }
 
    my $res = call_socket_api_sync( $CONFIG->{'docker'}{'socket'}, "/exec/$existing->{'execId'}/json", {} );
@@ -399,13 +471,107 @@ sub _hook_entry_liveness ($existing) {
       return ( 1, undef ) if $info->{'Running'};   # genuinely still running
 
       if ( defined $info->{'ExitCode'} ) {
-         return ( 0, { %$existing,
+         return ( 0, {
             'state'    => $info->{'ExitCode'} == 0 ? 'done' : 'failed',
             'exitCode' => $info->{'ExitCode'},
          } );
       }
    }
-   return ( 0, { %$existing, 'state' => 'aborted' } );   # signal not conclusive - self-heal
+   return ( 0, { 'state' => 'aborted' } );   # signal not conclusive - self-heal
+}
+
+# The one place a hooks.status.$name entry is ever transitioned into a terminal state
+# ('done'/'failed'/'timedOut'/'aborted'/'skipped') - called from inside each of this module's
+# own mutate() closures (never on its own, since it needs the lock already held), by
+# resolve_hook_status below, hook_claim_if_not_running, and launch_reset_stages_if_idle. $data
+# is the reservation's own already-locked 'data' hashref; $fields (must include 'state') is
+# merged onto whatever's currently persisted for $name, exactly as
+# Reservation::hook_status_completed's own merge used to do - the only difference is this reads
+# $existing fresh from $data rather than from a caller's possibly-stale in-memory copy, the same
+# correctness reasoning _append_hook_history already relies on for the same class of risk.
+#
+# If $existing carries 'pendingStartCount' (set by docker-event-daemon's own
+# _launch_dispatch_prep at dispatch time - see its comment) and $fields resolves the entry to
+# 'done', data.startCount is raised to at least that value in this same write - never
+# incremented again from whatever it currently holds, because the dispatched container was
+# already told this exact value via DOCKSIDE_START_COUNT before this exec ever ran, and nothing
+# that happens afterward can make a different number correct. This makes the commit idempotent:
+# applying it twice (e.g. a future caller resolving the same already-resolved entry again) can
+# only ever raise data.startCount to the same value, never bump it twice. 'pendingStartCount' is
+# never itself persisted onward - it is a one-shot instruction consumed here, not part of the
+# entry's own terminal vocabulary.
+#
+# A supplied token must match the persisted entry, including when that entry has no token.
+# An empty string identifies an observed legacy entry with no token; undef is reserved for
+# same-lock healers and synchronous DAG decisions. A pending stage has
+# no invocation and cannot accept a completion carrying a token. Returns ($applied, $entry).
+sub _resolve_hook_entry ($data, $name, $fields, $expectedInvocationId = undef) {
+   my $status = ( $data->{'hooks'} //= {} )->{'status'} //= {};
+   my $existing = $status->{$name} // { 'name' => $name };
+
+   if ( defined($expectedInvocationId)
+        && ( ( $existing->{'invocationId'} // '' ) ne $expectedInvocationId
+             || ($expectedInvocationId eq '' && ($existing->{'state'} // '') ne 'running') ) ) {
+      return ( 0, $existing );
+   }
+
+   my $resolved = { %$existing, %$fields };
+   my $pendingStartCount = delete $resolved->{'pendingStartCount'};
+   if ( defined($pendingStartCount) && ($fields->{'state'} // '') eq 'done' &&
+        ( $data->{'startCount'} // 0 ) < $pendingStartCount ) {
+      $data->{'startCount'} = $pendingStartCount;
+   }
+
+   return ( 1, $status->{$name} = $resolved );
+}
+
+# Reservation::hook_status_completed's own locked mutator - see _resolve_hook_entry above for
+# what "resolve" means here, including the pending startCount commit and $expectedInvocationId
+# fencing. An applied resolution also records its history row (capped at $cap rows, see
+# _append_hook_history) in this same write. Returns ($applied, $entry, $startCount): $applied
+# is false when the write was rejected as stale, in which case $entry is whatever is genuinely
+# current, not this call's own $fields; $entry is for the caller to sync onto its own in-memory
+# copy; $startCount (the record's current value once this call returns, whether or not it just
+# changed) for the caller to sync onto its own in-memory copy too.
+sub resolve_hook_status ($id, $name, $fields, $cap, $expectedInvocationId = undef) {
+   my ( $applied, $resolved, $startCount );
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $data = $reservation->{'data'} //= {};
+         ( $applied, $resolved ) = _resolve_hook_entry( $data, $name, $fields, $expectedInvocationId );
+         _append_hook_history( $data, { %$resolved }, $cap ) if $applied;
+         $startCount = $data->{'startCount'};
+         return 1;
+      }
+   );
+   return ( $applied, $resolved, $startCount );
+}
+
+# Writes dispatch progress only while the caller owns a running invocation. Exec creation
+# and detached-start confirmation use the same locked identity check. A detached launch may
+# commit one start-count increment with its first confirmation. Returns current state even
+# on rejection so the caller can synchronize its in-memory view.
+sub update_running_hook ($id, $name, $expectedInvocationId, $fields, $incrementStartCount = 0) {
+   my ( $applied, $entry, $startCount ) = ( 0, undef, undef );
+   mutate(
+      sub ($by_id, $by_name) {
+         my $reservation = $by_id->{$id} or return 0;
+         my $data = $reservation->{'data'} //= {};
+         $entry = $data->{'hooks'}{'status'}{$name};
+         $startCount = $data->{'startCount'};
+         return 0 unless $entry && ($entry->{'state'} // '') eq 'running'
+            && defined($expectedInvocationId)
+            && ($entry->{'invocationId'} // '') eq $expectedInvocationId;
+         if ( $incrementStartCount && !$entry->{'dispatchStarted'} ) {
+            $startCount = $data->{'startCount'} = ($startCount // 0) + 1;
+         }
+         $entry = $data->{'hooks'}{'status'}{$name} = { %$entry, %$fields };
+         $applied = 1;
+         return 1;
+      }
+   );
+   return ( $applied, $entry, $startCount );
 }
 
 # Atomically checks-and-claims hook/stage $name for reservation $id: if it is not genuinely
@@ -431,11 +597,9 @@ sub _hook_entry_liveness ($existing) {
 # too, when a profile's hooks entry sets "manual": true on them).
 #
 # A self-heal here (finding a stale entry and resolving it 'done'/'failed'/'aborted' before
-# claiming the slot fresh) also needs a history-array append, exactly like hook_is_running's own
-# self-heal does via hook_status_completed - done as a separate, sequential record_hook_history
-# call *after* this mutate() returns (nesting a second mutate() call inside this one's own
-# closure would try to flock() the same file twice from this process and deadlock - mutate()'s
-# lock is not reentrant).
+# claiming the slot fresh) records the healed entry's history row inside this same mutate()
+# closure, exactly as hook_is_running's own self-heal does through hook_status_completed, so
+# the heal and the claim that follows it are one write.
 #
 # Returns the claimed entry (a hashref) if this call won and should proceed to dispatch, or
 # undef if another invocation already owns $name. mutate() only ever operates on a fresh,
@@ -444,35 +608,42 @@ sub _hook_entry_liveness ($existing) {
 # onto its own in-memory Reservation, exactly mirroring _hook_status_store_one's existing
 # discipline, or its own subsequent hook_status_set_running_details call would merge execId
 # onto stale (pre-claim) in-memory state instead of this fresh entry.
-sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
+#
+# $invocationId is stamped onto the claimed entry as-is, uninterpreted here - it is the token
+# the caller must present back to _resolve_hook_entry (via resolve_hook_status/
+# hook_status_completed) to resolve this exact claim later, so a completion belonging to a since-
+# superseded claim of the same $name is rejected rather than overwriting the winner. The heal
+# call below needs no token of its own - it reads $status->{$name} fresh, under this same lock,
+# so it can never be stale by construction.
+sub hook_claim_if_not_running ($id, $name, $logPath, $cap, $invocationId) {
    my $claimedEntry;
-   my $healedEntry;
 
    mutate(
       sub ($by_id, $by_name) {
          my $reservation = $by_id->{$id} or return 0;
-         my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+         my $data = $reservation->{'data'} //= {};
+         my $status = ( $data->{'hooks'} //= {} )->{'status'} //= {};
 
-         my ( $isLive, $healed ) = _hook_entry_liveness( $status->{$name} );
+         my ( $isLive, $healedFields ) = _hook_entry_liveness( $status->{$name} );
          return 0 if $isLive;
-         if ( $healed ) {
-            $healedEntry = $healed;
-            $status->{$name} = $healed;
+         if ( $healedFields ) {
+            ( undef, my $healedEntry ) = _resolve_hook_entry( $data, $name, $healedFields );
+            _append_hook_history( $data, { %$healedEntry }, $cap );
             # Falls through to claim the now-free slot below.
          }
 
          $status->{$name} = $claimedEntry = {
-            'name'      => $name,
-            'state'     => 'running',
-            'execId'    => undef,
-            'logPath'   => $logPath,
-            'startTime' => YYYYMMDDHHMMSS(time),
+            'name'         => $name,
+            'state'        => 'running',
+            'execId'       => undef,
+            'logPath'      => $logPath,
+            'startTime'    => YYYYMMDDHHMMSS(time),
+            'invocationId' => $invocationId,
          };
          return 1;
       }
    );
 
-   record_hook_history( $id, { %$healedEntry }, $cap ) if $healedEntry;
    return $claimedEntry;
 }
 
@@ -492,31 +663,39 @@ sub hook_claim_if_not_running ($id, $name, $logPath, $cap) {
 # elsewhere), but would corrupt the status record's own accuracy for the duration - checked the
 # same way for all 5 names here rather than special-casing which two actually need it.
 #
-# Returns the entries actually written (a hashref, name => entry) - the caller must sync these
-# onto its own in-memory Reservation, exactly as hook_claim_if_not_running's callers do (mutate()
-# only ever operates on a fresh, separately-loaded copy, never the caller's own object).
+# Returns ($written, $startCount). The caller must sync both onto its in-memory Reservation:
+# healing a previous prep can advance the count used by the next launch's dispatch.
 sub launch_reset_stages_if_idle ($id, $stageNames, $cap) {
    my $written = {};
-   my @healedEntries;
+   my $startCount;
 
    mutate(
       sub ($by_id, $by_name) {
          my $reservation = $by_id->{$id} or return 0;
-         my $status = ( $reservation->{'data'}{'hooks'} //= {} )->{'status'} //= {};
+         my $data = $reservation->{'data'} //= {};
+         my $status = ( $data->{'hooks'} //= {} )->{'status'} //= {};
 
          for my $name (@$stageNames) {
-            my ( $isLive, $healed ) = _hook_entry_liveness( $status->{$name} );
+            my ( $isLive, $healedFields ) = _hook_entry_liveness( $status->{$name} );
             next if $isLive;   # leave it running, untouched - not ours to reset
 
-            push( @healedEntries, $healed ) if $healed;
+            # A stale entry resolved here still commits its own pending startCount (see
+            # _resolve_hook_entry) even though $status->{$name} is about to be overwritten below
+            # for the fresh cycle - the history row this produces is the only lasting record of
+            # that invocation's own outcome, but the startCount side effect isn't allowed to
+            # depend on anything ever reading it back from history.
+            if ( $healedFields ) {
+               ( undef, my $healedEntry ) = _resolve_hook_entry( $data, $name, $healedFields );
+               _append_hook_history( $data, { %$healedEntry }, $cap );
+            }
             $status->{$name} = $written->{$name} = { 'name' => $name, 'state' => 'pending' };
          }
+         $startCount = $data->{'startCount'};
          return 1;
       }
    );
 
-   record_hook_history( $id, { %$_ }, $cap ) for @healedEntries;
-   return $written;
+   return ( $written, $startCount );
 }
 
 1;

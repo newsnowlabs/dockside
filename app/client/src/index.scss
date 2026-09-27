@@ -1,40 +1,144 @@
-$table-accent-bg: #f9f9f9;
-$started: #337ab7;
-$stopped: #f8f9fa;
+// Vuetify's own CSS + the MDI icon font are loaded via JS import in
+// src/plugins/vuetify.js (see vite-plugin-vuetify's README), not here -
+// Vuetify 3 ships precompiled CSS rather than a Sass entrypoint to @import.
+//
+// This file holds global Vuetify overrides.
 
-$theme-colors: (
-   primary: $started,
-   started: $started,
-   stopped: $stopped
-);
+// A tonal-variant alert (v-alert type="warning" variant="tonal", currently
+// only SSHInfo.vue, but this is deliberately global so any future one picks
+// it up too) derives BOTH its text and its background tint from the same
+// single theme color + a fixed opacity (see VAlert's variant mixin) - for
+// warning that comes out too close in value to read comfortably, so this
+// overrides both independently instead, from the warning/warning-soft theme
+// tokens (see plugins/vuetify.js) rather than Vuetify's one-color formula.
+// Scoped to text-warning specifically (not .text-error, used elsewhere for
+// not-found banners) - this is a contrast fix for warning alerts, not a
+// restyle of every tonal alert in the app.
+.v-alert--variant-tonal.text-warning {
+   background-color: rgb(var(--v-theme-warning-soft));
+   // !important: needed to beat Vuetify's own .text-warning utility class,
+   // which sets color with !important itself, specifically so utility
+   // classes always win - ordinary selector specificity has no way to
+   // outrank that from outside Vuetify's own stylesheet.
+   color: rgb(var(--v-theme-warning)) !important;
 
-@import 'node_modules/bootstrap/scss/bootstrap';
-@import 'node_modules/bootstrap-vue/src/index.scss';
-
-.card.card--hoverable {
-   &.bg-started {
-      & .card-header:hover {
-         cursor: pointer;
-         background-color: lighten($started, 5%) !important;
-      }
-   }
-   &.bg-stopped {
-      & .card-header:hover {
-         cursor: pointer;
-         background-color: darken($stopped, 5%) !important;
-      }
-   }
-}
-
-// Admin form layout: narrow label column and tighter spacing.
-// Scoped to .admin-main to avoid overriding Bootstrap grid elsewhere.
-.admin-main {
-   .col-3 {
-      flex: 0 0 15% !important;
-      max-width: 15% !important;
-   }
-
-   .form-group {
-      margin-bottom: 0.5rem;
+   // The tint above is applied directly to the alert's own background,
+   // not through Vuetify's normal mechanism (an absolutely-positioned
+   // __underlay painted at low opacity) - leaving the underlay in place
+   // would layer a second, redundant orange wash on top and shift the hue.
+   .v-alert__underlay {
+      display: none;
    }
 }
+
+// Per-item marker for every sidebar list (devtainer list, launch-profile
+// picker, admin Users/Roles/Profiles) - a status dot per item instead of a
+// bullet. Genuinely global rather than duplicated in Sidebar.vue and
+// AdminSidebar.vue separately, so every list renders the same dot shape.
+// Defaults to a neutral grey, since most lists (users, roles, launch
+// profiles) have no per-item state to show; components with a real one
+// (devtainer status, profile active/inactive) add a modifier class over
+// this shared shape.
+.sidebar-dot {
+   display: inline-block;
+   width: 7px;
+   height: 7px;
+   border-radius: 50%;
+   flex: none;
+   background: rgb(var(--v-theme-neutral));
+   // Vuetify's #prepend slot only reserves its usual gap automatically for
+   // recognised prepend content (v-icon, v-avatar, ...) - a bare <span>
+   // this small doesn't get one, so the dot sat touching the title text.
+   margin-right: 10px;
+}
+
+// Colors every bare <code> tag app-wide (only SSHInfo.vue's prose uses bare
+// <code> today). Deliberately not `pre code`: the <pre> blocks are real
+// copy-paste command output, styled on their own terms (see SSHInfo.vue's
+// .code-block) - this is only for inline code called out mid-sentence.
+code {
+   color: #e83e8c;
+   font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+}
+
+// Restores two browser-default typographic behaviors Vuetify's own base
+// reset (`* { margin: 0; padding: 0; }`) strips app-wide: a <ul>/<ol>'s
+// indent from its marker, and a <p>'s spacing from its neighbours. Applied
+// globally for prose content generally (Welcome.vue and SSHInfo.vue both
+// depend on it) rather than patched per component. Safe for Vuetify's own
+// components: v-list (and everything built on it) renders a plain <div>,
+// not a <ul> (see makeTagProps' default tag), so this can't touch
+// sidebar/menu/nav styling.
+ul, ol {
+   padding-left: 1.5em;
+   margin-bottom: 1em;
+}
+
+p {
+   margin-bottom: 1em;
+}
+
+// Shared by the admin detail views: UserDetail, RoleDetail, ProfileDetail.
+.form-row {
+   margin-bottom: 16px;
+}
+
+.form-row-label {
+   font-size: 0.75rem;
+   font-weight: 600;
+   text-transform: uppercase;
+   letter-spacing: 0.05em;
+   color: rgb(var(--v-theme-ink-soft));
+   margin-bottom: 12px;
+}
+
+.detail-form-actions {
+   display: flex;
+   align-items: center;
+   gap: 8px;
+   margin-top: 16px;
+   padding-top: 12px;
+   border-top: 1px solid rgb(var(--v-theme-border));
+}
+
+.detail-header {
+   display: flex;
+   justify-content: space-between;
+   align-items: center;
+   margin-bottom: 16px;
+   border-bottom: 1px solid rgb(var(--v-theme-border));
+   padding-bottom: 8px;
+}
+
+.save-error {
+   font-size: 0.85rem;
+   color: rgb(var(--v-theme-error));
+   margin-left: 8px;
+}
+
+// A readonly outlined field (a view-mode value display, e.g. Container.vue's
+// non-edit-mode fields, ChoiceInput's own readonly branch, the readonly
+// branches of the admin detail views) stays focusable, so its content can
+// still be selected/copied - but nothing typed into it does anything.
+// Vuetify doesn't know that: it escalates a focused field's outline to full
+// opacity/width (.38 -> 1, 1px -> 2px) and its label to full opacity
+// regardless of `readonly`, the same escalation an editable field gets,
+// which reads as "you can type here now" on a field that can't be. Still
+// needs *some* focus feedback though - a sighted mouse user gets their own
+// feedback from the click, but a keyboard user tabbing through several
+// identical-looking readonly fields in a row has nothing else to go on -
+// so darken the outline a step short of that full escalation (opacity only;
+// width stays put) rather than suppressing it outright: a visible but
+// distinctly weaker cue than an editable field's own focus state, and -
+// since it's the field's own border, not a separately-drawn overlay - one
+// that respects the border's existing notch around a floating label instead
+// of cutting across it the way an external ring/shadow would.
+// !important: overriding CSS custom properties Vuetify sets from a
+// same-specificity selector of its own (.v-field.v-field--focused ...) -
+// ordinary selector specificity can't be relied on to win that from outside
+// Vuetify's own stylesheet.
+.v-input--readonly .v-field--focused .v-field__outline {
+   --v-field-border-opacity: .65 !important;
+   --v-field-border-width: 1px !important;
+}
+

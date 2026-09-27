@@ -349,18 +349,18 @@ class GitProfileTests(TestCase):
         disturb an already-checked-out branch.
 
         Guards against the create_git_repo/checkout_git_ref restart bug:
-        create_git_repo previously had no idempotency check, so it unconditionally
-        re-ran `git clone` on every restart - which fails outright into the
-        already-populated directory - spuriously reporting .git-repo-failed and
-        skipping ref checkout on every restart after the first, forever.
+        create_git_repo must have an idempotency check so it does not re-run
+        `git clone` on every restart: `git clone` fails outright into an
+        already-populated directory, which would spuriously report
+        .git-repo-failed and skip ref checkout on every restart after the
+        first, forever.
 
-        checkout_git_ref must also not simply be re-run on restart, not just have
-        its clone-failure fixed: DOCKSIDE_OPTION_REF is fixed at
-        reservation-creation time and can never change, so re-running it on
-        restart has nothing new to do - and would fail loudly (by design, to
-        protect any local work made since) if history has since diverged. head_sha
-        being unchanged below is what confirms it was skipped rather than merely
-        re-running as a no-op.
+        checkout_git_ref must not simply be re-run on restart either:
+        DOCKSIDE_OPTION_REF is fixed at reservation-creation time and can
+        never change, so re-running it on restart has nothing new to do - and
+        would fail loudly (by design, to protect any local work made since) if
+        history has since diverged. head_sha being unchanged below is what
+        confirms it was skipped rather than merely re-running as a no-op.
         """
         name = self._sfx('inttest-git-restart')
         self._create_git_container(

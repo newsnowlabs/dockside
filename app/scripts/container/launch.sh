@@ -32,7 +32,7 @@ log() {
 
 # Use the IDE-bundled git binary. Its CA cert store (http.sslcainfo) and exec-path
 # are baked into that binary's own wrapper script (created in the Dockerfile next to
-# the gh wrapper), so they no longer need to be passed on every call here.
+# the gh wrapper), so they don't need to be passed on every call here.
 git() {
    $IDE_PATH/bin/git "$@"
 }
@@ -205,9 +205,9 @@ create_git_repo() {
    fi
 
    log "- Running: git clone $GIT_URL"
-   # Detect clone failure explicitly: without this the function returned the
-   # status of the trailing gitconfig block, so a failed clone went unnoticed and
-   # the caller went on to touch .git-repo-ready over an absent repository.
+   # This function's exit status must reflect the clone itself, not the trailing
+   # gitconfig block, so the caller can detect a failed clone and avoid touching
+   # .git-repo-ready over an absent repository.
    if ! GIT_SSH_COMMAND="$IDE_PATH/bin/ssh -o StrictHostKeyChecking=accept-new" git clone "$GIT_URL"; then
       log "ERROR: git clone '$GIT_URL' failed"
       return 1
@@ -592,10 +592,35 @@ populate_known_hosts() {
 
 }
 
+# True (0) if the key at $1 is passphrase-protected, judged from the key's own
+# on-disk format — never by supplying or guessing the real passphrase. A legacy
+# PEM key carries a plaintext 'Proc-Type: 4,ENCRYPTED' header line when
+# encrypted. OpenSSH's newer 'OPENSSH PRIVATE KEY' format has no plaintext
+# marker, but its base64-encoded body always names its key-derivation function
+# immediately after the cipher name — 'none' for an unencrypted key, 'bcrypt'
+# for a passphrase-protected one (the only KDF OpenSSH implements for this
+# format) — so decoding the body and looking for the literal 'bcrypt' marker
+# is equivalent to parsing the struct by hand, using only tools already relied
+# on elsewhere in this file (no ssh-keygen: it isn't bundled alongside
+# ssh-add/ssh-agent/ssh-keyscan under $IDE_PATH/bin).
+key_is_passphrase_protected() {
+   local path="$1"
+   if grep -q '^Proc-Type: 4,ENCRYPTED' "$path" 2>/dev/null; then
+      return 0
+   fi
+   sed -n '/BEGIN OPENSSH PRIVATE KEY/,/END OPENSSH PRIVATE KEY/{//!p}' "$path" \
+      | busybox base64 -d 2>/dev/null \
+      | grep -aq 'bcrypt'
+}
+
 populate_ssh_agent_keys() {
    # SSH_AGENT_KEYS is a JSON object mapping keypair name -> { public, private }.
-   # Add every keypair's private key to the ssh-agent, each via a transient key file
-   # that is removed immediately after ssh-add (keys live only in the agent, not on disk).
+   # Each keypair's private key is written to a transient key file only long
+   # enough to ssh-add it, then removed (keys live only in the agent, not on
+   # disk) — except a passphrase-protected key, which ssh-add can never unlock
+   # non-interactively: that one is instead renamed to a stable
+   # dockside-user-key.<name> path (outside the transient sweep below) so the user
+   # can unlock it manually, e.g. via 'ssh-add' in an IDE terminal.
    local names
    names=$(echo "$SSH_AGENT_KEYS" | jq -r 'if type == "object" then keys[] else empty end' 2>/dev/null)
 
@@ -607,12 +632,18 @@ populate_ssh_agent_keys() {
    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
 
    # Defence-in-depth secret cleanup: each keypair is written to a transient
-   # dockside.XXXXXX file (and .pub) only long enough to ssh-add it, then removed
-   # in-loop below. A termination signal arriving inside that window would otherwise
-   # strand private-key material on disk, so sweep every transient file (all share the
-   # dockside. prefix) on the common signals and then exit. The trap is cleared once
-   # the keys are loaded so it does not alter the later IDE-supervision phase.
-   trap 'rm -f "$HOME"/.ssh/dockside.* 2>/dev/null; exit 1' INT TERM HUP
+   # .dockside-agentkey.XXXXXX file (and .pub) only long enough to ssh-add it,
+   # then removed in-loop below (a passphrase-protected key's file is renamed
+   # out of this .dockside-agentkey.* prefix first — see above — so it survives
+   # this sweep by design, not by accident). The prefix is deliberately specific
+   # (not just 'dockside.*') so this sweep can never catch an unrelated file a
+   # user happens to have placed in ~/.ssh under a plain name like 'dockside' or
+   # 'dockside.pub'. A termination signal arriving inside that window would
+   # otherwise strand private-key material on disk, so sweep every remaining
+   # transient file (all share the .dockside-agentkey. prefix) on the common
+   # signals and then exit. The trap is cleared once the keys are loaded so it
+   # does not alter the later IDE-supervision phase.
+   trap 'rm -f "$HOME"/.ssh/.dockside-agentkey.* 2>/dev/null; exit 1' INT TERM HUP
 
    # Iterate via read (never unquoted) since a keypair name may be '*'. Feed the
    # loop with process substitution rather than a pipe so it runs in THIS shell and
@@ -635,7 +666,7 @@ populate_ssh_agent_keys() {
       # material, not even a prefix — the launch log is not a secret store.
       log "SSH_AGENT_KEYS[$name](PUBLIC)=$KEY_PUBLIC"
 
-      KEY_PATH=$(busybox mktemp "$HOME/.ssh/dockside.XXXXXX")
+      KEY_PATH=$(busybox mktemp "$HOME/.ssh/.dockside-agentkey.XXXXXX")
       echo "$KEY_PRIVATE" > "$KEY_PATH"
       echo "$KEY_PUBLIC" > "$KEY_PATH.pub"
       chmod 400 "$KEY_PATH" "$KEY_PATH.pub"
@@ -646,6 +677,23 @@ populate_ssh_agent_keys() {
       # 'ssh-add -L' below succeeds whenever ANY key is loaded, so one failed key
       # would otherwise go completely unnoticed.
       if ! "$IDE_PATH/bin/ssh-add" "$KEY_PATH"; then
+         if key_is_passphrase_protected "$KEY_PATH"; then
+            # Expected, not an error: this key can never be added non-interactively.
+            # Renamed (name sanitised — it forms part of a filesystem path) to a
+            # stable location the user can unlock by hand, e.g. by running
+            # 'ssh-add <path>' in an IDE terminal. A stable name — rather than a
+            # fresh mktemp one — means a later restart overwrites it in place
+            # instead of accumulating one file per restart.
+            local safe_name kept_path
+            safe_name=$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_-]/_/g')
+            kept_path="$HOME/.ssh/dockside-user-key.$safe_name"
+            mv -f "$KEY_PATH" "$kept_path"
+            mv -f "$KEY_PATH.pub" "$kept_path.pub"
+            chmod 600 "$kept_path"; chmod 644 "$kept_path.pub"
+            log "Keypair '$name' is passphrase-protected; left at $kept_path for manual unlock (run 'ssh-add $kept_path' in a terminal)"
+            dockside_user_warning "Keypair '$name' is passphrase-protected; run 'ssh-add $kept_path' in a terminal to use it."
+            continue
+         fi
          log "ERROR: ssh-add failed for keypair '$name'"
          add_failures=$((add_failures + 1))
       fi
@@ -655,7 +703,7 @@ populate_ssh_agent_keys() {
 
    # Final sweep catches any transient file stranded by a non-signal failure inside
    # the loop (where the per-iteration rm above would not have run), then disarm.
-   rm -f "$HOME"/.ssh/dockside.* 2>/dev/null
+   rm -f "$HOME"/.ssh/.dockside-agentkey.* 2>/dev/null
    trap - INT TERM HUP
 
    "$IDE_PATH/bin/ssh-add" -L
@@ -843,12 +891,11 @@ populate_vscode_settings() {
 # uses - so the su'd child gets exactly the same init() setup (LOG_PATH, PATH, its own fd 5/
 # $LOG handle) a freshly-dispatched exec would, and its own log() output reaches the same
 # caller-visible stream (fd 1/2, inherited straight through su/env) as the parent's, with no
-# extra plumbing needed. Generalized from a single hardcoded target: what used to be
-# one function, run_nonroot, was split into launch_prep's own non-root tail plus the separate
-# launch_git entry point - both need this same su-transition machinery, only launch_prep's
-# since launch_git is dispatched directly as the non-root user by DED, needing no su at all
-# (only steps that genuinely need root - create_user, launch_sshd's dropbear - run as root at
-# all; everything else drops to the non-root user as soon as it can).
+# extra plumbing needed. Takes the target function as a parameter rather than a single
+# hardcoded target, since launch_prep's non-root tail needs this same su-transition machinery
+# while launch_git does not - launch_git is dispatched directly as the non-root user by DED,
+# needing no su at all (only steps that genuinely need root - create_user, launch_sshd's
+# dropbear - run as root at all; everything else drops to the non-root user as soon as it can).
 launch_nonroot() {
    local FUNCTION="${1:-run_prep_nonroot}"
    log "Continuing launch as non-root user '$IDE_USER' (running '$FUNCTION') ..."
@@ -988,8 +1035,8 @@ run_prep_nonroot() {
    rm -f "$LOG_PATH/launch-status.txt" "$LOG_PATH/.credentials-ready" 2>/dev/null
    install_launch_status_notice
    spawn_ssh_agent
-   # A failed key load is non-fatal (the IDE still launches), but no longer silent:
-   # populate_ssh_agent_keys logs + returns non-zero, and we surface it to the user.
+   # A failed key load is non-fatal (the IDE still launches) and is surfaced to the
+   # user: populate_ssh_agent_keys logs + returns non-zero.
    if ! populate_ssh_agent_keys; then
       dockside_user_warning "One or more SSH keys could not be loaded into the ssh-agent (see $LOG)."
    fi
@@ -1054,7 +1101,7 @@ launch_git() {
             # consumer can detect it immediately rather than waiting for a timeout.
             #
             # On success (or when no ref was requested), write .git-repo-ready. With a
-            # hard clone failure now handled above, this signals that a GIT_URL clone
+            # hard clone failure detected above, this signals that a GIT_URL clone
             # succeeded and any requested ref was checked out; it does NOT wait for the
             # later VS Code population, and Dockside does not guarantee an otherwise error-free
             # working tree, so .git-repo-ready is gated on a non-empty GIT_URL and its sole

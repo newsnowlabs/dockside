@@ -6,10 +6,11 @@ use Exporter qw(import);
 our @EXPORT_OK = qw($CONFIG $HOSTNAME $INNER_DOCKERD $VERSION $HOSTINFO invalidate_profile_cache valid_ide_name
    $CONFIG_PATH $USERS_FILE $ROLES_FILE $PASSWD_FILE $PROFILES_DIR);
 
+use B;
 use JSON;
 use Time::HiRes qw(stat time gettimeofday);
 use Try::Tiny;
-use Util qw(flog cacheReadWrite get_config call_socket_json_api);
+use Util qw(flog wlog cacheReadWrite get_config call_socket_json_api);
 
 # Single source of truth for all persistent config storage paths.
 # Exported so that User::Manage and Profile::Manage can reference these
@@ -24,13 +25,25 @@ our $PROFILES_DIR = "$CONFIG_PATH/profiles";
 # Load in the container ID of this Dockside container and the inner-dockerd flag.
 # See entrypoint.sh for details. Read from app-server's own service data dir, not nginx's -
 # ctr-id/inner-dockerd are identical copies in every service's data dir (entrypoint.sh writes
-# them per-service), but 'version' is only ever computed and written by one runscript, and
-# since the mojolicious-app-server split that's app-server/run (it's the process that actually
-# renders it into the UI), not nginx/run any more.
+# them per-service), but 'version' is only ever computed and written by app-server/run, the
+# process that actually renders it into the UI.
 our $HOSTNAME = get_config('/etc/service/app-server/data/ctr-id');
 our $INNER_DOCKERD = get_config('/etc/service/app-server/data/inner-dockerd');
 our $VERSION = get_config('/etc/service/app-server/data/version');
 our $HOSTINFO = { 'docker' => undef, 'IDEs' => undef }; # Host info cache: populated later
+
+# Core config files: a failure to parse one is a critical error, not something to run past on
+# stale/undef data (see load()'s own parse-failure handling). Profiles are deliberately not
+# here - a single unparseable profile is skipped individually (Data.pm's profiles loader), never
+# a whole-server failure.
+my %CORE_FILE = map { $_ => 1 } qw( config.json users.json roles.json reservations.json containers.json );
+
+# Set true by app-server / docker-event-daemon around their own startup load: a core-file parse
+# failure then exits the process (bypassing any surrounding catch) so s6 restarts it. Left false
+# for reload-time loads and for nginx-embedded Proxy, where the failure is instead re-thrown and
+# caught by the request/event handler already around it - failing that one request/event closed
+# rather than taking the process, or an nginx worker, down.
+our $CORE_PARSE_FAILURE_FATAL = 0;
 
 sub parse_json ($json) {
    local $_ = $json;
@@ -42,6 +55,72 @@ sub parse_json ($json) {
    s!//[^"]*$!!gm;
 
    return from_json( $_, { 'relaxed' => 1 } );
+}
+
+# One message to both loggers for a config value this server cannot use: wlog reaches stderr - a
+# supervised service's own log stream, and nginx's error log for the embedded proxy - while flog
+# files it in the service log alongside the load lines it belongs with.
+sub _config_warn ($message) {
+   my $msg = "Data::load: config.json: $message";
+   flog($msg);
+   wlog($msg);
+   return;
+}
+
+# True only of a JSON number that is a finite whole number of at least 1. The decoded scalar's
+# own flags are what tells a JSON number apart from a JSON string of digits - from_json leaves a
+# number with numeric flags and no string flag of its own - and the two are kept distinct
+# deliberately by _validate_shutdown_grace_seconds below: the only string that key takes is
+# 'unlimited', so a quoted "300" is a mistake to tell the operator about rather than silently
+# accept. The number's own decimal form then has to be plain digits: an exponent that overflows
+# decodes to infinity, which is numerically whole and positive and would otherwise pass, and a
+# magnitude beyond what prints as digits is no ceiling anyone means. A JSON boolean decodes to
+# an object and a number the decoder keeps as a string (one too large for a native integer) to
+# a string, so both fall to the two tests before this one.
+sub _is_json_positive_integer ($value) {
+   return 0 if !defined($value) || ref($value);
+
+   my $flags = B::svref_2object( \$value )->FLAGS;
+   return 0 unless ( $flags & ( B::SVp_IOK | B::SVp_NOK ) ) && !( $flags & B::SVp_POK );
+
+   return "$value" =~ /\A[1-9][0-9]*\z/ ? 1 : 0;
+}
+
+# Settles appServer.shutdownGraceSeconds in place on a freshly loaded config.json's appServer
+# section. The string 'unlimited' and a positive integer number of seconds stand as given;
+# every other shape, and the key's absence, leave it 'unlimited', with one warning for anything
+# actually written in the file. A value this server cannot use is never a reason to fail the
+# load: the rest of the config is serviceable, and the fallback is the safest of the two shapes -
+# it waits for in-flight work rather than cutting it short.
+sub _validate_shutdown_grace_seconds ($appServer) {
+   if ( exists $appServer->{'shutdownGracePeriod'} ) {
+      _config_warn( 'appServer.shutdownGracePeriod is not a key this server reads; a draining ' .
+         "worker's ceiling comes from appServer.shutdownGraceSeconds" );
+      delete $appServer->{'shutdownGracePeriod'};
+   }
+
+   unless ( exists $appServer->{'shutdownGraceSeconds'} ) {
+      $appServer->{'shutdownGraceSeconds'} = 'unlimited';
+      return;
+   }
+
+   my $value = $appServer->{'shutdownGraceSeconds'};
+
+   # The numeric test must come before any string comparison against $value: comparing a number
+   # as a string caches its string form in the scalar, which is the very flag the numeric test
+   # reads to tell 300 from "300".
+   return if _is_json_positive_integer($value);
+   return if defined($value) && !ref($value) && $value eq 'unlimited';
+
+   my $shown =
+        ref($value)      ? 'the ' . ref($value) . ' value it holds'
+      : !defined($value) ? 'its null value'
+      :                    "the value '$value'";
+   _config_warn( "appServer.shutdownGraceSeconds: ignoring $shown; it takes the string " .
+      "'unlimited' or a positive integer number of seconds, and drains unlimited until it holds " .
+      'one of those' );
+   $appServer->{'shutdownGraceSeconds'} = 'unlimited';
+   return;
 }
 
 sub valid_ide_name ($ide) {
@@ -57,6 +136,10 @@ our $CONFIG;
 my $CONFIG_FILES;
 $CONFIG_FILES = {
    'users.json' => {
+      # Read under cacheReadWrite's shared lock, the same lock User/Manage.pm's writes take
+      # exclusively - so a read never observes a half-written file, matching reservations.json
+      # and containers.json below.
+      'load' => \&cacheReadWrite,
       'process' => sub ($c) {
          my $USERS;
          foreach my $username ( keys %$c ) {
@@ -73,6 +156,8 @@ $CONFIG_FILES = {
       'parse' => \&parse_json
    },
    'roles.json' => {
+      # Shared-locked read, same as users.json above.
+      'load' => \&cacheReadWrite,
       'process' => sub ($ROLES) {
          if($ROLES) {
             # Set up convenience shortcut
@@ -106,20 +191,29 @@ $CONFIG_FILES = {
          $CONFIG->{'appServer'}{'port'} //= 8100;
          $CONFIG->{'appServer'}{'workers'} //= 4;
          $CONFIG->{'appServer'}{'maxRequestSize'} //= 0;
-         # Static root for /docs, now that nginx no longer runs App.pm in-process to fall
-         # through to nginx's own `root` directive for it. Matches that directive's own value
-         # (sites-available/default) - not a new convention, the existing one, now needing an
-         # explicit config point since nginx itself no longer serves it.
-         $CONFIG->{'appServer'}{'docsPath'} //= '/home/dockside/dockside/app/server/nginx/html';
          # create's own restart-recovery/graceful-exit design - see
          # docs/adr/0007-create-restart-recovery.md. reconcileIntervalSeconds is the per-worker
-         # periodic reconciler's own recheck cadence (each tick re-runs the same sweep under a
-         # single process-wide flock, so only one worker's tick actually does the work).
-         # shutdownGracePeriod must stay comfortably under Mojo::Server::Prefork's own
-         # graceful_timeout (bin/app-server raises that to 150s to match) - deliberately
-         # coordinated, not left to whatever the two defaults happened to leave.
-         $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 300;
-         $CONFIG->{'appServer'}{'shutdownGracePeriod'} //= 90;
+         # periodic reconciler's own recheck cadence: every worker's tick runs the same candidate
+         # sweep, and each candidate is claimed with its own non-blocking lock
+         # (Reservation::reconcile_one), so whichever worker reaches a reservation first
+         # reconciles it and the others skip it. The cadence bounds how long a chain no live
+         # worker owns waits for a driver: one a worker abandoned at pulling, or one whose retry
+         # timer died with its worker. A pass costs each worker a stat of reservations.json,
+         # parsed only when it has changed. bin/app-server reads the value once, at startup, so a
+         # change takes effect on its restart.
+         $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 60;
+
+         # shutdownGraceSeconds is the ceiling a shutting-down worker's drain waits under, and
+         # the one bin/app-server also hands Mojo::Server::Prefork as its graceful_timeout. It is
+         # validated rather than defaulted with //=, because it takes two shapes and a
+         # mistyped one silently bounds a drain that operators expect to be unlimited.
+         _validate_shutdown_grace_seconds( $CONFIG->{'appServer'} );
+
+         # A hook run's server-side time limit in seconds when the caller sets none. The only
+         # default for it: every dispatch path reads this key and none carries a fallback of
+         # its own. The container's stop grace (docker-compose.yml's stop_grace_period, or
+         # docker run's --stop-timeout) must exceed it - see docs/upgrading.md.
+         $CONFIG->{'hooks'}{'defaultTimeoutSeconds'} //= 300;
 
          # How long a hook-invocation log file (tmpPath/r-<id>-hook-<invocationId>.log) is kept
          # before logrotate-daemon's age-based sweep deletes it - see
@@ -280,6 +374,12 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
       # Work out the most recent last-modified time for all files in the current list
       my $lastModified = 0;
       foreach my $file (@files) {
+         # This is Time::HiRes::stat (this file's own top-of-file import), not CORE::stat -
+         # $lm carries a fractional-second mtime, and the comparison below relies on that
+         # sub-second precision to tell apart two writes to the same file within one wall-clock
+         # second (a real occurrence under concurrent reservation/container churn). Removing
+         # 'stat' from that import - e.g. while tidying an apparently-unused-looking name -
+         # would silently widen every caller's staleness window back out to a full second.
          my $lm = (stat($file))[9];
          $lastModified = $lm if $lm > $lastModified;
       }
@@ -311,7 +411,27 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
             }
             catch {
                chomp;
-               flog("Data::load: error parsing '$file': '$_'");
+               my $err = $_;
+
+               if ( $CORE_FILE{$p} ) {
+                  # Log loudly - to flog and, unconditionally, to STDERR so it reaches the
+                  # container's log stream (`docker logs`) whatever the state of the log file -
+                  # then either exit for s6 to restart (at startup, $CORE_PARSE_FAILURE_FATAL) or
+                  # re-throw. The re-throw aborts this file's update below, so its lastModified and
+                  # last-good data are left untouched (the outer handler swallows it) and the next
+                  # load retries, rather than running 'process' on a partial/undef parse.
+                  my $emsg = "Data::load: ERROR: cannot parse core config file '$file': $err";
+                  flog($emsg);
+                  print STDERR "[dockside] $emsg\n";
+                  if ( $CORE_PARSE_FAILURE_FATAL ) {
+                     flog("Data::load: ERROR: exiting so s6 restarts this service");
+                     print STDERR "[dockside] Data::load: ERROR: exiting so s6 restarts this service\n";
+                     exit(1);
+                  }
+                  die $err;
+               }
+
+               flog("Data::load: error parsing '$file': '$err'");
             };
          }
 
@@ -338,6 +458,15 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
          flog("Data::load: error parsing '$p': '$_'");
       };
    }
+}
+
+# Reload without trusting modification timestamps. Ownership checks need this even
+# with fractional-second stat: separate writes can still have identical timestamps.
+sub load_fresh (@configFiles) {
+   for my $p ( @configFiles ? @configFiles : keys %$CONFIG_FILES ) {
+      $CONFIG_FILES->{$p}{'lastModified'} = -1 if $CONFIG_FILES->{$p};
+   }
+   load(@configFiles);
 }
 
 # Force the profile glob to reload on the next Data::load call.

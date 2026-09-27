@@ -132,7 +132,7 @@ sub viewers ($class = undef) {
 # - with data from users.json, for populating the $USERS in-memory user database;
 # - with no data, representing a client connection, subject to authentication.
 #
-# N.B. We NO LONGER check that the user has a password defined in the passwd file,
+# N.B. This does not check that the user has a password defined in the passwd file,
 # to allow for API to return list of users to an admin, including those without passwords.
 
 sub new ($class, $data = undef) {
@@ -786,11 +786,11 @@ sub set ($self, $reservation, $property, $value = '') {
       }
 
       # $value ne '' above leaves $value as '' (not decoded) whenever no access was
-      # requested - previously that meant $value stayed undef, and Perl reads undef->{$name}
-      # below as an empty map without complaint; now that the top-of-sub $value //= '' means
-      # a real, defined '' reaches here instead, the same read would die ("Can't use string
-      # as a HASH ref") under strict refs. Normalise explicitly rather than depending on
-      # that undef-specific leniency.
+      # requested. $value must be normalised to a HASH ref explicitly here: an undef
+      # $value->{$name} read below would return an empty map without complaint, but
+      # the top-of-sub $value //= '' guarantees a real, defined '' reaches here instead,
+      # and the same read on a defined non-ref string would die ("Can't use string as
+      # a HASH ref") under strict refs.
       $value = {} unless ref($value) eq 'HASH';
 
       my $oldAccess = $reservation->meta('access');
@@ -1052,6 +1052,23 @@ sub _defaultRouterAccessLevel ($self, $reservation, $auth) {
    return ( grep { $_ eq $preferred } @$auth ) ? $preferred : $auth->[0];
 }
 
+# Narrows $routerDef->{'auth'} (already defaulted to the full known-levels list by the caller if
+# the request itself didn't supply one) down to whichever of those levels this user's own
+# derivedResourceConstraints actually permits - same filtering idiom Profile::applyConstraints
+# uses to strip disallowed levels from a profile-declared router's 'auth' at launch time, so a
+# role/user resource constraint means the same thing whichever path enforces it. Without this, a
+# caller could both request and receive a router auth list wider than their own role/user
+# 'auth' resource constraint allows - constrained here (self-service add/replace) is the only
+# path that skipped it; profile-declared routers already go through cloneWithConstraints. Dies
+# rather than silently narrowing to an empty list, since a router with no legal auth level can
+# never be reached by anyone.
+sub _constrainRouterAuth ($self, $routerDef) {
+   my $allowed = $self->derivedResourceConstraints->{'auth'} // {};
+   $routerDef->{'auth'} = [ grep { $allowed->{$_} // $allowed->{'*'} } @{$routerDef->{'auth'}} ];
+   die Exception->new( 'msg' => "None of the requested router 'auth' levels are permitted for this user" )
+      unless @{$routerDef->{'auth'}};
+}
+
 # Adds a router to a live reservation (docs/adr/0008-router-mutation.md). Gated on
 # addContainerRouter + can_on(develop) (the same two-part shape as every other developer-level
 # container mutation above - see the 'access'/'private' branches of set()) and, unless this user
@@ -1076,6 +1093,7 @@ sub addContainerRouter ($self, $args) {
 
    my $routerDef = _decode_router_arg( $args->{'router'} );
    $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
+   $self->_constrainRouterAuth($routerDef);
    my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
 
    $reservation->add_router( $routerDef, $accessLevel );
@@ -1103,9 +1121,10 @@ sub removeContainerRouter ($self, $args) {
 }
 
 # Atomically replaces router $args->{'name'} with $args->{'router'} (a convenience wrapper -
-# same-name remove+add under one lock, carrying meta.access forward). Needs both permissions -
-# the add half and the remove half are each exactly as gated as their standalone counterparts
-# above, so replace needs no permission or profile-gate of its own beyond the union of the two.
+# same-name remove+add under one lock, carrying meta.access forward when $args->{'access'} is
+# omitted). Needs both permissions - the add half and the remove half are each exactly as gated
+# as their standalone counterparts above, so replace needs no permission or profile-gate of its
+# own beyond the union of the two.
 sub replaceContainerRouter ($self, $args) {
    my $reservation = $self->reservation( $args->{'id'} );
    unless($reservation) {
@@ -1124,9 +1143,17 @@ sub replaceContainerRouter ($self, $args) {
 
    my $routerDef = _decode_router_arg( $args->{'router'} );
    $routerDef->{'auth'} //= Reservation::known_router_auth_levels();
-   my $accessLevel = $args->{'access'} // $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
+   $self->_constrainRouterAuth($routerDef);
 
-   $reservation->replace_router( $args->{'name'}, $routerDef, $accessLevel );
+   # $args->{'access'} is passed through undefined when omitted, rather than being defaulted
+   # here as addContainerRouter's own $accessLevel is - replace_router must be able to tell an
+   # explicit request apart from an omitted one, since an explicit request always overrides the
+   # router's own pre-existing access level, while an omitted one may carry it forward instead.
+   # $defaultAccessLevel is only the fallback for when neither an explicit request nor a legal
+   # carried-forward value applies.
+   my $defaultAccessLevel = $self->_defaultRouterAccessLevel($reservation, $routerDef->{'auth'});
+
+   $reservation->replace_router( $args->{'name'}, $routerDef, $args->{'access'}, $defaultAccessLevel );
 
    return $self->createClientReservation($reservation);
 }
@@ -1200,6 +1227,13 @@ sub runContainerHook ($self, $id, $args, $cb) {
 # status is hook_status($name)'s master-record entry (undef if $name has never been invoked
 # on this devtainer), output is load_hook_log($name)'s tailed log lines ([] if there is
 # nothing to show yet, for either reason).
+#
+# An entry still reading 'running' is checked against Docker first (hook_is_running), so a
+# poller sees the outcome of an exec that has finished even when the process that dispatched
+# it never recorded one - its outcome write threw, or it died. This read is the next reader
+# such an entry gets, and the settlement is the one that read performs; without it a poller
+# would watch an unchanged 'running' entry until its own deadline. An exec genuinely still
+# running costs the poll one exec inspection and changes nothing.
 sub runContainerHookStatus ($self, $id, $args = {}) {
    if( $id !~ m!^([0-9a-f]+)$! ) {
       die Exception->new( 'msg' => "hook status read with invalid argument '$id' failed" );
@@ -1218,6 +1252,8 @@ sub runContainerHookStatus ($self, $id, $args = {}) {
    my $name = $args->{'name'};
    die Exception->new( 'msg' => "'name' is required", 'status' => 400 ) unless length($name // '');
 
+   $container->hook_is_running($name);
+
    return {
       'status' => $container->hook_status($name),
       'output' => $container->load_hook_log($name),
@@ -1232,6 +1268,17 @@ sub runContainerHookStatus ($self, $id, $args = {}) {
 # blocking GitHub fetch, no docker CLI subprocess). The old synchronous fallback, and the
 # App.pm route that was its only caller, are both gone (audited first - no other caller
 # existed).
+# The create requests this process has accepted whose chain create() has not yet registered:
+# from just before the devcontainer.json fetch createContainerReservation makes, to the entry
+# of the callback that fetch resumes, from where create() registers the chain without returning
+# to the loop. Keyed by the reservation id, the id the chain's own registry entry then carries.
+# bin/app-server's exit handler reads it: a draining worker waits for these requests to reach
+# their chains as it waits for its chains' issued tails, since a request left here at the
+# worker's exit is unanswered and has written no record.
+my %CREATE_REQUEST_IN_FLIGHT;
+
+sub create_request_in_flight_ids ($class) { return sort keys %CREATE_REQUEST_IN_FLIGHT; }
+
 sub createContainerReservation ($self, $args, $cb) {
    # Launch new container.
    if( !$self->has_permission( 'createContainerReservation' ) ) {
@@ -1260,36 +1307,58 @@ sub createContainerReservation ($self, $args, $cb) {
 
    $reservation->data('runningIDE', $reservation->meta('IDE'));
 
-   # Test if we can construct the command line; on failure, we'll throw an error.
-   $reservation->cmdline();
+   # Render the Create API request body now, synchronously, and discard it. This is the same
+   # cmdline_json() call create() itself makes, so whatever it rejects - a dockerArgs entry,
+   # tmpfs option or size string this server cannot express, an undeclared {option.<name>} or
+   # {container.<prop>} placeholder - is reported in the response to this request, while this
+   # reservation has not been persisted and the devcontainer.json fetch below has not run. The
+   # same failure raised from inside create() would arrive only after both, leaving a stored
+   # reservation with a 'failed' createStatus behind for a profile that cannot launch as
+   # written.
+   #
+   # The body is deliberately not carried forward to create(): building it is pure computation
+   # over profile/reservation data with no I/O, and create() needs the version reflecting
+   # whatever the fetch below changes.
+   $reservation->cmdline_json();
 
+   # Registered before the fetch and released at the entry of its callback, see
+   # %CREATE_REQUEST_IN_FLIGHT above. getGitDevContainer calls back exactly once and never
+   # throws, at once when there is nothing to fetch, get_uri settling a fetch that cannot be
+   # built or started as no result; the release below therefore always runs.
+   $CREATE_REQUEST_IN_FLIGHT{ $reservation->id() } = 1;
    $reservation->getGitDevContainer( sub ($dc) {
-      if ($dc) {
-         if($dc->{'image'}) {
-            $reservation->data('image', $dc->{'image'});
+      delete $CREATE_REQUEST_IN_FLIGHT{ $reservation->id() };
 
-            if(!$dc->{'overrideCommand'}) {
-               $reservation->data('entrypoint', '/bin/sh');
-               $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+      # This whole callback runs outside the caller's own try/catch frame (it fires later, off
+      # the event loop, once the GitHub fetch above resolves) - an uncaught die anywhere in here,
+      # not just around store()->create below, would be an uncaught exception inside a Mojo
+      # completion callback, not something bin/app-server's own surrounding try/catch could ever
+      # see (see docker_exec's own comment on this same hazard, Util.pm). $dc itself is already
+      # guaranteed a HASH or undef by getGitDevContainer, but the setters below can still throw
+      # on content they reject (e.g. an invalid 'image'), so the try/catch has to cover them too,
+      # not just the store/create call after them.
+      try {
+         if ($dc) {
+            if($dc->{'image'}) {
+               $reservation->data('image', $dc->{'image'});
+
+               if(!$dc->{'overrideCommand'}) {
+                  $reservation->data('entrypoint', '/bin/sh');
+                  $reservation->data('command', ['-c', "while sleep 1000; do :; done"]);
+               }
             }
+
+            $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
+            $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
+            $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
          }
 
-         $dc->{'remoteUser'} && $reservation->data('unixuser', $dc->{'remoteUser'});
-         $dc->{'postCreateCommand'} && $reservation->data('postCreateCommand', $dc->{'postCreateCommand'});
-         $dc->{'customizations'}{'vscode'} && $reservation->data('vscode', $dc->{'customizations'}{'vscode'});
-      }
-
-      # Store, then create/launch asynchronously, then hand $cb a sanitised clone of the
-      # reservation object. A full (not narrowed) store() is correct here specifically: this
-      # reservation id has never been persisted before this call, so no other process can
-      # possibly be concurrently writing to it - none of Reservation::store_fields' concerns (a
-      # stale in-memory copy of some unrelated field clobbering a fresher one) apply to a
-      # record's very first write. Wrapped in try/catch because this whole callback runs outside
-      # the caller's own try/catch frame (it fires later, off the event loop, once the GitHub
-      # fetch above resolves) - an uncaught die here would be an uncaught exception inside a Mojo
-      # completion callback, not something bin/app-server's own surrounding try/catch could ever
-      # see (see docker_exec's own comment on this same hazard, Util.pm).
-      try {
+         # Store, then create/launch asynchronously, then hand $cb a sanitised clone of the
+         # reservation object. A full (not narrowed) store() is correct here specifically: this
+         # reservation id has never been persisted before this call, so no other process can
+         # possibly be concurrently writing to it - none of Reservation::store_fields' concerns
+         # (a stale in-memory copy of some unrelated field clobbering a fresher one) apply to a
+         # record's very first write.
          $reservation->store()->create( sub ($createdReservation, $err) {
             return $cb->( undef, $err ) if $err;
             return $cb->( $self->createClientReservation($createdReservation), undef );

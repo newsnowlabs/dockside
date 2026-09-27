@@ -157,11 +157,12 @@ _ROUTER_PROFILE = {
 }
 
 # Debian counterpart to _ALPINE_PROFILE, used by the lifecycle (03) and IDE (07)
-# modules.  Those modules previously hard-coded the server's bundled '11-debian'
-# profile, which violates the suite's no-pre-existing-fixtures rule and breaks on
-# any server that does not ship that exact profile.  An apt-based image is needed
-# (rather than reusing the alpine fixture) because 07 launches an IDE, whose
-# bootstrap assumes a Debian/Ubuntu userland.
+# modules.  These modules must not hard-code the server's bundled '11-debian'
+# profile — the suite's no-pre-existing-fixtures rule requires creating this
+# profile at runtime instead, so the tests pass on any server regardless of
+# which profiles it ships.  An apt-based image is needed (rather than reusing
+# the alpine fixture) because 07 launches an IDE, whose bootstrap assumes a
+# Debian/Ubuntu userland.
 _DEBIAN_PROFILE = {
     "version": 2,
     "name": "Integration Test - Debian",
@@ -600,6 +601,35 @@ _BAD_IMAGE_PROFILE = {
 
 # ── Developer role spec ────────────────────────────────────────────────────────
 
+# A devtainer that takes its whole stop timeout to stop: its main process ignores SIGTERM (the
+# trap is inherited by sleep), so Docker kills it 20 s after the stop signal. What module 20
+# measures the stop acknowledgement against.
+_STOP_TIMEOUT_PROFILE = {
+    "version": 2,
+    "name": "Integration Test - Stop Timeout",
+    "active": True,
+    "routers": [
+        {
+            "name": "www",
+            "prefixes": ["www"],
+            "domains": ["*"],
+            "https": {"protocol": "http", "port": 8080},
+            "auth": ["developer", "owner", "viewer", "user", "containerCookie", "public"],
+        }
+    ],
+    "networks": ["*"],
+    "images": [_prefix_image("alpine:latest")],
+    "unixusers": ["dockside"],
+    "mounts": {
+        "tmpfs": [{"dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M"}],
+        "bind": [],
+        "volume": [],
+    },
+    "lxcfs": True,
+    "dockerArgs": ["--pids-limit=4000", "--stop-timeout=20"],
+    "command": ["/bin/sh", "-c", "trap '' TERM; sleep infinity"],
+}
+
 _DEVELOPER_ROLE_PERMISSIONS = {
     'createContainerReservation': 1,
     'startContainer':             1,
@@ -768,6 +798,7 @@ class _EnvManager:
         self.profile_nginx      = None
         self.profile_git        = None
         self.profile_bad_image  = None
+        self.profile_stop_timeout = None
         self.password_dev    = 'inttest-testpass'
 
         # Resolved by select_network() before setup() builds any profile.
@@ -960,15 +991,16 @@ class _EnvManager:
     def select_network(self, test_mode, allow_network_modify, dockside_container_id):
         """Choose which Docker network test devtainers use, deterministically.
 
-        Every default test profile used to declare ``"networks": ["*"]``, which
-        Profile::applyDefaultsAndFilters resolves to an alphabetical sort of
+        A default test profile declaring ``"networks": ["*"]`` would leave
+        Profile::applyDefaultsAndFilters to resolve it to an alphabetical sort of
         whatever networks the Dockside-under-test happens to be attached to.  On
         a real instance with more than one attached network (e.g. one firewall-
-        managed, one not), that made a test run's actual network non-deterministic
-        and dependent on incidental network naming rather than anything the suite
-        declares — the same "correct by assumption" problem the no-pre-existing-
-        fixtures rule exists to avoid for users/roles/profiles.  This picks one
-        network explicitly instead, in priority order:
+        managed, one not), that would make a test run's actual network non-
+        deterministic and dependent on incidental network naming rather than
+        anything the suite declares — the same "correct by assumption" problem
+        the no-pre-existing-fixtures rule exists to avoid for users/roles/
+        profiles.  This method picks one network explicitly instead, in
+        priority order:
 
           1. DOCKSIDE_TEST_NETWORK env var — used verbatim.  Verified against the
              Dockside-under-test's actual attachments when docker access and a
@@ -1157,6 +1189,7 @@ class _EnvManager:
         self.profile_hook_git   = self._ensure_profile('inttest-hook-git',   _HOOK_GIT_PROFILE)
         self.profile_hook_edge_case = self._ensure_profile('inttest-hook-edge-case', _EDGE_CASE_HOOK_PROFILE)
         self.profile_bad_image  = self._ensure_profile('inttest-bad-image',  _BAD_IMAGE_PROFILE)
+        self.profile_stop_timeout = self._ensure_profile('inttest-stop-timeout', _STOP_TIMEOUT_PROFILE)
 
         print('# Test environment ready.', file=sys.stderr)
 
@@ -1354,6 +1387,7 @@ def main():
         test_profile_hook_git   = _env_manager.profile_hook_git
         test_profile_hook_edge_case = _env_manager.profile_hook_edge_case
         test_profile_bad_image  = _env_manager.profile_bad_image
+        test_profile_stop_timeout = _env_manager.profile_stop_timeout
         test_image_alpine       = _prefix_image('alpine:latest')
         test_image_nginx        = _prefix_image('nginx:latest')
         test_image_debian       = _prefix_image('debian:latest')
@@ -1387,6 +1421,7 @@ def main():
             'test_profile_hook_git':   test_profile_hook_git,
             'test_profile_hook_edge_case': test_profile_hook_edge_case,
             'test_profile_bad_image':  test_profile_bad_image,
+            'test_profile_stop_timeout': test_profile_stop_timeout,
             'test_image_alpine':       test_image_alpine,
             'test_image_nginx':        test_image_nginx,
             'test_image_debian':       test_image_debian,

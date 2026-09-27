@@ -1,6 +1,6 @@
 # Dockside Web Client
 
-The browser single-page app — Vue 2 + Vuex + Vue Router, bundled with webpack and
+The browser single-page app — Vue 2 + Vuex + Vue Router, bundled with Vite and
 served by the Perl server.
 
 ## Build / develop

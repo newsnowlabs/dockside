@@ -106,8 +106,8 @@ consistency over a marginal naming improvement.
 is an array, a pure leaf overwrite. Computing a new array in the request process and writing it
 back would lose a concurrent second add. Instead, `add_router`/`remove_router`/`replace_router`
 each run their whole read-validate-mutate-write cycle inside `Reservation::Mutate`'s own `flock`,
-against the freshly-reread on-disk record — the same shape `increment_data_field` already
-established for this class of problem. Permission/profile-gate checks happen once in `User.pm`,
+against the freshly-reread on-disk record — the same shape the hook status mutators in
+`Reservation::Mutate` already established for this class of problem. Permission/profile-gate checks happen once in `User.pm`,
 before the lock; only the array mutation itself, plus the absolute `ide`/`ssh` block, needs the
 lock's protection.
 
@@ -115,6 +115,10 @@ lock's protection.
 rejects a colliding router prefix/domain/protocol within a profile — `Reservation::routers()`'s own
 lookup table is a silent last-write-wins hash, tolerable for a trusted admin's static file.
 Self-service input gets a real collision check instead of silently shadowing an existing route.
+A hyphenated prefix is rejected outright for the same reason: `lookup_container_uri` treats any
+hyphen in an actual request prefix as a passthrough indicator and diverts to the `**` router
+without ever consulting the literal prefix table, so a router registered under one would add
+successfully but could never be reached.
 
 **gatewayMode: reject `add` outright, unconditionally.** gatewayMode publishes Docker ports only at
 container-create time, so a new router's port may not be reachable without a full recreate. Rather
@@ -140,7 +144,8 @@ complexity there. `remove`/`replace` are unaffected.
   remit — see "Future work" below for both, including why autodetection is deferred rather than
   rejected outright. Either, if built, should call these same `add_router`/`remove_router`/
   `replace_router` primitives rather than a separate code path. The self-service path also depends
-  on ADR-0009's token mechanism, layered on top of the metadata server's existing IP-based floor.
+  on a credential layer, designed separately, layered on top of the metadata server's existing
+  IP-based floor.
 
 ## Future work
 
@@ -188,60 +193,19 @@ derived server-side from that lookup — a request can never name a target reser
 mutation would be the first *write* gated this way, which is a real step up in consequence: a
 stale/reused docker IP landing a write against the wrong, newly-provisioned reservation is a
 narrower risk than for the read-only lookups this floor has only ever gated before, but a worse
-one. See ADR-0009 for the general per-reservation, named-token mechanism layered on top of the IP
-floor to gate that step up.
-
-**The `routers` capability.** Given a token that grants it
-(`metadata.tokens.<name>.routers` — see ADR-0009 for the token schema, lifecycle, storage, and
-CLI/API this sits inside), its shape is:
-```json
-"routers": { "auth": ["owner", "developer"], "default": "owner" }
-```
-`auth` is the router-mutation allow-list ceiling, `default` the initial access level assigned to a
-router the token adds — the same two values `User.pm` already resolves for the human CLI/UI path,
-just profile-authored instead of session-derived.
-
-**Implementing ADR-0009's owner-permission check for this capability: reuse, not
-reimplementation.** The metadata-server handler for a `routers`-capability token doesn't run any
-authorization logic of its own. It resolves the reservation's owner account and calls the exact
-same `User::addContainerRouter`/`removeContainerRouter`/`replaceContainerRouter` entry points the
-CLI/UI path calls, as that owner, passing the token's `auth`/`default` through as `--auth`/
-`--access` are passed today. Every check those methods already perform therefore applies
-unchanged: `has_permission('addContainerRouter'/'removeContainerRouter')` (now checked against the
-owner's account — this is ADR-0009's use-time re-check, not a second, parallel mechanism),
-`can_on($reservation, 'develop')` (trivially true for an owner), and `_canAddRoutersToReservation`
-(the profile's `userRouters` opt-in, or the owner being an admin). Nothing about
-`Mutate.pm`/`normalise_router_def` changes or needs to know a token was involved.
-
-One consequence worth flagging for profile authors, since it falls directly out of this reuse
-rather than being a separate rule: declaring a `routers`-capability token is not itself a
-substitute for `userRouters`. A profile that declares such a token but leaves `userRouters` false
-only works via the token if the owner happens to be an admin (the same bypass the human path
-already has); otherwise both need to be set, exactly as they would for the owner to add a router
-via the CLI directly.
-
-**Deferred, not designed here:**
-
-- **Prefix/domain/protocol restriction per token.** Not motivated by a collision/squatting risk:
-  `Proxy::domain_to_host` resolves *which reservation* a request belongs to from the container
-  name embedded in the public hostname before any router-prefix lookup ever runs, and
-  `Reservation::lookup_container_uri` only ever consults that one already-identified reservation's
-  own router table — two devtainers can never collide at the prefix or domain level, whatever
-  values either one picks. Within a single reservation,
-  `normalise_router_def`'s existing overlap check already rejects any two routers (self-service or
-  admin-authored) claiming the same (protocol, prefix, domain) tuple. So access level (who can
-  reach a router once it exists) is the only restriction this feature actually needs; protocol and
-  domain need none, for the reasons already given. If a prefix restriction is ever wanted anyway,
-  it'd be for a purely organizational reason — an admin wanting a given token's additions confined
-  to a predictable namespace (e.g. `dev-*`) rather than an unconstrained one — not a safety
-  requirement. Still a single additional profile-level allow-pattern layered into the existing
-  `normalise_router_def`/`Mutate.pm` validation if ever built, not a new "router class" concept.
+one, so a bare IP check isn't sufficient on its own for this case. A per-reservation, named,
+revocable credential layered on top of that floor closes the gap; its schema, lifecycle, and the
+capability it would grant `routers` add/remove/replace under are designed separately and not
+reproduced here. Whatever form it takes, it should call these same `add_router`/`remove_router`/
+`replace_router` primitives rather than a separate code path, and any capability it grants must
+never exceed what the reservation's owner account could already do directly — declaring the
+capability is not itself a substitute for `userRouters`.
 
 ## UI implementation outline
 
 The Vue components described here are separate, independently-schedulable work from the server
-API and CLI in Decision above. Scope: router add/remove/replace only — token management's UI is
-ADR-0009's concern, since its design is capability-agnostic rather than router-specific.
+API and CLI in Decision above. Scope: router add/remove/replace only — a token-management UI is
+a separate, capability-agnostic concern out of scope here.
 
 ### Router add/remove/replace
 

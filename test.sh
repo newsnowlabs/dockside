@@ -5,7 +5,9 @@
 # Usage:
 #   bash test.sh                  # run all checks
 #   bash test.sh --only perl      # run one category
+#   bash test.sh --only unit
 #   bash test.sh --only vue
+#   bash test.sh --only vuetest
 #   bash test.sh --only eslint
 #   bash test.sh --only stylelint
 #   bash test.sh --only shellcheck
@@ -28,6 +30,9 @@ fi
 
 # ── State ────────────────────────────────────────────────────────────────────
 declare -A RESULTS=()
+# Every check that ran or was skipped, in the order it was reached. The summary walks this rather
+# than a fixed list, so a check cannot fail without also failing the run.
+CHECKS=()
 ONLY="${2:-}"   # set by --only flag below
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -43,6 +48,7 @@ run_check() {
   local name="$1"; shift
   [[ -n "$ONLY" && "$ONLY" != "$name" ]] && return 0
 
+  CHECKS+=("$name")
   echo ""
   echo -e "${BOLD}━━━ $name ━━━${RESET}"
   if "$@"; then
@@ -57,6 +63,7 @@ run_check() {
 skip_check() {
   local name="$1"; local reason="$2"
   [[ -n "$ONLY" && "$ONLY" != "$name" ]] && return 0
+  CHECKS+=("$name")
   RESULTS["$name"]="SKIP"
   echo ""
   echo -e "${YELLOW}⚠ $name skipped: $reason${RESET}"
@@ -86,8 +93,13 @@ check_perl() {
   local modules=(
     app/server/lib/App.pm
     app/server/lib/App/Metadata.pm
+    app/server/lib/App/Shutdown.pm
     app/server/lib/Containers.pm
     app/server/lib/Data.pm
+    app/server/lib/EventDaemon/ContainerSync.pm
+    app/server/lib/EventDaemon/LaunchDispatch.pm
+    app/server/lib/EventDaemon/LaunchReadiness.pm
+    app/server/lib/EventDaemon/LaunchRecovery.pm
     app/server/lib/Exception.pm
     app/server/lib/Profile.pm
     app/server/lib/Proxy.pm
@@ -128,6 +140,26 @@ check_perl() {
   return $failed
 }
 
+# ── 1b. Perl unit tests ──────────────────────────────────────────────────────
+# Every t/unit/*.t stubs its own external transport and uses disposable temporary storage, so the
+# suite needs no running service. Each test adds app/server/lib and t/stubs to @INC itself; the
+# -I flags here keep that true for a test invoked through a different working directory. prove
+# exits nonzero if any test file fails, which is what propagates a failure to the runner.
+check_unit() {
+  if ! command -v prove &>/dev/null; then
+    echo "prove not found (part of the perl package)"
+    return 1
+  fi
+  shopt -s nullglob
+  local tests=(t/unit/*.t)
+  shopt -u nullglob
+  if [[ ${#tests[@]} -eq 0 ]]; then
+    echo "  (no unit tests found under t/unit)"
+    return 0
+  fi
+  prove -I app/server/lib -I t/stubs "${tests[@]}" 2>&1
+}
+
 # ── 2. Vue / JS production build ────────────────────────────────────────────
 check_vue() {
   if ! command -v npm &>/dev/null; then
@@ -151,7 +183,24 @@ check_vue() {
   )
 }
 
-# ── 3. ESLint ────────────────────────────────────────────────────────────────
+# ── 3. Vue unit tests (Vitest smoke suite) ───────────────────────────────────
+check_vuetest() {
+  if ! command -v npm &>/dev/null; then
+    echo "npm not found — cannot run Vue unit tests"
+    return 1
+  fi
+  if [[ ! -d app/client/node_modules ]]; then
+    echo "node_modules not installed — run the 'vue' check first"
+    return 1
+  fi
+  (
+    cd app/client
+    echo "  Running Vitest..."
+    npx --no-install vitest run 2>&1
+  )
+}
+
+# ── 4. ESLint ────────────────────────────────────────────────────────────────
 check_eslint() {
   if ! command -v npm &>/dev/null; then
     echo "npm not found — cannot run ESLint"
@@ -168,7 +217,7 @@ check_eslint() {
   )
 }
 
-# ── 4. StyleLint ─────────────────────────────────────────────────────────────
+# ── 5. StyleLint ─────────────────────────────────────────────────────────────
 check_stylelint() {
   if ! command -v npm &>/dev/null; then
     echo "npm not found — cannot run StyleLint"
@@ -185,7 +234,7 @@ check_stylelint() {
   )
 }
 
-# ── 5. ShellCheck ─────────────────────────────────────────────────────────────
+# ── 6. ShellCheck ─────────────────────────────────────────────────────────────
 check_shellcheck() {
   if ! command -v shellcheck &>/dev/null; then
     echo "shellcheck not found (install with: apt-get install -y shellcheck)"
@@ -231,7 +280,7 @@ check_shellcheck() {
   return $failed
 }
 
-# ── 6. perltidy formatting check ─────────────────────────────────────────────
+# ── 7. perltidy formatting check ─────────────────────────────────────────────
 check_perltidy() {
   if ! command -v perltidy &>/dev/null; then
     echo "perltidy not found"
@@ -268,13 +317,13 @@ check_perltidy() {
   return $failed
 }
 
-# ── 7. JSON / YAML validation ─────────────────────────────────────────────────
+# ── 8. JSON / YAML validation ─────────────────────────────────────────────────
 check_json() {
   local failed=0
 
-  # Note: t/integration/config/{users,roles}.json were removed when the
-  # integration harness moved to creating all users/roles/profiles dynamically
-  # via the admin API (commit 7b2f1bb); they are no longer static config files.
+  # Note: no static t/integration/config/{users,roles}.json config files exist —
+  # the integration harness creates all users/roles/profiles dynamically via the
+  # admin API instead.
   local json_files=(
     app/client/package.json
     app/client/jsconfig.json
@@ -295,16 +344,16 @@ check_json() {
     fi
   done
 
-  # Example profiles are relaxed JSON with '//' comments (see e.g. 00-dockside.json) -
-  # python3 -m json.tool would reject every one of them, which is exactly why they were never
-  # in $json_files above and so went unchecked entirely until this loop was added. Validate with
-  # the *actual* function Data.pm uses to load every profile at runtime - Data::parse_json,
-  # which strips '//' comments with its own two regexes before calling
+  # Example profiles and the example config.json are relaxed JSON with '//' comments (see e.g.
+  # 00-dockside.json) - python3 -m json.tool would reject every one of them, which is exactly
+  # why they were never in $json_files above and so went unchecked entirely until this loop was
+  # added. Validate with the *actual* function Data.pm uses to load them at runtime -
+  # Data::parse_json, which strips '//' comments with its own two regexes before calling
   # from_json($text, {relaxed=>1}) - rather than reimplementing/guessing at that logic here,
   # which would silently drift from the real parser the moment either changed.
   if perl -I app/server/lib -MData -e 1 2>/dev/null; then
     shopt -s nullglob
-    local profile_files=(app/server/example/config/profiles/*.json)
+    local profile_files=(app/server/example/config/profiles/*.json app/server/example/config/config.json)
     shopt -u nullglob
     for f in "${profile_files[@]}"; do
       if perl -I app/server/lib -MData -e '
@@ -312,7 +361,7 @@ check_json() {
          open(my $fh, "<", $ARGV[0]) or die "open: $!";
          eval { Data::parse_json(<$fh>) } or die "$@";
       ' "$f" 2>/tmp/dockside-test-json-err; then
-        echo "  OK (profile JSON): $f"
+        echo "  OK (relaxed JSON): $f"
       else
         echo "  INVALID:   $f"
         cat /tmp/dockside-test-json-err
@@ -326,7 +375,7 @@ check_json() {
 
   # YAML
   if python3 -c "import yaml" 2>/dev/null; then
-    for f in mkdocs.yml; do
+    for f in docker-compose.yml; do
       if [[ ! -f "$f" ]]; then continue; fi
       if python3 -c "import yaml, sys; yaml.safe_load(open('$f'))" 2>&1; then
         echo "  OK (YAML): $f"
@@ -342,7 +391,7 @@ check_json() {
   return $failed
 }
 
-# ── 8. Python syntax check ───────────────────────────────────────────────────
+# ── 9. Python syntax check ───────────────────────────────────────────────────
 check_python() {
   local failed=0
   local py_files=()
@@ -383,14 +432,16 @@ echo -e "${BOLD}Dockside test suite${RESET}"
 echo "Repo: $REPO_ROOT"
 
 run_check "perl"       check_perl
+run_check "unit"       check_unit
 run_check "vue"        check_vue
+run_check "vuetest"    check_vuetest
 run_check "eslint"     check_eslint
 run_check "stylelint"  check_stylelint
 run_check "shellcheck" check_shellcheck
 run_check "json"       check_json
 run_check "python"     check_python
 # perltidy is available via --only perltidy but excluded from the default run:
-# the codebase pre-dates perltidy enforcement and has many pre-existing diffs.
+# many files do not currently conform to the perltidy profile.
 [[ -n "$ONLY" ]] && run_check "perltidy" check_perltidy
 # Integration tests require a running Dockside instance; opt-in only:
 [[ -n "$ONLY" ]] && run_check "integration" check_integration
@@ -400,8 +451,12 @@ echo ""
 echo -e "${BOLD}━━━ Summary ━━━${RESET}"
 
 overall=0
-for name in perl vue eslint stylelint shellcheck json perltidy; do
-  result="${RESULTS[$name]:-SKIP}"
+if [[ ${#CHECKS[@]} -eq 0 ]]; then
+  echo -e "  ${RED}✗ no such check: ${ONLY}${RESET}"
+  overall=1
+fi
+for name in "${CHECKS[@]}"; do
+  result="${RESULTS[$name]}"
   case "$result" in
     PASS) echo -e "  ${GREEN}✓ PASS${RESET}  $name" ;;
     FAIL) echo -e "  ${RED}✗ FAIL${RESET}  $name"; overall=1 ;;

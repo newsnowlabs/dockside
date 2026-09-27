@@ -4,6 +4,10 @@ services:
     image: ${DOCKSIDE_IMAGE:-newsnowlabs/dockside:latest}
     restart: unless-stopped
     attach: false
+    # A stop or restart waits this long for in-flight work (hook runs, devcontainer creates)
+    # before the container is killed. Must exceed hooks.defaultTimeoutSeconds (300 s) and any
+    # longer per-run hook timeout in use, plus a margin - see docs/upgrading.md.
+    stop_grace_period: 360s
     command: ["--ssl-builtin"]
     ports:
       - "${DOCKSIDE_HTTPS_PORT:-443}:443"

@@ -111,22 +111,21 @@ general).
 - The re-invoked `dockside` must be resolvable from `ProxyCommand` (on `PATH`, or an
   absolute path), run fully non-interactively, and fail cleanly when the stored session has
   expired (prompting a re-`login`). Confirmed in the shipped implementation.
-- **Test coverage landed with this fix:** the existing SSH integration tests
-  (`t/integration/tests/09_ssh.py`) already exercise `exec-proxy` end-to-end incidentally,
-  since `dockside ssh config` now always emits the `exec-proxy` `ProxyCommand`. Explicit
-  tests were added for the wildcard (no-devtainer) `ssh config` block, the `--wstunnel`
-  binary-path override, the headers file's 0600 permissions, and the path-traversal guard
-  (`_write_wstunnel_headers_file` rejecting a key containing `/`).
+- **Test coverage:** the SSH integration tests (`t/integration/tests/09_ssh.py`) exercise
+  `exec-proxy` end-to-end, since `dockside ssh config` always emits the `exec-proxy`
+  `ProxyCommand`; explicit coverage exists for the wildcard (no-devtainer) `ssh config`
+  block, the `--wstunnel` binary-path override, the headers file's 0600 permissions, and the
+  path-traversal guard (`_write_wstunnel_headers_file` rejecting a key containing `/`).
 - **Deliberately deferred as follow-up work, not silent gaps:** a dedicated test for
   nested/multi-server alias resolution (the bug fixed by `1753e7c`, requiring a
   devtainer-inside-a-devtainer fixture) and an explicit regression test pinning the
   deprecated legacy v6 path to the v6 server.
 
-## Surfaces migrated (landed)
+## Surfaces migrated
 
-The wstunnel v10 CLI break meant client and server had to move atomically. These
-surfaces all touched the cookie-bearing tunnel and were updated in lockstep
-(originally enumerated by the release-readiness review):
+These surfaces all implement or describe the credential-exposure fix (the cookie-bearing
+argv replaced by a 0600 headers file) and the v10/v6 dual-version coexistence it runs
+alongside, and must stay consistent with each other:
 
 - `cli/dockside` (renamed from `dockside_cli.py`; `_build_ssh_proxy_command`,
   `_check_wstunnel_binary`, `_write_wstunnel_headers_file`, `_build_wstunnel_client_argv`,

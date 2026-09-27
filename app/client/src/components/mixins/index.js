@@ -1,3 +1,19 @@
+import { mdiHome, mdiPlusCircle, mdiCog, mdiAccountCircle } from '@mdi/js';
+import copyToClipboard from '@/utilities/copy-to-clipboard';
+
+// Header.vue and BottomNav.vue both render the same 4 nav icons (see
+// plugins/vuetify.js's own comment on why these are real @mdi/js imports,
+// not @mdi/font glyph names) - shared here rather than each file repeating
+// the same import line.
+const navIcons = {
+   computed: {
+      mdiHome: () => mdiHome,
+      mdiPlusCircle: () => mdiPlusCircle,
+      mdiCog: () => mdiCog,
+      mdiAccountCircle: () => mdiAccountCircle,
+   },
+};
+
 const filteredContainers = {
    computed: {
       filteredContainers() {
@@ -62,14 +78,31 @@ const routePermissions = {
    }
 };
 
+const sidebarDrawerSelect = {
+   methods: {
+      // Close the drawer (mobile/temporary only), then run the given action -
+      // one shared path for "user picked something in the sidebar". Shared
+      // between Sidebar.vue and AdminSidebar.vue to avoid duplication.
+      // The mdAndUp guard matters: closing unconditionally would also
+      // collapse the md+ permanent drawer, because Vuetify's internal
+      // "re-open when :permanent becomes true" watcher only fires on
+      // *permanent itself* changing, not on modelValue being set false while
+      // permanent stays constantly true - see App.vue's drawerOpen comment
+      // for the closely related initial-value version of this same gotcha.
+      // Relies on the consuming component emitting 'update:modelValue' for
+      // its own drawer prop.
+      onSelect(action) {
+         if (!this.$vuetify.display.mdAndUp) this.$emit('update:modelValue', false);
+         action();
+      },
+   },
+};
+
 const routing = {
    methods: {
       go: function (path) {
          this.$router.push({ path: path }).catch(() => {});
          return false;
-      },
-      goDocs: function () {
-         this.$router.push({ path: '/docs' }).catch(() => {});
       },
       goHome: function (withQuery) {
          this.$router.push({ path: '/', query: (withQuery ? this.$route.query : undefined) }).catch(() => {});
@@ -95,4 +128,59 @@ const routing = {
    }
 };
 
-export { filteredContainers, routing, routePermissions };
+const COPY_FEEDBACK_MS = 1500;
+
+// "Copy" buttons that briefly flash an accent-strong tonal fill after a
+// successful copy - color/variant only, never the label text, so a button
+// text width never changes and a tightly-packed row (SSHInfo's toolbars,
+// Container's per-router action row) never rewraps because of it.
+// copiedKey holds whichever key was last copied, not a single boolean, so
+// a component with several independent copy buttons (SSHInfo.vue has
+// five) doesn't have one button's feedback light up every button's
+// template; each call also clears any previous pending reset, so copying
+// a second value doesn't cut short by an earlier timer.
+const copyable = {
+   data() {
+      return { copiedKey: null };
+   },
+   beforeUnmount() {
+      clearTimeout(this._copyFeedbackTimeout);
+   },
+   methods: {
+      async copyWithFeedback(key, value) {
+         await copyToClipboard(value);
+         clearTimeout(this._copyFeedbackTimeout);
+         this.copiedKey = key;
+         this._copyFeedbackTimeout = setTimeout(() => {
+            this.copiedKey = null;
+         }, COPY_FEEDBACK_MS);
+      },
+      isCopied(key) {
+         return this.copiedKey === key;
+      },
+   },
+};
+
+// Raises the app-wide snackbar (rendered once in App.vue, backed by the root
+// store's snackbar state) from any component, replacing the bare alert() calls
+// that used to interrupt the page. notifyError is the shared shape every catch
+// block wants: show the server's own sanitised msg when there is one, otherwise
+// log - so a genuine transport failure with no response body is recorded rather
+// than surfaced as an empty, unactionable toast.
+const notifier = {
+   methods: {
+      notify(text, { color = 'error', timeout = 6000 } = {}) {
+         this.$store.commit('showSnackbar', { text, color, timeout });
+      },
+      notifyError(error, context) {
+         const msg = error && error.response && error.response.data && error.response.data.msg;
+         if (msg) {
+            this.notify(msg, { color: 'error' });
+         } else {
+            console.error(context || 'Request failed', error);
+         }
+      },
+   },
+};
+
+export { filteredContainers, navIcons, routing, routePermissions, sidebarDrawerSelect, copyable, notifier };

@@ -1,15 +1,12 @@
-import Vue from 'vue';
-import VueRouter from 'vue-router';
-import Vuex from 'vuex';
-import { BootstrapVue, IconsPlugin } from 'bootstrap-vue';
+import { createApp } from 'vue';
+import { createRouter, createWebHistory } from 'vue-router';
 import createStore from '@/store';
+import vuetify from '@/plugins/vuetify';
 import './index.scss';
 import App from '@/components/App.vue';
 
-Vue.use(VueRouter);
-Vue.use(Vuex);
-Vue.use(BootstrapVue);
-Vue.use(IconsPlugin);
+// createApp() is used to mount the app (not @vue/compat's configureCompat()
+// path).
 
 // Create store before route guards so guards read live currentUser state
 // rather than the stale window.dockside.user bootstrap snapshot.
@@ -34,23 +31,25 @@ function adminTypeGuard(to, from, next) {
 
 const routes = [
    { path: '/container/:name', name: 'container', component: App },
-   { path: '/admin', beforeEnter(to, from, next) {
+   { path: '/admin', redirect: () => {
+      // A route record with only `beforeEnter` and no component/redirect/
+      // children never matches. `redirect` is the purpose-built feature for
+      // a route with no view of its own that always sends you elsewhere.
       const p = store.state.account.currentUser.permissions.actions;
-      if (p.manageUsers)         next('/admin/users');
-      else if (p.manageProfiles) next('/admin/profiles');
-      else                       next('/');
+      if (p.manageUsers)         return '/admin/users';
+      else if (p.manageProfiles) return '/admin/profiles';
+      else                       return '/';
    }},
    { path: '/admin/:type',     name: 'adminList',   component: App, beforeEnter: adminTypeGuard },
    { path: '/admin/:type/:id', name: 'adminDetail', component: App, beforeEnter: adminTypeGuard },
    { path: '/account',         name: 'account',     component: App },
    { path: '/', component: App },
-   { path: '/docs', name: 'docs', beforeEnter() { window.open("/docs/", "docs"); } },
    { path: '/docksideio', name: 'docksideio', beforeEnter() { window.open("https://dockside.io/", "docksideio"); } },
    { path: '/dockside-github', name: 'dockside-github', beforeEnter() { window.open("https://github.com/newsnowlabs/dockside", "dockside-github"); } },
    { path: '/newsnow', name: 'newsnow', beforeEnter() { window.open("https://www.newsnow.co.uk/about", "newsnow"); } },
 ];
 
-const router = new VueRouter({
+const router = createRouter({
    routes,
    // https://v3.router.vuejs.org/guide/advanced/scroll-behavior.html
    scrollBehavior (to, from) {
@@ -71,10 +70,21 @@ const router = new VueRouter({
       }
       return { x: 0, y: 0 };
    },
-   mode: 'history' // https://router.vuejs.org/guide/essentials/history-mode.html
+   history: createWebHistory() // https://router.vuejs.org/guide/essentials/history-mode.html
 });
 
-new Vue({
-   router,
-   store,
-}).$mount('#app');
+// createApp() is Vue 3's app-instance entry point: router and store are wired
+// up via installable plugin instances (`app.use(router)`, `app.use(store)`),
+// not root-instance options.
+const app = createApp({
+   // Explicit template string, matching the markup App.pm's server HTML puts
+   // in #app (see App.pm's get_body handler) exactly, rather than relying on
+   // in-DOM template compilation of that markup.
+   template: '<router-view></router-view>',
+});
+app.use(router);
+app.use(store);
+// Vuetify 3's install(app, ...) receives the real app instance directly - no
+// compat translation involved.
+app.use(vuetify);
+app.mount('#app');

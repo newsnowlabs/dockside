@@ -1,7 +1,8 @@
 <template>
    <div class="json-editor-wrap">
       <json-editor-vue
-         v-model="localValue"
+         :model-value="localValue"
+         @update:model-value="localValue = $event"
          :mode="currentMode"
          :modes="allowedModes"
          :read-only="readonly"
@@ -9,14 +10,9 @@
       />
       <div v-if="!readonly" class="json-editor-toolbar">
          <span class="json-editor-mode-label">Mode:</span>
-         <b-button-group size="sm">
-            <b-button
-               v-for="m in ['tree', 'text']"
-               :key="m"
-               :variant="currentMode === m ? 'secondary' : 'outline-secondary'"
-               @click="currentMode = m"
-            >{{ m }}</b-button>
-         </b-button-group>
+         <v-btn-toggle v-model="currentMode" density="compact" mandatory color="secondary">
+            <v-btn v-for="m in ['tree', 'text']" :key="m" :value="m" size="small">{{ m }}</v-btn>
+         </v-btn-toggle>
       </div>
    </div>
 </template>
@@ -30,13 +26,26 @@
     *         readonly (Boolean)          default false — shows read-only tree view
     * Emits:  input(newValue)
     *
-    * Vue 3 migration: rename 'value' → 'modelValue' and 'input' → 'update:modelValue'.
+    * This component's OWN external contract is deliberately still
+    * value/input, not modelValue/update:modelValue, for consistency with
+    * this repo's other custom form components.
+    *
+    * The INNER binding to <json-editor-vue> below follows a separate
+    * contract: that package picks its own prop/event names *at runtime* via
+    * vue-demi's isVue3 flag (modelValue/update:modelValue when true,
+    * value/input when false). In this app that resolves to
+    * modelValue/update:modelValue, which is what the binding below uses -
+    * binding :value/@input to <json-editor-vue> instead would silently
+    * receive nothing, since the package's own component declares no `value`
+    * prop in that mode.
     */
    import JsonEditorVue from 'json-editor-vue';
 
    export default {
       name: 'JsonEditor',
-      components: { JsonEditorVue },
+      components: {
+         JsonEditorVue,
+      },
       props: {
          value: {
             default: null,
@@ -84,7 +93,7 @@
 
 <style lang="scss" scoped>
    .json-editor-wrap {
-      border: 1px solid #ced4da;
+      border: 1px solid rgb(var(--v-theme-border));
       border-radius: 4px;
       overflow: hidden;
    }
@@ -98,12 +107,12 @@
       align-items: center;
       gap: 8px;
       padding: 4px 8px;
-      background: #f8f9fa;
-      border-top: 1px solid #dee2e6;
+      background: rgb(var(--v-theme-surface-alt));
+      border-top: 1px solid rgb(var(--v-theme-border));
    }
 
    .json-editor-mode-label {
       font-size: 0.8rem;
-      color: #6c757d;
+      color: rgb(var(--v-theme-ink-soft));
    }
 </style>

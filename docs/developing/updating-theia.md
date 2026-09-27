@@ -49,7 +49,7 @@ The process for reimplementing Theia patches involves launching Theia, developin
    docker cp my-theia-build:/opt/dockside/ide/theia/theia-1.66.1/theia/yarn.lock ~/dockside/ide/theia/1.66.1/build/
    ```
 
-> **Note:** System binaries (`git`, `bash`, `ssh`, `gh`, etc.) now reside in `/opt/dockside/system/latest/bin/` — a path separate from the IDE-specific binaries. No action is needed for these during a Theia version update.
+> **Note:** System binaries (`git`, `bash`, `ssh`, `gh`, etc.) reside in `/opt/dockside/system/latest/bin/` — a path separate from the IDE-specific binaries. No action is needed for these during a Theia version update.
 
 ## Testing for desired functionality of Theia patches
 

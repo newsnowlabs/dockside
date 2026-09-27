@@ -11,9 +11,9 @@
 # See:
 # - http://nginx.org/en/docs/http/ngx_http_perl_module.html
 #
-# This caveat now applies to Proxy only - the App UI/API content itself no longer runs
-# embedded in nginx at all: it's a standalone Mojolicious process (bin/app-server),
-# reverse-proxied to like any other upstream, not perl_require'd here.
+# This caveat applies to Proxy only. The App UI/API server is a standalone Mojolicious
+# process (bin/app-server), reverse-proxied like any other upstream, not perl_require'd
+# here.
 
 perl_modules /home/dockside/dockside/app/server/lib;
 perl_require Proxy.pm;
@@ -102,11 +102,9 @@ server {
       access_log /var/log/nginx/access.log proxy_http;
     }
 
-    # Fail closed: previously, an $upstream_http that matched none of the above (a bug, or an
-    # unexpected value) fell through to nginx's own `perl App::handlerHTTP;` content-handler
-    # directive as an accidental fallback. That directive is gone now (see this file's own
-    # header comment) - without this guard, execution would instead fall through to
-    # proxy_pass'ing to nothing, which nginx handles far less predictably than an explicit 400.
+    # Fail closed: if $upstream_http matches none of the above conditions (a bug, or an
+    # unexpected value), return 400 rather than falling through to proxy_pass'ing to
+    # nothing, which nginx handles far less predictably than an explicit 400.
     if ($upstream_http !~ '^http') {
       return 400;
     }
@@ -176,13 +174,10 @@ server {
       access_log /var/log/nginx/access.log proxy_https;
     }
 
-    # Fail closed: previously, an $upstream_https that matched none of the above (a bug, or an
-    # unexpected value) fell through to nginx's own `perl App::handlerHTTPS;` content-handler
-    # directive as an accidental fallback, itself falling through further to this location's own
-    # `root` for a static-file DECLINED case. Both are gone now (see this file's own header
-    # comment - /docs moved into the app itself, reached only via ui_uri() proxying, since a
-    # plain nginx `location /docs` here would hijack that path on every devtainer host too) -
-    # without this guard, execution would instead fall through to proxy_pass'ing to nothing.
+    # Fail closed: if $upstream_https matches none of the above conditions (a bug, or an
+    # unexpected value), return 400 rather than falling through to proxy_pass'ing to
+    # nothing. /docs lives in the app itself, reached only via ui_uri() proxying, since a
+    # plain nginx `location /docs` here would hijack that path on every devtainer host too.
     if ($upstream_https !~ '^http') {
       return 400;
     }

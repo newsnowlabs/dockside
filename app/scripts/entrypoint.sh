@@ -316,6 +316,14 @@ _EOE_
     ln -sf $APP_DIR/app/scripts/runscripts/$s/down-signal /etc/service/$s/down-signal
   fi
 
+  # Symlink a finish script, if this service declares one - s6-supervise runs ./finish after
+  # ./run exits and before it restarts it, so a service that can exit on a fatal error (a core
+  # config file that won't parse - see Data.pm) uses it to throttle the crash-restart loop.
+  # Generic here (any service can opt in), like down-signal above.
+  if [ -f "$APP_DIR/app/scripts/runscripts/$s/finish" ]; then
+    ln -sf $APP_DIR/app/scripts/runscripts/$s/finish /etc/service/$s/finish
+  fi
+
   # Copy each immediate child of $APP_DIR/app/scripts/runscripts/$s/data
   # N.B. We can't symlink $APP_DIR/app/scripts/runscripts/logrotate/data because
   #.     for logrotate to run, these files must be root-owned.
@@ -340,8 +348,7 @@ fi
 log "Creating /var/log/$APP log directory ..."
 mkdir -p /var/log/$APP && chown -R $USER:$USER /var/log/$APP
 
-# Determine IDE volume state once: drives the populate logic below and replaces
-# the separate writability log that previously appeared after the populate block.
+# Determine IDE volume state once: drives the populate logic below.
 if ! mountpoint -q "$OPT_PATH" 2>/dev/null; then
   OPT_PATH_STATE=symlinked
 elif (>$OPT_PATH/.writeable && rm -f $OPT_PATH/.writeable) 2>/dev/null; then
@@ -372,7 +379,7 @@ if [ -d "${OPT_PATH}.img" ]; then
 
         name="$(basename "$ide")"
 
-        # Backwards-compatibility with Dockside v3.x: if 'latest' is not a symlink, mv it to 'latest.orig'
+        # Handle a non-symlink 'latest' directory (legacy layout) by renaming it aside.
         if [ -d "${OPT_PATH}/ide/$name/latest" ] && [ ! -h "${OPT_PATH}/ide/$name/latest" ]; then
           mv "${OPT_PATH}/ide/$name/latest" "${OPT_PATH}/ide/$name/latest.orig"
         fi
@@ -395,7 +402,7 @@ if [ -d "${OPT_PATH}.img" ]; then
         cp -a -P "$ide/latest" "$OPT_PATH/ide/$(basename "$ide")"
       done
 
-      # Backwards-compatibility with Dockside v3.x: if 'latest' is not a symlink, mv it to 'latest.orig'
+      # Handle a non-symlink 'latest' directory (legacy layout) by renaming it aside.
       if [ -d "${OPT_PATH}/system/latest" ] && [ ! -h "${OPT_PATH}/system/latest" ]; then
         mv "${OPT_PATH}/system/latest" "${OPT_PATH}/system/latest.orig"
       fi

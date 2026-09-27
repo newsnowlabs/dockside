@@ -32,7 +32,17 @@
         ]
     },
     "hooks": {
-        "defaultTimeoutSeconds": 120
+        "defaultTimeoutSeconds": 300
+    },
+    "appServer": {
+        // 'unlimited' (the default) sets no ceiling of its own: a stopping worker waits for in-flight hook runs, and for any devcontainer create or start it has
+        // posted to Docker and not yet recorded, however long they take, bounded only by the container's stop grace (docker-compose.yml stop_grace_period) and a
+        // one-day backstop after which the server kills the worker regardless. A pull in progress is abandoned to the restarted workers' first pass.
+        // A positive integer is instead an in-container ceiling in seconds, after which a draining worker is killed.
+        "shutdownGraceSeconds": "unlimited",
+        // Seconds between each app-server worker's sweeps for devcontainer creates no worker is driving (one abandoned by a restart, or whose retry died with
+        // its worker); each sweep costs a stat of reservations.json per worker. Read at app-server startup: a change takes effect on restart.
+        "reconcileIntervalSeconds": 60
     },
     "clientDistPath": "/home/dockside/dockside/app/client/dist",
     "docker": {

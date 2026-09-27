@@ -29,7 +29,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))
 
-from dockside_test import TestCase
+from dockside_test import TestCase, APIError
 
 # A name no fixture ever creates: used wherever a test needs a reference the server must
 # treat as non-existent.
@@ -211,8 +211,9 @@ class RejectionTests(TestCase):
 
     def test_18_admin_cannot_strip_own_admin_role(self):
         """updateRole self-lock-out: an admin must not remove manageUsers from its OWN
-        admin-granting (custom) role. Exercises a guard added concurrently in the server,
-        so assert only that the request is rejected — not an exact message/status."""
+        admin-granting (custom) role. The server enforces this unconditionally on any
+        such edit, so assert only that the request is rejected — not an exact
+        message/status."""
         self.assert_api_error(
             lambda: self._adminrole_client._run('role', 'edit', self._admin_role,
                                                 '--set', 'permissions.manageUsers=0'))
@@ -232,3 +233,56 @@ class RejectionTests(TestCase):
     def test_21_get_absent_profile(self):
         self.assert_api_error(
             lambda: self.admin._run('profile', 'get', _ABSENT))
+
+
+class RemoveRunningDevtainerTests(TestCase):
+    """A running devtainer cannot be removed: the server refuses (Docker's own 409, surfaced),
+    and the CLI reports that refusal, rather than accepting the request with a 200 that removes
+    nothing.
+
+    Regression cover for the pre-async behaviour where Reservation::action discarded Docker's
+    refusal and the route returned 200 unconditionally, so `dockside remove` of a running
+    devtainer reported a success it never achieved and could only surface the failure as a
+    two-minute wait for a removal that never happened.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.CONTAINER = cls._sfx('inttest-rej-remove-running')
+
+    @classmethod
+    def tearDownClass(cls):
+        # stop first, then remove - a remove is refused while it is still running, which is the
+        # very thing under test, so it must be stopped before the teardown remove can take.
+        for fn in (
+            lambda: cls.admin.stop(cls.CONTAINER, wait=True, timeout=60),
+            lambda: cls.admin.remove(cls.CONTAINER, wait=False),
+        ):
+            try:
+                fn()
+            except Exception:
+                pass
+
+    def test_22_remove_running_is_refused(self):
+        self.create_and_wait(self.admin, self.test_profile_alpine, self.CONTAINER)
+
+        # The assertion only means something if it really is running first.
+        data = self.admin.get_container(self.CONTAINER)
+        self.assert_equal(data.get('status'), 1,
+                          f'expected running (status 1) before remove, got {data.get("status")!r}')
+
+        # remove() sends --force, but that only skips the CLI's own confirm prompt - it does not
+        # ask the server to force-remove, so Docker still refuses a running container. The CLI
+        # exits non-zero on that refusal, which the harness raises as APIError.
+        try:
+            self.admin.remove(self.CONTAINER)
+        except APIError as e:
+            self.assert_in('running', str(e).lower(),
+                           f'remove was refused, but not for being running: {e!r}')
+        else:
+            raise AssertionError('remove of a running devtainer was accepted, not refused')
+
+        # A refused remove must have removed nothing.
+        data = self.admin.get_container(self.CONTAINER)
+        self.assert_equal(data.get('status'), 1,
+                          f'devtainer should still be running after a refused remove, got {data.get("status")!r}')

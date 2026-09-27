@@ -320,10 +320,18 @@ sub cmdline ($self) {
 sub _parse_docker_size ($str) {
    return 0 + $str if $str =~ /^\d+$/;
    my ( $num, $unit ) = $str =~ /^([\d.]+)\s*([a-zA-Z]*)$/
-      or die Exception->new( 'msg' => "Internal error - cannot parse docker size string '$str'" );
+      or die Exception->new(
+         'msg'    => "This devtainer's profile declares a size, '$str', that cannot be read as one " .
+                     "(expected digits, optionally followed by b, k, kb, m, mb, g or gb)",
+         'status' => 400
+      );
    my %mult = ( '' => 1, 'b' => 1, 'k' => 1024, 'kb' => 1024, 'm' => 1024**2, 'mb' => 1024**2, 'g' => 1024**3, 'gb' => 1024**3 );
    my $m = $mult{ lc($unit) };
-   die Exception->new( 'msg' => "Internal error - unknown docker size unit '$unit' in '$str'" ) unless defined $m;
+   die Exception->new(
+      'msg'    => "This devtainer's profile declares a size, '$str', with an unrecognised unit " .
+                  "'$unit' (expected b, k, kb, m, mb, g or gb)",
+      'status' => 400
+   ) unless defined $m;
    return int( $num * $m );
 }
 
@@ -343,12 +351,18 @@ sub _parse_docker_size ($str) {
 # has no generic CLI-flag-to-JSON translation available - unlike every other
 # field here, these are arbitrary strings a profile author can put anything into.
 # Scoped instead to exactly the flag patterns every profile in this repo actually
-# uses today (--memory, --pids-limit, --cpus, --env - verified by grep across
+# uses today (--memory, --pids-limit, --cpus, --env, --stop-timeout - the profiles under
 # app/server/example/config/profiles/*.json and the integration test fixtures) -
 # anything else fails loudly with a clear message naming the unsupported flag,
 # rather than silently dropping it or creating a container that doesn't match
 # what the profile declared. Extending this list for a new flag pattern is
 # straightforward if/when a profile actually needs one outside this set.
+#
+# The largest value Docker's integer container-config fields are guaranteed to hold. A digit
+# string above it is refused like any other unsupported entry: Perl would carry a larger one as
+# a float, and one past its range as Inf, which the JSON encoder writes as a string.
+my $DOCKER_INT_MAX = 2147483647;
+
 sub cmdline_json ($self) {
    # Mirrors cmdline_security()'s own per-flag logic above, reading $security directly rather
    # than parsing that function's own CLI-flag output back apart - see this function's own
@@ -405,6 +419,7 @@ sub cmdline_json ($self) {
    # collision - profile-author intent expressed directly in dockerArgs wins over the derived
    # options-projection.
    my @env = $self->_option_env_pairs();
+   my $stopTimeout;
    if ( ref( $self->profileObject->{'dockerArgs'} ) eq 'ARRAY' ) {
       for my $raw ( @{ $self->profileObject->{'dockerArgs'} } ) {
          my $arg = $self->_placeholders($raw);
@@ -420,24 +435,60 @@ sub cmdline_json ($self) {
          elsif ( $arg =~ /^--env=(.+)$/ ) {
             push( @env, $1 );
          }
+         elsif ( $arg =~ /^--stop-timeout=(\d+)$/ && $1 <= $DOCKER_INT_MAX ) {
+            # Seconds Docker waits after the stop signal before killing the container, honoured by
+            # a stop request that sends no timeout of its own (Reservation::action). A container
+            # config field, not a HostConfig one.
+            $stopTimeout = 0 + $1;
+         }
          else {
-            die Exception->new( 'msg' => "Internal error - dockerArgs entry '$arg' has no JSON Create API equivalent implemented" );
+            die Exception->new(
+               'msg'    => "This devtainer's profile declares a dockerArgs entry, '$arg', that this " .
+                           "server cannot apply. Supported entries are --memory, --pids-limit, " .
+                           "--cpus, --env and --stop-timeout.",
+               'status' => 400
+            );
          }
       }
    }
 
+   # Docker has two independent mechanisms for a tmpfs mount. The structured Mounts[] form
+   # (Type=tmpfs + TmpfsOptions) is used below whenever a mount only needs size/mode - but its
+   # TmpfsOptions.Options field (confirmed against the installed dockerd's own source) validates
+   # against a hardcoded exec/noexec-only allowlist, so uid/gid/nosuid/nodev can never reach Docker
+   # through it. The legacy HostConfig.Tmpfs field - a plain {dst => "opt,opt,..."} map with no
+   # schema of its own, the same one 'docker run --tmpfs' uses - passes its string straight to the
+   # kernel's tmpfs mount parser and so supports the full option set; used here only when one of
+   # the five extra options is actually set, since switching every tmpfs mount to it unconditionally
+   # would drop plain size/mode mounts out of `docker inspect`'s top-level Mounts array for no
+   # reason (confirmed live; docker-event-daemon reads that array for volume discovery elsewhere).
+   # noexec/nosuid/nodev are bare flags in this string, not "flag=value" - confirmed live that the
+   # kernel's tmpfs parser rejects "nodev=1" et al.
    my @mounts;
+   my %tmpfsLegacy;
    for my $m ( @{ $self->profileObject->{'mounts'}{'tmpfs'} } ) {
-      die Exception->new( 'msg' => "Internal error - tmpfs mount options beyond size/mode have no JSON Create API equivalent implemented (dst='$m->{'dst'}')" )
-         if $m->{'tmpfs-uid'} || $m->{'tmpfs-gid'} || $m->{'tmpfs-noexec'} || $m->{'tmpfs-nosuid'} || $m->{'tmpfs-nodev'};
-      my $tmpfsOptions = {};
-      $tmpfsOptions->{'SizeBytes'} = _parse_docker_size( $m->{'tmpfs-size'} ) if $m->{'tmpfs-size'};
-      $tmpfsOptions->{'Mode'}      = oct( $m->{'tmpfs-mode'} )               if $m->{'tmpfs-mode'};
-      push( @mounts, {
-         'Type'         => 'tmpfs',
-         'Target'       => $self->_placeholders( $m->{'dst'} ),
-         'TmpfsOptions' => $tmpfsOptions,
-      } );
+      my $dst = $self->_placeholders( $m->{'dst'} );
+      if ( $m->{'tmpfs-uid'} || $m->{'tmpfs-gid'} || $m->{'tmpfs-noexec'} || $m->{'tmpfs-nosuid'} || $m->{'tmpfs-nodev'} ) {
+         $tmpfsLegacy{$dst} = join( ',',
+            $m->{'tmpfs-size'}   ? "size=$m->{'tmpfs-size'}" : (),
+            $m->{'tmpfs-mode'}   ? "mode=$m->{'tmpfs-mode'}" : (),
+            $m->{'tmpfs-uid'}    ? "uid=$m->{'tmpfs-uid'}"   : (),
+            $m->{'tmpfs-gid'}    ? "gid=$m->{'tmpfs-gid'}"   : (),
+            $m->{'tmpfs-noexec'} ? 'noexec'                  : (),
+            $m->{'tmpfs-nosuid'} ? 'nosuid'                  : (),
+            $m->{'tmpfs-nodev'}  ? 'nodev'                   : (),
+         );
+      }
+      else {
+         my $tmpfsOptions = {};
+         $tmpfsOptions->{'SizeBytes'} = _parse_docker_size( $m->{'tmpfs-size'} ) if $m->{'tmpfs-size'};
+         $tmpfsOptions->{'Mode'}      = oct( $m->{'tmpfs-mode'} )               if $m->{'tmpfs-mode'};
+         push( @mounts, {
+            'Type'         => 'tmpfs',
+            'Target'       => $dst,
+            'TmpfsOptions' => $tmpfsOptions,
+         } );
+      }
    }
    for my $m ( @{ $self->profileObject->{'mounts'}{'bind'} } ) {
       push( @mounts, {
@@ -487,6 +538,7 @@ sub cmdline_json ($self) {
       }
    }
    $hostConfig->{'Mounts'} = \@mounts if @mounts;
+   $hostConfig->{'Tmpfs'}  = \%tmpfsLegacy if %tmpfsLegacy;
 
    $hostConfig->{'Init'} = JSON::true if $self->profileObject->run_docker_init;
 
@@ -503,8 +555,22 @@ sub cmdline_json ($self) {
       ( defined($entrypoint) ? ( 'Entrypoint' => [$entrypoint] ) : () ),
       'Cmd'      => \@command,
       ( @env             ? ( 'Env'          => \@env )          : () ),
+      ( defined($stopTimeout) ? ( 'StopTimeout' => $stopTimeout ) : () ),
       ( %$exposedPorts    ? ( 'ExposedPorts' => $exposedPorts )  : () ),
       'HostConfig' => $hostConfig,
+      # Identity labels - docs/adr/0007-create-restart-recovery.md's "Decision" section. Only
+      # dev.dockside.reservation.id is load-bearing: it's what a recovery re-entry's by-name
+      # lookup checks before adopting a container it finds under this reservation's name. The
+      # rest exist so `docker inspect` shows a coherent, self-describing set instead of one
+      # opaque key, and `docker ps --filter label=dev.dockside.reservation.id` works as a
+      # handle. Keys use reverse-DNS of dockside.dev, Docker's own documented namespacing
+      # convention.
+      'Labels' => {
+         'dev.dockside.reservation.id' => $self->id,
+         'dev.dockside.owner.username' => $self->owner('username') // '',
+         'dev.dockside.owner.name'     => $self->owner('name') // '',
+         'dev.dockside.profile'        => $self->profile,
+      },
    };
 }
 
