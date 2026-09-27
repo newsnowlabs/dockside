@@ -715,34 +715,69 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
    } );
 }
 
-# Just GET a URI, non-blocking - $cb->($result) fires with the response object, or undef on
-# any failure (connection error, timeout, ...). Used by Reservation::getGitDevContainer;
-# kept as its own function here, not inlined, in case another caller needs the same non-blocking
-# fetch later. Manual build_tx/start (not the ->get($uri => $cb) shorthand) and
-# %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api above - the same
-# "Premature connection close" GC hazard applies here (this function's own $ua is otherwise
-# unreferenced the instant it returns), same fix. The completion is entered through $STEP at
-# its entry, as call_socket_api's is.
+# Just GET a URI, non-blocking - $cb->($result) fires exactly once: with the response object,
+# or undef on any failure, a request that cannot be built or started as much as a connection
+# error or a timeout. Used by Reservation::getGitDevContainer; kept as its own function here,
+# not inlined, in case another caller needs the same non-blocking fetch later. Manual
+# build_tx/start (not the ->get($uri => $cb) shorthand) and %ASYNC_UA_IN_FLIGHT registration,
+# exactly matching call_socket_api above - the same "Premature connection close" GC hazard
+# applies here (this function's own $ua is otherwise unreferenced the instant it returns), same
+# fix. The exactly-once guarantee is call_socket_api's too, kept by the same construction and
+# for the same reason: a caller registers an obligation against $cb firing
+# (Reservation::getGitDevContainer promises its own caller one callback, and
+# User::createContainerReservation holds a create request's registry entry until that callback),
+# so a setup failure settles through $cb rather than throwing, and an exception $cb itself
+# raises is the caller's and is rethrown, told apart from a setup failure by $settled, which is
+# set before $cb is entered. The completion is entered through $STEP at its entry.
 sub get_uri ($uri, $cb) {
-   my $ua = Mojo::UserAgent->new();
+   my $settled = 0;
+   my $settle = once( "get_uri: completion for $uri", sub ($result) {
+      $settled = 1;
+      $cb->($result);
+      return;
+   } );
+
+   my $ua = eval { Mojo::UserAgent->new() };
+   unless ($ua) {
+      flog( "get_uri: failed to create user agent for $uri: " . ( format_caught_error($@) || 'no user agent' ) );
+      $settle->(undef);
+      return;
+   }
 
    flog("get_uri: $uri");
 
-   my $tx = $ua->build_tx( GET => $uri );
+   my $tx = eval { $ua->build_tx( GET => $uri ) };
+   unless ($tx) {
+      flog( "get_uri: failed to build request for $uri: " . ( format_caught_error($@) || 'no transaction' ) );
+      $settle->(undef);
+      return;
+   }
    $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;
 
-   $ua->start( $tx => sub ($ua, $tx) {
-      $STEP->( sub {
-         delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+   my $started = eval {
+      $ua->start( $tx => sub ($ua, $tx) {
+         $STEP->( sub {
+            delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
 
-         my $err = $tx->error;
-         if( $err && !defined($err->{'code'}) ) {
-            $cb->(undef);
-            return;
-         }
-         $cb->( $tx->result );
+            my $err = $tx->error;
+            if( $err && !defined($err->{'code'}) ) {
+               $settle->(undef);
+               return;
+            }
+            $settle->( $tx->result );
+         } );
       } );
-   } );
+      1;
+   };
+   unless ($started) {
+      # As at call_socket_api's start guard: a throw after the request settled is the consumer's
+      # own, raised on a completion start delivered synchronously, and belongs to the caller.
+      my $startErr = $@;
+      die $startErr if $settled;
+      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+      flog( "get_uri: failed to start request for $uri: " . ( format_caught_error($startErr) || 'no error' ) );
+      $settle->(undef);
+   }
 
    return;
 }

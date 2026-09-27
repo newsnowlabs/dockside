@@ -192,6 +192,91 @@ subtest 'a user agent that cannot be constructed settles once' => sub {
    like( $settled[0][1], qr/fixture user agent failure/, 'and includes what actually went wrong' );
 };
 
+# get_uri keeps the same exactly-once guarantee as call_socket_api, by the same construction,
+# and is driven here with the same failures injected beneath it. The user agent counts are
+# relative to each subtest's own start, one request above being left open for the rest of the
+# file.
+subtest 'get_uri: a request that cannot be built settles once, with no result, and registers no user agent' => sub {
+   my @settled;
+   my $before = Util::async_ua_in_flight_count();
+   no warnings 'redefine';
+   local *Mojo::UserAgent::build_tx = sub { die "fixture build failure\n" };
+
+   my $returned = eval { Util::get_uri( 'http://unused/', sub (@a) { push @settled, [@a] } ); 1 };
+
+   ok( $returned, 'a build failure is not an exception to the caller' );
+   is( scalar @settled, 1, 'the callback fires exactly once' );
+   ok( !defined( $settled[0][0] ), 'with no result' );
+   like( read_log(), qr/get_uri: failed to build request for http:\/\/unused\/: fixture build failure/, 'and the failure is logged with its cause' );
+   is( Util::async_ua_in_flight_count(), $before, 'no user agent is registered for a request never built' );
+};
+
+subtest 'get_uri: a request that cannot be started settles once and leaks no user agent' => sub {
+   my @settled;
+   my $before = Util::async_ua_in_flight_count();
+   no warnings 'redefine';
+   local *Mojo::UserAgent::start = sub { die Exception->new( 'dbg' => 'fixture start failure' ) };
+
+   my $returned = eval { Util::get_uri( 'http://unused/', sub (@a) { push @settled, [@a] } ); 1 };
+
+   ok( $returned, 'a start failure is not an exception to the caller' );
+   is( scalar @settled, 1, 'the callback fires exactly once' );
+   ok( !defined( $settled[0][0] ), 'with no result' );
+   like( read_log(), qr/get_uri: failed to start request for http:\/\/unused\/: .*fixture start failure/, 'and the failure is logged with its cause' );
+   is( Util::async_ua_in_flight_count(), $before, 'the user agent registered before the start attempt is dropped again' );
+};
+
+subtest 'get_uri: an exception from the caller own callback, on a completion delivered inside start, reaches the caller once' => sub {
+   my $calls = 0;
+   my $before = Util::async_ua_in_flight_count();
+   no warnings 'redefine';
+   local *Mojo::UserAgent::start = sub ( $ua, $tx, $cb ) {
+      $cb->( $ua, $tx );
+      return $tx;
+   };
+
+   my $error;
+   eval { Util::get_uri( 'http://unused/', sub (@) { $calls++; die "consumer failure\n" } ); 1 } or $error = $@;
+
+   is( $calls, 1, 'the callback is entered exactly once: the throw is not taken for a start failure and retried' );
+   like( $error, qr/consumer failure/, 'the caller own exception reaches the caller' );
+   is( Util::async_ua_in_flight_count(), $before, 'and the user agent is not leaked' );
+};
+
+subtest 'get_uri: a transport that completes a request twice settles the caller once and logs the second' => sub {
+   my @settled;
+   my $before = Util::async_ua_in_flight_count();
+   no warnings 'redefine';
+   local *Mojo::UserAgent::start = sub ( $ua, $tx, $cb ) {
+      $cb->( $ua, $tx );
+      $cb->( $ua, $tx );
+      return $tx;
+   };
+
+   open( my $saved, '>&', \*STDERR ) or die "stderr: $!";
+   open( STDERR, '>', "$tmp/stderr" ) or die "stderr: $!";
+   Util::get_uri( 'http://unused/', sub (@a) { push @settled, [@a] } );
+   open( STDERR, '>&', $saved ) or die "stderr: $!";
+
+   is( scalar @settled, 1, 'the callback fires exactly once' );
+   like( read_log(), qr/get_uri: completion for http:\/\/unused\/: continuation called again; ignored/,
+      'the second completion is reported as a bug in the transport, naming the request' );
+   is( Util::async_ua_in_flight_count(), $before, 'and the user agent is released' );
+};
+
+subtest 'get_uri: a user agent that cannot be constructed settles once' => sub {
+   my @settled;
+   my $before = Util::async_ua_in_flight_count();
+   no warnings 'redefine';
+   local *Mojo::UserAgent::new = sub { die "fixture user agent failure\n" };
+
+   my $returned = eval { Util::get_uri( 'http://unused/', sub (@a) { push @settled, [@a] } ); 1 };
+
+   ok( $returned, 'a construction failure is not an exception to the caller' );
+   is( scalar @settled, 1, 'the callback still fires exactly once, so a registered obligation is not stranded' );
+   like( read_log(), qr/get_uri: failed to create user agent for http:\/\/unused\/: fixture user agent failure/, 'and the failure is logged with its cause' );
+};
+
 # A real local socket server for the two handoff tests below. It reads whatever arrives and,
 # once it holds a complete request, answers on a later tick, so the consumer's turn and the
 # reply's are distinct. $received is the request as the server read it.
