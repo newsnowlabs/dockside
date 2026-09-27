@@ -105,6 +105,14 @@ subtest 'a rejected value costs nothing else in the section' => sub {
       'its neighbour keeps the value the file gave it');
 };
 
+subtest 'the sweep interval defaults to 60 seconds when the key is absent' => sub {
+   load_config('{"appServer":{}}');
+   is($Data::CONFIG->{'appServer'}{'reconcileIntervalSeconds'}, 60, 'the default is 60');
+
+   load_config('{"appServer":{"reconcileIntervalSeconds":300}}');
+   is($Data::CONFIG->{'appServer'}{'reconcileIntervalSeconds'}, 300, 'a value the file gives is kept as it stands');
+};
+
 subtest 'shutdownGracePeriod is not a key the server reads' => sub {
    my @warnings = load_config('{"appServer":{"shutdownGracePeriod":90}}');
 

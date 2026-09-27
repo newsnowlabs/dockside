@@ -1068,9 +1068,9 @@ Mojo::IOLoop->recurring( $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} => \
 # The drain's own reactor pacing timer, created by the first tick below and released once the
 # drain returns - a worker that exits with nothing in flight never registers one at all. It
 # bounds how long a single tick may block: one_tick derives its timeout from the nearest pending
-# timer, and the periodic reconciler's own is up to 300s away, so with no nearer timer a quiet
-# moment mid-chain (an image pull between layer reads, say) would block well past the drain's
-# deadline instead of honouring it.
+# timer, and the periodic reconciler's own is as far off as appServer.reconcileIntervalSeconds
+# allows, so with no nearer timer a quiet moment mid-chain (an image pull between layer reads,
+# say) would block well past the drain's deadline instead of honouring it.
 my $pacer;
 
 # The seconds a shutting-down worker has before the manager kills it, or undef for a drain with

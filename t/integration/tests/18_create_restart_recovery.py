@@ -141,8 +141,9 @@ def _assert_recovered(test, name, data):
 class _PullChainTests(TestCase):
     """Fixtures shared by the two classes below, each of which drives a create() through a real,
     multi-second image pull: the throwaway profile permitting PULL_IMAGE, the removal of that
-    image, the wait for a pull with genuine progress behind it, and the reader for app-server's
-    own log.
+    image, the wait for a pull with genuine progress behind it, the reader for app-server's own
+    log, and the rewrite of the instance config a case makes to run the instance under a setting
+    of its own for its duration.
 
     Holds no test_ methods, so the runner's class discovery - every TestCase subclass in the
     module - finds nothing to run here."""
@@ -206,6 +207,46 @@ class _PullChainTests(TestCase):
             timeout_msg=f'{name!r} createStatus never reached pulling with real progress',
         )
 
+    # ── Instance config rewriting, for a case that runs the instance under a setting of its own ──
+
+    def _load_config(self):
+        """Return the instance config as (raw bytes, parsed dict), or skip when this run cannot
+        rewrite and restore it byte-for-byte."""
+        if not os.access(_DOCKSIDE_CONFIG, os.W_OK):
+            self.skip(
+                f'{_DOCKSIDE_CONFIG} is not writable by this user, so the instance cannot be '
+                'run under a setting of the test\'s own'
+            )
+        try:
+            with open(_DOCKSIDE_CONFIG, 'rb') as fh:
+                raw = fh.read()
+            return raw, json.loads(raw.decode('utf-8'))
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            self.skip(f'{_DOCKSIDE_CONFIG} is not plain readable JSON ({e}), so it cannot be '
+                      'rewritten and restored safely')
+
+    def _write_config(self, raw):
+        """Replace the config by writing a sibling temp file and renaming it over the original,
+        preserving its mode. The rename is what makes the swap atomic for a concurrent reader:
+        app-server re-reads this file on every authenticated request, so a reader either gets the
+        whole old config or the whole new one, never a half-written one. The rename gives the
+        file this user's own group, which no reader of it depends on - a torn read on a live
+        instance costs more than the group does."""
+        mode = os.stat(_DOCKSIDE_CONFIG).st_mode & 0o777
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(_DOCKSIDE_CONFIG),
+                                        prefix='.config.json.')
+        try:
+            with os.fdopen(fd, 'wb') as fh:
+                fh.write(raw)
+            os.chmod(tmp_path, mode)
+            os.replace(tmp_path, _DOCKSIDE_CONFIG)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
     def _log_contains_since(self, offset, needle, timeout=120):
         """Poll app-server's log, from byte `offset`, for `needle`. A line this is asked for can
         trail the event that provoked it by however long the pull takes to finish - so this polls
@@ -256,8 +297,17 @@ class _PullChainTests(TestCase):
 
 class CreateRestartRecoveryTests(_PullChainTests):
     """app-server restart while a create() is still mid-flight must not strand the
-    reservation - the startup sweep / periodic reconciler must pick it back up to a
-    terminal createStatus.stage."""
+    reservation - the restarted workers' first pass must pick it back up to a terminal
+    createStatus.stage.
+
+    The cases run the instance under a sweep interval far longer than their own timeouts,
+    written into the config for their duration: app-server reads appServer.reconcileIntervalSeconds
+    at startup, and every case restarts it, so the restarted workers run their first pass at once
+    and their next only after that interval. A chain that reaches done within a case's timeout
+    therefore did so through the first pass, which is what the cases are about. Teardown restores
+    the config and restarts app-server once more, so the restored value is the one running."""
+
+    _SWEEP_INTERVAL_SECONDS = 600
 
     def setUp(self):
         super().setUp()
@@ -268,12 +318,55 @@ class CreateRestartRecoveryTests(_PullChainTests):
                 'environment with sudo/s6 access to restart app-server - see '
                 "CLAUDE.md's testing-capability matrix)"
             )
+        self._config_bytes, config = self._load_config()
+        config.setdefault('appServer', {})['reconcileIntervalSeconds'] = self._SWEEP_INTERVAL_SECONDS
+        self._write_config(json.dumps(config, indent=2).encode('utf-8'))
+        self._config_rewritten = True
         self._profile = self._create_pull_profile()
 
     def tearDown(self):
-        if hasattr(self, '_profile'):
+        """Every step runs even if an earlier one raises, and any failure is surfaced. The
+        devtainers go first, through app-server as it runs; the config is restored next, and
+        app-server restarted so the restored interval is the one running."""
+        failures = []
+        for step in (super().tearDown, self._remove_test_profile, self._restore_config,
+                     self._restart_app_server_on_restored_config):
+            try:
+                step()
+            except Exception as e:
+                failures.append(f'{step.__name__}: {e!r}')
+        if failures:
+            raise AssertionError('teardown step(s) failed: ' + '; '.join(failures))
+
+    def _remove_test_profile(self):
+        if getattr(self, '_profile', None):
             self._remove_profile(self._profile)
-        super().tearDown()
+
+    def _restore_config(self):
+        if getattr(self, '_config_rewritten', False):
+            self._write_config(self._config_bytes)
+            self._config_rewritten = False
+
+    def _restart_app_server_on_restored_config(self):
+        """Only once the config was read for rewriting: a setUp that skipped before that left
+        app-server running the operator's own interval throughout. Nothing of this case is in
+        flight by now, so the documented graceful restart returns as soon as the workers exit.
+        The helper returns when s6 reports the new manager, which is before its workers listen,
+        so this also waits until a request is answered again: the next case's setUp is the
+        next request, and a gateway error there would be this teardown's doing."""
+        if not hasattr(self, '_config_bytes'):
+            return
+        restart_app_server_graceful()
+
+        def _serving():
+            try:
+                self.admin.list_containers()
+            except APIError:
+                return False
+            return True
+
+        self.wait_until(_serving, timeout=30, interval=0.5,
+                        timeout_msg='app-server did not answer a request within 30s of its restart')
 
     def test_01_single_create_restart_mid_pull(self):
         """Isolates the mechanism: one create, interrupted deterministically mid-pull -
@@ -457,44 +550,6 @@ class CreatePullInterruptionTests(_PullChainTests):
             raise AssertionError('teardown step(s) failed: ' + '; '.join(failures))
 
     # ── Instance config redirection ───────────────────────────────────────────
-
-    def _load_config(self):
-        """Return the instance config as (raw bytes, parsed dict), or skip when this run cannot
-        rewrite and restore it byte-for-byte."""
-        if not os.access(_DOCKSIDE_CONFIG, os.W_OK):
-            self.skip(
-                f'{_DOCKSIDE_CONFIG} is not writable by this user, so app-server cannot be '
-                'pointed at the test proxy socket'
-            )
-        try:
-            with open(_DOCKSIDE_CONFIG, 'rb') as fh:
-                raw = fh.read()
-            return raw, json.loads(raw.decode('utf-8'))
-        except (OSError, UnicodeDecodeError, ValueError) as e:
-            self.skip(f'{_DOCKSIDE_CONFIG} is not plain readable JSON ({e}), so it cannot be '
-                      'rewritten and restored safely')
-
-    def _write_config(self, raw):
-        """Replace the config by writing a sibling temp file and renaming it over the original,
-        preserving its mode. The rename is what makes the swap atomic for a concurrent reader:
-        app-server re-reads this file on every authenticated request, so a reader either gets the
-        whole old config or the whole new one, never a half-written one. The rename gives the
-        file this user's own group, which no reader of it depends on - a torn read on a live
-        instance costs more than the group does."""
-        mode = os.stat(_DOCKSIDE_CONFIG).st_mode & 0o777
-        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(_DOCKSIDE_CONFIG),
-                                        prefix='.config.json.')
-        try:
-            with os.fdopen(fd, 'wb') as fh:
-                fh.write(raw)
-            os.chmod(tmp_path, mode)
-            os.replace(tmp_path, _DOCKSIDE_CONFIG)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
 
     def _restore_config(self):
         if getattr(self, '_redirected', False):

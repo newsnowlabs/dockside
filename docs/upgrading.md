@@ -12,6 +12,8 @@ The grace must be at least the longest hook run you allow plus a margin for reco
 
 To stop without waiting, pass a shorter grace on the command itself: `docker compose stop -t 5` or `docker stop -t 5`. This kills every process inside the container once the time is up, including any hook run and any devcontainer create in progress; a create interrupted this way is resumed when Dockside restarts, and a hook run's outcome is recovered from Docker when it is next read.
 
+A create that no running worker is driving, whether interrupted by a stop or abandoned mid-pull by a restart, is picked up by the restarted server's first sweep and thereafter every `appServer.reconcileIntervalSeconds` (`config.json`; 60 s by default). The value is read when app-server starts, so a change takes effect on its next restart.
+
 ### Testing a new Dockside version while old version stopped
 
 It can be a good idea to test a new version of Dockside like this:

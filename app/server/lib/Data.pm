@@ -196,8 +196,12 @@ $CONFIG_FILES = {
          # periodic reconciler's own recheck cadence: every worker's tick runs the same candidate
          # sweep, and each candidate is claimed with its own non-blocking lock
          # (Reservation::reconcile_one), so whichever worker reaches a reservation first
-         # reconciles it and the others skip it.
-         $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 300;
+         # reconciles it and the others skip it. The cadence bounds how long a chain no live
+         # worker owns waits for a driver: one a worker abandoned at pulling, or one whose retry
+         # timer died with its worker. A pass costs each worker a stat of reservations.json,
+         # parsed only when it has changed. bin/app-server reads the value once, at startup, so a
+         # change takes effect on its restart.
+         $CONFIG->{'appServer'}{'reconcileIntervalSeconds'} //= 60;
 
          # shutdownGraceSeconds is the ceiling a shutting-down worker's drain waits under, and
          # the one bin/app-server also hands Mojo::Server::Prefork as its graceful_timeout. It is

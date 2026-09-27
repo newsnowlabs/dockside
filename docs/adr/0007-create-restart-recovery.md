@@ -148,7 +148,8 @@ Admission and the issued tail are the two distinctions the drain in mechanism 6 
   driver at a time. Kernel state: released the instant the holding process dies.
 - **Reconciler.** The per-worker sweep (`_reconcile_pass` in `bin/app-server`, running
   `Reservation->reconcile_one`) that resumes abandoned chains every
-  `appServer.reconcileIntervalSeconds` and once at worker start.
+  `appServer.reconcileIntervalSeconds` (60 s by default, read once at app-server startup) and
+  once at worker start.
 - **Adoption.** A resumed attempt taking over a container that an earlier attempt created, allowed
   only on exact name plus this reservation's id label plus a usable id.
 - **Unresolved.** An attempt that ended without learning whether its mutation took effect. The
@@ -229,7 +230,10 @@ reason, with no heartbeat, no staleness threshold, no pid probing.
 
 **2. A single reconciler, run per worker.** Each `app-server` worker runs a reconcile pass
 (`_reconcile_pass`) once when its own event loop starts, and again every
-`appServer.reconcileIntervalSeconds`. Both are registered pre-fork, on the shared `Mojo::IOLoop`
+`appServer.reconcileIntervalSeconds`, 60 s by default: the bound on how long a chain no live
+worker owns, one abandoned at `pulling` by a restart or one whose retry timer died with its
+worker, waits for a driver, at the cost of a `stat` of `reservations.json` per worker per
+pass, parsed only when it has changed. Both are registered pre-fork, on the shared `Mojo::IOLoop`
 singleton, so each forked worker's own copy of the reactor ticks them independently - the
 manager itself never runs the reactor past that point, so neither ever fires there. A pass loads
 `reservations.json`, and for every reservation with a non-terminal `createStatus.stage` attempts
