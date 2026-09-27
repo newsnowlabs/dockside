@@ -1,8 +1,9 @@
 # bin/app-server's graceful-exit gate: the one-way shutting-down latch every admission check
-# consults, and the drain that gives this worker's in-flight obligations a chance to settle
-# before the process exits. Owned here rather than as a bin/app-server lexical so the
-# latch is reachable from any route's own closure without threading a variable through it, and
-# so the drain loop itself is exercisable without a reactor.
+# consults, the drain that gives this worker's in-flight obligations a chance to settle before
+# the process exits, and the step bracket that decides when the drain may begin. Owned here
+# rather than as a bin/app-server lexical so the latch is reachable from any route's own closure
+# without threading a variable through it, and so the drain loop itself is exercisable without
+# a reactor.
 #
 # Deliberately free of any Mojo dependency: everything time-, reactor- and log-shaped is injected
 # by configure() below. bin/app-server supplies the production implementations (Mojo::Util's
@@ -15,7 +16,7 @@ package App::Shutdown;
 use v5.36;
 
 use Exporter qw(import);
-our @EXPORT_OK = qw(configure begin_shutdown is_shutting_down admit drain graceful_timeout_for hold);
+our @EXPORT_OK = qw(configure begin_shutdown is_shutting_down admit drain graceful_timeout_for hold busy_while on_finish);
 
 # Seconds by which a drain under a finite ceiling stops short of the ceiling itself. The manager
 # kills the worker at the ceiling regardless; stopping this much earlier is what lets the worker
@@ -82,6 +83,49 @@ sub hold () {
       $ENVIRONMENT{'accept_limit'}->($KEPT_LIMIT) if --$HOLDS == 0;
       return;
    };
+}
+
+# A step is a stretch of this worker's own code that runs to completion without returning to
+# the loop: a Docker reply's continuation, a timer's, the reconcile pass, a request that starts
+# a chain or a hook run. The loop's finish event can arrive inside one, because the worker's
+# SIGQUIT handler is a Perl signal handler, which Perl runs between two operations of whatever
+# code is executing, and the graceful stop emits the event before it returns. A drain begun
+# there would run above the interrupted step and wait for a settlement that step is about to
+# record, which no tick the drain pumps can reach: under an unlimited ceiling it would never
+# return, under a finite one it would wait its whole budget. So on_finish sets the latch at
+# once, refusing new work from the signal on, and runs the drain at once only when no step is
+# executing; otherwise it holds the drain for the moment the outermost step completes, where
+# busy_while runs it. Steps nest, a drain's own ticks running other steps, and only the
+# outermost end runs what is held.
+my $DEPTH = 0;
+my $PENDING;
+
+# Runs $code as one of this worker's steps, releasing the bracket however $code leaves, and
+# rethrowing what it threw once the bracket is released and any held drain has run.
+sub busy_while ($code) {
+   $DEPTH++;
+   my $completed = eval { $code->(); 1 };
+   my $error = $@;
+   $DEPTH--;
+   if ( $DEPTH == 0 && ( my $finish = $PENDING ) ) {
+      $PENDING = undef;
+      $finish->();
+   }
+   die $error unless $completed;
+   return;
+}
+
+# The finish event's handler body: sets the latch, then runs $finish, the drain and whatever
+# follows it, at once when no step is executing, or once the executing steps have all
+# completed. A repeated finish event, a second QUIT's, is turned away by the latch.
+sub on_finish ($finish) {
+   return unless begin_shutdown();
+   if ( $DEPTH > 0 ) {
+      $PENDING = $finish;
+      return;
+   }
+   $finish->();
+   return;
 }
 
 # The graceful_timeout to give Mojo::Server::Prefork for a worker draining under $ceiling. Both

@@ -217,6 +217,49 @@ sub run_loop ($server) {
    return;
 }
 
+# A server, on a Unix socket path or a TCP address, that answers any complete request on a
+# later tick with a 200 carrying a five-byte body, so the reply is read as a body chunk before
+# it completes the call.
+sub body_server (%listen) {
+   return Mojo::IOLoop->server( %listen, sub ( $loop, $stream, $id ) {
+      my $request = '';
+      $stream->on( read => sub ( $s, $bytes ) {
+         $request .= $bytes;
+         return unless $request =~ /\r\n\r\n\z/ && !$s->{'answered'}++;
+         Mojo::IOLoop->timer( 0.05 => sub {
+            $s->write( "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello" => sub ($s) { $s->close_gracefully } );
+         } );
+      } );
+   } );
+}
+
+subtest 'every callback the transport hands the loop is entered inside the installed step wrapper' => sub {
+   my $depth = 0;
+   my %seen;
+   Util::step_wrapper( sub ($code) { $depth++; $code->(); $depth--; return; } );
+
+   my $server = body_server( path => "$tmp/server.sock" );
+   Util::call_socket_api( "$tmp/server.sock", '/containers/x/logs', {
+      'method'          => 'POST',
+      'on_read'         => sub ($bytes) { $seen{'read'} = $depth; },
+      'on_request_sent' => sub () { $seen{'sent'} = $depth; },
+   }, sub (@) { $seen{'settled'} = $depth; Mojo::IOLoop->stop } );
+   run_loop($server);
+
+   my $http = body_server( address => '127.0.0.1' );
+   my $port = Mojo::IOLoop->acceptor($http)->port;
+   Util::get_uri( "http://127.0.0.1:$port/", sub (@) { $seen{'fetched'} = $depth; Mojo::IOLoop->stop } );
+   run_loop($http);
+
+   # A settlement made synchronously, from a setup failure, runs in the caller's own frame.
+   Util::call_socket_api( 'unused', '/containers/x', { 'method' => 'PUT' }, sub (@) { $seen{'refused'} = $depth; } );
+   Util::step_wrapper( sub ($code) { $code->(); return; } );
+
+   is_deeply( \%seen, { 'read' => 1, 'sent' => 1, 'settled' => 1, 'fetched' => 1, 'refused' => 0 },
+      'the streamed read, the request-sent check, the completion and the fetch completion each run inside the wrapper; the synchronous settlement runs in the caller frame' );
+   is( $depth, 0, 'and each is released once it returns' );
+};
+
 subtest 'on_request_sent fires once, with no arguments, before the reply completes the call' => sub {
    my $server = socket_server("$tmp/server.sock");
    my @events;

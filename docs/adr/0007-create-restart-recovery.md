@@ -89,7 +89,11 @@ does not make; they are defined so that the whole area shares one vocabulary.
   and any key inside the object hash, is **internal**.
 - **Graceful shutdown.** The manager receiving `SIGQUIT`. It sends each worker `SIGQUIT`, which
   makes the worker's loop stop accepting connections and emit its `finish` event; the manager then
-  waits up to the **graceful ceiling** for each worker to exit before killing it.
+  waits up to the **graceful ceiling** for each worker to exit before killing it. The worker's
+  handler for the signal is a Perl signal handler, which Perl runs between two operations of
+  whatever code is executing, so the `finish` event can arrive inside one of the worker's own
+  steps; the drain then begins once that step completes (`App::Shutdown::on_finish`,
+  `busy_while`), never above it.
 - **Graceful ceiling** (`graceful_timeout`). The one bound the framework provides: the seconds a
   worker may take to exit after being asked to, measured by the manager, after which it is sent
   `SIGKILL`. A single number for the whole process.
@@ -308,7 +312,19 @@ Mojo's graceful shutdown has no visibility into work that outlives the request t
 
 `App::Shutdown` tracks the worker's in-flight `create()` chains and hook runs
 (`Reservation->create_in_flight_ids`, `->hook_dispatch_in_flight_ids`) and, on the worker's
-`finish` event, drains: it waits for them to settle before letting the worker actually stop,
+`finish` event, drains: it waits for them to settle before letting the worker actually stop.
+The event can arrive inside one of the worker's own steps, a Docker reply's continuation, a
+timer's, the reconcile pass or a request that starts work, since Perl runs the signal handler
+between two operations of the executing code; a drain begun there would wait for a settlement
+the interrupted step is about to record, which no tick can reach, so the drain is held until
+that step completes (`on_finish`, `busy_while`; `Util::step_wrapper` brackets, at its entry,
+every callback the transport, the fetch and the timer hand the loop: a reply's completion, a
+streamed read, the request-sent check, a fetch's completion, a timer's). The framework's own
+handler is left as it is. A streamed read's step ends when its consumer returns, and a
+response whose last chunk that read carried completes in the same reactor event, after a drain
+begun there: Docker's exec output stream is read until the connection closes, so a hook run
+completes in an event of its own; a pull is chunked, and can complete in the event that
+carried its last chunk. The drain waits
 with no configured ceiling by default, or up to `appServer.shutdownGraceSeconds` less a fixed
 margin when a finite ceiling is configured, logging what it is still waiting for every 30 s; the
 `/containers/create` route itself asks `App::Shutdown` for admission at its own top and returns

@@ -100,12 +100,27 @@ sub once ($label, $cb) {
    };
 }
 
+# The wrapper this process runs around every callback this module hands the loop: a reply's
+# completion, a streamed read and the request-sent check (call_socket_api), a fetch's completion
+# (get_uri) and a timer's (loop_timer). A sub taking one sub and running it; the default runs
+# the callback as it is. bin/app-server installs App::Shutdown::busy_while, which brackets the
+# callback as one of the worker's own steps, so a graceful stop whose signal lands inside it
+# drains once the callback has completed rather than above it. The bracket sits at each
+# callback's entry, before anything the callback does, so no operation of it runs outside. An
+# exception the callback raises still reaches the loop.
+my $STEP = sub ($code) { $code->(); return; };
+
+sub step_wrapper ($wrapper) {
+   $STEP = $wrapper;
+   return;
+}
+
 # Runs $cb once, with no arguments, $delay seconds from now on this process's event loop, and
 # returns the loop's id for the timer. The loop passes its own timer callbacks the loop object;
 # that argument stops here, so a consumer's signature can say it takes nothing. This is the
 # timer a process installs for Reservation's create chain (Reservation::provider).
 sub loop_timer ($delay, $cb) {
-   return Mojo::IOLoop->timer( $delay => sub (@) { $cb->() } );
+   return Mojo::IOLoop->timer( $delay => sub (@) { $STEP->( sub { $cb->(); } ); } );
 }
 
 sub sanitize_sensitive_text ($text) {
@@ -299,6 +314,11 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
    # caller, and swallowing it here would hide a real caller bug. $settled, set before $cb is
    # entered, makes a caller exception distinguishable from a setup failure at the $ua->start
    # guard below, and tells on_request_sent that a call which has settled fires nothing.
+   #
+   # Every callback this function hands the loop, the completion, a streamed read and the
+   # request-sent check, is entered through $STEP at its entry (see $STEP above). A settlement
+   # made here synchronously, from a setup failure below, runs in the caller's own frame, which
+   # is whatever step the caller is in.
    my $settled = 0;
    my $settle = once( "call_socket_api: settlement for $path", sub ( $result, $error ) {
       $settled = 1;
@@ -371,12 +391,20 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
    # held here and reported at completion below, in place of the response.
    my $consumerError;
 
+   # The read is a step of its own, and the step ends when the consumer returns: what follows
+   # in the same reactor event, the rest of the response parse and, when this chunk ends the
+   # response, the completion below, is not reachable from a drain begun at the consumer's
+   # end. A response read until the connection closes, Docker's raw exec output stream,
+   # completes on the close, an event of its own; a chunked response, a pull's, can complete in
+   # the event that carried its last chunk.
    if( my $onRead = $opts->{'on_read'} ) {
       $tx->res->content->unsubscribe('read')->on(read => sub ($content, $bytes) {
-         my $consumed = eval { $onRead->($bytes); 1 };
-         return if $consumed;
-         $consumerError //= $@;
-         flog("call_socket_api: on_read consumer failed for $path: " . format_caught_error($@));
+         $STEP->( sub {
+            my $consumed = eval { $onRead->($bytes); 1 };
+            return if $consumed;
+            $consumerError //= $@;
+            flog("call_socket_api: on_read consumer failed for $path: " . format_caught_error($@));
+         } );
       });
    }
 
@@ -398,9 +426,11 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
    if( my $onSent = $opts->{'on_request_sent'} ) {
       my $fired = 0;
       my $fire  = sub (@) {
-         return if $fired++ || $settled;
-         eval { $onSent->(); 1 } and return;
-         flog("call_socket_api: on_request_sent consumer failed for $path: " . format_caught_error($@));
+         $STEP->( sub {
+            return if $fired++ || $settled;
+            eval { $onSent->(); 1 } and return;
+            flog("call_socket_api: on_request_sent consumer failed for $path: " . format_caught_error($@));
+         } );
       };
       $tx->req->on(finish => sub (@) {
          Mojo::IOLoop->next_tick( sub {
@@ -416,23 +446,27 @@ sub call_socket_api ($socket, $path, $opts, $cb) {
 
    my $started = eval {
       $ua->start( $tx => sub ($ua, $tx) {
-         delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+         $STEP->( sub {
+            delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
 
-         my $err = $tx->error;
-         if( $err && !defined($err->{'code'}) ) {
-            # Transport-level failure - see this function's own header comment for why ->result
-            # would throw here rather than just being undef, and why that's not tested for.
-            $settle->( undef, $err->{'message'} );
-            return;
-         }
-         # Checked before the response is handed over: a stream the consumer could not finish
-         # reading is not a usable result, whatever status the transfer itself ended with.
-         if ( defined $consumerError ) {
-            $settle->( undef, "call_socket_api: streamed-response consumer failed for $path: "
-               . ( format_caught_error($consumerError) || 'consumer failed' ) );
-            return;
-         }
-         $settle->( $tx->result, undef );
+            my $err = $tx->error;
+            if( $err && !defined($err->{'code'}) ) {
+               # Transport-level failure - see this function's own header comment for why
+               # ->result would throw here rather than just being undef, and why that's not
+               # tested for.
+               $settle->( undef, $err->{'message'} );
+               return;
+            }
+            # Checked before the response is handed over: a stream the consumer could not
+            # finish reading is not a usable result, whatever status the transfer itself ended
+            # with.
+            if ( defined $consumerError ) {
+               $settle->( undef, "call_socket_api: streamed-response consumer failed for $path: "
+                  . ( format_caught_error($consumerError) || 'consumer failed' ) );
+               return;
+            }
+            $settle->( $tx->result, undef );
+         } );
       } );
       1;
    };
@@ -687,7 +721,8 @@ sub docker_exec ($socket, $containerId, $args, $opts, $cb) {
 # fetch later. Manual build_tx/start (not the ->get($uri => $cb) shorthand) and
 # %ASYNC_UA_IN_FLIGHT registration, exactly matching call_socket_api above - the same
 # "Premature connection close" GC hazard applies here (this function's own $ua is otherwise
-# unreferenced the instant it returns), same fix.
+# unreferenced the instant it returns), same fix. The completion is entered through $STEP at
+# its entry, as call_socket_api's is.
 sub get_uri ($uri, $cb) {
    my $ua = Mojo::UserAgent->new();
 
@@ -697,14 +732,16 @@ sub get_uri ($uri, $cb) {
    $ASYNC_UA_IN_FLIGHT{ 0 + $tx } = $ua;
 
    $ua->start( $tx => sub ($ua, $tx) {
-      delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
+      $STEP->( sub {
+         delete $ASYNC_UA_IN_FLIGHT{ 0 + $tx };
 
-      my $err = $tx->error;
-      if( $err && !defined($err->{'code'}) ) {
-         $cb->(undef);
-         return;
-      }
-      $cb->( $tx->result );
+         my $err = $tx->error;
+         if( $err && !defined($err->{'code'}) ) {
+            $cb->(undef);
+            return;
+         }
+         $cb->( $tx->result );
+      } );
    } );
 
    return;

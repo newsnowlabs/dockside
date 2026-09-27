@@ -79,31 +79,35 @@ _cleanup_orphaned_reservation_locks();
 # A draining worker starts nothing here: the periodic tick keeps firing while the drain pumps the
 # reactor, and this pass is the one way a worker with no request in hand can start a create
 # chain, which the drain would then have to wait for, or abandon at its grace period for the next
-# worker's own start-up pass to recover anyway. One check at the top suffices: the candidates are
-# handed over synchronously inside this one reactor callback, and the latch is only ever set from
-# another (the signal dispatch, or the accept path once the accept limit is reached), so the
-# worker's state cannot change between two candidates of the same pass.
+# worker's own start-up pass to recover anyway. Admission is asked once at the top and again
+# before each candidate: the latch can be set inside this pass, since the worker's SIGQUIT
+# handler runs between two of its operations, and a candidate reached after that is refused as
+# a new pass would be. The whole pass is one of the worker's steps (App::Shutdown::busy_while),
+# so a finish event that arrives inside it drains once it has completed rather than above it.
 sub _reconcile_pass {
-   return unless App::Shutdown::admit('reconcile');
-   try {
-      Data::load('reservations.json');
+   App::Shutdown::busy_while( sub {
+      return unless App::Shutdown::admit('reconcile');
+      try {
+         Data::load('reservations.json');
 
-      my @candidates = grep {
-         my $stage = ( $_->{'createStatus'} // {} )->{'stage'} // '';
-         $stage =~ /^(?:pulling|creating|starting)$/;
-      } @{ Reservation->load() };
+         my @candidates = grep {
+            my $stage = ( $_->{'createStatus'} // {} )->{'stage'} // '';
+            $stage =~ /^(?:pulling|creating|starting)$/;
+         } @{ Reservation->load() };
 
-      return unless @candidates;
+         return unless @candidates;
 
-      for my $candidate (@candidates) {
-         Reservation->reconcile_one( $candidate->id(), sub ( $reconciled = undef, $err = undef ) {
-            flog("app-server: reconcile of reservation '" . $candidate->id() . "' failed: " . $err->msg) if $err;
-         } );
+         for my $candidate (@candidates) {
+            last unless App::Shutdown::admit('reconcile');
+            Reservation->reconcile_one( $candidate->id(), sub ( $reconciled = undef, $err = undef ) {
+               flog("app-server: reconcile of reservation '" . $candidate->id() . "' failed: " . $err->msg) if $err;
+            } );
+         }
       }
-   }
-   catch {
-      flog("app-server: reconcile pass failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
-   };
+      catch {
+         flog("app-server: reconcile pass failed (non-fatal): " . (ref($_) ? $_->dbg : $_));
+      };
+   } );
    return;
 }
 
@@ -497,37 +501,39 @@ my $authed = $routes->under('/' => sub ($c) {
 $routes->post('/containers/create')->to(
    cb => sub ($c) {
       $c->render_later;
-      try {
-         # Belt-and-braces: Mojo::Server::Prefork already stops routing new connections to a
-         # worker mid-graceful-shutdown (covering every route uniformly, not just this one) -
-         # App::Shutdown's own admission gate catches the narrow remaining window where a
-         # connection was already accepted, in flight, right as shutdown began, closing it with
-         # a clean, fast rejection rather than starting a chain that's about to be abandoned.
-         # Only the two routes that start work outliving their own HTTP response ask for
-         # admission; nothing else in this file starts any. See
-         # docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
-         return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
-            unless App::Shutdown::admit('create');
+      App::Shutdown::busy_while( sub {
+         try {
+            # Belt-and-braces: Mojo::Server::Prefork already stops routing new connections to a
+            # worker mid-graceful-shutdown (covering every route uniformly, not just this one) -
+            # App::Shutdown's own admission gate catches the narrow remaining window where a
+            # connection was already accepted, in flight, right as shutdown began, closing it with
+            # a clean, fast rejection rather than starting a chain that's about to be abandoned.
+            # Only the two routes that start work outliving their own HTTP response ask for
+            # admission; nothing else in this file starts any. See
+            # docs/adr/0007-create-restart-recovery.md's own "Graceful exit handler" section.
+            return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
+               unless App::Shutdown::admit('create');
 
-         my $User = _authenticate($c) or return;
+            my $User = _authenticate($c) or return;
 
-         my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
-         $args->{'parentFQDN'} ||= _parent_fqdn($c);
+            my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+            $args->{'parentFQDN'} ||= _parent_fqdn($c);
 
-         $User->createContainerReservation(
-            $args,
-            sub ( $reservation, $err ) {
-               return _render_error( $c, $err ) if $err;
-               return $c->render( json => {
-                  'status'      => $reservation ? '200' : '401',
-                  'reservation' => $reservation,
-               } );
-            }
-         );
-      }
-      catch {
-         _render_error( $c, $_ );
-      };
+            $User->createContainerReservation(
+               $args,
+               sub ( $reservation, $err ) {
+                  return _render_error( $c, $err ) if $err;
+                  return $c->render( json => {
+                     'status'      => $reservation ? '200' : '401',
+                     'reservation' => $reservation,
+                  } );
+               }
+            );
+         }
+         catch {
+            _render_error( $c, $_ );
+         };
+      } );
    }
 );
 $routes->any('/containers/create' => \&_post_only);
@@ -567,27 +573,29 @@ $routes->post('/containers/:id/hook')->to(
    cb => sub ($c) {
       $c->render_later;
       my $id = $c->stash('id');
-      try {
-         # Same admission gate as /containers/create above: dispatch_hook_exec holds a
-         # non-detached, live-streamed docker_exec connection open for however long the hook
-         # runs, just like create()'s own chain. See docs/adr/0007-create-restart-recovery.md.
-         return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
-            unless App::Shutdown::admit('hook');
+      App::Shutdown::busy_while( sub {
+         try {
+            # Same admission gate as /containers/create above: dispatch_hook_exec holds a
+            # non-detached, live-streamed docker_exec connection open for however long the hook
+            # runs, just like create()'s own chain. See docs/adr/0007-create-restart-recovery.md.
+            return _render_error( $c, Exception->new( 'msg' => 'app-server is shutting down, please retry', 'status' => 503 ) )
+               unless App::Shutdown::admit('hook');
 
-         my $User = _authenticate($c) or return;
-         my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
+            my $User = _authenticate($c) or return;
+            my $args = { %{ App::split_args( $c->req->body // '' ) }, %{ App::split_args( _query($c) ) } };
 
-         $User->runContainerHook(
-            $id, $args,
-            sub ( $result, $err ) {
-               return _render_error( $c, $err ) if $err;
-               return $c->render( json => { 'status' => '200', 'data' => $result } );
-            }
-         );
-      }
-      catch {
-         _render_error( $c, $_ );
-      };
+            $User->runContainerHook(
+               $id, $args,
+               sub ( $result, $err ) {
+                  return _render_error( $c, $err ) if $err;
+                  return $c->render( json => { 'status' => '200', 'data' => $result } );
+               }
+            );
+         }
+         catch {
+            _render_error( $c, $_ );
+         };
+      } );
    }
 );
 $routes->any('/containers/:id/hook' => \&_post_only);
@@ -1110,7 +1118,8 @@ App::Shutdown::configure(
    #
    # The reactor is addressed directly, rather than via Mojo::IOLoop->one_tick: that wrapper
    # croaks outright when the loop is already running, which it is here (the drain runs from
-   # inside stop_gracefully, itself reached from the reactor's own signal dispatch). Its body is
+   # inside stop_gracefully, itself reached from the reactor's own signal dispatch, or from the
+   # end of the step that dispatch interrupted). Its body is
    # exactly this call, and Mojo::Reactor::Poll::one_tick is re-entrant by construction - it
    # keeps its own 'running' flag set for a nested call and returns after a single event - so
    # this is the supported way to pump a running reactor from within one of its callbacks.
@@ -1129,19 +1138,27 @@ Reservation::provider(
    'hold'  => \&App::Shutdown::hold,
 );
 
+# Every callback Util enters on the loop's behalf, a Docker reply's or a timer's, runs as one of
+# this worker's steps, as the reconcile pass and the two routes that start work do by calling
+# busy_while themselves: the whole of what a graceful stop's signal can land inside.
+Util::step_wrapper( \&App::Shutdown::busy_while );
+
 # Graceful exit handler - refuses new creates and manually-invoked hook runs (the
 # /containers/create and /containers/:id/hook routes' own App::Shutdown::admit calls) and gives
 # in-flight ones the chance to settle before this worker exits, rather than relying
 # solely on the startup sweep/periodic reconciler. Mojo::Server::Prefork's own graceful
 # shutdown only waits for the HTTP connection to close, not for either kind of chain's own
 # work, which outlives it - this closes that gap. Registered once, pre-fork, on the shared
-# singleton; fires exactly once per worker, since begin_shutdown's latch turns away the repeat
-# emission a second QUIT produces (Mojo::IOLoop::stop_gracefully emits this event on every call)
-# and with it a second, nested drain waiting a second full grace period on top of the first.
+# singleton. on_finish sets the latch at once and runs the drain at once, or, when the event
+# arrives inside one of this worker's own steps, once that step has completed; its latch turns
+# away the repeat emission a second QUIT produces (Mojo::IOLoop::stop_gracefully emits this
+# event on every call) and with it a second, nested drain waiting a second full grace period on
+# top of the first.
 Mojo::IOLoop->singleton->on( finish => sub (@) {
-   return unless App::Shutdown::begin_shutdown();
-   App::Shutdown::drain();
-   Mojo::IOLoop->remove($pacer) if $pacer;
+   App::Shutdown::on_finish( sub () {
+      App::Shutdown::drain();
+      Mojo::IOLoop->remove($pacer) if $pacer;
+   } );
 } );
 
 flog("Listening on 127.0.0.1:$port with $workers worker(s)...");

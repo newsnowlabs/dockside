@@ -297,9 +297,53 @@ subtest 'admit accepts every kind while the worker is still serving' => sub {
    is(scalar @logged, 0, 'an admitted request logs nothing');
 };
 
+subtest 'busy_while brackets a step, nests, and releases however the step leaves' => sub {
+   my @order;
+   App::Shutdown::busy_while( sub {
+      push @order, 'outer begins';
+      App::Shutdown::busy_while( sub { push @order, 'inner'; } );
+      push @order, 'outer ends';
+   } );
+   is_deeply(\@order, [ 'outer begins', 'inner', 'outer ends' ], 'steps nest and run in order');
+
+   my $died = !eval { App::Shutdown::busy_while( sub { die "step failure\n"; } ); 1 };
+   ok($died, 'what a step throws reaches its caller');
+   is($@, "step failure\n", 'unchanged');
+};
+
+subtest 'a finish inside a step holds the drain for the outermost step end, whatever ends it' => sub {
+   @logged = ();
+   my @order;
+   my $finish = sub () { push @order, 'finish'; };
+   ok(!App::Shutdown::is_shutting_down(), 'the worker is not shutting down yet');
+
+   my $died = !eval {
+      App::Shutdown::busy_while( sub {
+         App::Shutdown::busy_while( sub {
+            push @order, 'inner begins';
+            App::Shutdown::on_finish($finish);
+            ok(App::Shutdown::is_shutting_down(), 'the latch is set the moment the event arrives');
+            ok(!App::Shutdown::admit('create'), 'so new work is refused from then on');
+            push @order, 'inner ends';
+         } );
+         push @order, 'outer ends';
+         die "step failure\n";
+      } );
+      1;
+   };
+   is_deeply(\@order, [ 'inner begins', 'inner ends', 'outer ends', 'finish' ],
+      'the drain runs once the outermost step has completed, after the inner one, however it ended');
+   ok($died, 'and what the step threw reaches its caller afterwards');
+   is($@, "step failure\n", 'unchanged');
+
+   App::Shutdown::on_finish($finish);
+   App::Shutdown::busy_while( sub { push @order, 'later step'; } );
+   is_deeply(\@order, [ 'inner begins', 'inner ends', 'outer ends', 'finish', 'later step' ],
+      'a repeated finish event, a second QUIT, runs nothing, and a later step holds nothing');
+};
+
 subtest 'the shutdown latch is one-way' => sub {
-   ok(App::Shutdown::begin_shutdown(), 'the first caller starts the shutdown');
-   ok(App::Shutdown::is_shutting_down(), 'the latch is set');
+   ok(App::Shutdown::is_shutting_down(), 'the latch is set by the finish event above');
    ok(!App::Shutdown::begin_shutdown(), 'a repeated shutdown request is turned away');
    ok(App::Shutdown::is_shutting_down(), 'and leaves the latch set');
 };
