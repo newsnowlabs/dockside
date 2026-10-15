@@ -475,27 +475,30 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       # Output permissions for signed-in user
       try {
 
-         $r->print(
-            sprintf( "<script>window.dockside = %s\n</script>",
-                     JSON::XS->new->utf8->convert_blessed->encode(
-                        {
-                           # FIXME: set 'user' => $User, after simply either (a) changing User object definition to make 'permissions' the derivedPermissions; or (b) the Vue app to check user.derivedPermissions.
-                           'user'    => {
-                              %{ $User->details() }, # username, name, email, id
-                              'role' => $User->role, # User's role
-                              'role_as_meta' => $User->role_as_meta, # User's role in metadata format
-                              'permissions' => { 'actions' => $User->permissions() } # User's permissions
-                           },
-                           'profiles' => $User->profiles(),
-                           'containers' => $User->reservations({'client' => 1}),
-                           'viewers' => User->viewers(),
-                           'dummyReservation' => $User->createClientReservation(),
-                           'host' => $parentFQDN,
-                           'version' => $VERSION // 'v-unknown'
-                        }
-                     )
-            )
+         # Must not contain a literal '<': every string in here (a user's display name via
+         # 'viewers', etc.) is attacker-controlled, and an unescaped '<' lets a crafted value
+         # close this <script> block early and inject markup. JSON::XS's own escaping doesn't
+         # cover this, since '<' is not a JSON metacharacter -- escape it after encoding, not by
+         # sanitising individual fields, so no future field addition can reopen this.
+         my $json = JSON::XS->new->utf8->convert_blessed->encode(
+            {
+               # FIXME: set 'user' => $User, after simply either (a) changing User object definition to make 'permissions' the derivedPermissions; or (b) the Vue app to check user.derivedPermissions.
+               'user'    => {
+                  %{ $User->details() }, # username, name, email, id
+                  'role' => $User->role, # User's role
+                  'role_as_meta' => $User->role_as_meta, # User's role in metadata format
+                  'permissions' => { 'actions' => $User->permissions() } # User's permissions
+               },
+               'profiles' => $User->profiles(),
+               'containers' => $User->reservations({'client' => 1}),
+               'viewers' => User->viewers(),
+               'dummyReservation' => $User->createClientReservation(),
+               'host' => $parentFQDN,
+               'version' => $VERSION // 'v-unknown'
+            }
          );
+         $json =~ s/</\\u003c/g;
+         $r->print( sprintf( "<script>window.dockside = %s\n</script>", $json ) );
       }
       catch {
          # FIXME: The caught exception can itself be an exception: find a way to rethrow it, preserving the msg/dbg history for debug purposes.
