@@ -7,7 +7,6 @@
 **/*.tdy
 app/client/node_modules
 app/client/dist
-app/server/nginx/html/docs
 depot.json
 .vscode
 .codex

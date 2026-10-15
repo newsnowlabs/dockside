@@ -376,11 +376,6 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       return nginx::OK;
    }
 
-   # Serve /docs/ statically.
-   if( $route =~ m!^/docs(?:/|$)! ) {
-      return nginx::DECLINED;
-   }
-
    # Serve /favicon.ico etc.
    if( $route =~ m!^/(favicon\.ico|apple-touch-icon\.png)$! ) {
       my $file = $&;

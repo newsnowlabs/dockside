@@ -430,20 +430,6 @@ RUN cd /git/dockside && \
     git gc
 
 ################################################################################
-# BUILD MKDOCS DOCUMENTATION SITE
-#
-FROM python:3-slim AS docs-build
-
-COPY app/server/assets /build/app/server/assets/
-COPY docs /build/docs/
-COPY mkdocs.yml /build/
-WORKDIR /build
-# --site-dir overrides mkdocs.yml's own (absolute, runtime-path-shaped) site_dir setting,
-# so this stage's output lands at a fixed, self-contained path regardless of that config.
-RUN pip install --no-warn-script-location mkdocs mkdocs-material==8.4.4 && \
-    mkdocs build --site-dir /build/site
-
-################################################################################
 # BUILD VUE CLIENT
 #
 # Built once here so both the production and development lineages copy from the
@@ -525,11 +511,6 @@ COPY --chown=$USER:$USER dehydrated $HOME/$APP/dehydrated/
 # to the production image. The development stage copies the full directory (including
 # node_modules) from the same vue-build stage instead of running npm install again.
 COPY --from=vue-build --chown=$USER:$USER /build/app/client/dist $HOME/$APP/app/client/dist
-
-# --------------
-# MKDOCS SITE
-#
-COPY --from=docs-build --chown=$USER:$USER /build/site/ $HOME/$APP/app/server/nginx/html/docs/
 
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
