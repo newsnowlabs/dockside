@@ -1,6 +1,7 @@
-// Vuex account module (namespaced) — session user identity and launch profiles.
-// All state here belongs to the currently logged-in user and is independent of
-// admin management operations.
+// Vuex account module (namespaced) — session user identity, launch profiles,
+// and the users/roles directory offered by the container-sharing autocomplete.
+// The admin module's user actions also update that directory (see
+// store/admin.js), so admin edits made in this session show up in it.
 import * as accountApi from '@/services/account';
 
 const createState = () => ({
@@ -17,7 +18,7 @@ const createState = () => ({
    // reactive so admin user mutations and self-edits made in this session are
    // reflected without a full reload. A mutable copy so splice/push stay reactive.
    // Normalize name to username here too (matching upsertViewer/setViewers): the
-   // server bootstrap only falls back for an undef name, so an empty-string name
+   // server bootstrap only falls back for a missing name, so an empty-string name
    // survives — and a non-admin session never runs fetchUsers to repair it, leaving
    // a blank autocomplete label that can't be matched or distinguished.
    viewers: (window.dockside.viewers || []).map(v => ({ ...v, name: v.name || v.username })),
@@ -51,7 +52,8 @@ export default {
 
       // Keep the shared viewers directory (consumed by UserTagsInput) in sync. name
       // falls back to the username when absent/empty (as the server bootstrap does),
-      // since UserTagsInput lowercases it for autocomplete.
+      // since UserTagsInput uses it as the autocomplete label and to map a chosen
+      // label back to its username.
       upsertViewer(state, { username, name, role }) {
          const entry = { username, name: name || username, role };
          const idx = state.viewers.findIndex(v => v.username === username);
@@ -71,7 +73,7 @@ export default {
    },
 
    actions: {
-      // Refresh session identity from the server (GET /account).
+      // Refresh session identity from the server (GET /me).
       // Throws on failure so callers can surface the error.
       async fetchSelf({ commit }) {
          const record = await accountApi.getSelf();
@@ -98,7 +100,7 @@ export default {
          }
       },
 
-      // Refresh the launch-profile cache (GET /account/profiles).  Non-fatal —
+      // Refresh the launch-profile cache (GET /me/profiles).  Non-fatal —
       // stale profiles still allow the user to launch existing containers.
       async fetchLaunchProfiles({ commit }) {
          try {

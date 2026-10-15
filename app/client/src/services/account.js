@@ -6,8 +6,8 @@ import axios from 'axios';
 // Guard against responses that are not a plain data object.
 //
 // When the server is in the process of restarting (or is running an older
-// version that doesn't recognise an endpoint), nginx may return a 302 redirect
-// to an HTML login/error page.  Axios follows the redirect and the final
+// version that doesn't recognise an endpoint), it may answer with a 302
+// redirect to an HTML login/error page.  Axios follows the redirect and the final
 // response is HTML, leaving r.data.data as undefined.  Without this guard,
 // downstream code would call commit('setCurrentUser', undefined) which throws a
 // TypeError deep inside Vuex and crashes silently.

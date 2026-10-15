@@ -41,9 +41,9 @@ const getReservationLogsUri = (args) => {
 
 // Container mutations go over POST — no state-changing route is reachable via
 // GET (GET is cacheable/prefetchable/logged). The body is the same form-encoded
-// arg string the querystring carries for other routes, so the server still parses
-// it raw with split_args (the reservation setters decode structured fields
-// themselves).
+// arg string the querystring carries for other routes: the server expects plain
+// key=value pairs, with booleans as 1/0 and structured fields as JSON strings,
+// which it decodes itself.
 const FORM_POST = { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } };
 
 const putContainer = (args) => {
@@ -64,4 +64,14 @@ const getAuthCookies = () => {
    return axios.get(url).then(response => response.data);
 };
 
-export { getContainers, putContainer, controlContainer, getReservationLogsUri, getAuthCookies, formToQuery };
+// Reads back a dispatched hook invocation's status/log - the same route the `dockside` CLI's
+// api_hook_status uses (see its own comment there). Works for any name ever recorded in
+// data.hooks.status on this reservation, including the launch:- and lifecycle:- stage names
+// the server records itself, not just profile-declared/manually-run hooks: the server does
+// not require the name to be profile-declared.
+const getHookStatus = (id, name) => {
+   const url = `/containers/${encodeURIComponent(id)}/hook/status?name=${encodeURIComponent(name)}`;
+   return axios.get(url, { timeout: 10000 }).then(response => response.data.data);
+};
+
+export { getContainers, putContainer, controlContainer, getReservationLogsUri, getAuthCookies, getHookStatus, formToQuery };

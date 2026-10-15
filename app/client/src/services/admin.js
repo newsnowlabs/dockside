@@ -1,4 +1,4 @@
-// Admin API service — users, roles, profiles, and self-service account editing.
+// Admin API service — users, roles, profiles, and host resource suggestions.
 // Follows the same axios pattern as services/container.js.
 // All state-changing endpoints (create/update/remove/rename for users, roles,
 // and profiles) use POST; the server enforces POST on these routes and returns

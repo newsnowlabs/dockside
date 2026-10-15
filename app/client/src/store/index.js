@@ -1,11 +1,24 @@
-import Vuex from 'vuex';
+import { markRaw } from 'vue';
+import { createStore as createVuexStore } from 'vuex';
 import { getContainers } from '@/services/container';
 import adminModule   from '@/store/admin';
 import accountModule from '@/store/account';
+import { readSetting, writeSetting } from '@/utilities/storage';
 
 const welcomeTextStatusLocalStorageKey = '/dockside/welcomeTextStatus';
 
-const createStore = () => new Vuex.Store({
+// The welcome guide's saved status (see Welcome.vue's displayStatus): -1
+// dismissed, 0 hidden, 1 shown. Anything else - absent, unreadable, or not one
+// of these - reads as 0.
+function readWelcomeTextStatus() {
+   const status = parseInt(readSetting(welcomeTextStatusLocalStorageKey), 10);
+   return [-1, 0, 1].includes(status) ? status : 0;
+}
+
+// Aliased to createVuexStore on import: this factory is itself also named
+// createStore (and exported as the default below) - importing Vuex's own
+// createStore under the same name would shadow it and self-recurse.
+const createStore = () => createVuexStore({
    strict: process.env.NODE_ENV !== 'production',
    modules: {
       admin:   adminModule,
@@ -14,9 +27,26 @@ const createStore = () => new Vuex.Store({
    state: {
       selectedContainer: { name: undefined, mode: 'view' },
       containersFilter: 'shared',
-      containers: window.dockside.containers,
-      welcomeTextStatus: localStorage.getItem(welcomeTextStatusLocalStorageKey) !== null ?
-         parseInt(localStorage.getItem(welcomeTextStatusLocalStorageKey)) : 0
+      // markRaw on every container object: nothing anywhere reads/writes a
+      // container's own fields reactively (Container.vue copies into its
+      // own local `form` to edit, and every store mutation below replaces
+      // the whole array rather than mutating one element in place), so only
+      // this array's own top-level reference needs to be reactive - not each
+      // container's nested meta/data/permissions structure, re-proxied on
+      // every ~1s polling refresh otherwise.
+      containers: window.dockside.containers.map(c => markRaw(c)),
+      welcomeTextStatus: readWelcomeTextStatus(),
+      // sshInfoModalOpen persists modal state in the store because
+      // Container.vue's Setup button and SSHInfo.vue (mounted as an
+      // App.vue-level singleton) are siblings with no parent/child
+      // relationship, so v-dialog's plain v-model has nowhere shared to
+      // live except here.
+      sshInfoModalOpen: false,
+      // The app-wide snackbar (rendered once in App.vue). Lives in the store,
+      // like sshInfoModalOpen above, because any component - via the notifier
+      // mixin - needs to raise it, and the single <v-snackbar> that shows it is
+      // a sibling of all of them, not a parent.
+      snackbar: { show: false, text: '', color: 'error', timeout: 6000 },
    },
    getters: {
       welcomeTextStatus: state => state.welcomeTextStatus,
@@ -36,7 +66,7 @@ const createStore = () => new Vuex.Store({
    mutations: {
       updateWelcomeTextStatus(state, status) {
          state.welcomeTextStatus = status;
-         localStorage.setItem(welcomeTextStatusLocalStorageKey, status);
+         writeSetting(welcomeTextStatusLocalStorageKey, status);
       },
       updateSelectedContainerName(state, name) {
          state.selectedContainer.name = name;
@@ -48,11 +78,23 @@ const createStore = () => new Vuex.Store({
          state.containersFilter = containersFilter || 'shared';
       },
       updateContainers(state, containers) {
-         state.containers = containers;
+         state.containers = containers.map(c => markRaw(c));
       },
       addContainer(state, container) {
-         state.containers = state.containers.filter(c => c.id !== container.id).concat(container);
-      }
+         state.containers = state.containers.filter(c => c.id !== container.id).concat(markRaw(container));
+      },
+      setSshInfoModalOpen(state, open) {
+         state.sshInfoModalOpen = open;
+      },
+      showSnackbar(state, { text, color = 'error', timeout = 6000 }) {
+         // Replace the whole object so a rapid second message re-triggers the
+         // snackbar even while the first is still visible (Vuetify re-opens on a
+         // fresh truthy model-value, but only if the reference actually changes).
+         state.snackbar = { show: true, text, color, timeout };
+      },
+      hideSnackbar(state) {
+         state.snackbar = { ...state.snackbar, show: false };
+      },
    },
    actions: {
       updateWelcomeTextStatus({ state, commit }, status) {

@@ -13,7 +13,6 @@ use JSON;
 use URI::Escape;
 use Try::Tiny;
 use File::Path;
-use Digest::SHA qw(sha256_hex);
 use Util qw(flog wlog run run_pty sanitize_sensitive_text YYYYMMDDHHMMSS);
 use Data qw($CONFIG $VERSION $HOSTINFO $HOSTNAME);
 use Containers;
@@ -21,6 +20,7 @@ use Profile;
 use Reservation;
 use Request;
 use User;
+use App::ClientBuild;
 use App::Metadata;
 
 ####################################################################################################
@@ -51,18 +51,6 @@ sub get_client_asset ($filename) {
    my $contents = <$FH>;
    close $FH;
    return $contents;
-}
-
-# A short, opaque cache-buster for a built client asset: a hash of its mtime+size (a cheap
-# stat, no file read). It changes on every rebuild — including dev rebuilds with no git
-# commit — so an immutable-cached asset URL is refreshed exactly when the file changes.
-# Not the git version: that wouldn't change on a dev rebuild and needlessly reveals the
-# commit (the version is already in window.dockside.version for traceability). Falls back
-# to 'missing' only if the file is absent (a broken deploy — the asset route 404s too, so
-# the value is moot); that just avoids an undef-interpolation warning at page render.
-sub _asset_version ($filename) {
-   my @st = stat("$CONFIG->{'clientDistPath'}/$filename");
-   return @st ? substr( sha256_hex("$st[9]-$st[7]"), 0, 12 ) : 'missing';
 }
 
 sub get_header ($title = undef) {
@@ -233,14 +221,27 @@ sub text ($r, $code, $data) {
    return nginx::OK;
 }
 
+# Stylesheet links for the client entry's own stylesheets, which carry the fonts and base styles
+# the branded and login pages use. A page that cannot name them still renders, unstyled, so a
+# broken client build cannot lock anyone out of the login form; the reason is logged.
+sub client_stylesheet_links () {
+   my $entry = eval { App::ClientBuild::entry( $CONFIG->{'clientDistPath'} ) };
+   unless ($entry) {
+      flog("App: page rendered without the client stylesheets: $@");
+      return '';
+   }
+   return join( '', map {qq{<link rel="stylesheet" href="$_">\n}} @{ $entry->{'css'} } );
+}
+
 sub send_branded_page ($r, $code, $class, $html) { # nginx request object
-   my $css_v = _asset_version('main.css');
+   my $links = client_stylesheet_links();
    $r->status($code);
+   $r->header_out('Cache-Control', 'no-store');
    $r->send_http_header("text/html");
    $r->print( get_header() );
    $r->print( "<style>\n" . get_asset('signin.css') . "\n</style>\n" );
    $r->print("</head><body>\n");
-   $r->print( qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n} );
+   $r->print($links);
    $r->print('<div class="container"><div class="branded ' . $class . '"><div class="dockside"></div>' . $html . "</div></div>\n</body></html>\n");
    return nginx::OK;
 }
@@ -405,15 +406,31 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       return nginx::OK;
    }
 
-   # Serve the Vue client bundle's compiled CSS pre-auth too, so the (also pre-auth)
-   # login page can link to it same-origin (see send_branded_page), avoiding any
-   # cross-origin fetch. main.js has no pre-auth reader, so it stays gated below
-   # with the rest of the authenticated app's assets.
-   if( $route eq '/assets/main.css' ) {
+   # Every file the client build emits under dist/assets/: the entry module, lazy-loaded
+   # chunks, stylesheets, source maps and fonts, each named with a hash of its content (see
+   # app/client/vite.config.js), so a file's URL changes whenever its content does and a long
+   # immutable max-age is safe. Served pre-auth: the login page links the entry's stylesheets,
+   # whose @font-face rules reference the font files. The files are the client's own code,
+   # which is public in this repository. nginx gzips scripts and stylesheets on the fly
+   # (they are in gzip_types). The pattern matches a single flat filename only - it cannot
+   # match a '/' or a bare '..' - and a missing file gets a 404, not the login page. A module
+   # script is refused by browsers unless it is sent as JavaScript.
+   if( $route =~ m!^/assets/([\w\-]+(?:\.[\w\-]+)+)$! ) {
+      my $file = $1;
+      my $path = "$CONFIG->{'clientDistPath'}/assets/$file";
+      return text($r, 404, "Not Found\n") unless -f $path;
+      my ($ext) = $file =~ m!\.([^.]+)$!;
+      my %types = (
+         'js'    => 'application/javascript',
+         'map'   => 'application/json',
+         'css'   => 'text/css',
+         'woff2' => 'font/woff2',
+         'woff'  => 'font/woff',
+      );
       $r->status(200);
       $r->header_out('Cache-Control', 'public, max-age=31536000, immutable');
-      $r->send_http_header('text/css');
-      $r->sendfile("$CONFIG->{'clientDistPath'}/main.css");
+      $r->send_http_header( $types{$ext} // 'application/octet-stream' );
+      $r->sendfile($path);
       return nginx::OK;
    }
 
@@ -444,33 +461,23 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
    # Enable for verbose request logging:
    # flog("App: route=$route; User=" . $User->username);
 
-   # Serve the Vue client bundle's JS as a separate, cacheable asset. Placed below
-   # the auth gate so it is served to authenticated users
-   # only (main.css has its own pre-auth route above, for the login page's benefit too).
-   # nginx gzips the response on the fly (application/javascript is in gzip_types); the ?v=
-   # cache-buster on the reference below changes whenever the file changes, so a long
-   # immutable max-age is safe. ($route is the path only — $r->uri — so the ?v= query does
-   # not affect this match, and the regex pins the exact filename, so there is no path
-   # traversal.)
-   if( $route eq '/assets/main.js' ) {
-      $r->status(200);
-      $r->header_out('Cache-Control', 'public, max-age=31536000, immutable');
-      $r->send_http_header('application/javascript');
-      $r->sendfile("$CONFIG->{'clientDistPath'}/main.js");
-      return nginx::OK;
-   }
-
    if( $route eq '/' || $route =~ m!^/(container|admin|account)(/|$)! ) {
       ###############################
       # Display main page HTML
       #
+      # The client's entry module and stylesheets, by the hashed names in its build manifest
+      # (see App::ClientBuild). Read before any header is sent: the app cannot start without
+      # its entry module, so a client build this cannot read fails the request, through
+      # handler()'s own error page, rather than serving a page that loads nothing.
+      my $entry = eval { App::ClientBuild::entry( $CONFIG->{'clientDistPath'} ) }
+         or die Exception->new( 'msg' => 'The web client build is missing or unreadable', 'dbg' => "App::ClientBuild::entry: $@" );
+      # no-store: this page names the current build's hashed files, which are cached for a year;
+      # a browser that cached the page would keep loading a superseded build.
+      $r->header_out('Cache-Control', 'no-store');
       $r->send_http_header("text/html");
       $r->print( get_header() );
-      # main.css served as a separate cacheable, gzip-compressible asset (see the
-      # /assets/main.(js|css) route above). Linked as a render-blocking <link> in
-      # <head>, so styles apply before first paint.
-      my $css_v = _asset_version('main.css');
-      $r->print( qq{<link rel="stylesheet" href="/assets/main.css?v=$css_v">\n} );
+      # Linked as render-blocking <link>s in <head>, so styles apply before first paint.
+      $r->print( join( '', map {qq{<link rel="stylesheet" href="$_">\n}} @{ $entry->{'css'} } ) );
 
       # Output permissions for signed-in user
       try {
@@ -508,10 +515,10 @@ sub _handler ($r, $protocol) { # nginx request object; protocol = 'http' | 'http
       $r->print('</head>');
       $r->print( '<body data-spy="scroll" data-target=".sidebar">' . "\n" );
       $r->print( "<div id='app'><router-view></router-view></div>\n" );
-      # main.js served as a separate cacheable, gzip-compressible asset (see the
-      # /assets/main.(js|css) route above), so it isn't duplicated into every page response.
-      my $js_v = _asset_version('main.js');
-      $r->print( qq{<script src="/assets/main.js?v=$js_v"></script>\n} );
+      # The entry is an ES module, whose dynamic import() calls load the other files under
+      # /assets/, so it must be loaded with type="module"; a module script runs after the
+      # document has finished parsing, as a classic script at the end of <body> would.
+      $r->print( qq{<script type="module" src="$entry->{'js'}"></script>\n} );
       $r->print("</body></html>\n");
 
       return nginx::OK;

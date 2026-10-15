@@ -1,18 +1,28 @@
 {
    "env": {
-      "node": true
+      "node": true,
+      "browser": true,
+      "es2021": true
    },
    "parserOptions": {
-      "ecmaVersion": 2018,
+      "ecmaVersion": "latest",
       "sourceType": "module"
    },
    "extends": [
       "eslint:recommended",
-      "plugin:vue/essential"
+      "plugin:vue/vue3-essential"
    ],
    "rules": {
       "semi": ["error", "always"],
       "no-debugger": 0,
-      "vue/no-parsing-error": [2, { "invalid-first-character-of-tag-name": false }]
+      "vue/no-parsing-error": [2, { "invalid-first-character-of-tag-name": false }],
+      // Both rules are off. vue/multi-word-component-names flags the
+      // project's single-word component names (Container, Dockside, Header,
+      // Main, Sidebar, Welcome), and vue/no-reserved-component-names flags
+      // the two of those that shadow HTML element names (Header, Main).
+      // Turning either on means renaming those components across all their
+      // call sites.
+      "vue/multi-word-component-names": 0,
+      "vue/no-reserved-component-names": 0
    }
 }

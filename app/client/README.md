@@ -1,14 +1,14 @@
 # Dockside Web Client
 
-The browser single-page app — Vue 2 + Vuex + Vue Router, bundled with webpack and
-served by the Perl server.
+The browser single-page app — Vue 3 + Vuetify 3 + Vuex 4 + Vue Router 4, bundled
+with Vite and served by the Dockside server.
 
 ## Build / develop
 
 ```sh
 cd dockside/app/client
 npm install        # install dependencies
-npm run build      # build dist/ (served by app/server/lib/App.pm)
+npm run build      # build dist/ (the server serves dist/assets/ and reads dist/manifest.json)
 npm run start      # watch and rebuild on change
 ```
 
@@ -17,21 +17,33 @@ Lint and build checks also run from the repo root: `./test.sh --only vue`,
 
 ## Build outputs
 
-`npm run build` emits `dist/main.js` and `dist/main.css`, which the server serves
-as separately-cacheable `/assets/main.{js,css}` (no longer inlined into the page
-HTML).
+`npm run build` puts every built file - the entry module, lazy-loaded chunks such as
+the admin screens, their stylesheets, source maps, fonts - in
+`dist/assets/<name>-<hash>.<ext>`, named with a hash of its content. The server serves
+them at `/assets/<file>`, before login, cached for a long time.
+
+It also writes `dist/manifest.json`, Vite's build manifest. The server reads it to find
+the entry module (the one chunk marked `isEntry`) and that entry's stylesheets, and
+writes them into the page as `<script type="module" src="/assets/...">` and
+`<link rel="stylesheet" href="/assets/...">`. Lazy-loaded chunks import the entry by the
+same hashed name, so the browser loads it once.
+
+The entry must stay under `dist/assets/` with the chunks: the browser resolves the
+entry's dynamic `import()` paths relative to its own URL, so its place on disk must
+match that URL. See `vite.config.js` for details.
 
 ## Layout
 
-- **Entry point — `src/index.js`:** creates the Vuex store *before* the router (so
-  the route guards can read the live current user), registers the store modules,
-  and defines the routes behind permission-aware guards.
+- **Entry point — `src/index.js`:** creates the Vuex store (whose modules
+  `src/store/index.js` registers) *before* the router, so the route guards can read
+  the live current user, and defines the routes behind permission-aware guards.
 - **Routes / layouts:** the default container view; `/admin/users`, `/admin/roles`,
   `/admin/profiles` (gated on the `manageUsers` / `manageProfiles` permissions); and
   `/account` (any authenticated user).
 - **Components:** `components/admin/` (the users/roles/profiles list and detail
-  editors); `components/shared/` (JsonEditor, ConfirmModal, ValueTag,
-  ResourceTagsInput, UserTagsInput); and the container/header/sidebar shells.
+  editors, including ResourceTagsInput); `components/shared/` (JsonEditor,
+  ConfirmModal, ValueTag, DetailField); and the container/header/sidebar shells,
+  plus UserTagsInput, in `components/`.
 - **State — `src/store/`:** `account` (session identity, launch profiles, and the
   reactive viewers directory consumed by the sharing autocomplete), `admin`
   (server-side users/roles/profiles CRUD), and the root container state. Admin and

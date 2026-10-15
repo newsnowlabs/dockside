@@ -77,7 +77,8 @@ The repo includes a `test.sh` script at the root that validates the codebase bef
 
 Checks performed include:
 - `perl` — syntax check on all `.pm` modules and scripts
-- `vue` — npm production build (webpack)
+- `vue` — npm production build (Vite)
+- `vuetest` — Vue unit tests (Vitest)
 - `eslint` — ESLint on Vue source files
 - `stylelint` — StyleLint on Vue styles
 - `shellcheck` — Bash script validation (severity: error)

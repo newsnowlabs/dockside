@@ -63,8 +63,8 @@ export default {
       setProfiles(state, list)       { state.profiles = list; state.profilesLoaded = true; },
       setHostResources(state, data)  { state.hostResources = data; },
 
-      // splice() is used rather than [...list] replacement to trigger Vue 2
-      // reactivity on the array element (Vue 2 can't detect direct index writes).
+      // splice() replaces an existing entry in place, keeping its position in
+      // the list; a new entry is appended.
       upsertUser(state, user) {
          const idx = state.users.findIndex(u => u.username === user.username);
          if (idx >= 0) state.users.splice(idx, 1, user);
