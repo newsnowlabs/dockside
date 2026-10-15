@@ -29,6 +29,9 @@ fi
 
 # ── State ────────────────────────────────────────────────────────────────────
 declare -A RESULTS=()
+# Every check that ran or was skipped, in the order it was reached. The summary walks this rather
+# than a fixed list, so a check cannot fail without also failing the run.
+CHECKS=()
 ONLY="${2:-}"   # set by --only flag below
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
@@ -44,6 +47,7 @@ run_check() {
   local name="$1"; shift
   [[ -n "$ONLY" && "$ONLY" != "$name" ]] && return 0
 
+  CHECKS+=("$name")
   echo ""
   echo -e "${BOLD}━━━ $name ━━━${RESET}"
   if "$@"; then
@@ -58,6 +62,7 @@ run_check() {
 skip_check() {
   local name="$1"; local reason="$2"
   [[ -n "$ONLY" && "$ONLY" != "$name" ]] && return 0
+  CHECKS+=("$name")
   RESULTS["$name"]="SKIP"
   echo ""
   echo -e "${YELLOW}⚠ $name skipped: $reason${RESET}"
@@ -387,8 +392,12 @@ echo ""
 echo -e "${BOLD}━━━ Summary ━━━${RESET}"
 
 overall=0
-for name in perl vue vuetest eslint stylelint shellcheck json perltidy; do
-  result="${RESULTS[$name]:-SKIP}"
+if [[ ${#CHECKS[@]} -eq 0 ]]; then
+  echo -e "  ${RED}✗ no such check: ${ONLY}${RESET}"
+  overall=1
+fi
+for name in "${CHECKS[@]}"; do
+  result="${RESULTS[$name]}"
   case "$result" in
     PASS) echo -e "  ${GREEN}✓ PASS${RESET}  $name" ;;
     FAIL) echo -e "  ${RED}✗ FAIL${RESET}  $name"; overall=1 ;;
