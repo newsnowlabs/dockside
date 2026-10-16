@@ -96,3 +96,10 @@ class EditTests(TestCase):
         self.assert_equal(meta.get('description'), 'ready for review')
         self.assert_not_in('data', data)
         self.assert_not_in('developers', meta)
+
+    def test_09_private_flag_stays_a_number(self):
+        """A stored number is written back as a number by a later, unrelated edit."""
+        self.admin._run('edit', self.CONTAINER_NAME, '--private')
+        self.admin.update(self.CONTAINER_NAME, description='second edit')
+        private = (self.admin.get_container(self.CONTAINER_NAME).get('meta') or {}).get('private')
+        self.assert_equal(private, 1, f'expected private as the number 1, got {private!r}')

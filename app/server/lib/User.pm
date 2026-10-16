@@ -386,8 +386,10 @@ sub can_on ($self, $container, $action) {    # Reservation object; 'view' | 'dev
    # Users named as a container's owner, developer or viewer can view the container.
    if( $action eq 'view' ) {
 
-      # Anyone with viewAllContainers capability can view all containers, except private ones
-      return 1 if $self->has_permission( 'viewAllContainers' ) && ( $container->meta('private') ne '1' );
+      # Anyone with viewAllContainers capability can view all containers, except private ones.
+      # A truth test, not `ne '1'`: a string comparison would stringify the stored number, which
+      # JSON::XS then encodes as "1" in every response and write that follows.
+      return 1 if $self->has_permission( 'viewAllContainers' ) && !$container->meta('private');
 
       # Anyone with viewAllPrivateContainers capability can also view all containers
       return 1 if $self->has_permission( 'viewAllPrivateContainers' );

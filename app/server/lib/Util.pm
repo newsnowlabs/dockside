@@ -482,12 +482,11 @@ sub cloneHash ($from, $to) {
             next;
          }
 
-         if( 
-            (!exists($to->{$k}) && exists($from->{$k})) ||
-            ($to->{$k} ne $from->{$k})
-            ) {
-            $to->{$k} = $from->{$k};
-         }
+         # Copied unconditionally, never only when different: comparing with `ne` would stringify
+         # both operands, and JSON::XS encodes a scalar that has been used as a string as a quoted
+         # string, so a stored number would be written as "1" rather than 1. The only caller,
+         # Reservation::Mutate::update, rewrites the record in any case.
+         $to->{$k} = $from->{$k};
       }
    }
 }

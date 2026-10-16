@@ -226,7 +226,9 @@ sub meta ($self, $key, @rest) {
    }
    elsif( $key eq 'private' ) {
       if( $value =~ /^(1|0)$/ ) {
-         $self->{'meta'}{$key} = $value;
+         # Stored as a number: the regex match above stringifies $value, which JSON::XS would
+         # then encode as "1" or "0".
+         $self->{'meta'}{$key} = 0 + $value;
       }
       else {
          die Exception->new( 'msg' => "Cannot set reservation privacy to invalid value '$value'" );
