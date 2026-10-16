@@ -241,3 +241,47 @@ class PlaceholderBracesTests(TestCase):
 
     def test_10_command_with_non_placeholder_braces_launches(self):
         self.create_and_wait(self.admin, self.PROFILE_NAME, self.CONTAINER_NAME)
+
+
+class TmpfsFlagsTests(TestCase):
+    """A profile tmpfs mount with noexec, nosuid and nodev launches.
+
+    These options reach docker inside a --tmpfs options string, which takes them as
+    bare flags. The profile is the suite's Alpine profile with such a mount added.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.PROFILE_NAME = cls._sfx('inttest-tmpfs-flags')
+        cls.CONTAINER_NAME = cls._sfx('inttest-tmpfs-flags-01')
+        spec = cls.admin._run('profile', 'get', cls.test_profile_alpine)
+        spec.pop('id', None)
+        spec['name'] = f'Integration Test - tmpfs flags [{cls.PROFILE_NAME}]'
+        spec['mounts']['tmpfs'].append({
+            'dst': '/scratch', 'tmpfs-size': '1M',
+            'tmpfs-noexec': True, 'tmpfs-nosuid': True, 'tmpfs-nodev': True,
+        })
+        import json
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(spec, f)
+            path = f.name
+        try:
+            cls.admin._run('profile', 'create', cls.PROFILE_NAME, '--from-json', path)
+        finally:
+            os.unlink(path)
+
+    @classmethod
+    def tearDownClass(cls):
+        for fn in (
+            lambda: cls.admin.stop(cls.CONTAINER_NAME, wait=False),
+            lambda: cls.admin.remove(cls.CONTAINER_NAME, wait=False),
+            lambda: cls.admin._run('profile', 'remove', '--force', cls.PROFILE_NAME),
+        ):
+            try:
+                fn()
+            except Exception:
+                pass
+
+    def test_11_tmpfs_flag_options_launch(self):
+        self.create_and_wait(self.admin, self.PROFILE_NAME, self.CONTAINER_NAME)

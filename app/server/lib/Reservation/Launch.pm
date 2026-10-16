@@ -120,9 +120,11 @@ sub cmdline_mounts_tmpfs ($self) {
                   $_->{'tmpfs-mode'} ? "mode=$_->{'tmpfs-mode'}" : (),
                   $_->{'tmpfs-uid'} ? "uid=$_->{'tmpfs-uid'}" : (),
                   $_->{'tmpfs-gid'} ? "gid=$_->{'tmpfs-gid'}" : (),
-                  $_->{'tmpfs-noexec'} ? "noexec=$_->{'tmpfs-noexec'}" : (),
-                  $_->{'tmpfs-nosuid'} ? "nosuid=$_->{'tmpfs-nosuid'}" : (),
-                  $_->{'tmpfs-nodev'} ? "nodev=$_->{'tmpfs-nodev'}" : ()
+                  # Bare flags: the tmpfs options string accepts noexec, nosuid and nodev only as
+                  # flags, and docker refuses e.g. 'noexec=1'.
+                  $_->{'tmpfs-noexec'} ? "noexec" : (),
+                  $_->{'tmpfs-nosuid'} ? "nosuid" : (),
+                  $_->{'tmpfs-nodev'} ? "nodev" : ()
                )
             )
          )
