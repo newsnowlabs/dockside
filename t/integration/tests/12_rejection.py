@@ -19,6 +19,8 @@ REFUSES an invalid request rather than silently accepting it. Driven through the
             OWN admin-granting role (lock-out via a custom, non-'admin' role + its user).
   Group E — reads of non-existent entities: getUser / getRole / getProfile must 404 on a
             name no fixture creates, rather than returning an empty or fabricated record.
+  Group F — names that could pass for a container ID: a bare 12- or 64-character hex
+            devtainer name is refused.
 
 If the server does NOT reject one of these, the corresponding test fails — surfacing a
 server-side validation gap rather than letting it pass silently.
@@ -233,3 +235,23 @@ class RejectionTests(TestCase):
     def test_21_get_absent_profile(self):
         self.assert_api_error(
             lambda: self.admin._run('profile', 'get', _ABSENT))
+
+    # ── Group F: names that could pass for a container ID ───────────────────────
+    # Docker resolves an exact container name before an ID prefix, and Dockside
+    # addresses each container by its 12-character short ID, so a devtainer named
+    # as a bare 12- or 64-character hex string could receive calls meant for
+    # another. These names fit the name grammar (a letter, then letters/digits),
+    # so only the hex check refuses them. They carry no run suffix: a suffix would
+    # make them non-hex.
+
+    def test_22_create_hex_short_id_name(self):
+        name = 'abcdef012345'
+        self.register_cleanup(name)
+        self.assert_api_error(
+            lambda: self.admin.create(profile=self.test_profile_alpine, name=name, no_wait=True))
+
+    def test_23_create_hex_full_id_name(self):
+        name = 'f' + '0123456789abcdef' * 3 + '0123456789abcde'
+        self.register_cleanup(name)
+        self.assert_api_error(
+            lambda: self.admin.create(profile=self.test_profile_alpine, name=name, no_wait=True))
