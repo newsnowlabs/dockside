@@ -796,8 +796,9 @@ sub set ($self, $reservation, $property, $value = '') {
          # If the user has requested an access mode be assigned for this router,
          # and it is different to the one which is currently set,
          # do not permit unless the user is allowed to use that access mode
-         # and the profile supports it.
-         if( $value->{$name} && ($value->{$name} ne $oldAccess->{$name}) ) {
+         # and the profile supports it. A devtainer being launched has no mode set
+         # for any router yet, which differs from every requested mode.
+         if( $value->{$name} && ($value->{$name} ne ($oldAccess->{$name} // '')) ) {
             return 0 unless
                # User and profile allow the requested auth type
                grep { $_ eq $value->{$name} } @{$router->{'auth'}};
