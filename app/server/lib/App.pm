@@ -77,11 +77,12 @@ sub split_args ($queryString) {
    # (e.g. $r->args on a plain GET); treat that the same as an empty string.
    $queryString //= '';
 
-   # Split querystring-style arguments, and unescape them
-   my %hash = map { uri_unescape($_) } split( /[=&]/, $queryString );
-
-   # Map once more to eliminate any hash key mapping to undef
-   return { map { $_ // '' } %hash };
+   # Split into '&'-separated pairs, each pair at its first '=', and unescape both halves. A
+   # pair with nothing after its '=' ('key='), or with no '=' at all ('key'), maps the key to ''.
+   return { map {
+      my ( $k, $v ) = split( /=/, $_, 2 );
+      ( uri_unescape($k), uri_unescape( $v // '' ) )
+   } grep { length } split( /&/, $queryString ) };
 }
 
 # Parse a POST request body into a normalised hashref whose values are always
@@ -128,13 +129,18 @@ sub parse_body_args ($r) {
       return $decoded;
    }
 
-   # Form-encoded fallback: split on '=' and '&', then for each token translate
-   # '+' to space before percent-decoding (application/x-www-form-urlencoded
-   # encodes a space as '+' and a literal '+' as %2B, so '+'->space must happen
-   # before uri_unescape turns %2B back into '+'), and finally JSON-decode each
-   # value so the result has the same shape as the JSON path.  The first-party
-   # CLI percent-encodes spaces, but other form clients rely on '+'.
-   my %flat = map { ( my $t = $_ ) =~ tr/+/ /; uri_unescape($t) } split( /[=&]/, $body );
+   # Form-encoded fallback: split into '&'-separated pairs, each pair at its first
+   # '=', then for each half translate '+' to space before percent-decoding
+   # (application/x-www-form-urlencoded encodes a space as '+' and a literal '+'
+   # as %2B, so '+'->space must happen before uri_unescape turns %2B back into
+   # '+'), and finally JSON-decode each value so the result has the same shape as
+   # the JSON path.  The first-party CLI percent-encodes spaces, but other form
+   # clients rely on '+'.  'key=' gives an empty value; 'key' alone gives undef.
+   my $unescape = sub ($t) { return undef unless defined $t; $t =~ tr/+/ /; return uri_unescape($t) };
+   my %flat = map {
+      my ( $k, $v ) = split( /=/, $_, 2 );
+      ( $unescape->($k), $unescape->($v) )
+   } grep { length } split( /&/, $body );
    my %decoded;
    for my $key ( keys %flat ) {
       my $v = $flat{$key};
