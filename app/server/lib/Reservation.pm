@@ -831,6 +831,14 @@ sub referencing_reservations ($class, $identifier, $kind) {
 #
 
 sub action ($self, $action, $args = {}) {
+   # A reservation whose launch failed, or has not yet created its container, has no container
+   # id: each action below would pass an empty id to docker, which refuses it with a message
+   # naming no devtainer.
+   unless( length( $self->containerId() // '' ) ) {
+      my $verb = { 'getLogs' => 'read logs from' }->{$action} // $action;
+      die Exception->new( 'msg' => "Devtainer '" . $self->name() . "' has no container to $verb: its launch failed or has not finished" );
+   }
+
    my @command;
    if($action eq 'start') {
       @command = ('start');

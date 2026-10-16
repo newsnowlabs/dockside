@@ -173,6 +173,17 @@ class CreateFailureTests(TestCase):
             f'createStatus not set on launch failure (got {create_status!r})',
         )
 
+    def test_08b_stop_without_container_names_the_problem(self):
+        # test_08's launch failed before Docker created a container, so the devtainer has no
+        # container id. Stopping it must be refused with a message that says so, not passed
+        # on to docker with an empty id.
+        try:
+            self.admin.stop(self.CONTAINER_NAME, wait=False)
+        except APIError as e:
+            self.assert_in('has no container to stop', str(e))
+            return
+        raise AssertionError('stopping a devtainer with no container was not refused')
+
     def test_09_waited_create_exits_nonzero_on_launch_failure(self):
         # A waited create (the default) must exit non-zero when the launch fails
         # (-4), so scripts and automation do not mistake a failed launch for
