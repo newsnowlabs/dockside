@@ -783,7 +783,9 @@ sub meta_has_user ($self, $key, $user) {
    # Empty $user would still match the regex, so check for this case.
    return 0 unless defined($user);
 
-   return $self->meta($key) =~ /(?:^|,)\Q$user\E(?:,|$)/;
+   # An unset list - 'viewers'/'developers' never assigned on this reservation - names nobody,
+   # and is matched against as the empty string rather than as undef.
+   return ( $self->meta($key) // '' ) =~ /(?:^|,)\Q$user\E(?:,|$)/;
 }
 
 # Return the reservations whose owner/viewers/developers reference $identifier, as a
