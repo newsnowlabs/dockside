@@ -4,4 +4,8 @@
 
 HOME=$APP_HOME
 
+# Files the daemon creates (the shared log, database and lock files) are readable by their owner
+# and group only.
+umask 027
+
 LOGNAME=$USER USER=$USER PERLLIB=$APP_DIR/app/server/lib:$PERLLIB exec /usr/bin/s6-setuidgid $USER $APP_DIR/app/server/bin/docker-event-daemon

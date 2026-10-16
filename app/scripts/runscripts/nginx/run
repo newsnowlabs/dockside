@@ -14,6 +14,10 @@ echo "$GIT_TAG ($GIT_COMMIT_ID)" >./data/version
 
 if [ -f "/data/certs/fullchain.pem" ] && [ -f "/data/certs/privkey.pem" ]; then
   log "Launching nginx"
+  # Files nginx and its workers create (the shared log, database and lock files) are readable by
+  # their owner and group only. This is set after ./data/version is written, which the app reads
+  # as another user.
+  umask 027
   exec /usr/sbin/nginx -g 'daemon off;' -c /home/dockside/dockside/app/server/nginx/conf/nginx.conf
 fi
 
