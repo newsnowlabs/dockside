@@ -22,9 +22,15 @@ my $PLACEHOLDERS = {
 sub _placeholders ($self, $value) {
    local $_ = $value;
 
+   # Substitutes only where the brace contents are an exact (case-insensitive) match for one of
+   # the known prefixes above; any other {...} is left as it is. Profile commands, mounts and
+   # environment values routinely contain other curly braces - shell parameter expansion like
+   # ${VAR#pattern}, command grouping like `{ cmd; }`, embedded JSON, awk or printf blocks - and
+   # none of those is one of this short, fixed set of words. A mistyped prefix (e.g. '{usre}')
+   # therefore passes through unchanged, being indistinguishable from ordinary script text.
    s/\{([^\}\.]+)(?:\.([^\}]+))?\}/do {
       my $sub = $PLACEHOLDERS->{lc($1)};
-      $sub ? $self->$sub($2) : die Exception->new( 'msg' => "Unknown placeholder '$&' in '$_'" );
+      $sub ? $self->$sub($2) : $&;
    }/egs;
 
    return $_;

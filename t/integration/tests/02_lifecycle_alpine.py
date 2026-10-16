@@ -181,3 +181,52 @@ class CreateFailureTests(TestCase):
         self.register_cleanup(name)
         self.assert_api_error(
             lambda: self.admin.create(profile=self.test_profile_bad_image, name=name))
+
+
+class PlaceholderBracesTests(TestCase):
+    """A profile whose command contains curly braces that are not placeholders launches.
+
+    The launch substitutes {ideUser}, {container.name} and the like in a profile's
+    command, mounts and environment, and leaves any other {...} as it is: shell
+    parameter expansion, command grouping and JSON are ordinary profile content.
+    The profile is the suite's Alpine profile with such text added to its command;
+    its tmpfs mount's {ideUser} placeholder is still substituted for the launch to
+    succeed.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.PROFILE_NAME = cls._sfx('inttest-braces')
+        cls.CONTAINER_NAME = cls._sfx('inttest-braces-01')
+        spec = cls.admin._run('profile', 'get', cls.test_profile_alpine)
+        spec.pop('id', None)
+        spec['name'] = f'Integration Test - Braces [{cls.PROFILE_NAME}]'
+        shell = spec['command'][2]
+        spec['command'][2] = (
+            'v=/home/x; { echo "${v#/}"; } >/dev/null; '
+            'printf \'%s\\n\' \'{"weight": 1.5}\' >/dev/null; ' + shell
+        )
+        import json
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(spec, f)
+            path = f.name
+        try:
+            cls.admin._run('profile', 'create', cls.PROFILE_NAME, '--from-json', path)
+        finally:
+            os.unlink(path)
+
+    @classmethod
+    def tearDownClass(cls):
+        for fn in (
+            lambda: cls.admin.stop(cls.CONTAINER_NAME, wait=False),
+            lambda: cls.admin.remove(cls.CONTAINER_NAME, wait=False),
+            lambda: cls.admin._run('profile', 'remove', '--force', cls.PROFILE_NAME),
+        ):
+            try:
+                fn()
+            except Exception:
+                pass
+
+    def test_10_command_with_non_placeholder_braces_launches(self):
+        self.create_and_wait(self.admin, self.PROFILE_NAME, self.CONTAINER_NAME)
