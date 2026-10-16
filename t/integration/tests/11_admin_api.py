@@ -227,3 +227,13 @@ class AdminApiTests(TestCase):
         self.assert_api_error(
             lambda: self.admin._run('role', 'create', self._role_bad,
                                     '--permissions', '"not-an-object"'))
+
+    # ── form-encoded bodies: an empty value at the end of the body ──────────────
+
+    def test_09_user_edit_clears_email(self):
+        """An edit whose form body ends 'email=' clears the email; it is not ignored."""
+        user = self._user
+        self.admin._run('user', 'edit', user, '--email', 'inttest-clear@example.invalid')
+        self.admin._run('user', 'edit', user, '--email', '')
+        email = (self.admin._run('user', 'get', user) or {}).get('email')
+        self.assert_true(not email, f'email was not cleared: {email!r}')
