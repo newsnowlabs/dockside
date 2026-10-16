@@ -28,6 +28,11 @@ our $INNER_DOCKERD = get_config('/etc/service/nginx/data/inner-dockerd');
 our $VERSION = get_config('/etc/service/nginx/data/version');
 our $HOSTINFO = { 'docker' => undef, 'IDEs' => undef }; # Host info cache: populated later
 
+# Core config files: a failure to parse one is a critical error, not something to run past on
+# undef or partial data (see load()'s own parse-failure handling). Profiles are deliberately not
+# here - a single unparseable profile is skipped individually, never a whole-server failure.
+my %CORE_FILE = map { $_ => 1 } qw( config.json users.json roles.json reservations.json containers.json );
+
 sub parse_json ($json) {
    local $_ = $json;
 
@@ -286,7 +291,21 @@ sub load (@configFiles) { # Optional: list of config files to check for changes 
             }
             catch {
                chomp;
-               flog("Data::load: error parsing '$file': '$_'");
+               my $err = $_;
+
+               if ( $CORE_FILE{$p} ) {
+                  # Logged to flog and, unconditionally, to STDERR so it reaches the container's
+                  # log stream (`docker logs`) whatever the state of the log file. The re-throw
+                  # aborts this file's update below, so its lastModified and last-good data are
+                  # left untouched (the outer catch logs it) and the next load retries, rather
+                  # than running 'process' on a partial or undef parse.
+                  my $emsg = "Data::load: ERROR: cannot parse core config file '$file': $err";
+                  flog($emsg);
+                  print STDERR "[dockside] $emsg\n";
+                  die $err;
+               }
+
+               flog("Data::load: error parsing '$file': '$err'");
             };
          }
 
