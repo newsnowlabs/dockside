@@ -928,7 +928,12 @@ sub getGitDevContainer ($self) {
             # Strip comments
             my $body = $result->body;
             $body =~ s!//.*$!!gm;
-            return eval { return decode_json($body); };
+
+            # Only a JSON Object is a usable devcontainer.json: the caller (User.pm) reads it as a
+            # hashref. A body that is valid JSON but not an Object - an Array, string or number -
+            # falls through to the next branch, as a parse failure does.
+            my $decoded = eval { decode_json($body) };
+            return $decoded if ref($decoded) eq 'HASH';
          }
       }
    }
