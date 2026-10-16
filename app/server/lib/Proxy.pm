@@ -206,7 +206,8 @@ sub https_server_port ($r) {
 # We'll use this to set the cookie header on the request proxied to
 # the subcontainer.
 sub upstream_cookie ($r) {
-   my $cookie = $r->header_in('Cookie');
+   # A request with no Cookie header yields '', which proxy_set_header sends as no header.
+   my $cookie = $r->header_in('Cookie') // '';
 
    $cookie =~ s/\b\Q$CONFIG->{'uidCookie'}{'name'}\E(?:_http)?=[^ ;]+(;\s*)?//sg;
 
