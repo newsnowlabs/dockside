@@ -621,7 +621,9 @@ sub _api_handler ($r, $User, $querystring, $parentFQDN) {
 
          my $logs = $User->controlContainer('getLogs', $id, $args);
 
-         return ($args->{'format'} eq 'text') ? text($r, 200, join('', @$logs)) : json($r, 200, { 'status' => '200', 'data' => $logs });
+         # $logs is indexed by Docker stream number (1 stdout, 2 stderr), so slot 0 - and any
+         # stream not requested - is undef.
+         return ($args->{'format'} eq 'text') ? text($r, 200, join('', grep { defined } @$logs)) : json($r, 200, { 'status' => '200', 'data' => $logs });
       }
 
       ######################################

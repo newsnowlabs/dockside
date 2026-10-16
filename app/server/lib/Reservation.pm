@@ -930,7 +930,8 @@ sub getGitDevContainer ($self) {
          my $devcontainerUri = "https://raw.githubusercontent.com/$path/refs/heads/$branch/.devcontainer/devcontainer.json";
 
          my $result = get_uri($devcontainerUri);
-         flog("getGitDevContainer: uri=$devcontainerUri; result=$result; is_success=" . ($result && $result->is_success) . "; body='" . ($result ? $result->body : 'N/A') . "'");
+         # get_uri returns undef when it gets no response at all.
+         flog("getGitDevContainer: uri=$devcontainerUri; status=" . ($result ? $result->code : 'no response') . "; body='" . ($result ? $result->body : 'N/A') . "'");
 
          if( $result && $result->is_success ) {
             # Strip comments
@@ -1024,7 +1025,8 @@ sub launch ($self) {
       $exitCode = run_pty( \@cmd, "$CONFIG->{'tmpPath'}/r-$id.log" );
 
       my $o = get_config("$CONFIG->{'tmpPath'}/r-$id.cid");
-      flog("Reservation::launch: containerId='$o'; exitCode=$exitCode");
+      # A 'docker create' that failed writes no container id file, leaving $o undef.
+      flog("Reservation::launch: containerId='" . ($o // '') . "'; exitCode=$exitCode");
 
       if( $exitCode != 0 ) {
          flog("Reservation::launch: 'docker create' failed with exit code $exitCode");
