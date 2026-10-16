@@ -21,6 +21,8 @@ REFUSES an invalid request rather than silently accepting it. Driven through the
             name no fixture creates, rather than returning an empty or fabricated record.
   Group F — names that could pass for a container ID: a bare 12- or 64-character hex
             devtainer name is refused.
+  Group G — profile router protocols: a router whose protocol is anything but http or
+            https (here, one carrying its own host) is refused at profile create.
 
 If the server does NOT reject one of these, the corresponding test fails — surfacing a
 server-side validation gap rather than letting it pass silently.
@@ -255,3 +257,28 @@ class RejectionTests(TestCase):
         self.register_cleanup(name)
         self.assert_api_error(
             lambda: self.admin.create(profile=self.test_profile_alpine, name=name, no_wait=True))
+
+    # ── Group G: profile router protocols ───────────────────────────────────────
+    # A router's protocol becomes the scheme of the proxy target nginx is handed, so
+    # a value carrying its own host would redirect the router's traffic.
+
+    def test_24_profile_router_protocol_with_host(self):
+        import json
+        import tempfile
+        name = self._sfx('inttest-rej-protocol')
+        spec = self.admin._run('profile', 'get', self.test_profile_alpine)
+        spec.pop('id', None)
+        spec['name'] = f'Integration Test - Bad Protocol [{name}]'
+        spec['routers'][0]['https']['protocol'] = 'http://example.invalid/x?'
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(spec, f)
+            path = f.name
+        try:
+            self.assert_api_error(
+                lambda: self.admin._run('profile', 'create', name, '--from-json', path))
+        finally:
+            os.unlink(path)
+            try:
+                self.admin._run('profile', 'remove', '--force', name)
+            except Exception:
+                pass

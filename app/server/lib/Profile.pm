@@ -493,7 +493,20 @@ sub validate_profile_routers ($self, $type, $data) {
    }
 
    for( my $i = 0; $i < @$data; $i++ ) {
-      $self->do_validate( "$type\[$i\]", $data->[$i], qw( name=s type=s auth=@ prefixes=@! domains=@! http=% https=% ) );
+      my $router = $data->[$i];
+      $self->do_validate( "$type\[$i\]", $router, qw( name=s type=s auth=@ prefixes=@! domains=@! http=% https=% ) );
+
+      # A router's protocol becomes the scheme of the proxy_pass target nginx is handed for it
+      # (Reservation::lookup_container_uri), and nginx uses that target verbatim, so a value carrying
+      # its own host or path would send the router's traffic wherever the Dockside container can
+      # reach. It must be one nginx can proxy to. do_validate above already reports an http or
+      # https block that isn't a Hash.
+      foreach my $publicProtocol (qw( http https )) {
+         my $proto = $router->{$publicProtocol};
+         next unless ref($proto) eq 'HASH' && defined $proto->{'protocol'};
+         $self->errors( "$type\[$i\].$publicProtocol.protocol", "must be 'http' or 'https'" )
+            unless $proto->{'protocol'} =~ /\Ahttps?\z/;
+      }
    }
 }
 
