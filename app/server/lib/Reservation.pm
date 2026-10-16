@@ -589,7 +589,7 @@ sub cloneWithConstraints ($self, $constraints, $reservationPermissions) {
       $clone->sanitise(
          {
             'docker' => [ qw( ID Size CreatedAt Status ) ],
-            'meta' => [ qw( owner access viewers ) ],
+            'meta' => [ qw( owner access viewers description ) ],
             'profileObject' => [ qw( name routers ) ]
          },
          [ qw( id name owner profile status containerId ) ]

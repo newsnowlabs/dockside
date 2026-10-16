@@ -177,7 +177,7 @@ A devtainer can be shared with other users by listing them in the Viewers list o
 - Can edit: description, viewers list, developers list, IDE, access modes, and network
 
 **Named viewers**:
-- Can view and list the devtainer 
+- Can view and list the devtainer, seeing its owner, description and viewers list, but not its developers list or launch details (image, git URL, IDE, options)
 - Can access routers whose active mode is `viewer`, `user`, or `public`
 - **Cannot** access the IDE or SSH router — these are always restricted to `owner`/`developer`
 - **Cannot** edit any container properties (description, viewers, developers, access mode, network, IDE)

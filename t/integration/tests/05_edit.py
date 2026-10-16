@@ -86,3 +86,13 @@ class EditTests(TestCase):
         self.assert_api_error(
             self.dev2.update, self.CONTAINER_NAME, description='dev2 edit attempt'
         )
+
+    def test_08_viewer_sees_description_but_not_launch_details(self):
+        """A viewer is sent the description, but not the developer-only launch details."""
+        self.admin.update(self.CONTAINER_NAME, description='ready for review',
+                          viewers=self.test_username_viewer)
+        data = self.viewer.get_container(self.CONTAINER_NAME)
+        meta = data.get('meta') or {}
+        self.assert_equal(meta.get('description'), 'ready for review')
+        self.assert_not_in('data', data)
+        self.assert_not_in('developers', meta)
