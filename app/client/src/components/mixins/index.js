@@ -120,22 +120,19 @@ const routing = {
             this.$router.replace({ path: '/' }).catch(() => {});
          }
       },
-      // Opens the launch form with the given profile chosen. Deliberately not
-      // goToContainer(): that copies the *current* route's query (minus cf)
-      // onto the new route, which here would carry forward the
-      // previously-selected profile's already-synced field values (image,
-      // access, etc.) into the newly-selected profile's form — values that are
-      // almost certainly wrong for it (an image string that isn't one of the
-      // new profile's own options, or a router key its access schema doesn't
-      // even have). Choosing a profile always starts from a clean slate: just
-      // the chosen profile, nothing else.
+      // Opens the launch form with the given profile chosen, as the form's only
+      // query field (goToContainer() opens it with an empty query).
       launchWithProfile(profileId) {
          this.$router.push({ name: 'container', params: { name: 'new' }, query: { profile: profileId } }).catch(() => {})
             .then(() => this.$store.dispatch('updateSelectedContainerMode', 'prelaunch'));
       },
+      // Opens a devtainer's page (or the launch form, for name 'new') with an
+      // empty query. The query string carries only the launch form's in-progress
+      // field values (and the containers filter, which is a property of the
+      // list, not of a devtainer), so none of it is passed on to another page or
+      // to the next launch form.
       goToContainer(name, mode, replace) {
-         const query = Object.assign({}, this.$route.query);
-         delete query.cf;
+         const query = {};
 
          console.log('goToContainer', name, mode, { name: 'container', params: { name }, query });
 

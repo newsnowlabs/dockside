@@ -68,3 +68,19 @@ describe('routing.goBackOrHome', () => {
       expect(window.history.length).toBe(historyLength);
    });
 });
+
+// The query string of a launch form's route holds that form's field values, so
+// a devtainer's page, and the next launch form, must not inherit it.
+describe('routing.goToContainer', () => {
+   it('opens the launch form with an empty query', () => {
+      const route = { query: { name: 'storefront', profile: '30-nginx', description: 'Shop', cf: 'own' } };
+      const calls = [];
+      routing.methods.goToContainer.call({
+         $route: route,
+         $router: { push: args => { calls.push(args); return Promise.resolve(); } },
+         $store: { dispatch: () => Promise.resolve() },
+      }, 'new', 'prelaunch');
+
+      expect(calls).toEqual([{ name: 'container', params: { name: 'new' }, query: {} }]);
+   });
+});
