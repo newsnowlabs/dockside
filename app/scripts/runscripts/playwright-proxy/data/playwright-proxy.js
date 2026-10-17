@@ -17,6 +17,9 @@
  *   https-port   Local port for HTTPS (CONNECT) remap. Default: 8443
  *   http-port    Local port for HTTP remap.             Default: 8080
  *   regex        Hostname pattern triggering remap.     Default: none (DNS only)
+ *                For a Dockside server, start it with the '-' that joins a service to the
+ *                server's name, e.g. '-ds-a\.example\.com$': the part it matches
+ *                identifies the server.
  *   tls-cert     PEM cert for regex-matched hosts.       Default: none (see below)
  *   tls-key      PEM private key for tls-cert.           Default: none
  *
@@ -39,11 +42,16 @@
  *   header, and gets misread as a lookup for a child reservation of the same
  *   name, so nginx returns 400 "container not found".
  *
- *   The dockside CLI hits this identically whenever --connect-to bypasses the
- *   proxy chain, and solves it client-side by computing the implied nest level
- *   from the target hostname and injecting X-Nest-Level itself (see
- *   _compute_nest_level()/_NestLevelHandler in cli/dockside). computeNestLevel()
- *   below is a direct port of that same logic, applied here for the same reason.
+ *   This proxy stands in for that outer chain, sending the X-Nest-Level its hops would
+ *   have accumulated: the depth of the Dockside server it forwards to. That is the same
+ *   for every hostname the server serves (its own UI, and any service of any devtainer
+ *   beneath it), so it is read from the part of the hostname the regex matched, and not
+ *   from the shape of the hostname being requested (see computeNestLevel()). The server
+ *   extends the header itself as it proxies on to a devtainer.
+ *
+ *   The dockside CLI sends the same value, from the URL of the Dockside server it is
+ *   logged in to, whenever --connect-to bypasses the proxy chain (see
+ *   _compute_nest_level() and _NestLevelHandler in cli/dockside).
  *
  *   Plain HTTP requests can just get the header added directly. HTTPS is
  *   normally passed through as an opaque CONNECT tunnel (the proxy never sees
@@ -85,6 +93,9 @@ Usage:
   https-port   Local port for HTTPS (CONNECT) remap. Default: 8443
   http-port    Local port for HTTP remap.             Default: 8080
   regex        Hostname pattern triggering remap.     Default: none (DNS only)
+               For a Dockside server, start it with the '-' that joins a service to the
+               server's name, e.g. '-ds-a\\.example\\.com$': the part it matches
+               identifies the server.
   tls-cert     PEM cert for regex-matched hosts.       Default: none (no X-Nest-Level injection over HTTPS)
   tls-key      PEM private key for tls-cert.           Default: none
 
@@ -126,16 +137,40 @@ if (args[4] && args[5]) {
 const LOCALHOST = new Set(['127.0.0.1', '::1']);
 
 // ---------------------------------------------------------------------------
-// X-Nest-Level computation (mirrors cli/dockside's _compute_nest_level)
+// X-Nest-Level computation
 // ---------------------------------------------------------------------------
+//
+// The rule is the dockside CLI's (_compute_nest_level(), which `dockside check-url` and
+// every other --connect-to request use): send the depth of the Dockside server that
+// serves the request, meaning how many Dockside servers stand above it. The value belongs
+// to that server, not to the hostname being requested, so it is the same for everything
+// the server serves: its own UI, and every service of every devtainer beneath it. For the
+// Dockside server whose UI is www-ds-a.example.com:
+//
+//   www-ds-a.example.com           its UI
+//   ide-myapp--ds-a.example.com    the IDE of its devtainer 'myapp'
+//   www-myapp--ds-a.example.com    the website of 'myapp'
+//
+// All take '1-'. The server extends it itself as it proxies on to 'myapp'.
+//
+// The CLI computes the value from the address of the Dockside server it is logged in to.
+// This proxy must compute it from each request's hostname, which may reference either the
+// Dockside server or its children or other descendants. As such, it must first find the
+// part of the hostname that identifies the Dockside server, given to it using
+// MATCH_REGEX.
+//
+// In this example the match is '-ds-a.example.com', the tail of all three hostnames
+// above: it starts at the '-' directly before the server's name, ds-a, so it never
+// includes the devtainer or the service. Each '--'-separated name in the match is one
+// level. A pattern with no leading '-' matches only a zone, which belongs to the
+// outermost Dockside server, at depth 0.
+//
+// The requested hostname's own level count is not the server's depth: a devtainer's
+// hostname has one more level than the server serving it.
 function computeNestLevel(hostname) {
-  const firstLabel = hostname.split('.')[0];        // e.g. 'www-inner--host'
-  const segments = firstLabel.split('--');          // split on double-dash separator
-  // The first segment is 'service[-topHost]', e.g. 'www-host' or 'www'.
-  const m = segments[0].match(/^(?:.*-(?:wv|mb|webview|minibrowser)-)?[^-]+(-(.+))?$/);
-  const hasTopHost = Boolean(m && m[2]);
-  const nestCount = (segments.length - 1) + (hasTopHost ? 1 : 0);
-  return '1-'.repeat(nestCount);
+  const serving = MATCH_REGEX.exec(hostname)[0];
+  if (!serving.startsWith('-')) return '';
+  return '1-'.repeat(serving.slice(1).split('.')[0].split('--').length);
 }
 
 // ---------------------------------------------------------------------------
