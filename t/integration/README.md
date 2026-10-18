@@ -56,7 +56,7 @@ running server is not auto-reloaded); after changing **client** code, rebuild th
 
 The recommended way to develop and test Dockside is to launch a Dockside
 development container from an outer Dockside server using the
-`01-dockside-own-ide` profile.  The inner container runs its own Dockside
+`905-dockside-own-ide` profile.  The inner container runs its own Dockside
 instance, and you test that inner instance from within the container itself.
 
 Because the inner container has `ssh` and `wstunnel` available under

@@ -1,6 +1,6 @@
 {
    "version": 2,
-   "name": "Dockside.io",
+   "name": "Dockside website (Jekyll)",
    "active": true,
    "routers": [
       {

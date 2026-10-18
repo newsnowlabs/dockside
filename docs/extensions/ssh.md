@@ -36,7 +36,7 @@ dockside user edit alice --unset ssh.publicKeys.laptop                       # r
 
 Whenever a devcontainer is started, its developer list is changed, or its SSH access mode is switched (between 'Devcontainer owner only' and 'Devcontainer developers only'), Dockside automatically writes the correct set of public keys to `~/.ssh/authorized_keys` inside the devcontainer. No manual step is needed.
 
-> **Profile requirement:** For Dockside to write `authorized_keys`, the devcontainer's `~/.ssh` directory must be writable and must not already contain a persistent `authorized_keys` file. The recommended approach — used in the example `10-alpine.json` profile — is to mount `~/.ssh` as a `tmpfs`:
+> **Profile requirement:** For Dockside to write `authorized_keys`, the devcontainer's `~/.ssh` directory must be writable and must not already contain a persistent `authorized_keys` file. The recommended approach — used in the example `400-alpine.json` profile — is to mount `~/.ssh` as a `tmpfs`:
 > ```json
 > "tmpfs": [
 >   { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }

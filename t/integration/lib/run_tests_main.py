@@ -120,7 +120,7 @@ _ALPINE_PROFILE = {
 }
 
 # Debian counterpart to _ALPINE_PROFILE, used by the lifecycle (03) and IDE (07)
-# modules.  These modules must not hard-code the server's bundled '11-debian'
+# modules.  These modules must not hard-code the id of the server's bundled Debian
 # profile — the suite's no-pre-existing-fixtures rule requires creating this
 # profile at runtime instead, so the tests pass on any server regardless of
 # which profiles it ships.  An apt-based image is needed (rather than reusing

@@ -18,7 +18,7 @@ export function makeContainer(overrides = {}) {
          developers: '',
          viewers: '',
       },
-      profile: '00-dockside',
+      profile: '900-dockside',
       profileObject: { name: 'Dockside' },
       permissions: {
          auth: { developer: 1, owner: 1, viewer: 1, user: 1, public: 1 },
