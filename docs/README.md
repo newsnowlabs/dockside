@@ -19,11 +19,6 @@ Each devcontainer (or _devtainer_, as we call them) is automatically provisioned
 
 **Running AI coding tools?** Dockside devcontainers are natural sandboxes for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://openai.com/codex), GitHub Copilot and similar. The Claude and Codex CLIs — and their VS Code extensions — run natively inside Dockside's integrated IDEs. Each AI session is isolated in its own container. And coming soon: built-in network firewall management to define exactly what AI agents can reach, reproducing purpose-built AI devcontainer security without elevated capabilities or weakened isolation.
 
-<h3 align="center">Our sponsors</h3>
-<p align="center">
-<a title="NewsNow is hiring: work on Dockside and other existing projects" href="https://www.newsnow.co.uk/careers/?utm_source=GitHub&utm_medium=cpc&utm_campaign=2021-10-21-Developer-Roles&utm_content=SponsoredHiringAd" target="_blank"><img alt="Dockside sponsor NewsNow is hiring" src="https://user-images.githubusercontent.com/354555/144637598-5cc14a58-6918-4170-8b47-bbd26cb84062.png"></a>
-</p>
-
 ## AI-assisted development
 
 AI coding tools work best when they have their own isolated environment to operate in — somewhere they can install dependencies, run tests, edit files, and make mistakes, without affecting anything else. Dockside devcontainers are a natural fit.
@@ -94,14 +89,6 @@ Advanced features:
 - Access Dockside devtainers via multiple domain names, when needed to stage or simulate multi-domain web applications.
 - Command-line interface (`dockside` CLI) for scripting, automation, and CI/CD integration.
 - Autodetection of available runtimes, networks and IDEs from the host environment.
-
-## Video walkthrough
-
-<p align="center">
-<a title="Click to view video in HD on YouTube" href="https://www.youtube.com/embed/buAefREyngQ" target="_blank"><img src="https://user-images.githubusercontent.com/354555/135777679-67fd1424-f01f-4072-ac3e-ed910c8711af.gif" alt="Dockside Walkthrough Video" width="70%"></a>
-</p>
-
-> _The core workflow shown here is still current, though the UI's present design differs in appearance._
 
 ## Host requirements
 
