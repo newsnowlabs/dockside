@@ -73,7 +73,7 @@ describe('routing.goBackOrHome', () => {
 // a devtainer's page, and the next launch form, must not inherit it.
 describe('routing.goToContainer', () => {
    it('opens the launch form with an empty query', () => {
-      const route = { query: { name: 'storefront', profile: '30-nginx', description: 'Shop', cf: 'own' } };
+      const route = { query: { name: 'storefront', profile: '300-nginx', description: 'Shop', cf: 'own' } };
       const calls = [];
       routing.methods.goToContainer.call({
          $route: route,

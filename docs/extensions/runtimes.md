@@ -64,7 +64,7 @@ Each devcontainer launched under RunCVM runs as a KVM virtual machine with its o
 
 ### Running Dockside itself with RunCVM
 
-Just as with Sysbox, Dockside can itself be launched as a RunCVM devcontainer. This gives Dockside a fully isolated environment: Dockside runs its own `dockerd` (via `--run-dockerd`) inside a KVM VM, with no access to the host's Docker daemon. See the example [`92-dockside-runcvm.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/92-dockside-runcvm.json) profile for a working configuration.
+Just as with Sysbox, Dockside can itself be launched as a RunCVM devcontainer. This gives Dockside a fully isolated environment: Dockside runs its own `dockerd` (via `--run-dockerd`) inside a KVM VM, with no access to the host's Docker daemon. See the example [`920-dockside-runcvm.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/920-dockside-runcvm.json) profile for a working configuration.
 
 ## gVisor
 

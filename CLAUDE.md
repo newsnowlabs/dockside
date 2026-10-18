@@ -145,7 +145,7 @@ curated-landing process.
 
 What you can test depends on **how this container was launched** — specifically whether its
 launch profile sets **`mountIDE: false`**. That property — *not* the profile name (names like
-`01-dockside-own-ide` / `00-dockside` are just current examples and may change) — decides
+`905-dockside-own-ide` / `900-dockside` are just current examples and may change) — decides
 whether `/opt/dockside` is our **own writable** volume or the **outer** Dockside's
 **read-only** IDE volume. Detect it at runtime the way `entrypoint.sh` does (check the
 **mount flag**, not user `-w` — the dir is root-owned, so writes need `sudo`):
@@ -158,8 +158,8 @@ sudo s6-svstat /etc/service/nginx       # is an inner Dockside server running he
 
 | Launch context | `/opt/dockside` | Deploy `launch.sh`/IDE? | Testing capability |
 |---|---|---|---|
-| **`mountIDE: false`** + own Dockside (e.g. `01-dockside-own-ide`) | own **rw** volume; `.img` present | **yes**, via `sudo` (like `entrypoint.sh`); propagates to launched devtainers | **full e2e**, including our repo's `launch.sh`/IDE changes |
-| `mountIDE: true` + inner Dockside (e.g. `00-dockside`, `03-git-repo`) | outer Dockside's IDE volume, **read-only** | no | full suite runs and **server** changes are testable (Perl loads from the repo), but the `launch.sh`/IDEs exercised are the **outer** Dockside's, not our repo's |
+| **`mountIDE: false`** + own Dockside (e.g. `905-dockside-own-ide`) | own **rw** volume; `.img` present | **yes**, via `sudo` (like `entrypoint.sh`); propagates to launched devtainers | **full e2e**, including our repo's `launch.sh`/IDE changes |
+| `mountIDE: true` + inner Dockside (e.g. `900-dockside`, `500-git-repo`) | outer Dockside's IDE volume, **read-only** | no | full suite runs and **server** changes are testable (Perl loads from the repo), but the `launch.sh`/IDEs exercised are the **outer** Dockside's, not our repo's |
 | no inner Dockside (e.g. host, plain container) | outer IDE (ro) or none | no | static (`./test.sh`) + unit only; integration tests must target a separate/remote instance |
 
 **Why `mountIDE: false` is special:** `/opt/dockside` is then this container's own writable

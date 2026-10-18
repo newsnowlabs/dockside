@@ -154,7 +154,7 @@ docker logs dockside 2>&1 | grep 'Sign in'
    dockside login --server https://www.local.dockside.dev --nickname local
    ```
    Enter your `admin` credentials when prompted. Your session is saved to `~/.config/dockside/` and reused by subsequent `dockside` commands. See the [Dockside CLI README](../cli/README.md) for full installation options and available commands.
-3. In the Dockside UI, click **Launch**, and pick an example profile (e.g. `Dockside.io`) to launch your first trial devcontainer — this confirms everything is working.
+3. In the Dockside UI, click **Launch**, and pick an example profile (e.g. `Stock Image - Ghost`) to launch your first trial devcontainer — this confirms everything is working.
 4. Next, register your team members and configure profiles to tailor the available devcontainer types for your projects — through the **Admin UI** (`/admin`), the `dockside` CLI, or by editing the config files directly. See [**Setup**](#setup) below for a guided overview and [**the full configuration reference here**](setup.md).
 
 ### Launch on a public domain with auto-generated SSL
@@ -188,7 +188,7 @@ Dockside configuration lives under `~/.dockside/config/` on the host (mounted at
 
 Getting set up involves three main steps:
 
-- **[Profiles](setup.md#profiles)**: define the types of devcontainer your team can launch — which Docker images, networks, runtimes, and IDE options are available. Dockside ships several example profiles (`alpine.json`, `debian.json`, `dockside.json`, and others) to get you started. Manage them through the **Admin UI** (`/admin/profiles`, requires `manageProfiles`) or the `dockside profile` CLI; editing the `.json` files directly remains an advanced/offline option.
+- **[Profiles](setup.md#profiles)**: define the types of devcontainer your team can launch — which Docker images, networks, runtimes, and IDE options are available. Dockside ships several example profiles (`400-alpine.json`, `410-debian.json`, `900-dockside.json`, and others) to get you started. Manage them through the **Admin UI** (`/admin/profiles`, requires `manageProfiles`) or the `dockside profile` CLI; editing the `.json` files directly remains an advanced/offline option.
 - **[Users and Roles](setup.md#users)**: manage team members and roles through the **Admin UI** (`/admin/users`, `/admin/roles`, requires `manageUsers`) or the `dockside user` / `dockside role` CLI — assign a role (`admin` or a custom role) to control what each user can do and which profiles they can deploy. The `manageUsers` / `manageProfiles` permissions delegate administration to non-`admin` roles. The underlying `users.json` / `passwd` / `roles.json` files can still be edited directly as an advanced/offline method.
 - **[SSH keys](extensions/ssh.md)**: add each user's SSH public key(s) — via the **Account UI** (their own keys), the Admin UI, or the `dockside user` CLI — so Dockside auto-populates `~/.ssh/authorized_keys` in every devcontainer they own or are shared on. Users then follow the one-click **SSH Setup** instructions in the Dockside UI to configure their `~/.ssh/config` and install the [wstunnel](https://github.com/erebe/wstunnel) helper. After that, SSHing into any devcontainer — and using VS Code Remote SSH or JetBrains Remote Development — works seamlessly with no extra steps.
 
