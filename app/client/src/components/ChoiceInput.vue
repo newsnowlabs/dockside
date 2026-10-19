@@ -48,8 +48,8 @@
    <v-combobox v-else
       :label="label"
       :items="values"
-      :model-value="value"
-      @update:model-value="$emit('input', $event)"
+      :model-value="value || null"
+      @update:model-value="$emit('input', $event ?? '')"
       :placeholder="placeholder"
       :aria-label="ariaLabel"
       :auto-select-first="autoSelect"
@@ -83,7 +83,10 @@ import { defineComponent } from 'vue';
 // built-in editable text control of its own).
 //
 // The third branch, for a free-entry field that does have suggestions, is
-// Vuetify's own v-combobox. Like the v-select and plain-text-field branches
+// Vuetify's own v-combobox, which counts an empty-string value as a selection
+// (floating the label and withholding the placeholder) and reports no selection
+// as null, so it is given null for an empty value and its null is passed on as
+// the empty string. Like the v-select and plain-text-field branches
 // above it, it binds :disabled="disabled" directly, so the component's
 // disabled prop is honoured consistently regardless of which of the three
 // branches ends up rendering.
