@@ -231,6 +231,8 @@ check_shellcheck() {
     app/scripts/container/launch.sh
     app/server/example/images/react-nextjs/build.sh
     app/server/example/images/react-nextjs/entrypoint.sh
+    app/server/example/images/react-vite/build.sh
+    app/server/example/images/react-vite/entrypoint.sh
     build/development/claude-code/statusline.sh
     t/integration/run_tests.sh
     t/integration/harness.sh
