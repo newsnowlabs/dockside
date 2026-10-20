@@ -123,8 +123,10 @@ const DOCS_URL = 'https://github.com/newsnowlabs/dockside/blob/main/docs/';
 const EXAMPLE_PROFILES_URL = 'https://github.com/newsnowlabs/dockside/tree/main/app/server/example/config/profiles';
 
 // The Launch section offers this many profiles as buttons; the launch form
-// lists them all.
-const SHOWN_PROFILES = 6;
+// lists them all. With the example profiles' numbering this is every
+// application, every development framework and the Git repository profile,
+// so none of them needs the launch form.
+const SHOWN_PROFILES = 10;
 
 const hasSshRouter = profile => !!(profile && (profile.routers || []).some(r => r.type === 'ssh'));
 
