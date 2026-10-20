@@ -235,6 +235,8 @@ check_shellcheck() {
     app/server/example/images/react-vite/entrypoint.sh
     app/server/example/images/vue3/build.sh
     app/server/example/images/vue3/entrypoint.sh
+    app/server/example/images/vue3-nuxt/build.sh
+    app/server/example/images/vue3-nuxt/entrypoint.sh
     build/development/claude-code/statusline.sh
     t/integration/run_tests.sh
     t/integration/harness.sh

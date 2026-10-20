@@ -1,0 +1,56 @@
+{
+   "version": 2,
+   "name": "Vue 3 app (Nuxt)",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [
+            "www"
+         ],
+         "domains": [
+            "*"
+         ],
+         "https": {
+            "protocol": "http",
+            "port": 3000
+         },
+         "auth": [
+            "developer",
+            "owner",
+            "viewer",
+            "user",
+            "containerCookie",
+            "public"
+         ]
+      }
+   ],
+   "networks": [
+      "*"
+   ],
+   "images": [
+      "ghcr.io/newsnowlabs/dockside/example/images/vue3-nuxt:latest"
+   ],
+   "unixusers": [
+      "dockside"
+   ],
+   "mounts": {
+      "tmpfs": [
+         {
+            "dst": "/home/{ideUser}/.ssh",
+            "tmpfs-size": "1M"
+         }
+      ]
+   },
+   "security": {
+      "apparmor": "unconfined"
+   },
+   "command": [
+      "https://www-{container.hostname}"
+   ],
+   "dockerArgs": [
+      "--memory=2G",
+      "--pids-limit=4000",
+      "--cpus=2"
+   ]
+}
