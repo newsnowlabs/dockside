@@ -10,4 +10,4 @@ sudo apt-get -y install qemu binfmt-support qemu-user-static && \
 docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
 ```
 
-> **You can test you have installed qemu-user-static correctly, by launching a devtainer from the Debian profile, and selecting either the `arm32v7/debian`, `arm64v8/debian`, `mips64le/debian`, `ppc64le/debian` or `s390x/debian` image.**
+> **You can test you have installed qemu-user-static correctly, by launching a devtainer from the `450-linux-other-architectures` profile, and selecting either the `arm32v7/debian`, `arm64v8/debian`, `mips64le/debian`, `ppc64le/debian` or `s390x/debian` image.**

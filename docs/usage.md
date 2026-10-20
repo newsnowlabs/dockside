@@ -82,6 +82,6 @@ Dockside currently provides all devtainer developers with root access within dev
 
 > N.B.
 > 
-> 1. Sudo functionality will only be available in devtainers: (a) launched from images with `sudo` pre-installed; or, (b) where a profile launch `command` is provided that installs the `sudo` package into the running container e.g. the [`400-alpine.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/400-alpine.json) profile.
+> 1. Sudo functionality will only be available in devtainers: (a) launched from images with `sudo` pre-installed; or, (b) where a profile launch `command` is provided that installs the `sudo` package into the running container e.g. the [`400-linux.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/400-linux.json) profile.
 > 2. An option to disable `sudo` functionality may be provided in a future Dockside version.
 > 3. An option to preconfigure the devtainer root password (to enable `su` functionality) may be provided in a future Dockside version.
