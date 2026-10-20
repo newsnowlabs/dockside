@@ -71,11 +71,18 @@ describe('Welcome.vue', () => {
       expect(wrapper.text()).not.toContain('SSH access');
    });
 
-   it('offers up to six profiles in sidebar order, then All profiles', () => {
-      const profiles = Object.fromEntries(['h', 'g', 'f', 'e', 'd', 'c', 'b', 'a'].map(id => [id, sshProfile('Profile ' + id)]));
+   it('offers up to ten profiles in sidebar order, then All profiles', () => {
+      const profiles = Object.fromEntries(['l', 'k', 'j', 'i', 'h', 'g', 'f', 'e', 'd', 'c', 'b', 'a'].map(id => [id, sshProfile('Profile ' + id)]));
       const wrapper = mountAs({ actions: { developContainers: 1, createContainerReservation: 1 }, profiles });
       const buttons = wrapper.findAll('.welcome-profiles .v-btn').map(b => b.text());
-      expect(buttons).toEqual(['Profile a', 'Profile b', 'Profile c', 'Profile d', 'Profile e', 'Profile f', 'All profiles…']);
+      expect(buttons).toEqual([...'abcdefghij'].map(id => 'Profile ' + id).concat('All profiles…'));
+   });
+
+   it('offers every profile, and no All profiles button, when there are ten or fewer', () => {
+      const profiles = Object.fromEntries([...'abcdefghij'].map(id => [id, sshProfile('Profile ' + id)]));
+      const wrapper = mountAs({ actions: { developContainers: 1, createContainerReservation: 1 }, profiles });
+      const buttons = wrapper.findAll('.welcome-profiles .v-btn').map(b => b.text());
+      expect(buttons).toEqual([...'abcdefghij'].map(id => 'Profile ' + id));
    });
 
    it('opens the launch form with a profile chosen', async () => {

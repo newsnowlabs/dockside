@@ -18,7 +18,7 @@ config/
     ...
 ```
 
-The Launch menu lists profiles in the order of their file names, so the number at the start of a name sets a profile's place in the menu, and the whole name, without `.json`, is the profile's id. A new launch form starts on the first profile, and the Welcome card offers the first six. The example profiles use these ranges, leaving room to add a profile between two others:
+The Launch menu lists profiles in the order of their file names, so the number at the start of a name sets a profile's place in the menu, and the whole name, without `.json`, is the profile's id. A new launch form starts on the first profile, and the Welcome card offers the first ten. The example profiles use these ranges, leaving room to add a profile between two others:
 
 | Range | Used for | Examples |
 |---|---|---|
