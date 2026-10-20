@@ -12,8 +12,7 @@ config/
   passwd
   profiles/
     300-nginx.json
-    400-alpine.json
-    410-debian.json
+    400-linux.json
     500-git-repo.json
     900-dockside.json
     ...
@@ -27,7 +26,7 @@ The Launch menu lists profiles in the order of their file names, so the number a
 | 100s | Applications you configure and use, one number each | `100-ghost`, `101-wordpress` |
 | 200s | Development frameworks you edit the source of, in steps of ten between frameworks, with the numbers between for variations of one | `200-react-nextjs`, `210-vue`, `220-jekyll` |
 | 300s | Stock servers | `300-nginx` |
-| 400s | Stock operating-system images, in steps of ten | `400-alpine`, `410-debian` |
+| 400s | Stock operating-system images | `400-linux`, `450-linux-other-architectures` |
 | 500s | Profiles that clone a Git repository | `500-git-repo` |
 | 900s | Profiles that run Dockside itself, for developing Dockside, in steps of five; and, last, Dockside's own website | `900-dockside`, `990-dockside-website` |
 
