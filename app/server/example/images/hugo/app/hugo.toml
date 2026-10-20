@@ -1,0 +1,4 @@
+baseURL = "/"
+locale = "en-US"
+title = "Dockside Hugo example"
+disableKinds = ["taxonomy", "term"]

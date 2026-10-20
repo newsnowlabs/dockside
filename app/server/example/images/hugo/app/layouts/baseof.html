@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="{{ site.Language.Locale }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ if .IsHome }}{{ site.Title }}{{ else }}{{ .Title }} | {{ site.Title }}{{ end }}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; line-height: 1.6; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    header a { text-decoration: none; color: inherit; }
+    nav a { margin-right: 1rem; }
+    time { color: #666; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><a href="{{ "/" | relURL }}">{{ site.Title }}</a></h1>
+    <nav>
+      <a href="{{ "/" | relURL }}">Home</a>
+      <a href="{{ "/posts/" | relURL }}">Posts</a>
+    </nav>
+  </header>
+  <main>
+    {{ block "main" . }}{{ end }}
+  </main>
+</body>
+</html>
