@@ -229,6 +229,8 @@ check_shellcheck() {
     app/server/bin/upgrade
     app/server/bin/password-wrapper
     app/scripts/container/launch.sh
+    app/server/example/images/react-nextjs/build.sh
+    app/server/example/images/react-nextjs/entrypoint.sh
     build/development/claude-code/statusline.sh
     t/integration/run_tests.sh
     t/integration/harness.sh
