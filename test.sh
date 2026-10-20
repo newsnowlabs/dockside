@@ -233,6 +233,8 @@ check_shellcheck() {
     app/server/example/images/react-nextjs/entrypoint.sh
     app/server/example/images/react-vite/build.sh
     app/server/example/images/react-vite/entrypoint.sh
+    app/server/example/images/vue3/build.sh
+    app/server/example/images/vue3/entrypoint.sh
     build/development/claude-code/statusline.sh
     t/integration/run_tests.sh
     t/integration/harness.sh
