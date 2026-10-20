@@ -1,0 +1,31 @@
+{
+   "version": 2,
+   "name": "Stock Image - WordPress",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 8080 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "*" ],
+   "images": [ "readystack/wordpress:7.1.3-CE-ubuntu24.04-r1" ],
+   "unixusers": ["dockside"],
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ]
+   },
+   "security": {
+      "apparmor": "unconfined"
+   },
+   "entrypoint": ["/usr/local/bin/docker-entrypoint.sh"],
+   "command": [ "apache2-foreground" ],
+   "dockerArgs": [
+      "--memory=1G", "--pids-limit=4000", "--cpus=1",
+      "-e", "WORDPRESS_URL=https://www-{container.hostname}"
+   ]
+}

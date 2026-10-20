@@ -1,0 +1,34 @@
+{
+   "version": 2,
+   "name": "Stock Image - Ghost",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [ "www" ],
+         "domains": [ "*" ],
+         "https": { "protocol": "http", "port": 2368 },
+         "auth": [ "developer", "owner", "viewer", "user", "containerCookie", "public" ]
+      }
+   ],
+   "networks": [ "*" ],
+   "images": [ "ghost:latest" ],
+   "unixusers": ["dockside"],
+   "mounts": {
+      "tmpfs": [
+         { "dst": "/home/{ideUser}/.ssh", "tmpfs-size": "1M" }
+      ]
+   },
+   "security": {
+      "apparmor": "unconfined"
+   },
+   "entrypoint": ["/bin/bash"],
+   "command": [ "-c", "[ -x \"$(which sudo)\" ] || (apt-get update && apt-get -y install sudo); exec docker-entrypoint.sh node current/index.js" ],
+   "dockerArgs": [
+      "--memory=1G", "--pids-limit=4000", "--cpus=1",
+      "-e", "url=https://www-{container.hostname}",
+      "-e", "NODE_ENV=development",
+      "-e", "server__host=0.0.0.0",
+      "-e", "database__connection__filename=/var/lib/ghost/content/data/ghost.db"
+   ]
+}
