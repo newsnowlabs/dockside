@@ -1,0 +1,74 @@
+{
+   "version": 2,
+   "name": "Jekyll site",
+   "active": true,
+   "routers": [
+      {
+         "name": "www",
+         "prefixes": [
+            "www"
+         ],
+         "domains": [
+            "*"
+         ],
+         "https": {
+            "protocol": "http",
+            "port": 4000
+         },
+         "auth": [
+            "developer",
+            "owner",
+            "viewer",
+            "user",
+            "containerCookie",
+            "public"
+         ]
+      },
+      {
+         "name": "ws",
+         "prefixes": [
+            "ws"
+         ],
+         "domains": [
+            "*"
+         ],
+         "https": {
+            "protocol": "http",
+            "port": 35729
+         },
+         "auth": [
+            "developer",
+            "owner",
+            "viewer",
+            "user",
+            "containerCookie",
+            "public"
+         ]
+      }
+   ],
+   "networks": [
+      "*"
+   ],
+   "images": [
+      "ghcr.io/newsnowlabs/dockside/example/images/jekyll:latest"
+   ],
+   "unixusers": [
+      "dockside"
+   ],
+   "mounts": {
+      "tmpfs": [
+         {
+            "dst": "/home/{ideUser}/.ssh",
+            "tmpfs-size": "1M"
+         }
+      ]
+   },
+   "security": {
+      "apparmor": "unconfined"
+   },
+   "dockerArgs": [
+      "--memory=1G",
+      "--pids-limit=4000",
+      "--cpus=1"
+   ]
+}

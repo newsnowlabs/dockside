@@ -1,0 +1,33 @@
+<HEAD>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {%- seo -%}
+  <link rel="stylesheet" href="{{ "/assets/main.css" | relative_url }}">
+  {%- feed_meta -%}
+  {%- if jekyll.environment == 'production' and site.google_analytics -%}
+    {%- include google-analytics.html -%}
+  {%- endif -%}
+  {%- comment -%}
+    The site's head include, derived from Minima's, which loads the live-reload client itself.
+    Jekyll adds its own live-reload script after a lower-case <head> tag, and that script names
+    port 35729 of the page's host, which Dockside's proxy does not publish. So the tag is written
+    in upper case (HTML does not mind), which Jekyll does not match. Behind Dockside's proxy the
+    page is served at www-<name>.<domain> and the live-reload server is the profile's `ws` router,
+    at ws-<name>.<domain> on the proxy's port. Anywhere else, the client is loaded from port 35729
+    of the page's host, as Jekyll would.
+  {%- endcomment -%}
+  <script>
+    (function () {
+      var behindProxy = /^www-/.test(location.host), src;
+      if (behindProxy) {
+        src = location.protocol + '//' + location.host.replace(/^www-/, 'ws-') +
+          '/livereload.js?snipver=1&port=' + (location.port || (location.protocol === 'https:' ? 443 : 80));
+      } else {
+        src = location.protocol + '//' + (location.host || 'localhost').split(':')[0] +
+          ':35729/livereload.js?snipver=1&port=35729';
+      }
+      document.write('<script src="' + src + '"></' + 'script>');
+    })();
+  </script>
+</HEAD>
