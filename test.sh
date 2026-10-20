@@ -241,6 +241,8 @@ check_shellcheck() {
     app/server/example/images/jekyll/entrypoint.sh
     app/server/example/images/svelte/build.sh
     app/server/example/images/svelte/entrypoint.sh
+    app/server/example/images/hugo/build.sh
+    app/server/example/images/hugo/entrypoint.sh
     build/development/claude-code/statusline.sh
     t/integration/run_tests.sh
     t/integration/harness.sh
