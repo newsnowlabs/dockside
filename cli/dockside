@@ -72,6 +72,7 @@ def _resolve_config_dir():
 CONFIG_DIR   = _resolve_config_dir()
 CONFIG_FILE  = os.path.join(CONFIG_DIR, 'config.json')
 COOKIES_DIR  = os.path.join(CONFIG_DIR, 'cookies')
+WSTUNNEL_DIR = os.path.join(CONFIG_DIR, 'wstunnel')
 
 # ── Status labels ─────────────────────────────────────────────────────────────
 
@@ -1198,7 +1199,7 @@ def _write_wstunnel_headers_file(key, cookie_header, host_override=None, nest_le
     """
     if '/' in key:
         die(f'Invalid wstunnel headers key {key!r}: must not contain path separators')
-    wstunnel_dir = os.path.join(CONFIG_DIR, 'wstunnel')
+    wstunnel_dir = WSTUNNEL_DIR
     if os.path.islink(wstunnel_dir):
         die(f"wstunnel headers directory {wstunnel_dir!r} is a symlink – refusing to use it")
     os.makedirs(wstunnel_dir, mode=0o700, exist_ok=True)
@@ -1250,6 +1251,62 @@ def _server_entry_from_ssh_hostname(ssh_hostname, cfg):
             best_url = _normalise_server_url(url)
             best_entry = {**s, 'url': best_url}
     return best_url, best_entry
+
+
+def _ancestor_urls(cfg, server_entry):
+    """Yield the URLs of server_entry's configured 'parent' chain, nearest first."""
+    seen = {server_entry.get('url', '')}
+    entry = server_entry
+    while True:
+        parent_ref = (entry.get('parent') or '').strip()
+        if not parent_ref:
+            return
+        entry = _find_server(cfg, parent_ref)
+        if not entry or entry.get('url', '') in seen:
+            return  # not found or cycle
+        seen.add(entry.get('url', ''))
+        yield entry.get('url', '')
+
+
+def _remove_wstunnel_headers_files(cfg, server_url):
+    """Delete the wstunnel headers files built from server_url's session; return their paths.
+
+    `dockside ssh` and exec-proxy reuse a headers file for as long as it exists,
+    so it must be removed whenever the cookies it was built from change.  A
+    file's Cookie header holds its own server's /getAuthCookies result plus the
+    session cookies of that server's 'parent' chain, so the files built from
+    server_url's session are those of server_url and of every configured server
+    whose parent chain includes it.  A file is keyed by its server's hostname,
+    or in connect_to mode by an SSH alias, which belongs to the server
+    exec-proxy resolves that alias to.
+    """
+    if not os.path.isdir(WSTUNNEL_DIR):
+        return []
+    if os.path.islink(WSTUNNEL_DIR):
+        print(f"Warning: wstunnel headers directory {WSTUNNEL_DIR!r} is a symlink – "
+              "not removing headers files from it", file=sys.stderr)
+        return []
+    affected = {server_url}
+    for s in cfg.get('servers') or []:
+        if server_url in _ancestor_urls(cfg, s):
+            affected.add(s.get('url', ''))
+    hostnames = {urllib.parse.urlparse(u).hostname for u in affected}
+    removed = []
+    for name in sorted(os.listdir(WSTUNNEL_DIR)):
+        if name not in hostnames and _server_entry_from_ssh_hostname(name, cfg)[0] not in affected:
+            continue
+        path = os.path.join(WSTUNNEL_DIR, name)
+        if not os.path.isfile(path) or os.path.islink(path):
+            continue
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            print(f'Warning: could not remove wstunnel headers file {path!r}: {e}', file=sys.stderr)
+            continue
+        removed.append(path)
+    return removed
 
 
 def _build_ssh_proxy_command(cookie_header, websocket_url, nest_level=None, tls_sni=None):
@@ -1937,6 +1994,7 @@ def cmd_login(args):
     if out_fmt:
         cfg['output'] = out_fmt
     save_config(cfg)
+    _remove_wstunnel_headers_files(cfg, server)
 
     display = f'{nickname!r} ({server})' if nickname else server
     print(f'Logged in to {display} as {username}')
@@ -1954,14 +2012,17 @@ def cmd_logout(args):
             if os.path.exists(path) and not os.path.islink(path):
                 os.remove(path)
                 removed.append(path)
+        headers_removed = []
         for s in cfg.get('servers', []):
             cf = _cookie_file_for(s)
             if os.path.exists(cf) and not os.path.islink(cf):
                 os.remove(cf)
                 removed.append(cf)
+            headers_removed += _remove_wstunnel_headers_files(cfg, s.get('url', ''))
         print('Logged out of all servers.')
         if removed:
             print('Removed:', ', '.join(removed))
+        _print_wstunnel_headers_removed(headers_removed)
         return
 
     server_entry = _find_server(cfg, ref) if ref else _current_server(cfg)
@@ -1975,9 +2036,17 @@ def cmd_logout(args):
     if os.path.isfile(cookie_file) and not os.path.islink(cookie_file):
         os.remove(cookie_file)
         removed.append(cookie_file)
+    headers_removed = _remove_wstunnel_headers_files(cfg, server_entry.get('url', ''))
     print(f'Logged out of {nick!r}.')
     if removed:
         print('Removed:', ', '.join(removed))
+    _print_wstunnel_headers_removed(headers_removed)
+
+
+def _print_wstunnel_headers_removed(paths):
+    # Counted rather than listed: connect_to mode keeps one file per devtainer.
+    if paths:
+        print(f'Removed {len(paths)} wstunnel headers file(s) from {WSTUNNEL_DIR}')
 
 
 def cmd_server_list(args):
@@ -3048,7 +3117,7 @@ def _wstunnel_headers_path(ssh_alias, server_url, connect_to):
         key = ssh_alias or ''
     else:
         key = urllib.parse.urlparse(server_url).hostname or (ssh_alias or '')
-    return key, os.path.join(CONFIG_DIR, 'wstunnel', key)
+    return key, os.path.join(WSTUNNEL_DIR, key)
 
 
 def _build_wstunnel_client_argv(binary, ssh_alias, server_url, cookie_header, connect_to, existing_path=None):
