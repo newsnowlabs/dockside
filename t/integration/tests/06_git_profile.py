@@ -2,7 +2,7 @@
 06_git_profile.py — Git URL, branch, and PR options
 
 Coverage:
-  - launch accepts a gitURL for the example 500-git-repo profile
+  - launch accepts a gitURL for the example 250-git-repo profile
   - launch accepts branch / PR profile options
   - launch accepts alternate allowed images for the profile
   - launch writes the owner's git name/email into ~/.gitconfig
