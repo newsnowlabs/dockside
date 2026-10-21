@@ -1,6 +1,7 @@
 import { createApp } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import createStore from '@/store';
+import { trackInputModality } from '@/utilities/input-modality';
 import vuetify from '@/plugins/vuetify';
 import './index.scss';
 // The IBM Plex typefaces settings.scss and the components name, built into the bundle
@@ -14,6 +15,9 @@ import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource/ibm-plex-mono/600.css';
 import '@fontsource/ibm-plex-mono/700.css';
 import App from '@/components/App.vue';
+
+// The root element's data-input says whether keyboard or pointer was used last (index.scss).
+trackInputModality();
 
 // Create store before route guards so guards read live currentUser state
 // rather than the stale window.dockside.user bootstrap snapshot.

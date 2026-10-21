@@ -98,9 +98,10 @@
          <v-text-field
             v-model="form.name"
             label="Name"
-            :readonly="!isEditMode && !isNew"
+            :readonly="viewing"
+            :active="viewing"
             variant="outlined"
-            placeholder="Display name"
+            :placeholder="viewing ? undefined : 'Display name'"
             autocomplete="off"
             hide-details="auto"
             class="mb-4"
@@ -110,9 +111,10 @@
          <v-text-field
             v-model="form.description"
             label="Description"
-            :readonly="!isEditMode && !isNew"
+            :readonly="viewing"
+            :active="viewing"
             variant="outlined"
-            placeholder="Brief description"
+            :placeholder="viewing ? undefined : 'Brief description'"
             autocomplete="off"
             hide-details="auto"
             class="mb-4"
@@ -268,6 +270,13 @@ export default defineComponent({
 
      isNew() {
         return !this.profileId;
+     },
+
+     // Showing a saved record rather than a form to fill in or edit. The fields
+     // that can be empty then keep their label floated and show no placeholder,
+     // so an empty value reads as an empty value rather than a prompt.
+     viewing() {
+        return !this.isEditMode && !this.isNew;
      },
 
      isEditMode() {

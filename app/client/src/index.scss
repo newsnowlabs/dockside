@@ -173,6 +173,8 @@ p {
 // since it's the field's own border, not a separately-drawn overlay - one
 // that respects the border's existing notch around a floating label instead
 // of cutting across it the way an external ring/shadow would.
+// These fields stay in the tab order as controls that a click could act on,
+// which would also need Enter to do what the click does.
 // !important: overriding CSS custom properties Vuetify sets from a
 // same-specificity selector of its own (.v-field.v-field--focused ...) -
 // ordinary selector specificity can't be relied on to win that from outside
@@ -180,5 +182,30 @@ p {
 .v-input--readonly .v-field--focused .v-field__outline {
    --v-field-border-opacity: .65 !important;
    --v-field-border-width: 1px !important;
+}
+
+// The focus cue is for keyboard focus. After a pointer press (html[data-input=
+// "pointer"], set by utilities/input-modality.js) the field takes focus - so
+// its content can still be selected - but neither its outline nor its label
+// darkens. :focus-visible cannot tell the two apart here: browsers match it
+// for every focused text input, readonly or not. The label rule restores
+// Vuetify's resting label opacity, which its own focused rule raises to 1.
+html[data-input="pointer"] .v-input--readonly .v-field--focused .v-field__outline {
+   --v-field-border-opacity: .38 !important;
+}
+
+html[data-input="pointer"] .v-input--readonly .v-field--focused .v-label.v-field-label {
+   opacity: var(--v-medium-emphasis-opacity);
+}
+
+// Vuetify also darkens any field's outline on hover (to .87, regardless of
+// `readonly`), which would make a readonly field under the pointer look more
+// "live" than the same field once clicked. A readonly field's outline is
+// left at rest while hovered, and a focused one keeps the focus cue above
+// (that rule is !important, so it still wins while the pointer is over it).
+// Nothing in a readonly field responds to a click, so a hover has no
+// affordance to signal; a field made clickable would want this rule undone.
+.v-input--readonly .v-field:hover .v-field__outline {
+   --v-field-border-opacity: .38;
 }
 
