@@ -10,6 +10,12 @@ Test B — wstunnel v10 CLI surfaces (exec-proxy / ssh config):
   path-traversal guard are pure CLI checks (no ssh/wstunnel needed); the
   headers-file permission check reuses a live connection like Test A.
 
+Test C — wstunnel headers file lifetime across login/logout:
+  `dockside ssh` and exec-proxy reuse a cached headers file (holding the
+  session Cookie) for as long as it exists, so login and logout must remove
+  it.  Runs as dev1 in a private CLI config directory, leaving the system
+  config's stored sessions untouched.
+
 The committed test-only Ed25519 keypairs are in:
   t/integration/config/ssh/testdev1_ed25519{,.pub}
   t/integration/config/ssh/testdev2_ed25519{,.pub}
@@ -195,3 +201,68 @@ class SshTests(SshTestMixin, TestCase):
             raise AssertionError(
                 f'exec-proxy should have refused headers-file key from {malicious_alias!r}'
             )
+
+    # ── Test C: wstunnel headers file lifetime across login/logout ────────────
+
+    def test_09_login_and_logout_remove_stale_wstunnel_headers(self):
+        """login/logout remove a stale headers file; the next connection rewrites it."""
+        if not ssh_available():
+            warn_missing_host_tool('ssh')
+            self.skip('ssh not in PATH')
+        if not wstunnel_available():
+            warn_missing_host_tool('wstunnel')
+            self.skip('wstunnel not in PATH')
+        if not os.path.isfile(_DEV1_KEY):
+            self.skip(f'testdev1 key not found at {_DEV1_KEY}')
+        entry = self.admin.server_entry()
+        if entry is None:
+            self.skip('server under test is not a configured CLI server')
+        if entry.get('parent'):
+            self.skip('server under test is reached through a parent chain, '
+                      'which an isolated CLI config cannot carry')
+
+        self._ensure_ssh_container()
+        iso = self.dev1.with_isolated_config()
+        try:
+            def login():
+                iso.login(connect_to=entry.get('connect_to'),
+                          no_verify=bool(entry.get('no_verify')))
+
+            def ssh_hello():
+                return run_host_ssh_via_cli_config(
+                    iso, self.SSH_CONTAINER, _DEV1_KEY, ['echo', 'hello'])
+
+            login()
+            r = ssh_hello()
+            self.assert_equal(r.stdout.strip(), 'hello',
+                              f'SSH failed; rc={r.returncode} stderr={r.stderr!r}')
+            files = iso.wstunnel_headers_files()
+            self.assert_true(bool(files), 'connection wrote no wstunnel headers file')
+
+            # Stand in for a session or globalCookie value the server no longer accepts.
+            for path in files:
+                with open(path) as fh:
+                    lines = fh.read().splitlines()
+                lines = [re.sub(r'^(Cookie: [^=]+=).*$', r'\1stale-integration-test-value', line)
+                         for line in lines]
+                with open(path, 'w') as fh:
+                    fh.write('\n'.join(lines) + '\n')
+            r = ssh_hello()
+            self.assert_true(r.returncode != 0,
+                             'SSH succeeded with a stale cookie in the headers file, so this '
+                             f'test is not exercising the cached file; stdout={r.stdout!r}')
+
+            login()
+            self.assert_equal(iso.wstunnel_headers_files(), [],
+                              'login left wstunnel headers files in place')
+            r = ssh_hello()
+            self.assert_equal(r.stdout.strip(), 'hello',
+                              f'SSH failed after re-login; rc={r.returncode} stderr={r.stderr!r}')
+            self.assert_true(bool(iso.wstunnel_headers_files()),
+                             'connection after re-login wrote no wstunnel headers file')
+
+            iso.logout()
+            self.assert_equal(iso.wstunnel_headers_files(), [],
+                              'logout left wstunnel headers files in place')
+        finally:
+            iso.cleanup()

@@ -14,6 +14,7 @@ import http.cookiejar
 import json
 import os
 import re
+import shutil
 import signal
 import ssl
 import subprocess
@@ -258,11 +259,15 @@ class DocksideClient:
         keep sessions isolated.  The system config (~/.config/dockside/) is still
         consulted for the parent chain so ancestor cookies are merged automatically.
         Used for all test-user clients (dev1/dev2/viewer).
+    config_dir : str or None
+        If set, every CLI subprocess runs with DOCKSIDE_CLI_CONFIG pointing at
+        this private directory instead of the system config, and the client
+        removes the directory in cleanup().  See with_isolated_config().
     """
 
     def __init__(self, cli_path, server_url, username=None, password=None,
                  use_cli_admin_creds=False, reuse_explicit_session=False,
-                 default_network=None):
+                 default_network=None, config_dir=None):
         self._cli = cli_path
         self._server = server_url
         self._username = username
@@ -299,6 +304,11 @@ class DocksideClient:
             _ALL_CLIENTS.append(self)
         else:
             self._session_cookie_file = None  # use system config stored session
+        self._config_dir = config_dir
+        if config_dir:
+            # The directory holds a live session once login() has run.
+            atexit.register(self.cleanup)
+            _ALL_CLIENTS.append(self)
         self._cookie_jar = None  # loaded lazily after first _run
 
     def with_credentials(self, username, password):
@@ -318,6 +328,39 @@ class DocksideClient:
             reuse_explicit_session=self._reuse_explicit_session,
             default_network=self._default_network,
         )
+
+    def with_isolated_config(self):
+        """Return a sibling client for this client's user with its own CLI config.
+
+        The sibling's CLI subprocesses use a fresh private config directory
+        rather than the system config, so login() and logout() act on that
+        directory alone and leave the developer's own stored sessions untouched.
+        It has no session until login() runs, and after that authenticates from
+        the session stored there, as the CLI does after a real `dockside login`.
+        Servers reached through a configured 'parent' chain are not supported:
+        the isolated config holds no ancestor sessions.
+        """
+        return DocksideClient(
+            cli_path=self._cli,
+            server_url=self._server,
+            username=self._username,
+            password=self._password,
+            use_cli_admin_creds=True,
+            default_network=self._default_network,
+            config_dir=tempfile.mkdtemp(prefix='dockside-cfg-'),
+        )
+
+    def cli_env(self):
+        """Return the environment for a CLI subprocess run on this client's behalf."""
+        env = os.environ.copy()
+        # Use the system config, where the parent chain needed for ancestor cookie
+        # merging lives; per-user session isolation comes from --cookie-file.  An
+        # isolated-config client instead points DOCKSIDE_CLI_CONFIG, which takes
+        # precedence, at its own directory.
+        env.pop('DOCKSIDE_CONFIG_DIR', None)
+        if self._config_dir:
+            env['DOCKSIDE_CLI_CONFIG'] = self._config_dir
+        return env
 
     def _should_send_credentials(self, force_credentials=False):
         if self._use_cli_admin_creds:
@@ -348,10 +391,7 @@ class DocksideClient:
         # like `ssh` can safely treat everything after their target as passthrough
         # argv for downstream tools such as OpenSSH.
         cmd = [self._cli] + self._base_args(force_credentials=force_credentials) + list(cmd_args)
-        env = os.environ.copy()
-        # Always use the system config so the parent chain is available for
-        # ancestor cookie merging.  Session isolation is achieved via --cookie-file.
-        env.pop('DOCKSIDE_CONFIG_DIR', None)
+        env = self.cli_env()
         verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
         debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
         if verbose or debug:
@@ -409,8 +449,7 @@ class DocksideClient:
                             '--password', self._password])
             cmd.extend(['--cookie-file', self._session_cookie_file])
         cmd.extend(list(cmd_args))
-        env = os.environ.copy()
-        env.pop('DOCKSIDE_CONFIG_DIR', None)
+        env = self.cli_env()
         verbose = os.environ.get('DOCKSIDE_TEST_VERBOSE', '').strip() == '1'
         debug   = os.environ.get('DOCKSIDE_TEST_DEBUG',   '').strip() == '1'
         if verbose or debug:
@@ -583,8 +622,7 @@ class DocksideClient:
         start sees immediate EOF rather than reading the harness's own stdin.
         """
         cmd = [self._cli] + self._base_args() + ['ssh', 'exec-proxy', hostname]
-        env = os.environ.copy()
-        env.pop('DOCKSIDE_CONFIG_DIR', None)
+        env = self.cli_env()
         try:
             result = subprocess.run(
                 cmd, capture_output=True, text=True, env=env,
@@ -599,6 +637,58 @@ class DocksideClient:
             raise APIError(result.stderr.strip() or result.stdout.strip()
                             or f'CLI exited {result.returncode}')
         return result.stdout
+
+    def login(self, connect_to=None, no_verify=False):
+        """Run `dockside login` as this client's user (isolated-config clients only).
+
+        The password reaches the CLI through DOCKSIDE_PASSWORD, keeping it out
+        of the process list.
+        """
+        if not self._config_dir:
+            raise APIError('login() would replace the system config session; '
+                           'call it on a with_isolated_config() client')
+        cmd = [self._cli, 'login', '--server', self._server,
+               '--username', self._username, '--nickname', 'inttest']
+        if connect_to:
+            cmd.extend(['--connect-to', connect_to])
+        if no_verify:
+            cmd.append('--no-verify')
+        env = self.cli_env()
+        env['DOCKSIDE_PASSWORD'] = self._password
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env,
+                                stdin=subprocess.DEVNULL, timeout=60)
+        if result.returncode != 0:
+            raise APIError(result.stderr.strip() or result.stdout.strip()
+                           or f'CLI exited {result.returncode}')
+        return result.stdout
+
+    def logout(self):
+        """Run `dockside logout` for this server (isolated-config clients only)."""
+        if not self._config_dir:
+            raise APIError('logout() would clear the system config session; '
+                           'call it on a with_isolated_config() client')
+        # Passed after the subcommand: logout's own --server option takes precedence.
+        return self._run_text('logout', '--server', self._server)
+
+    def server_entry(self):
+        """Return the CLI's configured server entry for this client's server, or None."""
+        # Passed after the subcommand: `server list` has its own --output option.
+        for entry in self._run_readonly('server', 'list', '--output', 'json') or []:
+            if entry.get('url', '').rstrip('/') == self._server.rstrip('/'):
+                return entry
+        return None
+
+    def wstunnel_headers_files(self):
+        """Return the paths of the wstunnel headers files in this client's config dir."""
+        if not self._config_dir:
+            raise APIError('only an isolated-config client has a private wstunnel directory')
+        wstunnel_dir = os.path.join(self._config_dir, 'wstunnel')
+        if not os.path.isdir(wstunnel_dir):
+            return []
+        return sorted(
+            path for path in (os.path.join(wstunnel_dir, n) for n in os.listdir(wstunnel_dir))
+            if os.path.isfile(path)
+        )
 
     def service_url(self, container_name, router_prefix='www'):
         """
@@ -632,12 +722,14 @@ class DocksideClient:
         return self.check_url(url, timeout=timeout)
 
     def cleanup(self):
-        """Remove the temporary session cookie file."""
+        """Remove the temporary session cookie file or isolated config directory."""
         if self._session_cookie_file:
             try:
                 os.unlink(self._session_cookie_file)
             except OSError:
                 pass
+        if self._config_dir:
+            shutil.rmtree(self._config_dir, ignore_errors=True)
         self._cookie_jar = None
         self._persisted_session_ready = False
 
