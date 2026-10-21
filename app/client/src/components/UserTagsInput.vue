@@ -138,3 +138,12 @@ export default defineComponent({
   },
 });
 </script>
+
+<style lang="scss" scoped>
+   // Vuetify's chips swallow mousedown, so a click on a chip would neither
+   // focus its field nor move focus off the previous one. Readonly, a chip
+   // is just display, so let the click fall through to the field behind it.
+   .tags-input.v-input--readonly :deep(.v-chip) {
+      pointer-events: none;
+   }
+</style>

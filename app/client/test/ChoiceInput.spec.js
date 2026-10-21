@@ -34,4 +34,12 @@ describe('ChoiceInput.vue', () => {
       await wrapper.find('input').setValue('');
       expect(wrapper.emitted('input').at(-1)).toEqual(['']);
    });
+
+   // A readonly field is a display of its value. Left to Vuetify, an empty one
+   // would show its label inside the box and float it into the border when
+   // clicked, as if it were about to take input.
+   it('shows an empty readonly field with its label already floated', () => {
+      const wrapper = mountApp(ChoiceInput, { props: { label: 'Image', values: ['alpine'], value: '', readonly: true } });
+      expect(wrapper.find('.v-field--active').exists()).toBe(true);
+   });
 });

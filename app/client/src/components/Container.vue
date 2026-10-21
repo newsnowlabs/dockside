@@ -80,6 +80,7 @@
                   label="Description"
                   :model-value="container.meta.description"
                   readonly
+                  active
                   variant="outlined"
                   autocomplete="off"
                   hide-details

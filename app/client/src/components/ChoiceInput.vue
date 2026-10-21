@@ -6,7 +6,9 @@
         way a readonly v-text-field does. resolvedLabel resolves the current
         value to its display text the same way the v-select branch's own
         item-title does, so the readonly text matches what the dropdown would
-        have shown.
+        have shown. `active` keeps the label floated above an empty value, as
+        it is above a filled one, instead of sitting in the box like a
+        placeholder and floating up when the (unusable) field is clicked.
 
         autocomplete="off" on every branch: these are all structured pick-lists,
         never personal data, so there's nothing for the browser's own autofill
@@ -19,6 +21,7 @@
       :label="label"
       :model-value="resolvedLabel"
       readonly
+      active
       :aria-label="ariaLabel"
       autocomplete="off"
       hide-details
