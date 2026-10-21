@@ -122,9 +122,10 @@ def run_host_ssh_via_cli_config(client, devtainer, private_key_path, remote_argv
         remote_cmd = ' '.join(shlex.quote(a) for a in list(remote_argv))
         argv = ['ssh', '-F', config_path, ssh_alias, remote_cmd]
         debug_ssh_command(argv, config_path)
+        # The ProxyCommand runs the CLI, which must see the same config as client.
         return subprocess.run(
             argv,
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30, env=client.cli_env()
         )
 
 
