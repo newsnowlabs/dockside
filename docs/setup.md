@@ -11,9 +11,9 @@ config/
   roles.json
   passwd
   profiles/
+    250-git-repo.json
     300-nginx.json
     400-linux.json
-    500-git-repo.json
     900-dockside.json
     ...
 ```
@@ -24,10 +24,9 @@ The Launch menu lists profiles in the order of their file names, so the number a
 |---|---|---|
 | 000-099 | **Your own profiles**, for your organisation's applications and their bespoke requirements. No example profile uses this range, so yours list first. | |
 | 100s | Applications you configure and use, one number each | `100-ghost`, `101-wordpress` |
-| 200s | Development frameworks you edit the source of, in steps of ten between frameworks, with the numbers between for variations of one | `200-react-nextjs`, `210-vue`, `220-jekyll` |
+| 200s | Development frameworks you edit the source of, in steps of ten between frameworks, with the numbers between for variations of one, then a profile that clones a Git repository of your choice | `200-react-nextjs`, `210-vue`, `220-jekyll`, `250-git-repo` |
 | 300s | Stock servers | `300-nginx` |
 | 400s | Stock operating-system images | `400-linux`, `450-linux-other-architectures` |
-| 500s | Profiles that clone a Git repository | `500-git-repo` |
 | 900s | Profiles that run Dockside itself, for developing Dockside, in steps of five; and, last, Dockside's own website | `900-dockside`, `990-dockside-website` |
 
 Dockside automatically checks for and reloads all configuration `.json` files when it finds they have changed. If errors are found within any file, the file will be ignored, and any preexisting file contents retaining in memory will be used, until such time as the file errors are fixed.
@@ -119,7 +118,7 @@ Each `options` entry's `type` is either:
 - `"combo"`: like `"select"` — a dropdown menu sourced from `values` (mandatory, non-empty) — but
   editable: any typed value is accepted too, not just one of the listed entries. Good for a "common
   choices, or type your own" field; see the `branch` option in
-  [`500-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/500-git-repo.json)
+  [`250-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/250-git-repo.json)
   for a working example.
 
 If `default` is set, it pre-fills the input as real, editable text the user can overwrite — it is
@@ -129,7 +128,7 @@ native input hint text, shown only while the field is empty (so it has no visibl
 
 #### Launch-time git branch/PR checkout
 
-The example [`500-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/500-git-repo.json) profile builds on `gitURLs` clone-on-launch by adding two `options` entries with the reserved names `branch` and `pr`. `branch` is a `"combo"` option (see [Option types](#option-types)) offering `main` as a one-click default while still accepting any other branch name typed in. These names are special-cased by `launch.sh`: once the launch-time `gitURL` has been cloned, it will, if `pr` is set, run `gh pr checkout <pr>` (falling back to `git fetch origin refs/pull/<pr>/head && git checkout FETCH_HEAD` if `gh` is unavailable or that fails); otherwise, if `branch` is set, it fetches and switches to that branch from `origin`, failing loudly rather than silently creating an empty local branch if the branch doesn't exist there. `pr` takes precedence if both are set.
+The example [`250-git-repo.json`](https://github.com/newsnowlabs/dockside/blob/main/app/server/example/config/profiles/250-git-repo.json) profile builds on `gitURLs` clone-on-launch by adding two `options` entries with the reserved names `branch` and `pr`. `branch` is a `"combo"` option (see [Option types](#option-types)) offering `main` as a one-click default while still accepting any other branch name typed in. These names are special-cased by `launch.sh`: once the launch-time `gitURL` has been cloned, it will, if `pr` is set, run `gh pr checkout <pr>` (falling back to `git fetch origin refs/pull/<pr>/head && git checkout FETCH_HEAD` if `gh` is unavailable or that fails); otherwise, if `branch` is set, it fetches and switches to that branch from `origin`, failing loudly rather than silently creating an empty local branch if the branch doesn't exist there. `pr` takes precedence if both are set.
 
 This checkout only happens when a repository was actually cloned, i.e. when the profile's `gitURLs` is non-empty *and* the user supplies a `gitURL` at launch. For profiles with no `gitURLs`, or when the `gitURL` field is left blank at launch, no cloning or branch/PR switching occurs — the `branch`/`pr` fields still populate `DOCKSIDE_OPTION_BRANCH`/`DOCKSIDE_OPTION_PR` like any other `options` entry (see the `options` row above), but those values have no special meaning unless the profile's own `command`/`entrypoint` chooses to consume them.
 
