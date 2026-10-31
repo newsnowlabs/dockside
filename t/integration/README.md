@@ -119,15 +119,21 @@ bash t/integration/run_tests.sh
 ### Harness mode (CI)
 Launches a fresh Dockside container, runs all tests, then removes the container.
 The harness creates an isolated temporary CLI config directory, logs in there,
-and drives the harness target through the CLI's stored server entry:
+and drives the harness target through the CLI's stored server entry.
+
+The image is used as it is on the host, so a locally built image can be tested under
+its own tag: an image present locally is not refreshed from its registry, and one that
+is absent is pulled when the container starts. Pass `--pull` (or set
+`DOCKSIDE_TEST_PULL=1`) to pull the image first, which is what testing a published tag
+needs:
 ```bash
 DOCKSIDE_TEST_IMAGE=newsnowlabs/dockside:latest \
-bash t/integration/run_tests.sh
+bash t/integration/run_tests.sh --pull
 ```
 
 ### Via test.sh
 ```bash
-DOCKSIDE_TEST_IMAGE=newsnowlabs/dockside:latest \
+DOCKSIDE_TEST_IMAGE=newsnowlabs/dockside:latest DOCKSIDE_TEST_PULL=1 \
 bash test.sh --only integration
 ```
 
@@ -210,6 +216,7 @@ In harness mode, `harness.sh` creates an isolated CLI config and runs
 | `DOCKSIDE_TEST_MODE` | (if `DOCKSIDE_TEST_IMAGE`, then `harness`; else `remote`) | `local`, `remote`, or `harness` |
 | `DOCKSIDE_TEST_HOST` | current CLI server URL | Public FQDN or URL, e.g. `www.local.dockside.dev` or `https://www.local.dockside.dev/`; if unset outside harness mode, the runner uses the CLI's currently selected server |
 | `DOCKSIDE_TEST_IMAGE` | — | Docker image for harness mode |
+| `DOCKSIDE_TEST_PULL` | `0` | `1` = pull `DOCKSIDE_TEST_IMAGE` from its registry before launching it in harness mode (usually set via `--pull`). Otherwise a local copy is used as it is, and only an absent image is pulled |
 | `DOCKSIDE_TEST_HARNESS_ZONE` | `dockside.test` | DNS zone used by harness mode when launching a fresh Dockside container |
 | `DOCKSIDE_TEST_CONTAINER_ID` | auto in `local`/`harness` | The Dockside container's id or name, used by the network-attach tests (08 `test_05`/`test_06`) to `docker network connect` a throwaway network to it. In `local`/`harness` mode it is auto-detected (from `/etc/service/nginx/data/ctr-id`, else the hostname, which equals the container name in a Dockside-launched container); set it explicitly for an "alongside" run or to override. Only used when network modification is enabled, and only when the reachable docker daemon manages that container (not under a sysbox-runc inner daemon) |
 | `DOCKSIDE_TEST_CONTAINER_ACCESS` | `ssh` | Access method for tests that inspect a devtainer: `ssh` (default, via wstunnel) or `docker` (docker exec). `auto` is rejected — choose explicitly. |
@@ -270,6 +277,7 @@ block buffer until it fills or the process exits.
 | `--verbose` | Print every CLI command executed by the harness and extra probe diagnostics for skipped HTTP checks |
 | `--debug` | Include verbose mode output plus captured subprocess stdout/stderr |
 | `--skip-cleanup` | Preserve the dynamic test environment created by `_EnvManager`; per-test/container teardown still runs |
+| `--pull` | In harness mode, pull `DOCKSIDE_TEST_IMAGE` from its registry before launching it (sets `DOCKSIDE_TEST_PULL=1`) |
 
 ## Running Subsets
 
