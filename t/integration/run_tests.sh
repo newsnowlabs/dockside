@@ -2,7 +2,7 @@
 # run_tests.sh — Dockside Integration Test Runner
 #
 # Usage:
-#   bash t/integration/run_tests.sh [--only <prefix>] [--verbose] [--debug]
+#   bash t/integration/run_tests.sh [--only <prefix>] [--verbose] [--debug] [--pull]
 #
 # Environment variables:
 #
@@ -21,6 +21,8 @@
 #                         In harness mode, harness.sh sets this automatically.
 #
 #   DOCKSIDE_TEST_IMAGE   Docker image for harness mode
+#   DOCKSIDE_TEST_PULL    1 = pull DOCKSIDE_TEST_IMAGE before launching it (--pull); otherwise
+#                         a local copy is used as it is, and only an absent image is pulled
 #   DOCKSIDE_TEST_HARNESS_ZONE  DNS zone for harness container (default: dockside.test)
 #
 #   DOCKSIDE_TEST_NAME_SUFFIX  Suffix for test resource names:
@@ -168,6 +170,7 @@ VERBOSE=0
 DEBUG=0
 SKIP_CLEANUP=0
 SKIP_CONTAINER_CLEANUP=0
+PULL=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --only) ONLY_PREFIX="$2"; shift 2 ;;
@@ -175,12 +178,14 @@ while [[ $# -gt 0 ]]; do
         --debug) DEBUG=1; shift ;;
         --skip-cleanup) SKIP_CLEANUP=1; shift ;;
         --skip-container-cleanup) SKIP_CONTAINER_CLEANUP=1; shift ;;
+        --pull) PULL=1; shift ;;
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
     esac
 done
 
 [[ "$SKIP_CLEANUP" == "1" ]] && export DOCKSIDE_TEST_SKIP_CLEANUP=1
 [[ "$SKIP_CONTAINER_CLEANUP" == "1" ]] && export DOCKSIDE_TEST_SKIP_CONTAINER_CLEANUP=1
+[[ "$PULL" == "1" ]] && export DOCKSIDE_TEST_PULL=1
 
 # ── Mode detection ─────────────────────────────────────────────────────────────
 if [[ -n "${DOCKSIDE_TEST_MODE:-}" ]]; then

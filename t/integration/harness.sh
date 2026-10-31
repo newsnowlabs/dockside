@@ -4,6 +4,9 @@
 #
 # Environment inputs:
 #   DOCKSIDE_TEST_IMAGE       (required) Docker image to launch
+#   DOCKSIDE_TEST_PULL        1 = pull the image from its registry before launching
+#                             (--pull). Otherwise an image present locally is used as it
+#                             is, and one that is absent is pulled by `docker run`.
 #   DOCKSIDE_TEST_HARNESS_ZONE  DNS zone / ssl-zone for the harness container
 #                               (default: dockside.test)
 #
@@ -41,8 +44,10 @@ trap harness_cleanup EXIT INT TERM
 IMAGE="${DOCKSIDE_TEST_IMAGE:?DOCKSIDE_TEST_IMAGE must be set for harness mode}"
 HARNESS_ZONE="${DOCKSIDE_TEST_HARNESS_ZONE:-dockside.test}"
 
-echo "# Pulling ${IMAGE}..." >&2
-docker pull "${IMAGE}" >&2
+if [[ "${DOCKSIDE_TEST_PULL:-0}" == "1" ]]; then
+    echo "# Pulling ${IMAGE}..." >&2
+    docker pull "${IMAGE}" >&2
+fi
 
 echo "# Starting Dockside harness container (ssl-zone: ${HARNESS_ZONE})..." >&2
 HARNESS_ID=$(docker run --detach \
