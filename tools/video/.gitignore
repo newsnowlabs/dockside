@@ -1,0 +1,4 @@
+# Recordings, captures and node modules are generated.
+out/
+node_modules/
+package-lock.json
