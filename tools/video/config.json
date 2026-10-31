@@ -1,0 +1,128 @@
+{
+  "demo": {
+    "user": "demo",
+    "role": "admin",
+    "resources": {
+      "profiles": [
+        "100-ghost",
+        "101-wordpress",
+        "200-react-nextjs",
+        "205-react-vite",
+        "210-vue",
+        "215-vue3-nuxt",
+        "220-jekyll",
+        "230-svelte",
+        "240-hugo",
+        "250-git-repo"
+      ],
+      "runtimes": [
+        "*"
+      ],
+      "networks": [
+        "*"
+      ],
+      "auth": [
+        "*"
+      ],
+      "images": [
+        "*"
+      ],
+      "IDEs": [
+        "*"
+      ]
+    },
+    "viewer": {
+      "user": "priya",
+      "name": "Priya Product",
+      "role": "productmanager",
+      "precreate": false
+    },
+    "colleague": {
+      "user": "dana",
+      "name": "Dana Developer",
+      "role": "developer",
+      "precreate": false
+    },
+    "name": "Alex Admin",
+    "email": "alex@example.com"
+  },
+  "window": {
+    "width": 1280,
+    "height": 800,
+    "tabStrip": 40
+  },
+  "scale": 2,
+  "chrome": "tabs",
+  "target": "current",
+  "cleanServer": false,
+  "publicDomains": [
+    "local.dockside.dev"
+  ],
+  "childServer": {
+    "name": "ds-video-child",
+    "nickname": "video-child",
+    "image": "newsnowlabs/dockside:latest"
+  },
+  "fps": 60,
+  "colorScheme": "light",
+  "cards": {
+    "logo": "app/server/assets/ico/dockside.svg",
+    "background": "FFFFFF",
+    "ink": "333333",
+    "dark": {
+      "background": "0F151B",
+      "ink": "E7ECF2"
+    },
+    "fade": 0.6,
+    "start": {
+      "seconds": 3
+    },
+    "end": {
+      "seconds": 3.5
+    }
+  },
+  "pointer": {
+    "dwellMs": 500,
+    "pressMs": 250
+  },
+  "lead": 1.0,
+  "tail": 1.5,
+  "outputs": {
+    "mp4": {
+      "width": 1920,
+      "fps": 60,
+      "crf": 20
+    },
+    "gif": {
+      "width": 960,
+      "fps": 30,
+      "colors": 256
+    },
+    "webp": {
+      "width": 960,
+      "fps": 30,
+      "quality": 75
+    }
+  },
+  "captions": {
+    "mode": "phrases",
+    "position": "band",
+    "bandHeight": 0.13,
+    "font": "Liberation Sans",
+    "blockSize": 0.046,
+    "phraseSize": 0.062,
+    "maxChars": 44,
+    "minChars": 14,
+    "textColour": "FFFFFF",
+    "boxColour": "17202A",
+    "boxOpacity": 0.81
+  },
+  "speech": {
+    "wordsPerSecond": 2.0,
+    "minSeconds": 1.8,
+    "gapSeconds": 0.35
+  },
+  "voice": {
+    "engine": "none"
+  }
+}

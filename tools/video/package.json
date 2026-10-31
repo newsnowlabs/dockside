@@ -1,0 +1,8 @@
+{
+  "name": "dockside-video",
+  "private": true,
+  "description": "Scripted screen recordings of the Dockside UI",
+  "dependencies": {
+    "playwright-core": ">=1.50.0"
+  }
+}

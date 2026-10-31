@@ -1,0 +1,5 @@
+# A voice is an uncommitted drop-in directory (see README.md); only this
+# explanation and the ignore rules are tracked.
+*
+!.gitignore
+!README.md
