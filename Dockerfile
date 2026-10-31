@@ -514,7 +514,9 @@ COPY --from=vue-build --chown=$USER:$USER /build/app/client/dist $HOME/$APP/app/
 
 FROM dockside-1 AS dockside
 LABEL maintainer="Struan Bartlett <struan.bartlett@NewsNow.co.uk>"
-LABEL org.opencontainers.image.source="https://github.com/newsnowlabs/dockside"
+LABEL org.opencontainers.image.source="https://github.com/newsnowlabs/dockside" \
+      org.opencontainers.image.title="Dockside" \
+      org.opencontainers.image.description="A self-hosted platform for launching devcontainers (devtainers), each with a browser IDE, SSH access and its own HTTPS addresses behind an access-controlled proxy."
 
 ENV DEBIAN_FRONTEND=noninteractive
 
