@@ -90,6 +90,27 @@ Advanced features:
 - Command-line interface (`dockside` CLI) for scripting, automation, and CI/CD integration.
 - Autodetection of available runtimes, networks and IDEs from the host environment.
 
+## Video walkthrough
+
+A two-minute tour: launch a React app and a Ghost blog from the Welcome card, switch between the devtainers, open a devtainer's website, IDE and SSH, and share its services at different access levels.
+
+<p align="center">
+<a title="Click to watch the full walkthrough, with narration" href="https://github.com/user-attachments/assets/424ed6da-b2fb-4926-b3d4-62f7be1b884a"><img alt="Dockside: launch a devtainer from a profile, then open its website" src="https://github.com/user-attachments/assets/d0803158-f891-4838-978b-c6a81c2434f0"></a>
+</p>
+
+
+## Video walkthrough
+
+A two-minute tour: launch a React app and a Ghost blog from the Welcome card, switch between the devtainers, open a devtainer's website, IDE and SSH, and share its services at different access levels.
+
+<div align="center">
+
+[![Dockside: launch a devtainer from a profile, then open its website](https://github.com/user-attachments/assets/d0803158-f891-4838-978b-c6a81c2434f0)](https://github.com/user-attachments/assets/424ed6da-b2fb-4926-b3d4-62f7be1b884a "Click to watch the full walkthrough, with narration")
+
+*Click the animation to watch the full walkthrough.*
+
+</div>
+
 ## Host requirements
 
 Dockside is supported on Intel (amd64/x86) and arm64 (Apple M1-5, Raspberry Pi 64-bit) hardware platforms, via a multiarch Docker image
