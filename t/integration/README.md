@@ -33,8 +33,8 @@ CLI**. Follow these rules so the suite stays consistent and maintainable:
    functions from a test or the harness.
 2. **If the CLI can't do it, upgrade the CLI — don't work around it.** When a test needs a
    capability the CLI lacks, add the command/flag to `cli/dockside` and call it (e.g.
-   the self-service account test uses `dockside account edit`, added for exactly this
-   reason). Never hand-roll raw HTTP against the server, and never copy CLI internals
+   the self-service account test uses `dockside account edit`). Never hand-roll raw HTTP
+   against the server, and never copy CLI internals
    (openers, nest-level / connect-to handling, …) into a test.
 3. **Create fixtures at runtime; never rely on pre-existing state.** All users, roles, and
    profiles are created by the harness/tests via the CLI during setup and removed during

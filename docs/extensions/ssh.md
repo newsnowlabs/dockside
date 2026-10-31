@@ -50,9 +50,9 @@ Developers must follow the client configuration instructions — accessible via 
 
 - **wstunnel v10+** (default): install the [wstunnel](https://github.com/erebe/wstunnel) v10+ client and add the generated `~/.ssh/config` block, whose `ProxyCommand` passes the session credential via a `--http-headers-file` rather than inline on the command line.
 - **Dockside CLI**: use the [Dockside CLI](../../cli/README.md)'s `dockside ssh exec-proxy` as the `ProxyCommand` instead of invoking `wstunnel` directly — no secret is ever written to `~/.ssh/config`, and the credential is refreshed automatically at connect time.
-- **Legacy** (deprecated): the original v6 setup, which bakes the session cookie directly into the `wstunnel` command line. Kept only so existing saved `~/.ssh/config` entries keep working during the v10 migration; new setups should use one of the tabs above. Dockside's SSH router runs both a v10 and a v6 `wstunnel` server side by side, so old and new client configs work simultaneously — there is no forced cutover date, but the legacy tab will eventually be removed.
+- **Legacy** (deprecated): the original v6 setup, which bakes the session cookie directly into the `wstunnel` command line. Existing saved `~/.ssh/config` entries that use it keep working; new setups should use one of the tabs above. Dockside's SSH router runs both a v10 and a v6 `wstunnel` server side by side, so old and new client configs work simultaneously; the legacy tab will eventually be removed.
 
-If you already have a v6-era `~/.ssh/config` entry, it continues to work unchanged; re-running **Setup** and copying the new block is only needed if you want to move off the deprecated tab.
+A v6-era `~/.ssh/config` entry keeps working; re-running **Setup** and copying the new block is only needed to move off the deprecated tab.
 
 ### Notes
 

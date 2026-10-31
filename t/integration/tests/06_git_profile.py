@@ -27,7 +27,7 @@ from _ssh_test_common import _DEV1_KEY, run_in_devtainer
 GIT_URL = 'https://github.com/newsnowlabs/dockside.git'
 GH_REPO = 'newsnowlabs/dockside'  # owner/repo for `gh -R` PR queries
 EXPLICIT_BRANCH = 'gh-pages'
-EXPLICIT_PR = '40'  # closed PR from claude/login-use-current-server-pzpOa → main
+EXPLICIT_PR = '40'  # a closed PR in GH_REPO whose head commit is fixed
 GITHUB_TOKEN = os.environ.get('DOCKSIDE_TEST_GITHUB_TOKEN', '')
 REPO_DIR = '/home/dockside/dockside'
 HOME_DIR = '/home/dockside'
@@ -95,10 +95,10 @@ class GitProfileTests(TestCase):
             )
         except CapabilityUnavailable as exc:
             # CapabilityUnavailable = the container-access mechanism is genuinely
-            # unavailable (docker/ssh/wstunnel or key missing) — a legitimate skip. A
-            # plain APIError (e.g. a container-id or proxy/config regression), a
-            # TimeoutExpired, or any other error while inspecting an already-running
-            # container now propagates and fails rather than being skipped.
+            # unavailable (docker/ssh/wstunnel or key missing) — a legitimate skip. Any
+            # other error while inspecting an already-running container (an APIError from
+            # a container-id or proxy/config fault, a TimeoutExpired) propagates and fails
+            # the test.
             self.skip(str(exc))
         self._debug(
             f'inspect done name={name} rc={result.returncode} '

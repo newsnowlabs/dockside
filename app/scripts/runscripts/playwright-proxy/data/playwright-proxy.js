@@ -67,7 +67,7 @@
  *   node playwright-proxy.js
  *   node playwright-proxy.js 18080 8443 8080
  *   node playwright-proxy.js 18080 443 80 '(^|\.)local\.dockside\.dev$'
- *   node playwright-proxy.js 18080 443 80 '-ds101-feature\.staging\.newsnow\.co\.uk$' /data/certs/fullchain.pem /data/certs/privkey.pem
+ *   node playwright-proxy.js 18080 443 80 '-ds-a\.example\.com$' /data/certs/fullchain.pem /data/certs/privkey.pem
  */
 
 'use strict';
@@ -113,7 +113,7 @@ injected — see the header comment in this file for why that's needed.
 Examples:
   node playwright-proxy.js 18080 8443 8080
   node playwright-proxy.js 18080 443 80 '(^|\\.)local\\.dockside\\.dev$'
-  node playwright-proxy.js 18080 443 80 '-ds101-feature\\.staging\\.newsnow\\.co\\.uk$' /data/certs/fullchain.pem /data/certs/privkey.pem
+  node playwright-proxy.js 18080 443 80 '-ds-a\\.example\\.com$' /data/certs/fullchain.pem /data/certs/privkey.pem
   `.trim());
   process.exit(0);
 }
