@@ -1,8 +1,4 @@
-<div align="center" width="70%">
-
-[![Dockside: Launch, Develop, Share](https://github.com/user-attachments/assets/2c5eb71b-9fcc-432a-9f4c-e3d0df4a380a)](https://github.com/user-attachments/assets/2c5eb71b-9fcc-432a-9f4c-e3d0df4a380a "Click to watch the full walkthrough, with narration")
-
-</div>
+https://github.com/user-attachments/assets/2c5eb71b-9fcc-432a-9f4c-e3d0df4a380a
 
 <p align="center">
   <a href="https://github.com/newsnowlabs/dockside"><img alt="GitHub stars" src="https://img.shields.io/github/stars/newsnowlabs/dockside?style=flat-square&logo=github"></a>
