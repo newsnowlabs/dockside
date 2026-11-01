@@ -1,6 +1,4 @@
-<p align="center">
-    <img alt="//Dockside" src="https://user-images.githubusercontent.com/354555/145203965-b573f43b-757a-4471-a39c-d2e53b1acb41.png" width="75%"/>
-</p>
+https://github.com/user-attachments/assets/2c5eb71b-9fcc-432a-9f4c-e3d0df4a380a
 
 <p align="center">
   <a href="https://github.com/newsnowlabs/dockside"><img alt="GitHub stars" src="https://img.shields.io/github/stars/newsnowlabs/dockside?style=flat-square&logo=github"></a>
